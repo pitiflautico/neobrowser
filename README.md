@@ -26,15 +26,16 @@ No chromedriver needed — communicates directly via Chrome DevTools Protocol (W
 
 ## What it does
 
-NeoBrowser gives AI agents a browser they can control via the [Model Context Protocol](https://modelcontextprotocol.io/). Instead of parsing raw HTML, agents get a **WOM (Web Object Model)** — a compressed, AI-friendly representation of the page with stable IDs for every interactive element.
+NeoBrowser gives AI agents a browser they can control via the [Model Context Protocol](https://modelcontextprotocol.io/). Instead of dumping raw HTML or DOM trees, agents see pages the way a human does — visible text, interactive elements, and content.
 
 Key capabilities:
+- **Human-like vision**: Default `see` mode extracts what a user actually sees — no DOM parsing, no IDs, just text and interactive elements (~100ms)
 - **Dual engine**: Light mode (HTTP + html5ever, no Chrome) and Chrome mode (full CDP browser)
 - **Frame-aware**: Automatically detects framesets and targets the frame with actual content
-- **WOM output**: Pages compressed 5-20x into structured nodes with stable IDs (`btn_001`, `fld_003`, `lnk_012`)
-- **Delta tracking**: Only shows what changed between observations
-- **Session management**: Cookie injection, Chrome profile reuse, OS keychain auth
 - **browser_api**: HTTP requests from inside browser context — inherits cookies/session, 10x faster than navigating
+- **WOM output**: Optional structured mode with stable IDs (`btn_001`, `fld_003`) for complex automation
+- **Session management**: Cookie injection, Chrome profile reuse, OS keychain auth
+- **Delta tracking**: Only shows what changed between observations
 
 ## Architecture
 
@@ -55,7 +56,7 @@ Key capabilities:
 │  │html5ever │  │WebSocket│  │  auto-detect │  │
 │  └─────────┘  └─────────┘  └──────────────┘  │
 ├──────────────────────────────────────────────┤
-│  WOM Builder → Vision → Delta → Compression   │
+│  see_page (JS) │ WOM Builder │ Delta │ Vision │
 └──────────────────────────────────────────────┘
 ```
 
@@ -63,8 +64,8 @@ Key capabilities:
 
 | File | Purpose |
 |---|---|
-| `engine.rs` | Chrome CDP session — launch, navigate, click, type, scroll, eval, frame detection |
-| `mcp.rs` | MCP server — 8 tool definitions + handlers, JSON-RPC loop |
+| `engine.rs` | Chrome CDP session — launch, navigate, click, type, scroll, eval, frame detection, `see_page()` |
+| `mcp.rs` | MCP server — 9 tool definitions + handlers, JSON-RPC loop |
 | `wom.rs` | Web Object Model — DOM → structured nodes with stable IDs |
 | `vision.rs` | Page classification — detects type (article, form, list, app) and state |
 | `semantic.rs` | AX-tree-like text extraction from HTML |
@@ -85,17 +86,35 @@ Open a URL. Returns WOM representation of the page.
 Modes: `light` (HTTP only, fast), `chrome` (full browser), `auto` (try light, fall back to Chrome).
 
 ### browser_observe
-See the current page state.
+See the current page — what a user would see.
 
 ```json
-{ "format": "content" }
+{ "format": "see" }
+```
+
+Default output (format=`see`):
+```
+Page: EL MUNDO - Diario online líder de información en español
+URL: https://www.elmundo.es/
+
+Interactive:
+  [link "Guerra Irán"]
+  [link "Últimas noticias"]
+  [button "Menú"]
+  [input "Buscar"] placeholder="Buscar..."
+
+Content:
+  # PORTADA
+  ## Guerra en Irán
+  El nuevo líder supremo insta a vengar a los "mártires"...
 ```
 
 Formats:
-- `compact` — minimal JSON for fast loops
-- `content` — readable text with stable IDs (default for agents)
+- **`see`** — what a user sees: text + interactive elements. Fast (~100ms), no HTML parsing. **Recommended default.**
+- `compact` — WOM minimal JSON with stable IDs
+- `content` — WOM readable text
 - `full` — complete WOM JSON
-- `delta` — only changes since last observation
+- `delta` — WOM changes since last observation
 
 ### browser_act
 Interact with the page.
