@@ -162,15 +162,15 @@ fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "browser_observe".into(),
-            description: "Observe current page state. Returns WOM document with page classification, available actions, and content. Use format='compact' for fast loops, 'full' for planning, 'delta' for changes since last observation.".into(),
+            description: "See the current page as a user would. Returns visible text, interactive elements (inputs, buttons, links), and page info. Default format='see' is fast and human-like. Use 'wom' formats only when you need stable IDs for complex automation.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "format": {
                         "type": "string",
-                        "enum": ["compact", "full", "content", "delta"],
-                        "default": "content",
-                        "description": "compact: minimal JSON for fast loops | content: readable text with stable IDs (best default) | full: complete WOM JSON | delta: changes since last observation"
+                        "enum": ["see", "compact", "full", "content", "delta"],
+                        "default": "see",
+                        "description": "see: what a user sees — text + interactive elements (FAST, recommended) | compact: WOM minimal JSON | content: WOM readable text | full: complete WOM JSON | delta: WOM changes since last"
                     },
                     "include_network": {
                         "type": "boolean",
@@ -225,9 +225,9 @@ fn tool_definitions() -> Vec<ToolDef> {
                     },
                     "return_observation": {
                         "type": "string",
-                        "enum": ["none", "compact", "delta"],
-                        "default": "delta",
-                        "description": "What to return after action"
+                        "enum": ["none", "see", "compact", "delta"],
+                        "default": "see",
+                        "description": "What to return after action: see (fast, what user sees), compact/delta (WOM), none"
                     }
                 },
                 "required": ["kind"]
@@ -471,19 +471,35 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
 }
 
 async fn handle_observe(state: &mut McpState, args: &Value) -> Result<Value, String> {
-    let format = args["format"].as_str().unwrap_or("compact");
-    let session = state.ensure_session().await?;
-
-    let rev = state.wom_revision + 1;
-    state.wom_revision = rev;
-
+    let format = args["format"].as_str().unwrap_or("see");
     let include_net = args["include_network"].as_bool().unwrap_or(false);
     let include_con = args["include_console"].as_bool().unwrap_or(false);
 
+    let session = state.ensure_session().await?;
     let session = state.session.as_mut().unwrap();
+
+    // Fast path: "see" mode — JS extraction, no HTML parsing, no WOM
+    if format == "see" {
+        let page = session.see_page().await.map_err(|e| format!("{e}"))?;
+
+        let mut result = serde_json::json!({ "page": page });
+
+        if include_net {
+            result["network"] = serde_json::json!(session.read_network().await.unwrap_or_default());
+        }
+        if include_con {
+            result["console"] = serde_json::json!(session.read_console().await.unwrap_or_default());
+        }
+
+        return Ok(result);
+    }
+
+    // WOM path: full HTML parsing + structured output
+    let rev = state.wom_revision + 1;
+    state.wom_revision = rev;
+
     let doc = session.see_wom(rev).await.map_err(|e| format!("{e}"))?;
 
-    // Optionally fetch network/console data
     let network = if include_net {
         Some(session.read_network().await.unwrap_or_default())
     } else { None };
@@ -526,7 +542,6 @@ async fn handle_observe(state: &mut McpState, args: &Value) -> Result<Value, Str
         }
     };
 
-    // Attach network/console if requested
     if let Some(net) = network {
         result["network"] = serde_json::json!(net);
     }
@@ -541,7 +556,7 @@ async fn handle_observe(state: &mut McpState, args: &Value) -> Result<Value, Str
 async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String> {
     let kind = args["kind"].as_str().ok_or("Missing 'kind'")?;
     let raw_target = args["target"].as_str().unwrap_or("");
-    let return_obs = args["return_observation"].as_str().unwrap_or("delta");
+    let return_obs = args["return_observation"].as_str().unwrap_or("see");
 
     // Check if target is a WOM ID (e.g. btn_042, lnk_015, fld_003)
     let is_wom_id = raw_target.contains('_')
@@ -675,26 +690,33 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
     });
 
     if return_obs != "none" {
-        let rev = state.wom_revision + 1;
-        state.wom_revision = rev;
         let session = state.session.as_mut().unwrap();
-        let doc = session.see_wom(rev).await.map_err(|e| format!("{e}"))?;
 
         match return_obs {
-            "delta" => {
-                if let Some(ref prev) = state.prev_wom {
-                    let d = delta::diff(prev, &doc);
-                    result["delta"] = serde_json::to_value(&d).unwrap_or_default();
-                }
-                result["compact"] = serde_json::to_value(&wom::compact(&doc)).unwrap_or_default();
+            "see" => {
+                // Fast path: JS-only extraction, no WOM
+                let page = session.see_page().await.map_err(|e| format!("{e}"))?;
+                result["page"] = serde_json::json!(page);
             }
-            "compact" => {
-                result["compact"] = serde_json::to_value(&wom::compact(&doc)).unwrap_or_default();
+            "delta" | "compact" => {
+                let rev = state.wom_revision + 1;
+                state.wom_revision = rev;
+                let doc = session.see_wom(rev).await.map_err(|e| format!("{e}"))?;
+
+                if return_obs == "delta" {
+                    if let Some(ref prev) = state.prev_wom {
+                        let d = delta::diff(prev, &doc);
+                        result["delta"] = serde_json::to_value(&d).unwrap_or_default();
+                    }
+                    result["compact"] = serde_json::to_value(&wom::compact(&doc)).unwrap_or_default();
+                } else {
+                    result["compact"] = serde_json::to_value(&wom::compact(&doc)).unwrap_or_default();
+                }
+                result["revision"] = serde_json::json!(doc.session.revision);
+                state.prev_wom = Some(doc);
             }
             _ => {}
         }
-        result["revision"] = serde_json::json!(doc.session.revision);
-        state.prev_wom = Some(doc);
     }
 
     Ok(result)

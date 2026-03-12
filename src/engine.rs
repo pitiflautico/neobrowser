@@ -911,6 +911,161 @@ impl Session {
         Ok(view)
     }
 
+    /// Lightweight page view — extracts what a user SEES via JS.
+    /// No HTML parsing, no WOM, no html5ever. Just runs JS in the active frame
+    /// and returns structured text: title, URL, interactive elements, visible text.
+    /// This is what agents should use 90% of the time.
+    pub async fn see_page(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let t0 = Instant::now();
+        let js = format!(
+            r#"
+            (() => {{
+                const _doc = {active_doc};
+                const url = window.location.href;
+                const title = _doc.title || document.title || '';
+
+                // Collect interactive elements (visible only)
+                const els = [];
+                _doc.querySelectorAll('input, textarea, select, button, a, [role="button"], [role="link"], summary, [onclick]').forEach(el => {{
+                    // Skip hidden
+                    if (el.offsetParent === null && el.tagName !== 'BODY' && el.tagName !== 'HTML'
+                        && !el.closest('frame, iframe')) return;
+
+                    const tag = el.tagName.toLowerCase();
+                    const text = (el.textContent || '').trim().substring(0, 80);
+                    const placeholder = el.placeholder || '';
+                    const name = el.name || el.id || '';
+                    const type = el.type || '';
+                    const value = el.value || '';
+                    const ariaLabel = el.getAttribute('aria-label') || '';
+                    const title = el.title || '';
+                    const href = el.href || '';
+
+                    // Build label
+                    let label = ariaLabel || placeholder || text || name || title;
+                    if (!label && tag === 'input') label = type;
+                    if (!label) return;
+                    label = label.replace(/\s+/g, ' ').trim().substring(0, 60);
+
+                    let entry = '';
+                    if (tag === 'input' || tag === 'textarea') {{
+                        const t = (type === 'password') ? 'password' : (type === 'hidden') ? null : 'input';
+                        if (!t) return;
+                        const cur = value ? ' = "' + value.substring(0, 30) + '"' : '';
+                        entry = '[' + t + ' "' + label + '"]' + cur;
+                    }} else if (tag === 'select') {{
+                        const opts = Array.from(el.options).slice(0, 8).map(o => o.text.trim().substring(0, 30));
+                        const cur = el.selectedIndex >= 0 ? el.options[el.selectedIndex].text.trim() : '';
+                        entry = '[select "' + label + '"] selected="' + cur + '" options: ' + opts.join(' | ');
+                    }} else if (tag === 'button' || el.getAttribute('role') === 'button') {{
+                        entry = '[button "' + label + '"]';
+                    }} else if (tag === 'a') {{
+                        if (!text || text.length < 2) return;
+                        entry = '[link "' + label + '"]';
+                    }} else if (tag === 'summary') {{
+                        entry = '[toggle "' + label + '"]';
+                    }} else {{
+                        entry = '[action "' + label + '"]';
+                    }}
+
+                    els.push(entry);
+                }});
+
+                // Deduplicate
+                const seen = new Set();
+                const unique = els.filter(e => {{
+                    if (seen.has(e)) return false;
+                    seen.add(e);
+                    return true;
+                }});
+
+                // Extract visible text (headings + paragraphs, skip nav/footer noise)
+                const textParts = [];
+                let inNav = false;
+                _doc.querySelectorAll('h1,h2,h3,h4,h5,h6,p,td,th,li,label,span,div').forEach(el => {{
+                    // Skip if inside nav/header/footer
+                    const parent = el.closest('nav, header, footer, [role="navigation"], [role="banner"]');
+                    if (parent) return;
+
+                    // Skip hidden
+                    if (el.offsetParent === null && el.tagName !== 'BODY') return;
+
+                    const tag = el.tagName.toLowerCase();
+                    let t = '';
+
+                    // For headings, get direct text
+                    if (tag.startsWith('h')) {{
+                        t = el.textContent.trim();
+                        if (t) t = '#'.repeat(parseInt(tag[1])) + ' ' + t;
+                    }} else if (tag === 'p' || tag === 'label') {{
+                        t = el.textContent.trim();
+                    }} else if (tag === 'td' || tag === 'th') {{
+                        t = el.textContent.trim();
+                    }} else if (tag === 'li') {{
+                        // Only direct text, not nested lists
+                        const directText = Array.from(el.childNodes)
+                            .filter(n => n.nodeType === 3)
+                            .map(n => n.textContent.trim())
+                            .join(' ');
+                        if (directText) t = '- ' + directText;
+                    }} else if (tag === 'div' || tag === 'span') {{
+                        // Only leaf divs/spans with meaningful text
+                        if (el.children.length === 0) {{
+                            t = el.textContent.trim();
+                        }}
+                    }}
+
+                    if (t && t.length > 2 && t.length < 500) {{
+                        textParts.push(t.substring(0, 200));
+                    }}
+                }});
+
+                // Deduplicate text (many nested elements repeat text)
+                const seenText = new Set();
+                const uniqueText = textParts.filter(t => {{
+                    const key = t.substring(0, 50).toLowerCase();
+                    if (seenText.has(key)) return false;
+                    seenText.add(key);
+                    return true;
+                }});
+
+                // Build output
+                const lines = [];
+                lines.push('Page: ' + title);
+                lines.push('URL: ' + url);
+                lines.push('');
+
+                if (unique.length > 0) {{
+                    lines.push('Interactive:');
+                    unique.forEach(e => lines.push('  ' + e));
+                    lines.push('');
+                }}
+
+                if (uniqueText.length > 0) {{
+                    lines.push('Content:');
+                    uniqueText.slice(0, 80).forEach(t => lines.push('  ' + t));
+                    if (uniqueText.length > 80) {{
+                        lines.push('  ... (' + (uniqueText.length - 80) + ' more)');
+                    }}
+                }}
+
+                return lines.join('\n');
+            }})()
+            "#,
+            active_doc = Self::ACTIVE_DOC_JS,
+        );
+
+        let result = self.eval_string(&js).await?;
+
+        eprintln!(
+            "[SEE] {}chars | {}ms",
+            result.len(),
+            t0.elapsed().as_millis(),
+        );
+
+        Ok(result)
+    }
+
     /// WOM output — structured for AI agents.
     pub async fn see_wom(&self, revision: u64) -> Result<wom::WomDocument, Box<dyn std::error::Error>> {
         let t0 = Instant::now();
