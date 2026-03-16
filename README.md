@@ -13,34 +13,65 @@
 - **AI-native output** — semantic text compression, no screenshots needed
 - **Zero dependencies** — single binary, just needs Chrome installed
 
+## Install
+
+```bash
+# Option 1: npm (recommended — downloads pre-built binary)
+npx neobrowser mcp
+
+# Option 2: Build from source
+git clone https://github.com/pitiflautico/neobrowser.git
+cd neobrowser && cargo build --release
+# Binary: target/release/neobrowser_rs
+
+# Option 3: Docker
+docker run -i --rm pitiflautico/neobrowser
+```
+
 ## Quick Start
 
 ```bash
-# 1. Build
-git clone https://github.com/pitiflautico/neobrowser.git
-cd neobrowser
-cargo build --release
-# Binary: target/release/neobrowser_rs
+# 1. Setup: opens Chrome, login to your sites, saves session
+neobrowser_rs setup --sites linkedin.com,chatgpt.com
 
-# 2. Setup: opens Chrome, login to your sites, saves session
-./target/release/neobrowser_rs setup --sites linkedin.com,chatgpt.com
-
-# 3. Add to Claude Code (~/.claude.json)
+# 2. Add to your AI tool
 ```
 
+### Claude Code (`~/.claude.json`)
 ```json
 {
   "mcpServers": {
     "neobrowser": {
       "type": "stdio",
-      "command": "/path/to/neobrowser_rs",
-      "args": ["mcp"],
+      "command": "npx",
+      "args": ["-y", "neobrowser", "mcp"],
       "env": {
-        "NEOBROWSER_COOKIES": "~/.cookies/linkedin.json"
+        "NEOBROWSER_HEADLESS": "1",
+        "NEOBROWSER_STEALTH": "1"
       }
     }
   }
 }
+```
+
+### Cursor / VS Code
+```json
+{
+  "mcp": {
+    "servers": {
+      "neobrowser": {
+        "command": "npx",
+        "args": ["-y", "neobrowser", "mcp"]
+      }
+    }
+  }
+}
+```
+
+### Any MCP client
+NeoBrowser speaks [Model Context Protocol](https://modelcontextprotocol.io) over stdio. Send JSON-RPC to stdin, read responses from stdout:
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' | neobrowser_rs mcp
 ```
 
 Chrome required. Communicates via CDP WebSocket or Pipe — no chromedriver binary needed.

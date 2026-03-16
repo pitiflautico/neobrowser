@@ -2187,7 +2187,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     },
                     server_info: ServerInfo {
                         name: "neobrowser".into(),
-                        version: "0.2.0".into(),
+                        version: "0.3.0".into(),
                     },
                 };
                 JsonRpcResponse {

@@ -3,44 +3,68 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  check:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
-      - run: cargo test
+      - run: cargo check
+      - run: cargo test --lib
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+  build:
+    needs: check
     strategy:
       matrix:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
-            suffix: macos-arm64
-          - os: macos-latest
+            artifact: neobrowser-aarch64-apple-darwin
+          - os: macos-13
             target: x86_64-apple-darwin
-            suffix: macos-x86
+            artifact: neobrowser-x86_64-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            suffix: linux-x86
+            artifact: neobrowser-x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target ${{ matrix.target }}
-      - run: mv target/${{ matrix.target }}/release/neobrowser_rs neobrowser_rs-${{ matrix.suffix }}
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/neobrowser_rs dist/
+          cd dist && tar czf ../${{ matrix.artifact }}.tar.gz neobrowser_rs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: neobrowser_rs-${{ matrix.suffix }}
+          files: |
+            neobrowser-aarch64-apple-darwin.tar.gz
+            neobrowser-x86_64-apple-darwin.tar.gz
+            neobrowser-x86_64-unknown-linux-gnu.tar.gz
+          generate_release_notes: true

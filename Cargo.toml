@@ -1,6 +1,11 @@
 [package]
 name = "neobrowser_rs"
-version = "0.2.0"
+version = "0.3.0"
+description = "AI-native browser engine. Raw CDP over WebSocket/Pipe, semantic compression, stealth."
+license = "MIT"
+repository = "https://github.com/pitiflautico/neobrowser"
+keywords = ["mcp", "browser", "cdp", "ai", "automation"]
+categories = ["web-programming", "command-line-utilities"]
 edition = "2021"
 
 [dependencies]

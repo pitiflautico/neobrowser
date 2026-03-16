@@ -1,0 +1,41 @@
+{
+  "name": "neobrowser",
+  "version": "0.3.0",
+  "description": "AI-native browser engine. Raw CDP, semantic compression, stealth. 3.3x faster than Chrome MCP.",
+  "keywords": [
+    "mcp",
+    "browser",
+    "cdp",
+    "ai",
+    "automation",
+    "headless",
+    "chrome",
+    "stealth",
+    "model-context-protocol"
+  ],
+  "author": "pitiflautico",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pitiflautico/neobrowser.git"
+  },
+  "homepage": "https://github.com/pitiflautico/neobrowser",
+  "bin": {
+    "neobrowser": "bin/neobrowser.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "scripts": {
+    "postinstall": "node bin/install.js"
+  }
+}
