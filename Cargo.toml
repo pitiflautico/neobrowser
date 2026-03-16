@@ -36,6 +36,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
+os_pipe = "1"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

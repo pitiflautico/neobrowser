@@ -308,6 +308,114 @@ impl Session {
         Self::launch_ex(user_data_dir, true).await
     }
 
+    /// Launch Chrome with pipe-based CDP (no TCP port = undetectable by Cloudflare).
+    pub async fn launch_stealth(
+        user_data_dir: Option<&str>,
+        headless: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let chrome = find_chrome()?;
+        let profile_dir = match user_data_dir {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => default_profile_dir(),
+        };
+        std::fs::create_dir_all(&profile_dir)?;
+        let profile_str = profile_dir.to_string_lossy().to_string();
+        Self::kill_zombies(&profile_str);
+        let lock_file = profile_dir.join("SingletonLock");
+        if lock_file.exists() { let _ = std::fs::remove_file(&lock_file); }
+
+        let mut args = vec![
+            "--remote-debugging-pipe".to_string(), // PIPE not PORT
+            format!("--user-data-dir={profile_str}"),
+            "--no-first-run".to_string(),
+            "--no-default-browser-check".to_string(),
+            "--disable-dev-shm-usage".to_string(),
+            "--window-size=1440,900".to_string(),
+        ];
+        if headless {
+            args.push("--headless=new".to_string());
+            args.push("--use-gl=swiftshader".to_string());
+            args.push("--use-angle=swiftshader-webgl".to_string());
+        }
+
+        // Chrome --remote-debugging-pipe reads from fd 3 and writes to fd 4.
+        // We create two pipes and set up the file descriptors before spawning.
+        // os_pipe::pipe() returns (PipeReader, PipeWriter).
+        use std::os::unix::io::{FromRawFd, IntoRawFd};
+        use std::process::Stdio;
+
+        // Pipe 1: we write → Chrome reads (Chrome's fd 3)
+        // PipeReader goes to Chrome (fd 3), PipeWriter stays with us
+        let (chrome_reads_from, we_write_to) = os_pipe::pipe()?;
+        // Pipe 2: Chrome writes → we read (Chrome's fd 4)
+        // PipeReader stays with us, PipeWriter goes to Chrome (fd 4)
+        let (we_read_from, chrome_writes_to) = os_pipe::pipe()?;
+
+        let chrome_read_fd = chrome_reads_from.into_raw_fd();  // PipeReader → fd 3
+        let chrome_write_fd = chrome_writes_to.into_raw_fd();  // PipeWriter → fd 4
+
+        let mut child = unsafe {
+            tokio::process::Command::new(chrome)
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .pre_exec(move || {
+                    // Duplicate our pipe ends to fd 3 (Chrome reads) and fd 4 (Chrome writes)
+                    if libc::dup2(chrome_read_fd, 3) == -1 { return Err(std::io::Error::last_os_error()); }
+                    if libc::dup2(chrome_write_fd, 4) == -1 { return Err(std::io::Error::last_os_error()); }
+                    // Close the originals
+                    libc::close(chrome_read_fd);
+                    libc::close(chrome_write_fd);
+                    Ok(())
+                })
+                .spawn()?
+        };
+
+        // Give Chrome time to start
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+        // Convert our pipe ends to tokio async files
+        // we_read_from = PipeReader (Chrome's output to us)
+        // we_write_to = PipeWriter (our input to Chrome)
+        let chrome_stdout = unsafe {
+            tokio::fs::File::from_raw_fd(we_read_from.into_raw_fd())
+        };
+        let chrome_stdin = unsafe {
+            tokio::fs::File::from_raw_fd(we_write_to.into_raw_fd())
+        };
+
+        eprintln!("[ENGINE] Chrome launched with pipe (no TCP port, stealth mode)");
+
+        let cdp = CdpSession::connect_pipe(chrome_stdout, chrome_stdin)?;
+
+        // Get the first page target
+        let result = cdp.send("Target.getTargets", None).await?;
+        let targets = result["targetInfos"].as_array().ok_or("No targets")?;
+        let page_target = targets.iter()
+            .find(|t| t["type"].as_str() == Some("page"))
+            .ok_or("No page target")?;
+        let target_id = page_target["targetId"].as_str().ok_or("No targetId")?.to_string();
+
+        let result = cdp.send("Target.attachToTarget",
+            Some(json!({"targetId": target_id, "flatten": true}))).await?;
+        let session_id = result["sessionId"].as_str().ok_or("No sessionId")?.to_string();
+
+        cdp.send_to(&session_id, "Page.enable", None).await?;
+        cdp.send_to(&session_id, "Runtime.enable", None).await?;
+
+        eprintln!("[ENGINE] Stealth ready — target={}, session={}", &target_id[..8], &session_id[..8]);
+
+        Ok(Self {
+            cdp,
+            target_id,
+            page_session_id: session_id,
+            last_url: String::new(),
+            chrome_process: Some(child),
+            connected_mode: false,
+        })
+    }
+
     pub async fn launch_ex(
         user_data_dir: Option<&str>,
         headless: bool,
@@ -338,21 +446,19 @@ impl Session {
         let port = listener.local_addr()?.port();
         drop(listener);
 
+        // Minimal flags — every extra flag is a detection signal.
+        // DO NOT add --disable-blink-features=AutomationControlled
+        // (it's detectable because normal Chrome doesn't have it).
         let mut args = vec![
             format!("--remote-debugging-port={port}"),
             format!("--user-data-dir={profile_str}"),
-            "--disable-blink-features=AutomationControlled".to_string(),
             "--disable-dev-shm-usage".to_string(),
-            "--disable-default-apps".to_string(),
-            "--disable-sync".to_string(),
             "--no-first-run".to_string(),
             "--no-default-browser-check".to_string(),
             "--window-size=1440,900".to_string(),
         ];
         if headless {
             args.push("--headless=new".to_string());
-            // Use SwiftShader for GPU emulation — enables WebGL in headless
-            // without a real GPU, so fingerprint checks pass.
             args.push("--use-gl=swiftshader".to_string());
             args.push("--use-angle=swiftshader-webgl".to_string());
         }
@@ -414,42 +520,10 @@ impl Session {
         cdp.send_to(&session_id, "Page.enable", None).await?;
         cdp.send_to(&session_id, "Runtime.enable", None).await?;
 
-        // Generate polymorphic identity for this session
-        let identity = crate::identity::BrowserIdentity::random();
-        eprintln!("[ENGINE] Identity: {identity}");
-
-        // Override User-Agent with identity
-        cdp.send_to(&session_id, "Network.setUserAgentOverride", Some(json!({
-            "userAgent": identity.user_agent,
-            "acceptLanguage": identity.accept_language,
-            "platform": identity.platform_str(),
-        }))).await?;
-
-        // Inject polymorphic stealth — unique fingerprint per session
-        // runImmediately ensures it runs before any page JS
-        cdp.send_to(
-            &session_id,
-            "Page.addScriptToEvaluateOnNewDocument",
-            Some(json!({
-                "source": identity.to_stealth_js(),
-                "runImmediately": true
-            })),
-        )
-        .await?;
-
-        // Also nuke webdriver via CDP directly on the current context
-        // This catches the initial about:blank before any navigation
-        cdp.send_to(
-            &session_id,
-            "Runtime.evaluate",
-            Some(json!({
-                "expression": "Object.defineProperty(navigator, 'webdriver', {get: () => false, configurable: true}); delete Object.getPrototypeOf(navigator).webdriver;",
-                "returnByValue": true,
-            })),
-        )
-        .await.ok(); // ignore errors on about:blank
-
-        eprintln!("[ENGINE] Ready — target={}, session={}", &target_id[..8], &session_id[..8]);
+        // STEALTH STRATEGY: Do NOT inject anything during launch.
+        // Cloudflare Turnstile detects early CDP modifications.
+        // Stealth is applied AFTER the first navigation via apply_stealth().
+        eprintln!("[ENGINE] Ready (clean, no stealth yet) — target={}, session={}", &target_id[..8], &session_id[..8]);
 
         Ok(Self {
             cdp,
@@ -536,6 +610,40 @@ impl Session {
     }
 
     /// Check if the CDP connection is still alive.
+    /// Apply stealth after Cloudflare/Turnstile has passed.
+    /// Call this AFTER the first navigation, not during launch.
+    pub async fn apply_stealth(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let identity = crate::identity::BrowserIdentity::random();
+        eprintln!("[ENGINE] Applying stealth: {identity}");
+
+        // Override UA
+        self.cdp.send_to(&self.page_session_id, "Network.setUserAgentOverride", Some(json!({
+            "userAgent": identity.user_agent,
+            "acceptLanguage": identity.accept_language,
+            "platform": identity.platform_str(),
+        }))).await?;
+
+        // Inject stealth for future navigations
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Page.addScriptToEvaluateOnNewDocument",
+            Some(json!({"source": identity.to_stealth_js()})),
+        ).await?;
+
+        // Apply to current page too
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Runtime.evaluate",
+            Some(json!({
+                "expression": identity.to_stealth_js(),
+                "returnByValue": true,
+            })),
+        ).await.ok();
+
+        eprintln!("[ENGINE] Stealth applied");
+        Ok(())
+    }
+
     pub fn is_alive(&self) -> bool {
         self.cdp.is_alive()
     }

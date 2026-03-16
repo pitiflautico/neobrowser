@@ -163,11 +163,12 @@ impl BrowserIdentity {
     pub fn random() -> Self {
         let mut rng = rand::thread_rng();
 
-        // Pick platform weighted: 40% Mac, 45% Windows, 15% Linux
-        let platform_roll: f64 = rng.gen();
-        let platform = if platform_roll < 0.40 {
+        // Match the REAL OS — TLS fingerprint must be consistent with UA.
+        // Cloudflare compares JA3 hash (from the Chrome binary, OS-specific)
+        // with the User-Agent. Mismatch = instant block.
+        let platform = if cfg!(target_os = "macos") {
             Platform::MacOS
-        } else if platform_roll < 0.85 {
+        } else if cfg!(target_os = "windows") {
             Platform::Windows
         } else {
             Platform::Linux

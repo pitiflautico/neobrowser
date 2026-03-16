@@ -125,34 +125,41 @@ impl McpState {
         }
 
         if self.session.is_none() {
-            // Try connecting to running Chrome first, fall back to launching
-            // with the user's default profile (gets all cookies for free).
-            let session = match engine::Session::connect_running().await {
-                Ok(s) => {
-                    eprintln!("[MCP] Connected to running Chrome");
-                    s
-                }
-                Err(_) => {
-                    // Pre-persist cookies to Chrome profile SQLite BEFORE launch.
-                    // NEOBROWSER_COOKIES=/path/to/cookies.json,/path/to/more.json
-                    if let Ok(cookie_paths) = std::env::var("NEOBROWSER_COOKIES") {
-                        let profile_dir = engine::default_profile_dir();
-                        for path in cookie_paths.split(',') {
-                            let path = path.trim();
-                            if !path.is_empty() {
-                                match engine::persist_cookies_to_profile(&profile_dir, path) {
-                                    Ok(n) => eprintln!("[MCP] Pre-persisted {n} cookies from {path}"),
-                                    Err(e) => eprintln!("[MCP] Cookie persist warning: {e}"),
-                                }
-                            }
+            let headless = std::env::var("NEOBROWSER_HEADLESS").unwrap_or_default() == "1";
+            let stealth = std::env::var("NEOBROWSER_STEALTH").unwrap_or_default() == "1";
+
+            // Pre-persist cookies if configured
+            if let Ok(cookie_paths) = std::env::var("NEOBROWSER_COOKIES") {
+                let profile_dir = engine::default_profile_dir();
+                for path in cookie_paths.split(',') {
+                    let path = path.trim();
+                    if !path.is_empty() {
+                        match engine::persist_cookies_to_profile(&profile_dir, path) {
+                            Ok(n) => eprintln!("[MCP] Pre-persisted {n} cookies from {path}"),
+                            Err(e) => eprintln!("[MCP] Cookie persist warning: {e}"),
                         }
                     }
-                    // Default: headed (visible Chrome). NEOBROWSER_HEADLESS=1 → headless.
-                    // Headed = real browser, native cookies, no detection issues.
-                    let headless = std::env::var("NEOBROWSER_HEADLESS").unwrap_or_default() == "1";
-                    engine::Session::launch_ex(None, headless)
-                        .await
-                        .map_err(|e| format!("Failed to launch Chrome: {e}"))?
+                }
+            }
+
+            let session = if stealth {
+                // STEALTH: pipe CDP, no TCP port, no connect_running
+                eprintln!("[MCP] Stealth mode (pipe CDP, no TCP port)");
+                engine::Session::launch_stealth(None, headless)
+                    .await
+                    .map_err(|e| format!("Failed to launch stealth Chrome: {e}"))?
+            } else {
+                // Normal: try connecting to running Chrome, fall back to launching
+                match engine::Session::connect_running().await {
+                    Ok(s) => {
+                        eprintln!("[MCP] Connected to running Chrome");
+                        s
+                    }
+                    Err(_) => {
+                        engine::Session::launch_ex(None, headless)
+                            .await
+                            .map_err(|e| format!("Failed to launch Chrome: {e}"))?
+                    }
                 }
             };
             self.session = Some(session);
@@ -579,8 +586,11 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
         session.load_cookies(cookies_file).await.map_err(|e| format!("{e}"))?;
     }
 
-    // Navigate
+    // Navigate — stealth is NOT applied yet (Cloudflare would detect it)
     session.goto(url).await.map_err(|e| format!("{e}"))?;
+
+    // Apply stealth AFTER navigation (after Cloudflare challenge passes)
+    session.apply_stealth().await.ok(); // ignore errors, stealth is best-effort
 
     // Get WOM
     let rev = state.next_revision();
