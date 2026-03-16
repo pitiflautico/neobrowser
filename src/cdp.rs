@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task::JoinHandle;
@@ -30,6 +30,7 @@ pub struct CdpSession {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>>>,
     listeners: Arc<Mutex<HashMap<String, Vec<EventCallback>>>>,
     next_id: AtomicU64,
+    alive: Arc<AtomicBool>,
     _recv_handle: JoinHandle<()>,
     _send_handle: JoinHandle<()>,
 }
@@ -65,9 +66,12 @@ impl CdpSession {
         let listeners: Arc<Mutex<HashMap<String, Vec<EventCallback>>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
+        let alive = Arc::new(AtomicBool::new(true));
+
         // Recv loop — dispatches responses and events
         let pending_clone = pending.clone();
         let listeners_clone = listeners.clone();
+        let alive_clone = alive.clone();
         let recv_handle = tokio::spawn(async move {
             use futures::StreamExt;
             let mut ws_read = ws_read;
@@ -108,6 +112,13 @@ impl CdpSession {
                     }
                 }
             }
+            // WebSocket closed — mark dead and fail all pending commands
+            alive_clone.store(false, Ordering::SeqCst);
+            eprintln!("[CDP] WebSocket closed — session dead");
+            let mut pending = pending_clone.lock().await;
+            for (_id, sender) in pending.drain() {
+                let _ = sender.send(Err(CdpError("WebSocket disconnected".to_string())));
+            }
         });
 
         eprintln!("[CDP] Connected: {}...{}", &ws_url[..20.min(ws_url.len())],
@@ -118,9 +129,15 @@ impl CdpSession {
             pending,
             listeners,
             next_id: AtomicU64::new(1),
+            alive,
             _recv_handle: recv_handle,
             _send_handle: send_handle,
         })
+    }
+
+    /// Check if the CDP WebSocket is still connected.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
     }
 
     /// Send a CDP command and wait for the response.
@@ -129,6 +146,9 @@ impl CdpSession {
         method: &str,
         params: Option<Value>,
     ) -> Result<Value, Box<dyn std::error::Error>> {
+        if !self.is_alive() {
+            return Err(Box::new(CdpError("CDP connection dead".to_string())));
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
         let mut msg = serde_json::json!({
@@ -160,6 +180,9 @@ impl CdpSession {
         method: &str,
         params: Option<Value>,
     ) -> Result<Value, Box<dyn std::error::Error>> {
+        if !self.is_alive() {
+            return Err(Box::new(CdpError("CDP connection dead".to_string())));
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
         let mut msg = serde_json::json!({

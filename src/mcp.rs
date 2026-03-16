@@ -94,6 +94,8 @@ struct McpState {
     prev_wom: Option<wom::WomDocument>,
     auth_state: auth::AuthState,
     pending_challenge: Option<auth::AuthChallenge>,
+    trace: crate::trace::TraceLog,
+    pool: crate::pool::BrowserPool,
 }
 
 impl McpState {
@@ -105,10 +107,23 @@ impl McpState {
             prev_wom: None,
             auth_state: auth::AuthState::Idle,
             pending_challenge: None,
+            trace: crate::trace::TraceLog::new(),
+            pool: crate::pool::BrowserPool::new(8),
         }
     }
 
     async fn ensure_session(&mut self) -> Result<&mut engine::Session, String> {
+        // Check if existing session is dead (Chrome crashed, WS disconnected)
+        if let Some(ref session) = self.session {
+            if !session.is_alive() {
+                eprintln!("[MCP] Session dead — dropping for recovery");
+                // Take and drop the dead session (don't call close — it's already dead)
+                let _ = self.session.take();
+                self.wom_revision = 0;
+                self.prev_wom = None;
+            }
+        }
+
         if self.session.is_none() {
             // Try connecting to running Chrome first, fall back to launching
             // with the user's default profile (gets all cookies for free).
@@ -118,8 +133,24 @@ impl McpState {
                     s
                 }
                 Err(_) => {
-                    // Launch with our own persistent profile (~/.neobrowser/profile/)
-                    engine::Session::launch(None)
+                    // Pre-persist cookies to Chrome profile SQLite BEFORE launch.
+                    // NEOBROWSER_COOKIES=/path/to/cookies.json,/path/to/more.json
+                    if let Ok(cookie_paths) = std::env::var("NEOBROWSER_COOKIES") {
+                        let profile_dir = engine::default_profile_dir();
+                        for path in cookie_paths.split(',') {
+                            let path = path.trim();
+                            if !path.is_empty() {
+                                match engine::persist_cookies_to_profile(&profile_dir, path) {
+                                    Ok(n) => eprintln!("[MCP] Pre-persisted {n} cookies from {path}"),
+                                    Err(e) => eprintln!("[MCP] Cookie persist warning: {e}"),
+                                }
+                            }
+                        }
+                    }
+                    // Default: headed (visible Chrome). NEOBROWSER_HEADLESS=1 → headless.
+                    // Headed = real browser, native cookies, no detection issues.
+                    let headless = std::env::var("NEOBROWSER_HEADLESS").unwrap_or_default() == "1";
+                    engine::Session::launch_ex(None, headless)
                         .await
                         .map_err(|e| format!("Failed to launch Chrome: {e}"))?
                 }
@@ -193,7 +224,7 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["click", "type", "focus", "press", "scroll", "back", "forward", "reload", "eval", "hover", "select", "fill_form"],
+                        "enum": ["click", "type", "focus", "press", "scroll", "back", "forward", "reload", "eval", "hover", "select", "fill_form", "send_message"],
                         "description": "Action type"
                     },
                     "target": {
@@ -376,6 +407,104 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "required": ["url"]
             }),
         },
+        // ── New tools: state, network, trace, pipeline, pool ──
+        ToolDef {
+            name: "browser_state".into(),
+            description: "Manage browser state: export/import cookies+localStorage+sessionStorage, check session health.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["export", "import", "health"],
+                        "description": "export: save all state to JSON | import: restore from JSON | health: check if session is alive"
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": "State data for import (from previous export)"
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "File path to save/load state"
+                    }
+                },
+                "required": ["op"]
+            }),
+        },
+        ToolDef {
+            name: "browser_network".into(),
+            description: "Advanced network intelligence: capture full requests+responses with headers and bodies, export as HAR.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["start", "read", "har", "intercept"],
+                        "description": "start: begin full capture (headers+bodies) | read: get captured data | har: export as HAR | intercept: set URL pattern to intercept"
+                    },
+                    "url_pattern": {
+                        "type": "string",
+                        "description": "URL pattern for intercept (e.g. '*api*')"
+                    }
+                },
+                "required": ["op"]
+            }),
+        },
+        ToolDef {
+            name: "browser_trace".into(),
+            description: "Action tracing and observability: record all actions with timing and outcomes, get stats.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["start", "stop", "read", "stats", "clear"],
+                        "description": "start: enable tracing | stop: disable | read: get traces | stats: success rates | clear: reset"
+                    },
+                    "last_n": {
+                        "type": "integer",
+                        "description": "For read: only return last N traces"
+                    }
+                },
+                "required": ["op"]
+            }),
+        },
+        ToolDef {
+            name: "browser_pipeline".into(),
+            description: "Run deterministic automation pipelines: sequences of goto/click/type/wait/assert/extract steps with retry and control flow.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pipeline": {
+                        "type": "object",
+                        "description": "Pipeline definition: {name, steps: [{action, target, value, timeout_ms, max_retries, assert_text, store_as, on_fail}]}"
+                    },
+                    "pipeline_json": {
+                        "type": "string",
+                        "description": "Pipeline as JSON string (alternative to pipeline object)"
+                    }
+                }
+            }),
+        },
+        ToolDef {
+            name: "browser_pool".into(),
+            description: "Manage isolated browser contexts for parallel automation. Each context has its own profile and state.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["create", "list", "destroy", "destroy_all"],
+                        "description": "create: new isolated context | list: show all | destroy: remove one | destroy_all: clean up"
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "Context ID (for create/destroy)"
+                    }
+                },
+                "required": ["op"]
+            }),
+        },
     ]
 }
 
@@ -430,6 +559,11 @@ async fn handle_tool(state: &mut McpState, name: &str, args: &Value) -> Result<V
         "browser_session" => handle_session(state, args).await,
         "browser_auth" => handle_auth(state, args).await,
         "browser_api" => handle_api(state, args).await,
+        "browser_state" => handle_state(state, args).await,
+        "browser_network" => handle_network(state, args).await,
+        "browser_trace" => handle_trace(state, args).await,
+        "browser_pipeline" => handle_pipeline(state, args).await,
+        "browser_pool" => handle_pool(state, args).await,
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -554,6 +688,7 @@ async fn handle_observe(state: &mut McpState, args: &Value) -> Result<Value, Str
 }
 
 async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String> {
+    let act_t0 = std::time::Instant::now();
     let kind = args["kind"].as_str().ok_or("Missing 'kind'")?;
     let raw_target = args["target"].as_str().unwrap_or("");
     let return_obs = args["return_observation"].as_str().unwrap_or("see");
@@ -675,6 +810,78 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
             let outcome_str = if all_ok { "succeeded" } else { "partial" };
             (outcome_str, format!("fill_form: {}", results.join(", ")))
         }
+        // ── New actions (v3) ──
+        "click_css" => {
+            let selector = args["selector"].as_str().unwrap_or(&target);
+            let found = session.click_css(selector).await.map_err(|e| format!("{e}"))?;
+            if found {
+                ("succeeded", format!("css_clicked: {selector}"))
+            } else {
+                ("not_found", format!("css_not_found: {selector}"))
+            }
+        }
+        "click_at" => {
+            let x = args["x"].as_f64().ok_or("Missing 'x' coordinate")?;
+            let y = args["y"].as_f64().ok_or("Missing 'y' coordinate")?;
+            session.click_at(x, y).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("clicked_at: ({x}, {y})"))
+        }
+        "type_react" => {
+            let selector = args["selector"].as_str().ok_or("Missing 'selector' for type_react")?;
+            let value = args["value"].as_str().ok_or("Missing 'value' for type_react")?;
+            let ok = session.type_react(selector, value).await.map_err(|e| format!("{e}"))?;
+            if ok {
+                ("succeeded", format!("react_typed: {value}"))
+            } else {
+                ("not_found", format!("react_input_not_found: {selector}"))
+            }
+        }
+        "press_combo" => {
+            let combo = args["combo"].as_str().ok_or("Missing 'combo' (e.g. 'Ctrl+a')")?;
+            session.press_combo(combo).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("combo: {combo}"))
+        }
+        "wait_for" => {
+            let selector = args["selector"].as_str().ok_or("Missing 'selector' for wait_for")?;
+            let timeout = args["timeout_ms"].as_u64().unwrap_or(10000);
+            let found = session.wait_for_selector(selector, timeout).await.map_err(|e| format!("{e}"))?;
+            if found {
+                ("succeeded", format!("element_found: {selector}"))
+            } else {
+                ("timeout", format!("wait_timeout: {selector} after {timeout}ms"))
+            }
+        }
+        "scroll_to" => {
+            let selector = args["selector"].as_str().ok_or("Missing 'selector' for scroll_to")?;
+            let found = session.scroll_to(selector).await.map_err(|e| format!("{e}"))?;
+            if found {
+                ("succeeded", format!("scrolled_to: {selector}"))
+            } else {
+                ("not_found", format!("scroll_target_not_found: {selector}"))
+            }
+        }
+        "send_message" => {
+            // Universal contenteditable message sender.
+            // Works with LinkedIn, Slack, Discord, etc — any site with contenteditable + send button.
+            // Uses execCommand('insertText') + InputEvent to activate React/frameworks.
+            let text = args["text"].as_str().ok_or("Missing 'text' for send_message")?;
+            let input_sel = args["input_selector"].as_str().unwrap_or("div[contenteditable='true']");
+            let button_sel = args["button_selector"].as_str().unwrap_or("");
+            let result = session.send_message(text, input_sel, button_sel).await.map_err(|e| format!("{e}"))?;
+            match result.as_str() {
+                "SENT" => ("succeeded", format!("message_sent: {} chars", text.len())),
+                other => ("failed", format!("send_failed: {other}")),
+            }
+        }
+        "bounds" => {
+            let selector = args["selector"].as_str().ok_or("Missing 'selector' for bounds")?;
+            let bounds = session.get_element_bounds(selector).await.map_err(|e| format!("{e}"))?;
+            if let Some((x, y, w, h)) = bounds {
+                ("succeeded", format!("bounds: x={x},y={y},w={w},h={h}"))
+            } else {
+                ("not_found", format!("bounds_not_found: {selector}"))
+            }
+        }
         _ => return Err(format!("Unknown action kind: {kind}")),
     };
 
@@ -717,6 +924,20 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
             }
             _ => {}
         }
+    }
+
+    // Record trace if enabled
+    if state.trace.is_enabled() {
+        let url = state.session.as_ref().map(|s| s.last_url.clone()).unwrap_or_default();
+        state.trace.record(
+            kind,
+            &raw_target,
+            outcome,
+            &effect,
+            act_t0.elapsed().as_millis() as u64,
+            &url,
+            if ok { None } else { Some(effect.clone()) },
+        );
     }
 
     Ok(result)
@@ -1547,6 +1768,366 @@ async fn handle_api(state: &mut McpState, args: &Value) -> Result<Value, String>
         "status": parsed["status"],
         "data": parsed["data"],
     }))
+}
+
+// ─── browser_state handler ───
+
+async fn handle_state(state: &mut McpState, args: &Value) -> Result<Value, String> {
+    let op = args["op"].as_str().ok_or("Missing 'op'")?;
+    let session = state.ensure_session().await?;
+    let session = state.session.as_mut().unwrap();
+
+    match op {
+        "export" => {
+            let data = session.export_state().await.map_err(|e| format!("{e}"))?;
+
+            // Optionally save to file
+            if let Some(file) = args["file"].as_str() {
+                let json = serde_json::to_string_pretty(&data).map_err(|e| format!("{e}"))?;
+                std::fs::write(file, json).map_err(|e| format!("{e}"))?;
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "effect": format!("State exported to {file}"),
+                    "cookies": data["cookies"].as_array().map(|a| a.len()).unwrap_or(0),
+                    "localStorage": data["localStorage"].as_object().map(|o| o.len()).unwrap_or(0),
+                    "sessionStorage": data["sessionStorage"].as_object().map(|o| o.len()).unwrap_or(0),
+                }));
+            }
+
+            Ok(data)
+        }
+        "import" => {
+            let data = if let Some(file) = args["file"].as_str() {
+                let content = std::fs::read_to_string(file).map_err(|e| format!("{e}"))?;
+                serde_json::from_str::<Value>(&content).map_err(|e| format!("{e}"))?
+            } else if let Some(data) = args.get("data") {
+                data.clone()
+            } else {
+                return Err("Need 'file' or 'data' for import".into());
+            };
+
+            let result = session.import_state(&data).await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": format!("State imported: {result}"),
+            }))
+        }
+        "health" => {
+            let health = session.check_session_health().await.map_err(|e| format!("{e}"))?;
+            Ok(health)
+        }
+        _ => Err(format!("Unknown state op: {op}")),
+    }
+}
+
+// ─── browser_network handler ───
+
+async fn handle_network(state: &mut McpState, args: &Value) -> Result<Value, String> {
+    let op = args["op"].as_str().ok_or("Missing 'op'")?;
+    let session = state.ensure_session().await?;
+    let session = state.session.as_mut().unwrap();
+
+    match op {
+        "start" => {
+            session.start_full_network_capture().await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": "Full network capture started (headers + bodies)",
+            }))
+        }
+        "read" => {
+            let data = session.read_full_network().await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "requests": data,
+                "count": data.len(),
+            }))
+        }
+        "har" => {
+            let har = session.export_har().await.map_err(|e| format!("{e}"))?;
+            // Optionally save to file
+            if let Some(file) = args["file"].as_str() {
+                let json = serde_json::to_string_pretty(&har).map_err(|e| format!("{e}"))?;
+                std::fs::write(file, json).map_err(|e| format!("{e}"))?;
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "effect": format!("HAR exported to {file}"),
+                }));
+            }
+            Ok(har)
+        }
+        "intercept" => {
+            let pattern = args["url_pattern"].as_str().ok_or("Missing 'url_pattern'")?;
+            session.intercept_requests(pattern).await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": format!("Intercepting requests matching: {pattern}"),
+            }))
+        }
+        _ => Err(format!("Unknown network op: {op}")),
+    }
+}
+
+// ─── browser_trace handler ───
+
+async fn handle_trace(state: &mut McpState, args: &Value) -> Result<Value, String> {
+    let op = args["op"].as_str().ok_or("Missing 'op'")?;
+
+    match op {
+        "start" => {
+            state.trace.enable();
+            Ok(serde_json::json!({"ok": true, "effect": "Tracing enabled"}))
+        }
+        "stop" => {
+            state.trace.disable();
+            Ok(serde_json::json!({"ok": true, "effect": "Tracing disabled"}))
+        }
+        "read" => {
+            let last_n = args["last_n"].as_u64().map(|n| n as usize);
+            let traces = state.trace.read(last_n);
+            let json: Vec<Value> = traces.iter().map(|t| serde_json::to_value(t).unwrap()).collect();
+            Ok(serde_json::json!({"traces": json, "count": json.len()}))
+        }
+        "stats" => {
+            let stats = state.trace.stats();
+            Ok(serde_json::to_value(stats).unwrap_or(serde_json::json!({})))
+        }
+        "clear" => {
+            state.trace.clear();
+            Ok(serde_json::json!({"ok": true, "effect": "Traces cleared"}))
+        }
+        _ => Err(format!("Unknown trace op: {op}")),
+    }
+}
+
+// ─── browser_pipeline handler ───
+
+async fn handle_pipeline(state: &mut McpState, args: &Value) -> Result<Value, String> {
+    use crate::runner::{Pipeline, PipelineResult, StepResult, OnFail};
+
+    let pipeline = if let Some(json_str) = args["pipeline_json"].as_str() {
+        Pipeline::from_json(json_str)?
+    } else if let Some(obj) = args.get("pipeline") {
+        let json_str = serde_json::to_string(obj).map_err(|e| format!("{e}"))?;
+        Pipeline::from_json(&json_str)?
+    } else {
+        return Err("Need 'pipeline' or 'pipeline_json'".into());
+    };
+
+    let session = state.ensure_session().await?;
+    let session = state.session.as_mut().unwrap();
+
+    let t0 = std::time::Instant::now();
+    let mut results = Vec::new();
+    let mut variables = pipeline.variables.clone();
+    let mut aborted = false;
+
+    for (i, step) in pipeline.steps.iter().enumerate() {
+        let step_t0 = std::time::Instant::now();
+        let mut retries_used = 0;
+        let mut step_outcome = "failed".to_string();
+        let mut step_detail = String::new();
+
+        for attempt in 0..=step.max_retries {
+            if attempt > 0 {
+                retries_used = attempt;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+
+            let result = match step.action.as_str() {
+                "goto" => {
+                    let url = substitute_vars(&step.target, &variables);
+                    match session.goto(&url).await {
+                        Ok(_) => Ok("navigated".to_string()),
+                        Err(e) => Err(format!("{e}")),
+                    }
+                }
+                "click" => {
+                    let target = substitute_vars(&step.target, &variables);
+                    match session.click_reliable(&target).await {
+                        Ok((true, strategy)) => Ok(format!("clicked via {strategy}")),
+                        Ok((false, _)) => Err("target not found".into()),
+                        Err(e) => Err(format!("{e}")),
+                    }
+                }
+                "type" => {
+                    let text = substitute_vars(&step.value, &variables);
+                    match session.type_text(&text).await {
+                        Ok(_) => Ok(format!("typed {} chars", text.len())),
+                        Err(e) => Err(format!("{e}")),
+                    }
+                }
+                "press" => {
+                    let key = if step.value.is_empty() { "Enter" } else { &step.value };
+                    match session.press(key).await {
+                        Ok(_) => Ok(format!("pressed {key}")),
+                        Err(e) => Err(format!("{e}")),
+                    }
+                }
+                "wait" => {
+                    let ms = step.timeout_ms;
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                    Ok(format!("waited {ms}ms"))
+                }
+                "eval" => {
+                    let js = substitute_vars(&step.value, &variables);
+                    match session.eval(&js).await {
+                        Ok(result) => {
+                            if let Some(var_name) = &step.store_as {
+                                variables.insert(var_name.clone(), result.clone());
+                            }
+                            Ok(result)
+                        }
+                        Err(e) => Err(format!("{e}")),
+                    }
+                }
+                "screenshot" => {
+                    match session.screenshot_base64().await {
+                        Ok(b64) => {
+                            if let Some(var_name) = &step.store_as {
+                                variables.insert(var_name.clone(), format!("{}B", b64.len()));
+                            }
+                            Ok(format!("screenshot: {}KB", b64.len() / 1024))
+                        }
+                        Err(e) => Err(format!("{e}")),
+                    }
+                }
+                "extract" => {
+                    let js = if step.value.is_empty() {
+                        "document.body.innerText.substring(0, 4000)".to_string()
+                    } else {
+                        substitute_vars(&step.value, &variables)
+                    };
+                    match session.eval(&js).await {
+                        Ok(result) => {
+                            if let Some(var_name) = &step.store_as {
+                                variables.insert(var_name.clone(), result.clone());
+                            }
+                            Ok(result)
+                        }
+                        Err(e) => Err(format!("{e}")),
+                    }
+                }
+                _ => Err(format!("Unknown step action: {}", step.action)),
+            };
+
+            match result {
+                Ok(detail) => {
+                    // Check assertion if present
+                    if let Some(ref expected) = step.assert_text {
+                        let page = session.see_page().await.unwrap_or_default();
+                        if page.contains(expected) {
+                            step_outcome = "ok".into();
+                            step_detail = detail;
+                            break;
+                        } else {
+                            step_detail = format!("assertion failed: '{}' not found", expected);
+                            continue;
+                        }
+                    }
+                    step_outcome = "ok".into();
+                    step_detail = detail;
+                    break;
+                }
+                Err(e) => {
+                    step_detail = e;
+                }
+            }
+        }
+
+        // Record trace if enabled
+        if state.trace.is_enabled() {
+            let url = session.last_url.clone();
+            state.trace.record(
+                &step.action,
+                &step.target,
+                &step_outcome,
+                &step_detail,
+                step_t0.elapsed().as_millis() as u64,
+                &url,
+                if step_outcome != "ok" { Some(step_detail.clone()) } else { None },
+            );
+        }
+
+        results.push(StepResult {
+            step_index: i,
+            action: step.action.clone(),
+            outcome: step_outcome.clone(),
+            detail: step_detail,
+            duration_ms: step_t0.elapsed().as_millis() as u64,
+            retries_used,
+        });
+
+        if step_outcome != "ok" {
+            match step.on_fail {
+                OnFail::Abort => { aborted = true; break; }
+                OnFail::Skip => continue,
+                OnFail::Continue => continue,
+            }
+        }
+    }
+
+    let pr = PipelineResult {
+        name: pipeline.name,
+        status: if aborted { "aborted".into() } else { "completed".into() },
+        steps_completed: results.iter().filter(|r| r.outcome == "ok").count(),
+        steps_total: pipeline.steps.len(),
+        total_ms: t0.elapsed().as_millis() as u64,
+        results,
+        variables,
+    };
+
+    serde_json::to_value(pr).map_err(|e| format!("{e}"))
+}
+
+fn substitute_vars(template: &str, vars: &std::collections::HashMap<String, String>) -> String {
+    let mut result = template.to_string();
+    for (k, v) in vars {
+        result = result.replace(&format!("{{{{{}}}}}", k), v);
+    }
+    result
+}
+
+// ─── browser_pool handler ───
+
+async fn handle_pool(state: &mut McpState, args: &Value) -> Result<Value, String> {
+    let op = args["op"].as_str().ok_or("Missing 'op'")?;
+
+    match op {
+        "create" => {
+            let id = args["id"].as_str().map(|s| s.to_string());
+            let ctx_id = state.pool.create_context(id)?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "context_id": ctx_id,
+                "effect": format!("Created isolated context: {ctx_id}"),
+            }))
+        }
+        "list" => {
+            let contexts = state.pool.list();
+            let json: Vec<Value> = contexts.iter().map(|c| serde_json::to_value(c).unwrap()).collect();
+            Ok(serde_json::json!({
+                "contexts": json,
+                "count": json.len(),
+            }))
+        }
+        "destroy" => {
+            let id = args["id"].as_str().ok_or("Missing 'id'")?;
+            state.pool.destroy(id)?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": format!("Destroyed context: {id}"),
+            }))
+        }
+        "destroy_all" => {
+            state.pool.destroy_all();
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": "All contexts destroyed",
+            }))
+        }
+        _ => Err(format!("Unknown pool op: {op}")),
+    }
 }
 
 // ─── MCP Server loop ───

@@ -69,7 +69,11 @@ pub struct Session {
 }
 
 /// Default persistent profile directory for the AI browser.
+/// Override with NEOBROWSER_PROFILE env var to run multiple instances.
 pub fn default_profile_dir() -> std::path::PathBuf {
+    if let Ok(custom) = std::env::var("NEOBROWSER_PROFILE") {
+        return std::path::PathBuf::from(custom);
+    }
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".neobrowser")
@@ -178,13 +182,135 @@ pub fn persist_cookies_to_profile(
     Ok(count)
 }
 
+/// Save CDP-format cookies to the Chrome profile's SQLite database.
+/// Called during close() to persist session cookies that Chrome doesn't save itself.
+pub fn save_cookies_to_profile(
+    profile_dir: &std::path::Path,
+    cookies: &[Value],
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let db_path = profile_dir.join("Default").join("Cookies");
+    std::fs::create_dir_all(profile_dir.join("Default"))?;
+
+    let conn = rusqlite::Connection::open(&db_path)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cookies (
+            creation_utc INTEGER NOT NULL,
+            host_key TEXT NOT NULL DEFAULT '',
+            top_frame_site_key TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL DEFAULT '',
+            value TEXT NOT NULL DEFAULT '',
+            encrypted_value BLOB NOT NULL DEFAULT X'',
+            path TEXT NOT NULL DEFAULT '/',
+            expires_utc INTEGER NOT NULL DEFAULT 0,
+            is_secure INTEGER NOT NULL DEFAULT 0,
+            is_httponly INTEGER NOT NULL DEFAULT 0,
+            last_access_utc INTEGER NOT NULL DEFAULT 0,
+            has_expires INTEGER NOT NULL DEFAULT 1,
+            is_persistent INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 1,
+            samesite INTEGER NOT NULL DEFAULT -1,
+            source_scheme INTEGER NOT NULL DEFAULT 0,
+            source_port INTEGER NOT NULL DEFAULT -1,
+            last_update_utc INTEGER NOT NULL DEFAULT 0,
+            source_type INTEGER NOT NULL DEFAULT 0,
+            has_cross_site_ancestor INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (host_key, top_frame_site_key, name, path, source_scheme, source_port, has_cross_site_ancestor)
+        );"
+    )?;
+
+    let chrome_epoch_offset: i64 = 11_644_473_600 * 1_000_000;
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as i64;
+    let now_chrome = now_unix + chrome_epoch_offset;
+    let expires_30d = now_chrome + 30 * 86400 * 1_000_000;
+
+    // Merge: INSERT OR REPLACE preserves cookies from pre-persistence
+    // while updating any that Chrome modified during the session.
+
+    let mut count = 0;
+    for c in cookies {
+        // CDP cookie format: {name, value, domain, path, expires, size, httpOnly, secure, ...}
+        let name = match c.get("name").and_then(|v| v.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let value = c.get("value").and_then(|v| v.as_str()).unwrap_or("");
+        let domain = c.get("domain").and_then(|v| v.as_str()).unwrap_or("");
+        let path = c.get("path").and_then(|v| v.as_str()).unwrap_or("/");
+        let secure = c.get("secure").and_then(|v| v.as_bool()).unwrap_or(false) as i32;
+        let http_only = c.get("httpOnly").and_then(|v| v.as_bool()).unwrap_or(false) as i32;
+
+        // CDP expires is unix timestamp (seconds)
+        let expires_unix = c.get("expires").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let expires_chrome = if expires_unix > 1.0 {
+            (expires_unix as i64) * 1_000_000 + chrome_epoch_offset
+        } else {
+            expires_30d
+        };
+
+        // Skip session cookies (expires = -1 or 0) — they shouldn't persist
+        let session_cookie = c.get("session").and_then(|v| v.as_bool()).unwrap_or(false);
+        if session_cookie {
+            continue;
+        }
+
+        let source_scheme = if secure == 1 { 2 } else { 1 };
+
+        conn.execute(
+            "INSERT OR REPLACE INTO cookies (
+                creation_utc, host_key, name, value, encrypted_value,
+                path, expires_utc, is_secure, is_httponly,
+                last_access_utc, has_expires, is_persistent,
+                priority, samesite, source_scheme, source_port,
+                last_update_utc, top_frame_site_key, source_type, has_cross_site_ancestor
+            ) VALUES (?1,?2,?3,?4,X'',?5,?6,?7,?8,?9,1,1,1,-1,?10,-1,?9,'',0,0)",
+            params![
+                now_chrome, domain, name, value,
+                path, expires_chrome, secure, http_only,
+                now_chrome, source_scheme,
+            ],
+        )?;
+        count += 1;
+    }
+
+    eprintln!("[ENGINE] Saved {count} cookies to profile SQLite");
+    Ok(count)
+}
+
 impl Session {
+    /// Kill Chrome processes that use a specific user-data-dir.
+    /// Only kills neobrowser-owned profiles, never the user's personal Chrome.
+    fn kill_zombies(profile_str: &str) {
+        use std::process::Command;
+        let output = Command::new("pkill")
+            .args(["-f", &format!("user-data-dir={profile_str}")])
+            .output();
+        if let Ok(ref out) = output {
+            if out.status.success() {
+                eprintln!("[ENGINE] Killed zombie Chrome processes for {profile_str}");
+                // Wait for processes to die and release locks
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+            }
+        }
+    }
+
     /// Launch a new Chrome with a random debug port, connect via CDP.
     /// Always uses a persistent profile directory so sessions survive restarts.
     /// - `user_data_dir = Some(path)` → use that specific profile
     /// - `user_data_dir = None` → use ~/.neobrowser/profile/ (default)
+    /// - `headless = true` → headless Chrome (default, fast but Cloudflare detects it)
+    /// - `headless = false` → headed Chrome (visible window, passes Cloudflare/captchas)
     pub async fn launch(
         user_data_dir: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::launch_ex(user_data_dir, true).await
+    }
+
+    pub async fn launch_ex(
+        user_data_dir: Option<&str>,
+        headless: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let chrome = find_chrome()?;
 
@@ -196,6 +322,17 @@ impl Session {
         std::fs::create_dir_all(&profile_dir)?;
         let profile_str = profile_dir.to_string_lossy().to_string();
 
+        // Kill zombie Chrome processes using the same profile dir.
+        // Without this, Chrome refuses to start ("profile already in use").
+        Self::kill_zombies(&profile_str);
+
+        // Remove stale SingletonLock left by crashed Chrome
+        let lock_file = profile_dir.join("SingletonLock");
+        if lock_file.exists() {
+            eprintln!("[ENGINE] Removing stale SingletonLock");
+            let _ = std::fs::remove_file(&lock_file);
+        }
+
         // Find a free port
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
@@ -204,9 +341,7 @@ impl Session {
         let mut args = vec![
             format!("--remote-debugging-port={port}"),
             format!("--user-data-dir={profile_str}"),
-            "--headless=new".to_string(),
             "--disable-blink-features=AutomationControlled".to_string(),
-            "--disable-gpu".to_string(),
             "--disable-dev-shm-usage".to_string(),
             "--disable-default-apps".to_string(),
             "--disable-sync".to_string(),
@@ -214,6 +349,13 @@ impl Session {
             "--no-default-browser-check".to_string(),
             "--window-size=1440,900".to_string(),
         ];
+        if headless {
+            args.push("--headless=new".to_string());
+            // Use SwiftShader for GPU emulation — enables WebGL in headless
+            // without a real GPU, so fingerprint checks pass.
+            args.push("--use-gl=swiftshader".to_string());
+            args.push("--use-angle=swiftshader-webgl".to_string());
+        }
 
         let child = tokio::process::Command::new(chrome)
             .args(&args)
@@ -272,15 +414,40 @@ impl Session {
         cdp.send_to(&session_id, "Page.enable", None).await?;
         cdp.send_to(&session_id, "Runtime.enable", None).await?;
 
-        // Stealth: remove webdriver flag
+        // Generate polymorphic identity for this session
+        let identity = crate::identity::BrowserIdentity::random();
+        eprintln!("[ENGINE] Identity: {identity}");
+
+        // Override User-Agent with identity
+        cdp.send_to(&session_id, "Network.setUserAgentOverride", Some(json!({
+            "userAgent": identity.user_agent,
+            "acceptLanguage": identity.accept_language,
+            "platform": identity.platform_str(),
+        }))).await?;
+
+        // Inject polymorphic stealth — unique fingerprint per session
+        // runImmediately ensures it runs before any page JS
         cdp.send_to(
             &session_id,
             "Page.addScriptToEvaluateOnNewDocument",
             Some(json!({
-                "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                "source": identity.to_stealth_js(),
+                "runImmediately": true
             })),
         )
         .await?;
+
+        // Also nuke webdriver via CDP directly on the current context
+        // This catches the initial about:blank before any navigation
+        cdp.send_to(
+            &session_id,
+            "Runtime.evaluate",
+            Some(json!({
+                "expression": "Object.defineProperty(navigator, 'webdriver', {get: () => false, configurable: true}); delete Object.getPrototypeOf(navigator).webdriver;",
+                "returnByValue": true,
+            })),
+        )
+        .await.ok(); // ignore errors on about:blank
 
         eprintln!("[ENGINE] Ready — target={}, session={}", &target_id[..8], &session_id[..8]);
 
@@ -366,6 +533,11 @@ impl Session {
         let (port, _ws_path) =
             find_debug_port().ok_or("Chrome not running with --remote-debugging-port")?;
         Self::connect_port(port).await
+    }
+
+    /// Check if the CDP connection is still alive.
+    pub fn is_alive(&self) -> bool {
+        self.cdp.is_alive()
     }
 
     // ─── Frame-aware helpers ───
@@ -1015,15 +1187,15 @@ impl Session {
                         }}
                     }}
 
-                    if (t && t.length > 2 && t.length < 500) {{
-                        textParts.push(t.substring(0, 200));
+                    if (t && t.length > 2 && t.length < 2000) {{
+                        textParts.push(t.substring(0, 1000));
                     }}
                 }});
 
                 // Deduplicate text (many nested elements repeat text)
                 const seenText = new Set();
                 const uniqueText = textParts.filter(t => {{
-                    const key = t.substring(0, 50).toLowerCase();
+                    const key = t.substring(0, 120).toLowerCase();
                     if (seenText.has(key)) return false;
                     seenText.add(key);
                     return true;
@@ -1043,7 +1215,7 @@ impl Session {
 
                 if (uniqueText.length > 0) {{
                     lines.push('Content:');
-                    uniqueText.slice(0, 80).forEach(t => lines.push('  ' + t));
+                    uniqueText.slice(0, 200).forEach(t => lines.push('  ' + t));
                     if (uniqueText.length > 80) {{
                         lines.push('  ... (' + (uniqueText.length - 80) + ' more)');
                     }}
@@ -1319,6 +1491,70 @@ impl Session {
 
         eprintln!("[ENGINE] pressed {key}");
         Ok(())
+    }
+
+    /// Send a message via contenteditable input + send button.
+    /// Uses execCommand('insertText') which triggers React/framework state updates.
+    /// Works with LinkedIn, Slack, Discord, WhatsApp Web, etc.
+    pub async fn send_message(
+        &self,
+        text: &str,
+        input_selector: &str,
+        button_selector: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+        let btn_sel = if button_selector.is_empty() {
+            // Auto-detect: find nearest submit/send button
+            "document.querySelector('button[type=\"submit\"], button[class*=\"send\"], button[aria-label*=\"Send\"], button[aria-label*=\"Enviar\"]')"
+        } else {
+            &format!("document.querySelector('{}')", button_selector.replace('\'', "\\'"))
+        };
+
+        let js = format!(r#"
+            (async () => {{
+                const el = document.querySelector('{input_sel}');
+                if (!el) return 'NO_INPUT';
+
+                // Focus and clear
+                el.focus();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('delete', false, null);
+
+                // Insert text via execCommand (triggers React/framework state)
+                document.execCommand('insertText', false, '{text}');
+
+                // Fire events to activate send button (React needs these)
+                el.dispatchEvent(new InputEvent('beforeinput', {{bubbles: true, cancelable: true, inputType: 'insertText', data: '.'}}));
+                el.dispatchEvent(new InputEvent('input', {{bubbles: true, cancelable: true, inputType: 'insertText', data: '.'}}));
+                el.dispatchEvent(new KeyboardEvent('keydown', {{key: '.', code: 'Period', bubbles: true}}));
+                el.dispatchEvent(new KeyboardEvent('keyup', {{key: '.', code: 'Period', bubbles: true}}));
+
+                // Wait for framework to process
+                await new Promise(r => setTimeout(r, 300));
+
+                // Find and click send button
+                const btn = {btn_sel};
+                if (!btn) return 'NO_BUTTON';
+                if (btn.disabled) return 'BUTTON_DISABLED';
+                btn.click();
+
+                // Wait and verify
+                await new Promise(r => setTimeout(r, 2000));
+                const body = document.body.innerText;
+                if (body.includes('Volver a intentar') || body.includes('Error al enviar') || body.includes('Try again')) {{
+                    return 'SEND_ERROR';
+                }}
+                return 'SENT';
+            }})()
+        "#,
+            input_sel = input_selector.replace('\'', "\\'"),
+            text = escaped,
+            btn_sel = btn_sel,
+        );
+
+        let result = self.eval_string(&js).await?;
+        eprintln!("[ENGINE] send_message: {result}");
+        Ok(result)
     }
 
     pub async fn scroll(&self, direction: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -1681,6 +1917,588 @@ impl Session {
         Ok(())
     }
 
+    // ─── Session Storage ───
+
+    pub async fn get_session_storage(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, Box<dyn std::error::Error>> {
+        let result = self.eval_string(
+            "JSON.stringify(Object.fromEntries(Object.keys(sessionStorage).map(k=>[k,sessionStorage[k]])))"
+        ).await?;
+        let data: std::collections::HashMap<String, String> =
+            serde_json::from_str(&result).unwrap_or_default();
+        Ok(data)
+    }
+
+    pub async fn set_session_storage(
+        &self,
+        data: &std::collections::HashMap<String, String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for (key, value) in data {
+            let js = format!(
+                "sessionStorage.setItem({}, {})",
+                serde_json::to_string(key)?,
+                serde_json::to_string(value)?
+            );
+            self.eval_string(&js).await?;
+        }
+        eprintln!("[ENGINE] set {} sessionStorage items", data.len());
+        Ok(())
+    }
+
+    /// Export full browser state: cookies + localStorage + sessionStorage + URL.
+    pub async fn export_state(&self) -> Result<Value, Box<dyn std::error::Error>> {
+        let cookies = self.get_all_cookies().await?;
+        let local_storage = self.get_local_storage().await?;
+        let session_storage = self.get_session_storage().await?;
+        let url = self.eval_string("location.href").await.unwrap_or_default();
+
+        Ok(serde_json::json!({
+            "url": url,
+            "cookies": cookies,
+            "localStorage": local_storage,
+            "sessionStorage": session_storage,
+            "exportedAt": chrono::Utc::now().to_rfc3339(),
+        }))
+    }
+
+    /// Import state from a previous export.
+    pub async fn import_state(&self, state: &Value) -> Result<String, Box<dyn std::error::Error>> {
+        let mut imported = Vec::new();
+
+        // Cookies via CDP
+        if let Some(cookies) = state["cookies"].as_array() {
+            for c in cookies {
+                let _ = self.cdp.send_to(
+                    &self.page_session_id,
+                    "Network.setCookie",
+                    Some(c.clone()),
+                ).await;
+            }
+            imported.push(format!("{} cookies", cookies.len()));
+        }
+
+        // localStorage
+        if let Some(ls) = state["localStorage"].as_object() {
+            let data: std::collections::HashMap<String, String> = ls.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect();
+            self.set_local_storage(&data).await?;
+            imported.push(format!("{} localStorage", data.len()));
+        }
+
+        // sessionStorage
+        if let Some(ss) = state["sessionStorage"].as_object() {
+            let data: std::collections::HashMap<String, String> = ss.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect();
+            self.set_session_storage(&data).await?;
+            imported.push(format!("{} sessionStorage", data.len()));
+        }
+
+        Ok(imported.join(", "))
+    }
+
+    /// Check if current session appears healthy (logged in, no errors).
+    pub async fn check_session_health(&self) -> Result<Value, Box<dyn std::error::Error>> {
+        let js = r#"(() => {
+            const url = location.href;
+            const title = document.title;
+            const hasLoginForm = !!document.querySelector('input[type="password"], form[action*="login"], form[action*="signin"]');
+            const has401 = document.body?.innerText?.includes('401') || document.body?.innerText?.includes('Unauthorized');
+            const hasCaptcha = !!document.querySelector('[class*="captcha"], [id*="captcha"], iframe[src*="recaptcha"]');
+            const hasError = !!document.querySelector('.error, .alert-danger, [role="alert"]');
+            const cookieCount = document.cookie.split(';').filter(c => c.trim()).length;
+
+            return JSON.stringify({
+                url, title, cookieCount,
+                hasLoginForm, has401, hasCaptcha, hasError,
+                healthy: !hasLoginForm && !has401 && !hasCaptcha && !hasError
+            });
+        })()"#;
+
+        let result = self.eval_string(js).await?;
+        let data: Value = serde_json::from_str(&result).unwrap_or(serde_json::json!({"healthy": false}));
+        Ok(data)
+    }
+
+    // ─── Network Intelligence (CDP-level) ───
+
+    /// Start CDP-level network capture (captures headers, status, timing).
+    pub async fn start_cdp_network(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Network.enable", None).await?;
+        // Store captured requests in JS
+        self.eval_string(r#"
+            window.__neo_cdp_net = [];
+            window.__neo_cdp_responses = {};
+        "#).await?;
+        eprintln!("[ENGINE] CDP network capture started");
+        Ok(())
+    }
+
+    /// Get response body for a request ID.
+    pub async fn get_response_body(&self, request_id: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let result = self.cdp.send_to(
+            &self.page_session_id,
+            "Network.getResponseBody",
+            Some(serde_json::json!({"requestId": request_id})),
+        ).await?;
+        let body = result["body"].as_str().unwrap_or("").to_string();
+        Ok(body)
+    }
+
+    /// Intercept and modify requests matching a URL pattern.
+    pub async fn intercept_requests(&self, url_pattern: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Fetch.enable",
+            Some(serde_json::json!({
+                "patterns": [{"urlPattern": url_pattern}]
+            })),
+        ).await?;
+        eprintln!("[ENGINE] Request interception enabled for: {url_pattern}");
+        Ok(())
+    }
+
+    /// Capture full request/response via JS (more reliable than CDP events for simple cases).
+    pub async fn start_full_network_capture(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.eval_string(r#"
+            window.__neo_full_net = [];
+            const origFetch = window.__origFetch || window.fetch;
+            window.__origFetch = origFetch;
+            window.fetch = async function(...args) {
+                const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                const method = args[1]?.method || 'GET';
+                const headers = args[1]?.headers || {};
+                const reqBody = args[1]?.body || null;
+                const entry = {type:'fetch', method, url, reqHeaders: headers, ts: Date.now()};
+                try {
+                    const r = await origFetch.apply(this, args);
+                    entry.status = r.status;
+                    entry.resHeaders = Object.fromEntries(r.headers.entries());
+                    // Clone response to read body without consuming
+                    const clone = r.clone();
+                    try {
+                        const text = await clone.text();
+                        entry.body = text.substring(0, 4096);  // Cap at 4KB
+                    } catch(e) {}
+                    window.__neo_full_net.push(entry);
+                    return r;
+                } catch(e) {
+                    entry.error = e.message;
+                    window.__neo_full_net.push(entry);
+                    throw e;
+                }
+            };
+
+            const origXHR = XMLHttpRequest.prototype.open;
+            const origXHRSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this.__neo = {type:'xhr', method, url, ts: Date.now()};
+                return origXHR.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function(body) {
+                if (this.__neo) {
+                    this.__neo.reqBody = typeof body === 'string' ? body.substring(0, 2048) : null;
+                }
+                this.addEventListener('load', () => {
+                    if (this.__neo) {
+                        this.__neo.status = this.status;
+                        this.__neo.resHeaders = this.getAllResponseHeaders();
+                        this.__neo.body = this.responseText?.substring(0, 4096);
+                        window.__neo_full_net.push(this.__neo);
+                    }
+                });
+                return origXHRSend.apply(this, arguments);
+            };
+            'ok'
+        "#).await?;
+        eprintln!("[ENGINE] Full network capture started (headers + bodies)");
+        Ok(())
+    }
+
+    /// Read captured network data with bodies.
+    pub async fn read_full_network(&self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        let result = self.eval_string(r#"
+            (() => {
+                const d = window.__neo_full_net || [];
+                window.__neo_full_net = [];
+                return JSON.stringify(d);
+            })()
+        "#).await?;
+        let reqs: Vec<Value> = serde_json::from_str(&result).unwrap_or_default();
+        Ok(reqs)
+    }
+
+    /// Export captured network data as simplified HAR.
+    pub async fn export_har(&self) -> Result<Value, Box<dyn std::error::Error>> {
+        let requests = self.read_full_network().await?;
+        let entries: Vec<Value> = requests.iter().map(|r| {
+            serde_json::json!({
+                "startedDateTime": r["ts"],
+                "request": {
+                    "method": r["method"],
+                    "url": r["url"],
+                    "headers": r["reqHeaders"],
+                },
+                "response": {
+                    "status": r["status"],
+                    "headers": r["resHeaders"],
+                    "content": {
+                        "text": r["body"],
+                    }
+                }
+            })
+        }).collect();
+
+        Ok(serde_json::json!({
+            "log": {
+                "version": "1.2",
+                "entries": entries,
+            }
+        }))
+    }
+
+    // ─── CSS selector click ───
+
+    /// Click an element by CSS selector. Returns true if found and clicked.
+    pub async fn click_css(&self, selector: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let js = format!(r#"
+            (() => {{
+                const el = document.querySelector({sel});
+                if (!el) return 'not_found';
+                el.scrollIntoViewIfNeeded();
+                el.click();
+                return 'clicked: ' + (el.textContent || '').trim().substring(0, 40);
+            }})()"#,
+            sel = serde_json::to_string(selector)?
+        );
+        let result = self.eval_string(&js).await?;
+        let found = result.starts_with("clicked");
+        if found {
+            eprintln!("[ENGINE] css_click {selector} → {result}");
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        } else {
+            eprintln!("[ENGINE] css_click not found: {selector}");
+        }
+        Ok(found)
+    }
+
+    // ─── Coordinate click ───
+
+    /// Click at specific page coordinates (x, y).
+    pub async fn click_at(&self, x: f64, y: f64) -> Result<(), Box<dyn std::error::Error>> {
+        // CDP mouse events: move → press → release
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Input.dispatchMouseEvent",
+            Some(json!({"type": "mouseMoved", "x": x, "y": y})),
+        ).await?;
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Input.dispatchMouseEvent",
+            Some(json!({
+                "type": "mousePressed",
+                "x": x, "y": y,
+                "button": "left",
+                "clickCount": 1,
+            })),
+        ).await?;
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Input.dispatchMouseEvent",
+            Some(json!({
+                "type": "mouseReleased",
+                "x": x, "y": y,
+                "button": "left",
+                "clickCount": 1,
+            })),
+        ).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        eprintln!("[ENGINE] click_at ({x}, {y})");
+        Ok(())
+    }
+
+    // ─── React-compatible type ───
+
+    /// Type into a React input that ignores CDP key events.
+    /// Uses nativeInputValueSetter to bypass React's synthetic event system,
+    /// then dispatches input/change events to trigger React state updates.
+    pub async fn type_react(&self, selector: &str, value: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let js = format!(r#"
+            (() => {{
+                const el = document.querySelector({sel});
+                if (!el) return 'not_found';
+                el.scrollIntoViewIfNeeded();
+                el.focus();
+                el.click();
+                // Use native setter to bypass React's controlled input
+                const proto = el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (nativeSetter) {{
+                    nativeSetter.call(el, {val});
+                }} else {{
+                    el.value = {val};
+                }}
+                // Dispatch events React listens to
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                // Also fire keyboard events for autocomplete triggers
+                el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'a', bubbles: true }}));
+                el.dispatchEvent(new KeyboardEvent('keyup', {{ key: 'a', bubbles: true }}));
+                return 'typed: ' + el.value?.substring(0, 40);
+            }})()"#,
+            sel = serde_json::to_string(selector)?,
+            val = serde_json::to_string(value)?,
+        );
+        let result = self.eval_string(&js).await?;
+        let ok = result.starts_with("typed");
+        eprintln!("[ENGINE] type_react {selector} → {result}");
+        Ok(ok)
+    }
+
+    // ─── Keyboard combos ───
+
+    /// Press a key combination (e.g., "Ctrl+a", "Shift+Tab", "Meta+c").
+    pub async fn press_combo(&self, combo: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Parse combo: "Ctrl+a" → modifiers + key
+        let parts: Vec<&str> = combo.split('+').collect();
+        let key_part = parts.last().unwrap_or(&"");
+
+        let (key_val, code, _) = match *key_part {
+            "a" | "A" => ("a", "KeyA", 65),
+            "c" | "C" => ("c", "KeyC", 67),
+            "v" | "V" => ("v", "KeyV", 86),
+            "x" | "X" => ("x", "KeyX", 88),
+            "z" | "Z" => ("z", "KeyZ", 90),
+            "Tab" | "tab" => ("Tab", "Tab", 9),
+            "Enter" | "enter" => ("Enter", "Enter", 13),
+            "Backspace" | "backspace" => ("Backspace", "Backspace", 8),
+            "Delete" | "delete" => ("Delete", "Delete", 46),
+            "ArrowUp" | "up" => ("ArrowUp", "ArrowUp", 38),
+            "ArrowDown" | "down" => ("ArrowDown", "ArrowDown", 40),
+            "ArrowLeft" | "left" => ("ArrowLeft", "ArrowLeft", 37),
+            "ArrowRight" | "right" => ("ArrowRight", "ArrowRight", 39),
+            _ => (key_part.clone(), key_part.clone(), 0),
+        };
+
+        // Determine modifier flags from prefix parts
+        let mut modifiers = 0i32;
+        for p in &parts[..parts.len().saturating_sub(1)] {
+            match p.to_lowercase().as_str() {
+                "alt" => modifiers |= 1,
+                "ctrl" | "control" => modifiers |= 2,
+                "meta" | "cmd" | "command" => modifiers |= 4,
+                "shift" => modifiers |= 8,
+                _ => {}
+            }
+        }
+
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Input.dispatchKeyEvent",
+            Some(json!({
+                "type": "keyDown",
+                "key": key_val,
+                "code": code,
+                "modifiers": modifiers,
+            })),
+        ).await?;
+
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Input.dispatchKeyEvent",
+            Some(json!({
+                "type": "keyUp",
+                "key": key_val,
+                "code": code,
+                "modifiers": modifiers,
+            })),
+        ).await?;
+
+        eprintln!("[ENGINE] press_combo: {combo}");
+        Ok(())
+    }
+
+    // ─── Wait for element ───
+
+    /// Wait for a CSS selector to appear (become visible) in the DOM.
+    /// Polls every 500ms up to timeout_ms.
+    pub async fn wait_for_selector(&self, selector: &str, timeout_ms: u64) -> Result<bool, Box<dyn std::error::Error>> {
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_millis(timeout_ms);
+
+        loop {
+            let js = format!(r#"
+                (() => {{
+                    const el = document.querySelector({sel});
+                    if (!el) return 'absent';
+                    if (el.offsetParent === null && el.tagName !== 'BODY') return 'hidden';
+                    return 'visible';
+                }})()"#,
+                sel = serde_json::to_string(selector)?
+            );
+            let result = self.eval_string(&js).await?;
+            if result == "visible" {
+                eprintln!("[ENGINE] wait_for_selector: {selector} found in {}ms", start.elapsed().as_millis());
+                return Ok(true);
+            }
+
+            if start.elapsed() > deadline {
+                eprintln!("[ENGINE] wait_for_selector: {selector} timeout after {timeout_ms}ms (last: {result})");
+                return Ok(false);
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Scroll a specific element into view by CSS selector.
+    pub async fn scroll_to(&self, selector: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        let js = format!(r#"
+            (() => {{
+                const el = document.querySelector({sel});
+                if (!el) return 'not_found';
+                el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                return 'scrolled';
+            }})()"#,
+            sel = serde_json::to_string(selector)?
+        );
+        let result = self.eval_string(&js).await?;
+        let found = result == "scrolled";
+        eprintln!("[ENGINE] scroll_to {selector} → {result}");
+        Ok(found)
+    }
+
+    /// Get bounding box of element by CSS selector (for coordinate-based clicks).
+    pub async fn get_element_bounds(&self, selector: &str) -> Result<Option<(f64, f64, f64, f64)>, Box<dyn std::error::Error>> {
+        let js = format!(r#"
+            (() => {{
+                const el = document.querySelector({sel});
+                if (!el) return 'null';
+                const r = el.getBoundingClientRect();
+                return JSON.stringify({{x: r.x, y: r.y, w: r.width, h: r.height}});
+            }})()"#,
+            sel = serde_json::to_string(selector)?
+        );
+        let result = self.eval_string(&js).await?;
+        if result == "null" {
+            return Ok(None);
+        }
+        let v: serde_json::Value = serde_json::from_str(&result)?;
+        Ok(Some((
+            v["x"].as_f64().unwrap_or(0.0),
+            v["y"].as_f64().unwrap_or(0.0),
+            v["w"].as_f64().unwrap_or(0.0),
+            v["h"].as_f64().unwrap_or(0.0),
+        )))
+    }
+
+    // ─── Reliability: click with fallback chain ───
+
+    /// Click with fallback: text → aria-label → placeholder → partial → role → CSS.
+    pub async fn click_reliable(&self, target: &str) -> Result<(bool, String), Box<dyn std::error::Error>> {
+        // Strategy 0: CSS selector (if target starts with . # [ or contains :)
+        if target.starts_with('.') || target.starts_with('#') || target.starts_with('[')
+            || target.contains("::") || target.contains(":nth")
+        {
+            if self.click_css(target).await? {
+                return Ok((true, "css_selector".into()));
+            }
+        }
+
+        // Strategy 1: direct text match (default)
+        if self.click(target).await? {
+            return Ok((true, "text_match".into()));
+        }
+
+        // Strategy 2: aria-label match
+        let js_aria = format!(r#"
+            (() => {{
+                const el = document.querySelector('[aria-label={}]');
+                if (el) {{ el.click(); return 'clicked'; }}
+                return 'not_found';
+            }})()"#,
+            serde_json::to_string(target)?
+        );
+        let result = self.eval_string(&js_aria).await?;
+        if result == "clicked" {
+            return Ok((true, "aria_label".into()));
+        }
+
+        // Strategy 3: placeholder match (for clicking on inputs)
+        let js_placeholder = format!(r#"
+            (() => {{
+                const t = {}.toLowerCase();
+                for (const el of document.querySelectorAll('input, textarea, [contenteditable]')) {{
+                    const p = (el.placeholder || el.getAttribute('aria-label') || '').toLowerCase();
+                    if (p.includes(t)) {{
+                        el.scrollIntoViewIfNeeded();
+                        el.focus();
+                        el.click();
+                        return 'clicked';
+                    }}
+                }}
+                return 'not_found';
+            }})()"#,
+            serde_json::to_string(target)?
+        );
+        let result = self.eval_string(&js_placeholder).await?;
+        if result == "clicked" {
+            return Ok((true, "placeholder".into()));
+        }
+
+        // Strategy 4: partial text match (contains)
+        let js_partial = format!(r#"
+            (() => {{
+                const t = {};
+                const els = [...document.querySelectorAll('button, a, [role="button"], input[type="submit"]')];
+                const el = els.find(e => e.textContent?.trim().toLowerCase().includes(t.toLowerCase()));
+                if (el) {{ el.click(); return 'clicked'; }}
+                return 'not_found';
+            }})()"#,
+            serde_json::to_string(target)?
+        );
+        let result = self.eval_string(&js_partial).await?;
+        if result == "clicked" {
+            return Ok((true, "partial_text".into()));
+        }
+
+        // Strategy 5: role-based match
+        let js_role = format!(r#"
+            (() => {{
+                const t = {};
+                const els = [...document.querySelectorAll('[role]')];
+                const el = els.find(e => e.textContent?.trim().toLowerCase().includes(t.toLowerCase()));
+                if (el) {{ el.click(); return 'clicked'; }}
+                return 'not_found';
+            }})()"#,
+            serde_json::to_string(target)?
+        );
+        let result = self.eval_string(&js_role).await?;
+        if result == "clicked" {
+            return Ok((true, "role_match".into()));
+        }
+
+        Ok((false, "all_strategies_failed".into()))
+    }
+
+    /// Take a screenshot and return as base64 (for observability).
+    pub async fn screenshot_base64(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let result = self.cdp.send_to(
+            &self.page_session_id,
+            "Page.captureScreenshot",
+            Some(serde_json::json!({
+                "format": "jpeg",
+                "quality": 40,
+            })),
+        ).await?;
+        let b64 = result["data"].as_str().unwrap_or("").to_string();
+        Ok(b64)
+    }
+
     // ─── Lifecycle ───
 
     pub async fn wait(&self, secs: f64) {
@@ -1688,12 +2506,39 @@ impl Session {
     }
 
     pub async fn close(mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Close the browser
+        // Chrome with --user-data-dir does NOT persist cookies to SQLite on its own.
+        // Export all cookies via CDP and write them to the profile database ourselves.
+        if let Ok(cookies) = self.get_all_cookies().await {
+            if !cookies.is_empty() {
+                let profile_dir = if self.connected_mode {
+                    None // Don't write to user's Chrome profile
+                } else {
+                    Some(default_profile_dir())
+                };
+                if let Some(dir) = profile_dir {
+                    match save_cookies_to_profile(&dir, &cookies) {
+                        Ok(n) => eprintln!("[ENGINE] Saved {n} cookies to profile"),
+                        Err(e) => eprintln!("[ENGINE] Cookie save warning: {e}"),
+                    }
+                }
+            }
+        }
+
+        // Close the browser gracefully
         let _ = self.cdp.send("Browser.close", None).await;
 
-        // Kill Chrome process if we launched it
+        // Wait for Chrome to finish before killing
         if let Some(ref mut child) = self.chrome_process {
-            let _ = child.kill().await;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                child.wait(),
+            ).await {
+                Ok(_) => {}
+                Err(_) => {
+                    eprintln!("[ENGINE] Chrome didn't exit in 3s, killing");
+                    let _ = child.kill().await;
+                }
+            }
         }
 
         eprintln!("[ENGINE] Closed");

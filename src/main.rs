@@ -7,11 +7,16 @@
 
 mod auth;
 mod cdp;
-// mod chrome; // Replaced by engine (raw CDP, no chromiumoxide)
+mod cors_proxy;
 mod delta;
 mod engine;
+mod identity;
 mod mcp;
+mod pool;
+mod runner;
 mod semantic;
+mod stealth;
+mod trace;
 mod vision;
 mod wom;
 
@@ -58,6 +63,17 @@ enum Command {
     },
     /// MCP server mode (JSON-RPC over stdio for AI agents)
     Mcp,
+    /// CORS proxy: relay requests with permissive CORS headers
+    Proxy {
+        #[arg(short, long, default_value = "8888")]
+        port: u16,
+    },
+    /// First-time setup: opens Chrome, guides you to login, saves profile
+    Setup {
+        /// Sites to login to (e.g. linkedin.com,chatgpt.com)
+        #[arg(short, long)]
+        sites: Option<String>,
+    },
     /// Interactive session with full browser
     Session {
         /// Cookie file (Playwright storageState or JSON array)
@@ -440,6 +456,121 @@ async fn run_session(
     Ok(())
 }
 
+// ─── Setup wizard ───
+
+async fn run_setup(sites: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let profile_dir = engine::default_profile_dir();
+    let profile_str = profile_dir.to_string_lossy();
+
+    println!();
+    println!("  ╔══════════════════════════════════════════╗");
+    println!("  ║         NeoBrowser — First Setup          ║");
+    println!("  ╚══════════════════════════════════════════╝");
+    println!();
+    println!("  Profile: {profile_str}");
+    println!();
+    println!("  A Chrome window will open. Log into any sites you");
+    println!("  want NeoBrowser to access (LinkedIn, ChatGPT, etc).");
+    println!();
+    println!("  Your sessions will persist across restarts.");
+    println!("  NeoBrowser never sees your passwords — only cookies.");
+    println!();
+
+    // Launch headed Chrome
+    let mut session = engine::Session::launch_ex(None, false).await?;
+
+    // Navigate to sites if provided
+    let urls: Vec<String> = if let Some(ref s) = sites {
+        s.split(',')
+            .map(|s| {
+                let s = s.trim();
+                if s.starts_with("http") {
+                    s.to_string()
+                } else {
+                    format!("https://{s}")
+                }
+            })
+            .collect()
+    } else {
+        vec!["https://www.google.com".to_string()]
+    };
+
+    // Open first site
+    if let Some(url) = urls.first() {
+        println!("  Opening {url}...");
+        session.goto(url).await?;
+    }
+
+    println!();
+    println!("  ✓ Chrome is open. Log into your sites now.");
+    println!();
+    println!("  When you're done, type 'done' and press Enter.");
+    println!("  Type a URL to navigate somewhere else.");
+    println!();
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    loop {
+        print!("  neobrowser> ");
+        stdout.flush()?;
+
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line)?;
+        let input = line.trim();
+
+        if input.is_empty() {
+            continue;
+        }
+
+        if input == "done" || input == "quit" || input == "exit" {
+            break;
+        }
+
+        // Navigate to URL
+        let url = if input.starts_with("http") {
+            input.to_string()
+        } else {
+            format!("https://{input}")
+        };
+        println!("  Opening {url}...");
+        if let Err(e) = session.goto(&url).await {
+            println!("  Error: {e}");
+        }
+    }
+
+    // Save cookies
+    println!();
+    println!("  Saving session...");
+
+    // Close triggers save_cookies_to_profile
+    session.close().await?;
+
+    println!("  ✓ Session saved to {profile_str}");
+    println!();
+    println!("  Next steps:");
+    println!("  1. Add to Claude Code:");
+    println!("     {{");
+    println!("       \"mcpServers\": {{");
+    println!("         \"neobrowser\": {{");
+    println!("           \"type\": \"stdio\",");
+    println!("           \"command\": \"neobrowser_rs\",");
+    println!("           \"args\": [\"mcp\"]");
+    println!("         }}");
+    println!("       }}");
+    println!("     }}");
+    println!();
+    println!("  2. Or run interactively:");
+    println!("     neobrowser_rs session");
+    println!();
+    println!("  Environment variables:");
+    println!("     NEOBROWSER_HEADLESS=1   Run without visible window");
+    println!("     NEOBROWSER_PROFILE=path Custom profile directory");
+    println!();
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -450,6 +581,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Browse { url, lines } => browse_and_see(&url, lines).await,
         Command::See { url, lines } => auto_see(&url, lines).await,
         Command::Wom { url, compact } => wom_see(&url, compact).await,
+        Command::Proxy { port } => cors_proxy::run(port).await,
+        Command::Setup { sites } => run_setup(sites).await,
         Command::Session {
             cookies, url, lines, port, connect, profile,
         } => run_session(cookies, url, lines, port, connect, profile).await,

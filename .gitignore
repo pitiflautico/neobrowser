@@ -2,3 +2,7 @@
 *.swp
 *.swo
 .DS_Store
+*.egg-info/
+__pycache__/
+.env
+*.log
