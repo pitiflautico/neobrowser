@@ -1,6 +1,6 @@
 {
   "name": "neobrowser",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "AI-native browser engine. Raw CDP, semantic compression, stealth. 3.3x faster than Chrome MCP.",
   "keywords": [
     "mcp",
