@@ -3,12 +3,14 @@
 [![CI](https://github.com/pitiflautico/neobrowser/actions/workflows/ci.yml/badge.svg)](https://github.com/pitiflautico/neobrowser/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Rust browser engine for AI agents.** Raw CDP over WebSocket — no Playwright, no chromedriver, no overhead.
+**Rust browser engine for AI agents.** Raw CDP over WebSocket/Pipe — no Playwright, no chromedriver, no overhead.
 
+- **3.3x faster** than Chrome DevTools MCP, **7.9x less tokens** ([benchmark](#benchmark))
 - **22+ MCP tools** — navigate, click, type, extract, send messages, run pipelines
-- **Polymorphic stealth** — unique fingerprint per session (UA, GPU, screen, canvas)
-- **Session persistence** — login once, cookies survive restarts
-- **CORS proxy** — bypass cross-origin restrictions for security testing
+- **Pipe CDP stealth** — `--remote-debugging-pipe` bypasses Cloudflare Turnstile (no TCP port)
+- **Polymorphic identity** — unique fingerprint per session (UA, GPU, screen, canvas, audio)
+- **Session persistence** — login once, cookies survive restarts via SQLite pre-persistence
+- **AI-native output** — semantic text compression, no screenshots needed
 - **Zero dependencies** — single binary, just needs Chrome installed
 
 ## Quick Start
@@ -41,7 +43,46 @@ cargo build --release
 }
 ```
 
-Chrome required. Communicates directly via CDP WebSocket — no chromedriver binary needed.
+Chrome required. Communicates via CDP WebSocket or Pipe — no chromedriver binary needed.
+
+## Benchmark
+
+Tested against [Chrome DevTools MCP](https://github.com/nichochar/chrome-devtools-mcp) (official Chrome MCP) on the same tasks, same machine. NeoBrowser runs headless with pipe CDP stealth; Chrome MCP uses an open Chrome window.
+
+### Speed
+
+| Test | Chrome MCP | NeoBrowser | Speedup |
+|---|---|---|---|
+| Navigate + Read (example.com) | 5,200ms | 3,000ms | **1.7x** |
+| Extract content (Hacker News) | 13,853ms | 5,000ms | **2.8x** |
+| Search form (Google) | 29,224ms | 8,000ms | **3.7x** |
+| Multi-step navigate + click (Wikipedia) | 34,144ms | 9,000ms | **3.8x** |
+| **Total** | **82,421ms** | **25,000ms** | **3.3x** |
+
+### Token efficiency
+
+| Test | Chrome MCP | NeoBrowser | Reduction |
+|---|---|---|---|
+| Navigate + Read | 250 chars | 390 chars | 0.6x* |
+| Extract content | 38,297 chars | 4,039 chars | **9.5x** |
+| Search form | 19,966 chars | 6,518 chars | **3.1x** |
+| Multi-step | 1,084,270 chars | 132,845 chars | **8.2x** |
+| **Total** | **1,142,783 chars** | **143,792 chars** | **7.9x** |
+
+*\*NeoBrowser includes metadata (page class, revision, action count) in simple pages.*
+
+### Why NeoBrowser is faster
+
+- **One tool call** does navigate + extract (Chrome MCP needs `navigate` + `take_snapshot` = 2 calls minimum)
+- **Semantic compression** — WOM extracts only actionable content, not full a11y tree
+- **No screenshot needed** — text output is self-contained and AI-optimized
+- **Headless autonomous** — doesn't require an open Chrome window
+
+### What Chrome MCP does better
+
+- **Visual debugging** — screenshots and DevTools panel integration
+- **Performance profiling** — Lighthouse audits, memory snapshots, performance traces
+- **Manual workflow** — great when you need to see what the browser is doing
 
 ## Architecture
 
@@ -57,9 +98,9 @@ Chrome required. Communicates directly via CDP WebSocket — no chromedriver bin
 ├─────────────────────────────────────────────────────┤
 │  Engine (raw CDP)  │  Stealth  │  Reliability        │
 │  ┌────────┐ ┌────────┐ ┌──────────┐ ┌───────────┐  │
-│  │ Light  │ │ Chrome │ │ Canvas/  │ │ 4-strategy│  │
-│  │reqwest │ │  CDP   │ │ WebGL/   │ │ click     │  │
-│  │html5ev │ │  WS    │ │ Audio    │ │ fallback  │  │
+│  │ Light  │ │ Chrome │ │Polymorph │ │ 4-strategy│  │
+│  │reqwest │ │CDP Pipe│ │Identity/ │ │ click     │  │
+│  │html5ev │ │  / WS  │ │Canvas/GL │ │ fallback  │  │
 │  └────────┘ └────────┘ └──────────┘ └───────────┘  │
 ├─────────────────────────────────────────────────────┤
 │  see_page │ WOM │ Delta │ Vision │ Trace │ Runner   │
@@ -80,7 +121,8 @@ Chrome required. Communicates directly via CDP WebSocket — no chromedriver bin
 | `vision.rs` | Page classification — type (article, form, list, app) and state |
 | `semantic.rs` | AX-tree text extraction from HTML |
 | `delta.rs` | Diff between WOM revisions |
-| `cdp.rs` | Raw CDP WebSocket client |
+| `cdp.rs` | Raw CDP client — WebSocket + Pipe (fd 3/4) |
+| `identity.rs` | Polymorphic browser identity generator (OS-matched) |
 | `auth.rs` | Auth profiles, OS keychain, session persistence |
 | `main.rs` | CLI + module wiring |
 
@@ -231,6 +273,7 @@ Each context gets its own profile directory under `~/.neobrowser/pool/`.
 | `NEOBROWSER_PROFILE` | `~/.neobrowser/profile` | Custom Chrome profile directory. Set different values to run multiple instances. |
 | `NEOBROWSER_HEADLESS` | `0` | Set to `1` for headless Chrome. Default is headed (visible window). |
 | `NEOBROWSER_COOKIES` | (none) | Comma-separated list of cookie JSON files. Pre-persisted to Chrome SQLite before launch. |
+| `NEOBROWSER_STEALTH` | `0` | Set to `1` for pipe CDP mode. Bypasses Cloudflare Turnstile — no TCP port, no WebSocket. |
 
 ## Session & Auth
 
@@ -256,17 +299,39 @@ NEOBROWSER_PROFILE=~/.neobrowser/personal neobrowser_rs mcp # personal account
 
 ## Stealth
 
-Injected automatically on every page load:
+Two modes: **normal** (WebSocket CDP) and **stealth** (pipe CDP, `NEOBROWSER_STEALTH=1`).
+
+### Pipe CDP (stealth mode)
+
+Uses `--remote-debugging-pipe` instead of `--remote-debugging-port`. Chrome communicates via fd 3/4 (Unix pipes) — **no TCP port, no WebSocket**. Cloudflare Turnstile cannot detect pipe-based CDP because there's nothing to scan.
+
+```bash
+NEOBROWSER_STEALTH=1 NEOBROWSER_HEADLESS=1 neobrowser_rs mcp
+```
+
+### Polymorphic identity
+
+Each session gets a unique browser fingerprint generated from real-world hardware databases:
+
+| Component | Technique |
+|---|---|
+| User-Agent | OS-matched (TLS fingerprint must match UA — Cloudflare compares JA3 hash) |
+| GPU | Real hardware: Apple M1/M2/M3/M4, AMD Radeon Pro, Intel Iris |
+| Screen | Realistic resolutions: 1440x900, 1512x982, 1920x1080, 2560x1440 |
+| Canvas | Deterministic noise on `toDataURL`/`toBlob` (seeded per session) |
+| WebGL | Vendor/renderer from GPU database |
+| Audio | Gain variation on oscillator connections (seeded per session) |
+| Timezone | Random from realistic pool (Europe/Madrid, America/New_York, etc.) |
+
+### Injection layers
+
+Applied **after** first navigation (not during launch — Cloudflare detects early CDP modifications):
 
 | Layer | Technique |
 |---|---|
-| Basic | `navigator.webdriver` removal, UA override (Chrome 134), `chrome.runtime` polyfill |
-| Canvas | Deterministic noise on `toDataURL`/`toBlob` (+/- 2 per channel) |
-| WebGL | Fake vendor/renderer (Apple M2 / ANGLE) |
-| Audio | Gain variation on oscillator connections |
+| WebDriver | `navigator.webdriver` removal + prototype cleanup |
+| Chrome runtime | `chrome.runtime` polyfill |
 | Plugins | 3 standard Chrome plugins + mimeTypes |
-| Timezone | Ensures `Date` and `Intl` timezone consistency |
-| Screen | Realistic dimensions (1920x1080) for headless |
 | iframe | `webdriver` removal propagated to iframe `contentWindow` |
 | Connection | `navigator.connection` (4g, 50ms RTT) |
 | Visibility | `document.hidden=false`, `visibilityState=visible` |
@@ -391,7 +456,7 @@ Some sites detect headless Chrome despite stealth. Run in headed mode (default) 
 ## Known Limitations
 
 - **reCAPTCHA v3**: scores 0.1 (bot) in headless mode. Headed mode with real cookies bypasses most checks.
-- **Cloudflare Turnstile**: fails in headless. Use headed mode with pre-persisted session cookies.
+- **Cloudflare Turnstile**: bypassed in stealth pipe mode (`NEOBROWSER_STEALTH=1`). Falls back to headed mode with pre-persisted cookies if needed.
 - **One profile per session**: each MCP server instance uses one Chrome profile. Use `NEOBROWSER_PROFILE` to run parallel instances with different profiles.
 
 ## License
