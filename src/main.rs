@@ -74,6 +74,19 @@ enum Command {
         #[arg(short, long)]
         sites: Option<String>,
     },
+    /// Login to a site: opens visible Chrome, you login, cookies are saved.
+    /// Use this for sites with CAPTCHAs, 2FA, or complex auth flows.
+    /// After login, cookies persist for headless use.
+    Login {
+        /// URL to open (e.g. https://linkedin.com or just linkedin.com)
+        url: String,
+        /// Custom profile directory (default: ~/.neobrowser/profile)
+        #[arg(short, long)]
+        profile: Option<String>,
+        /// Additional sites to open in new tabs
+        #[arg(short, long)]
+        also: Option<String>,
+    },
     /// Interactive session with full browser
     Session {
         /// Cookie file (Playwright storageState or JSON array)
@@ -571,6 +584,100 @@ async fn run_setup(sites: Option<String>) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+// ─── Login command ───
+
+async fn run_login(url: &str, profile: Option<String>, also: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let url = if url.starts_with("http") { url.to_string() } else { format!("https://{url}") };
+    let profile_dir = match &profile {
+        Some(p) => std::path::PathBuf::from(p),
+        None => engine::default_profile_dir(),
+    };
+    let profile_str = profile_dir.to_string_lossy().to_string();
+
+    println!();
+    println!("  NeoBrowser Login");
+    println!("  ────────────────");
+    println!("  Profile: {profile_str}");
+    println!("  Opening: {url}");
+    println!();
+    println!("  A Chrome window will open. Log in normally.");
+    println!("  Handle any CAPTCHAs, 2FA, or verification steps.");
+    println!("  Your cookies will be saved when you're done.");
+    println!();
+
+    // Launch headed Chrome (never headless for login)
+    let mut session = engine::Session::launch_ex(profile.as_deref(), false).await?;
+    session.goto(&url).await?;
+
+    // Open additional sites in background if requested
+    if let Some(ref sites) = also {
+        for site in sites.split(',') {
+            let site = site.trim();
+            let site_url = if site.starts_with("http") { site.to_string() } else { format!("https://{site}") };
+            eprintln!("  Also opening: {site_url}");
+            // Open in new tab via eval
+            session.eval_string(&format!("window.open('{site_url}', '_blank')")).await.ok();
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+
+    println!("  ✓ Chrome is ready. Log in to your sites.");
+    println!();
+    println!("  Commands:");
+    println!("    done     — save cookies and exit");
+    println!("    open URL — navigate to another site");
+    println!("    status   — show captured cookies count");
+    println!();
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    loop {
+        print!("  login> ");
+        stdout.flush()?;
+
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line)? == 0 { break; }
+        let input = line.trim();
+        if input.is_empty() { continue; }
+
+        match input {
+            "done" | "quit" | "exit" | "q" => break,
+            "status" => {
+                let cookies = session.eval_string("document.cookie.split(';').length").await.unwrap_or_default();
+                let url = session.eval_string("document.URL").await.unwrap_or_default();
+                println!("  URL: {url}");
+                println!("  Cookies (JS-visible): {cookies}");
+            }
+            _ => {
+                let nav_url = if input.starts_with("http") || input.starts_with("open ") {
+                    input.trim_start_matches("open ").trim().to_string()
+                } else {
+                    format!("https://{input}")
+                };
+                let nav_url = if nav_url.starts_with("http") { nav_url } else { format!("https://{nav_url}") };
+                println!("  Opening {nav_url}...");
+                if let Err(e) = session.goto(&nav_url).await {
+                    println!("  Error: {e}");
+                }
+            }
+        }
+    }
+
+    println!();
+    println!("  Saving cookies...");
+    session.close().await?;
+    println!("  ✓ Cookies saved to {profile_str}");
+    println!();
+    println!("  Now use headless mode:");
+    println!("    NEOBROWSER_HEADLESS=1 neobrowser_rs mcp");
+    println!("  Or via npx:");
+    println!("    npx neobrowser login {url}  (to re-login later)");
+    println!();
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -583,6 +690,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Wom { url, compact } => wom_see(&url, compact).await,
         Command::Proxy { port } => cors_proxy::run(port).await,
         Command::Setup { sites } => run_setup(sites).await,
+        Command::Login { url, profile, also } => run_login(&url, profile, also).await,
         Command::Session {
             cookies, url, lines, port, connect, profile,
         } => run_session(cookies, url, lines, port, connect, profile).await,

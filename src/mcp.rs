@@ -231,7 +231,7 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["click", "type", "focus", "press", "scroll", "back", "forward", "reload", "eval", "hover", "select", "fill_form", "send_message"],
+                        "enum": ["click", "type", "focus", "press", "scroll", "back", "forward", "reload", "eval", "hover", "select", "fill_form", "send_message", "drag", "upload", "clipboard_read", "clipboard_write", "mouse", "highlight", "get_info", "screenshot_annotated"],
                         "description": "Action type"
                     },
                     "target": {
@@ -266,7 +266,20 @@ fn tool_definitions() -> Vec<ToolDef> {
                         "enum": ["none", "see", "compact", "delta"],
                         "default": "see",
                         "description": "What to return after action: see (fast, what user sees), compact/delta (WOM), none"
-                    }
+                    },
+                    "from_x": {"type": "number", "description": "Source X coordinate (for drag)"},
+                    "from_y": {"type": "number", "description": "Source Y coordinate (for drag)"},
+                    "to_x": {"type": "number", "description": "Destination X coordinate (for drag)"},
+                    "to_y": {"type": "number", "description": "Destination Y coordinate (for drag)"},
+                    "selector": {"type": "string", "description": "CSS selector (for upload, highlight, get_info)"},
+                    "files": {"type": "array", "items": {"type": "string"}, "description": "File paths (for upload)"},
+                    "button": {"type": "string", "enum": ["left", "right", "middle"], "default": "left", "description": "Mouse button (for mouse)"},
+                    "x": {"type": "number", "description": "X coordinate (for mouse)"},
+                    "y": {"type": "number", "description": "Y coordinate (for mouse)"},
+                    "what": {"type": "string", "description": "What to get: text, html, value, box, styles, count, or attribute name (for get_info)"},
+                    "mouse_action": {"type": "string", "enum": ["move", "down", "up", "wheel"], "description": "Mouse action type"},
+                    "delta_x": {"type": "number", "description": "Wheel delta X (for mouse wheel)"},
+                    "delta_y": {"type": "number", "description": "Wheel delta Y (for mouse wheel)"}
                 },
                 "required": ["kind"]
             }),
@@ -358,13 +371,23 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "properties": {
                     "op": {
                         "type": "string",
-                        "enum": ["load_cookies", "screenshot", "reset", "start_capture", "network", "console", "dialogs"],
+                        "enum": ["load_cookies", "screenshot", "reset", "start_capture", "network", "console", "dialogs", "pdf", "device", "geo", "offline", "color_scheme"],
                         "description": "Operation: start_capture enables network+console+dialog interception"
                     },
                     "cookies_file": {
                         "type": "string",
                         "description": "Path to cookies JSON file"
-                    }
+                    },
+                    "path": {"type": "string", "description": "File path (for pdf)"},
+                    "width": {"type": "integer", "description": "Viewport width (for device)"},
+                    "height": {"type": "integer", "description": "Viewport height (for device)"},
+                    "scale": {"type": "number", "default": 1.0, "description": "Device scale factor"},
+                    "mobile": {"type": "boolean", "default": false, "description": "Mobile mode"},
+                    "user_agent": {"type": "string", "description": "Custom user agent (for device)"},
+                    "lat": {"type": "number", "description": "Latitude (for geo)"},
+                    "lng": {"type": "number", "description": "Longitude (for geo)"},
+                    "enabled": {"type": "boolean", "description": "Enable/disable (for offline)"},
+                    "scheme": {"type": "string", "enum": ["dark", "light", "no-preference"], "description": "Color scheme"}
                 },
                 "required": ["op"]
             }),
@@ -577,6 +600,25 @@ async fn handle_tool(state: &mut McpState, name: &str, args: &Value) -> Result<V
 
 async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String> {
     let url = args["url"].as_str().ok_or("Missing 'url'")?;
+
+    // Check allowed domains
+    if let Ok(domains) = std::env::var("NEOBROWSER_ALLOWED_DOMAINS") {
+        let allowed: Vec<&str> = domains.split(',').map(|s| s.trim()).collect();
+        if let Ok(parsed) = url::Url::parse(url) {
+            if let Some(host) = parsed.host_str() {
+                let allowed_match = allowed.iter().any(|d| {
+                    if d.starts_with('*') {
+                        host.ends_with(&d[1..])
+                    } else {
+                        host == *d
+                    }
+                });
+                if !allowed_match {
+                    return Err(format!("Domain '{host}' not in allowed list: {domains}"));
+                }
+            }
+        }
+    }
 
     // Ensure session exists
     let session = state.ensure_session().await?;
@@ -883,6 +925,64 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
                 other => ("failed", format!("send_failed: {other}")),
             }
         }
+        "drag" => {
+            let from_x = args["from_x"].as_f64().unwrap_or(0.0);
+            let from_y = args["from_y"].as_f64().unwrap_or(0.0);
+            let to_x = args["to_x"].as_f64().unwrap_or(0.0);
+            let to_y = args["to_y"].as_f64().unwrap_or(0.0);
+            session.drag(from_x, from_y, to_x, to_y).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", "dragged".to_string())
+        }
+        "upload" => {
+            let selector = args["selector"].as_str().unwrap_or("input[type=file]");
+            let files: Vec<String> = args["files"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            session.upload_file(selector, &files).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("uploaded {} files", files.len()))
+        }
+        "clipboard_read" => {
+            let text = session.clipboard_read().await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("clipboard: {text}"))
+        }
+        "clipboard_write" => {
+            let text = args["text"].as_str().unwrap_or("");
+            session.clipboard_write(text).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("clipboard written: {} chars", text.len()))
+        }
+        "mouse" => {
+            let action = args["mouse_action"].as_str().unwrap_or("move");
+            let x = args["x"].as_f64().unwrap_or(0.0);
+            let y = args["y"].as_f64().unwrap_or(0.0);
+            let button = args["button"].as_str().unwrap_or("left");
+            match action {
+                "move" => session.mouse_move(x, y).await.map_err(|e| format!("{e}"))?,
+                "down" => session.mouse_down(x, y, button).await.map_err(|e| format!("{e}"))?,
+                "up" => session.mouse_up(x, y, button).await.map_err(|e| format!("{e}"))?,
+                "wheel" => {
+                    let dx = args["delta_x"].as_f64().unwrap_or(0.0);
+                    let dy = args["delta_y"].as_f64().unwrap_or(0.0);
+                    session.mouse_wheel(x, y, dx, dy).await.map_err(|e| format!("{e}"))?;
+                }
+                _ => return Err(format!("Unknown mouse action: {action}")),
+            };
+            ("succeeded", format!("mouse {action} at ({x},{y})"))
+        }
+        "highlight" => {
+            let selector = args["selector"].as_str().or_else(|| args["target"].as_str()).unwrap_or("");
+            session.highlight(selector).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", "highlighted".to_string())
+        }
+        "get_info" => {
+            let selector = args["selector"].as_str().or_else(|| args["target"].as_str()).unwrap_or("");
+            let what = args["what"].as_str().unwrap_or("text");
+            let info = session.get_element_info(selector, what).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("{what}: {info}"))
+        }
+        "screenshot_annotated" => {
+            let result = session.screenshot_annotated().await.map_err(|e| format!("{e}"))?;
+            ("succeeded", result)
+        }
         "bounds" => {
             let selector = args["selector"].as_str().ok_or("Missing 'selector' for bounds")?;
             let bounds = session.get_element_bounds(selector).await.map_err(|e| format!("{e}"))?;
@@ -891,6 +991,54 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
             } else {
                 ("not_found", format!("bounds_not_found: {selector}"))
             }
+        }
+        "drag" => {
+            let from_x = args["from_x"].as_f64().unwrap_or(0.0);
+            let from_y = args["from_y"].as_f64().unwrap_or(0.0);
+            let to_x = args["to_x"].as_f64().unwrap_or(0.0);
+            let to_y = args["to_y"].as_f64().unwrap_or(0.0);
+            session.drag(from_x, from_y, to_x, to_y).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", "dragged".to_string())
+        }
+        "upload" => {
+            let selector = args["selector"].as_str().unwrap_or("input[type=file]");
+            let files: Vec<String> = args["files"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            session.upload_file(selector, &files).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("uploaded {} files", files.len()))
+        }
+        "clipboard_read" => {
+            let text = session.clipboard_read().await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("clipboard: {text}"))
+        }
+        "clipboard_write" => {
+            let text = args["text"].as_str().unwrap_or("");
+            session.clipboard_write(text).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", format!("clipboard written: {} chars", text.len()))
+        }
+        "mouse" => {
+            let action = args["mouse_action"].as_str().unwrap_or("move");
+            let x = args["x"].as_f64().unwrap_or(0.0);
+            let y = args["y"].as_f64().unwrap_or(0.0);
+            let button = args["button"].as_str().unwrap_or("left");
+            match action {
+                "move" => session.mouse_move(x, y).await.map_err(|e| format!("{e}"))?,
+                "down" => session.mouse_down(x, y, button).await.map_err(|e| format!("{e}"))?,
+                "up" => session.mouse_up(x, y, button).await.map_err(|e| format!("{e}"))?,
+                "wheel" => {
+                    let dx = args["delta_x"].as_f64().unwrap_or(0.0);
+                    let dy = args["delta_y"].as_f64().unwrap_or(0.0);
+                    session.mouse_wheel(x, y, dx, dy).await.map_err(|e| format!("{e}"))?;
+                }
+                _ => return Err(format!("Unknown mouse action: {action}")),
+            };
+            ("succeeded", format!("mouse {action} at ({x},{y})"))
+        }
+        "highlight" => {
+            let selector = args["selector"].as_str().or_else(|| args["target"].as_str()).unwrap_or("");
+            session.highlight(selector).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", "highlighted".to_string())
         }
         _ => return Err(format!("Unknown action kind: {kind}")),
     };
@@ -1140,6 +1288,46 @@ async fn handle_session(state: &mut McpState, args: &Value) -> Result<Value, Str
                 "dialogs": dlgs,
                 "count": dlgs.len(),
             }))
+        }
+        "pdf" => {
+            let session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+            let path = args["path"].as_str();
+            let result = session.pdf(path).await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({"ok": true, "result": result}))
+        }
+        "device" => {
+            let session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+            let width = args["width"].as_u64().unwrap_or(1440) as u32;
+            let height = args["height"].as_u64().unwrap_or(900) as u32;
+            let scale = args["scale"].as_f64().unwrap_or(1.0);
+            let mobile = args["mobile"].as_bool().unwrap_or(false);
+            let ua = args["user_agent"].as_str();
+            session.set_device(width, height, scale, mobile, ua).await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({"ok": true, "device": format!("{width}x{height} @{scale}x mobile={mobile}")}))
+        }
+        "geo" => {
+            let session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+            let lat = args["lat"].as_f64().ok_or("Missing lat")?;
+            let lng = args["lng"].as_f64().ok_or("Missing lng")?;
+            session.set_geolocation(lat, lng, None).await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({"ok": true, "geolocation": format!("{lat}, {lng}")}))
+        }
+        "offline" => {
+            let session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+            let enabled = args["enabled"].as_bool().unwrap_or(true);
+            session.set_offline(enabled).await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({"ok": true, "offline": enabled}))
+        }
+        "color_scheme" => {
+            let session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+            let scheme = args["scheme"].as_str().unwrap_or("dark");
+            session.set_color_scheme(scheme).await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({"ok": true, "color_scheme": scheme}))
         }
         _ => Err(format!("Unknown session op: {op}")),
     }

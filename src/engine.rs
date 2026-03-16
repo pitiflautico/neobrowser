@@ -644,6 +644,244 @@ impl Session {
         Ok(())
     }
 
+    // ─── PDF ───
+    pub async fn pdf(&self, path: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+        let result = self.cdp.send_to(&self.page_session_id, "Page.printToPDF", Some(serde_json::json!({
+            "printBackground": true,
+            "preferCSSPageSize": true,
+        }))).await?;
+        let data = result["data"].as_str().ok_or("No PDF data")?;
+        if let Some(path) = path {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+            std::fs::write(path, &bytes)?;
+            Ok(format!("PDF saved to {path} ({} bytes)", bytes.len()))
+        } else {
+            Ok(format!("PDF generated ({} chars base64)", data.len()))
+        }
+    }
+
+    // ─── Device emulation ───
+    pub async fn set_device(&self, width: u32, height: u32, scale: f64, mobile: bool, ua: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Emulation.setDeviceMetricsOverride", Some(serde_json::json!({
+            "width": width,
+            "height": height,
+            "deviceScaleFactor": scale,
+            "mobile": mobile,
+        }))).await?;
+        if let Some(ua) = ua {
+            self.cdp.send_to(&self.page_session_id, "Network.setUserAgentOverride", Some(serde_json::json!({
+                "userAgent": ua,
+            }))).await?;
+        }
+        eprintln!("[ENGINE] Device: {width}x{height} @{scale}x mobile={mobile}");
+        Ok(())
+    }
+
+    // ─── Geolocation ───
+    pub async fn set_geolocation(&self, lat: f64, lng: f64, accuracy: Option<f64>) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Emulation.setGeolocationOverride", Some(serde_json::json!({
+            "latitude": lat,
+            "longitude": lng,
+            "accuracy": accuracy.unwrap_or(100.0),
+        }))).await?;
+        eprintln!("[ENGINE] Geolocation: {lat}, {lng}");
+        Ok(())
+    }
+
+    // ─── Offline mode ───
+    pub async fn set_offline(&self, offline: bool) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Network.emulateNetworkConditions", Some(serde_json::json!({
+            "offline": offline,
+            "latency": 0,
+            "downloadThroughput": -1,
+            "uploadThroughput": -1,
+        }))).await?;
+        eprintln!("[ENGINE] Offline: {offline}");
+        Ok(())
+    }
+
+    // ─── Color scheme ───
+    pub async fn set_color_scheme(&self, scheme: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Emulation.setEmulatedMedia", Some(serde_json::json!({
+            "features": [{"name": "prefers-color-scheme", "value": scheme}],
+        }))).await?;
+        eprintln!("[ENGINE] Color scheme: {scheme}");
+        Ok(())
+    }
+
+    // ─── Drag and drop ───
+    pub async fn drag(&self, from_x: f64, from_y: f64, to_x: f64, to_y: f64) -> Result<(), Box<dyn std::error::Error>> {
+        // Mouse down at source
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchMouseEvent", Some(serde_json::json!({
+            "type": "mousePressed", "x": from_x, "y": from_y, "button": "left", "clickCount": 1,
+        }))).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Move to destination
+        for i in 1..=10 {
+            let t = i as f64 / 10.0;
+            let x = from_x + (to_x - from_x) * t;
+            let y = from_y + (to_y - from_y) * t;
+            self.cdp.send_to(&self.page_session_id, "Input.dispatchMouseEvent", Some(serde_json::json!({
+                "type": "mouseMoved", "x": x, "y": y, "button": "left",
+            }))).await?;
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        // Mouse up at destination
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchMouseEvent", Some(serde_json::json!({
+            "type": "mouseReleased", "x": to_x, "y": to_y, "button": "left", "clickCount": 1,
+        }))).await?;
+        eprintln!("[ENGINE] Drag ({from_x},{from_y}) → ({to_x},{to_y})");
+        Ok(())
+    }
+
+    // ─── Upload file ───
+    pub async fn upload_file(&self, selector: &str, paths: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+        // Find the file input element
+        let js = format!(
+            "(() => {{ const el = document.querySelector('{}'); return el ? 'found' : 'not_found'; }})()",
+            selector.replace('\'', "\\'")
+        );
+        let result = self.eval_string(&js).await?;
+        if result == "not_found" {
+            return Err(format!("File input not found: {selector}").into());
+        }
+        // Get the DOM node ID
+        let doc = self.cdp.send_to(&self.page_session_id, "DOM.getDocument", None).await?;
+        let root_id = doc["root"]["nodeId"].as_i64().ok_or("No root node")?;
+        let node = self.cdp.send_to(&self.page_session_id, "DOM.querySelector", Some(serde_json::json!({
+            "nodeId": root_id, "selector": selector,
+        }))).await?;
+        let node_id = node["nodeId"].as_i64().ok_or("Node not found")?;
+        // Set files
+        self.cdp.send_to(&self.page_session_id, "DOM.setFileInputFiles", Some(serde_json::json!({
+            "nodeId": node_id, "files": paths,
+        }))).await?;
+        eprintln!("[ENGINE] Upload {} files to {selector}", paths.len());
+        Ok(())
+    }
+
+    // ─── Clipboard ───
+    pub async fn clipboard_read(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let result = self.eval_string("navigator.clipboard.readText()").await?;
+        Ok(result)
+    }
+
+    pub async fn clipboard_write(&self, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+        self.eval_string(&format!("navigator.clipboard.writeText('{escaped}')")).await?;
+        Ok(())
+    }
+
+    // ─── Mouse fine control ───
+    pub async fn mouse_move(&self, x: f64, y: f64) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchMouseEvent", Some(serde_json::json!({
+            "type": "mouseMoved", "x": x, "y": y,
+        }))).await?;
+        Ok(())
+    }
+
+    pub async fn mouse_down(&self, x: f64, y: f64, button: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchMouseEvent", Some(serde_json::json!({
+            "type": "mousePressed", "x": x, "y": y, "button": button, "clickCount": 1,
+        }))).await?;
+        Ok(())
+    }
+
+    pub async fn mouse_up(&self, x: f64, y: f64, button: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchMouseEvent", Some(serde_json::json!({
+            "type": "mouseReleased", "x": x, "y": y, "button": button, "clickCount": 1,
+        }))).await?;
+        Ok(())
+    }
+
+    pub async fn mouse_wheel(&self, x: f64, y: f64, delta_x: f64, delta_y: f64) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchMouseEvent", Some(serde_json::json!({
+            "type": "mouseWheel", "x": x, "y": y, "deltaX": delta_x, "deltaY": delta_y,
+        }))).await?;
+        Ok(())
+    }
+
+    // ─── Highlight element ───
+    pub async fn highlight(&self, selector: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let js = format!(
+            r#"(() => {{
+                const el = document.querySelector('{}');
+                if (!el) return 'not_found';
+                el.style.outline = '3px solid red';
+                el.style.outlineOffset = '2px';
+                return 'highlighted';
+            }})()"#,
+            selector.replace('\'', "\\'")
+        );
+        self.eval_string(&js).await?;
+        Ok(())
+    }
+
+    // ─── Get element info ───
+    pub async fn get_element_info(&self, selector: &str, what: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let js = match what {
+            "text" => format!("document.querySelector('{}')?.innerText || ''", selector.replace('\'', "\\'")),
+            "html" => format!("document.querySelector('{}')?.innerHTML || ''", selector.replace('\'', "\\'")),
+            "value" => format!("document.querySelector('{}')?.value || ''", selector.replace('\'', "\\'")),
+            "box" => format!(
+                "JSON.stringify(document.querySelector('{}')?.getBoundingClientRect())",
+                selector.replace('\'', "\\'")
+            ),
+            "styles" => format!(
+                "JSON.stringify(Object.fromEntries([...getComputedStyle(document.querySelector('{}'))].map(p => [p, getComputedStyle(document.querySelector('{}')).getPropertyValue(p)]).slice(0, 20)))",
+                selector.replace('\'', "\\'"), selector.replace('\'', "\\'")
+            ),
+            "count" => format!(
+                "document.querySelectorAll('{}').length.toString()",
+                selector.replace('\'', "\\'")
+            ),
+            _ => format!("document.querySelector('{}')?.getAttribute('{}') || ''",
+                selector.replace('\'', "\\'"), what.replace('\'', "\\'")),
+        };
+        self.eval_string(&js).await
+    }
+
+    // ─── Screenshot annotated ───
+    pub async fn screenshot_annotated(&self) -> Result<String, Box<dyn std::error::Error>> {
+        // Inject numbered labels on interactive elements, take screenshot, remove labels
+        let js = r#"
+            (() => {
+                const els = document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[onclick]');
+                const labels = [];
+                let i = 1;
+                els.forEach(el => {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) return;
+                    if (rect.top < 0 || rect.left < 0) return;
+                    const label = document.createElement('div');
+                    label.className = '_neo_label_';
+                    label.textContent = i;
+                    label.style.cssText = `position:fixed;top:${rect.top-10}px;left:${rect.left-10}px;z-index:999999;background:red;color:white;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:8px;pointer-events:none;`;
+                    document.body.appendChild(label);
+                    labels.push({i, tag: el.tagName, text: (el.textContent||'').trim().substring(0,30), x: Math.round(rect.x), y: Math.round(rect.y)});
+                    i++;
+                });
+                return JSON.stringify({count: i-1, labels});
+            })()
+        "#;
+        let legend = self.eval_string(js).await?;
+
+        // Take screenshot
+        let result = self.cdp.send_to(&self.page_session_id, "Page.captureScreenshot", Some(serde_json::json!({
+            "format": "jpeg", "quality": 60,
+        }))).await?;
+        let b64 = result["data"].as_str().unwrap_or("");
+
+        // Remove labels
+        self.eval_string("document.querySelectorAll('._neo_label_').forEach(el => el.remove())").await.ok();
+
+        Ok(serde_json::json!({
+            "screenshot_base64": b64,
+            "legend": serde_json::from_str::<serde_json::Value>(&legend).unwrap_or_default(),
+        }).to_string())
+    }
+
     pub fn is_alive(&self) -> bool {
         self.cdp.is_alive()
     }
