@@ -14,6 +14,14 @@ use std::collections::HashMap;
 use crate::semantic;
 use markup5ever_rcdom::Handle;
 
+/// Safe truncation at a char boundary (stable replacement for str::floor_char_boundary).
+fn truncate_at(s: &str, max: usize) -> &str {
+    if max >= s.len() { return s; }
+    let mut i = max;
+    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    &s[..i]
+}
+
 // ─── Core Types ───
 
 pub type NodeId = String; // e.g. "n_001", "fld_email", "btn_submit"
@@ -365,7 +373,7 @@ impl WomBuilder {
                         let text = semantic::extract_text(handle).trim().to_string();
                         if !text.is_empty() && text.len() < 120 && !is_noise_text(&text) {
                             let nid = self.next_node_id("btn");
-                            let display = if text.len() > 60 { format!("{}...", &text[..text.floor_char_boundary(60)]) } else { text.clone() };
+                            let display = if text.len() > 60 { format!("{}...", truncate_at(&text, 60)) } else { text.clone() };
                             let importance = 0.8;
                             let disabled = semantic::get_attr(handle, "disabled").is_some();
 
@@ -565,7 +573,7 @@ impl WomBuilder {
                         let text = semantic::extract_text(handle).trim().to_string();
                         if !text.is_empty() && text.len() < 120 && !is_noise_text(&text) {
                             let nid = self.next_node_id("btn");
-                            let display = if text.len() > 60 { format!("{}...", &text[..text.floor_char_boundary(60)]) } else { text.clone() };
+                            let display = if text.len() > 60 { format!("{}...", truncate_at(&text, 60)) } else { text.clone() };
                             let disabled = semantic::get_attr(handle, "aria-disabled").as_deref() == Some("true");
                             self.nodes.push(WomNode {
                                 id: nid.clone(),
@@ -644,7 +652,7 @@ impl WomBuilder {
                             self.paragraphs.push(TextItem {
                                 id: nid.clone(),
                                 text: if text.len() > 300 {
-                                    format!("{}...", &text[..text.floor_char_boundary(300)])
+                                    format!("{}...", truncate_at(&text, 300))
                                 } else {
                                     text.clone()
                                 },
