@@ -634,6 +634,9 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
     // Apply stealth AFTER navigation (after Cloudflare challenge passes)
     session.apply_stealth().await.ok(); // ignore errors, stealth is best-effort
 
+    // Auto-dismiss cookie banners
+    session.dismiss_cookie_banners().await.ok();
+
     // Get WOM
     let rev = state.next_revision();
     let session = state.session.as_mut().unwrap();

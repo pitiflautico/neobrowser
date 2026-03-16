@@ -644,6 +644,70 @@ impl Session {
         Ok(())
     }
 
+    // ─── Auto-dismiss cookie banners ───
+    pub async fn dismiss_cookie_banners(&self) -> Result<bool, Box<dyn std::error::Error>> {
+        let js = r#"
+            (() => {
+                // Strategy 1: Click accept/agree buttons by text
+                const acceptTexts = [
+                    'accept all', 'aceptar todo', 'aceptar todas', 'accept cookies',
+                    'acepto', 'aceptar', 'accept', 'agree', 'ok', 'got it', 'entendido',
+                    'allow all', 'permitir todo', 'consent', 'continuar', 'continue',
+                    'j\'accepte', 'tout accepter', 'akzeptieren', 'alle akzeptieren',
+                    'accetta tutto', 'aceitar tudo'
+                ];
+                const buttons = Array.from(document.querySelectorAll('button, a, [role="button"], span[onclick], div[onclick]'));
+                for (const btn of buttons) {
+                    const text = (btn.textContent || '').trim().toLowerCase();
+                    if (text.length > 50) continue;
+                    for (const accept of acceptTexts) {
+                        if (text === accept || text.includes(accept)) {
+                            btn.click();
+                            // Strategy 2: Also remove overlay containers
+                            setTimeout(() => {
+                                document.querySelectorAll('[class*="cky"], [class*="cookie-banner"], [class*="consent-banner"], [id*="cookie"], [id*="consent"], [class*="CookieConsent"], [class*="cc-banner"]').forEach(el => el.remove());
+                                document.body.style.overflow = '';
+                                document.documentElement.style.overflow = '';
+                            }, 500);
+                            return 'dismissed: ' + text;
+                        }
+                    }
+                }
+                // Strategy 3: No button found, try to remove overlays directly
+                let removed = 0;
+                document.querySelectorAll('[class*="cky"], [class*="cookie"], [class*="consent"], [id*="cookie"], [id*="consent"], [class*="CookieConsent"], [class*="cc-banner"], [class*="gdpr"]').forEach(el => {
+                    if (el.textContent && el.textContent.toLowerCase().includes('cookie')) {
+                        el.remove();
+                        removed++;
+                    }
+                });
+                if (removed > 0) {
+                    document.body.style.overflow = '';
+                    document.documentElement.style.overflow = '';
+                    return 'removed: ' + removed + ' elements';
+                }
+                return 'none';
+            })()
+        "#;
+        let result = self.eval_string(js).await.unwrap_or_default();
+        if result != "none" {
+            eprintln!("[ENGINE] Cookie banner: {result}");
+            // Wait for any animations/transitions
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            // Second pass: clean up any remaining overlays
+            self.eval_string(r#"
+                document.querySelectorAll('[class*="cky"], [class*="cookie"], [class*="consent"], [id*="cookie"]').forEach(el => {
+                    if (el.textContent && el.textContent.toLowerCase().includes('cookie')) el.remove();
+                });
+                document.body.style.overflow = '';
+                document.documentElement.style.overflow = '';
+            "#).await.ok();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     // ─── PDF ───
     pub async fn pdf(&self, path: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
         let result = self.cdp.send_to(&self.page_session_id, "Page.printToPDF", Some(serde_json::json!({
@@ -1649,7 +1713,7 @@ impl Session {
 
                 // Collect candidates with scores
                 const candidates = [];
-                for (const el of _doc.querySelectorAll('button, a, [role="button"], [role="link"], input[type="submit"], summary, [aria-label], [title]')) {{
+                for (const el of _doc.querySelectorAll('button, a, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="tab"], input[type="submit"], summary, [aria-label], [title], [onclick], [data-testid], [class*="cursor-pointer"], [tabindex="0"]')) {{
                     // Get the best text representation
                     const texts = [
                         (el.textContent || '').trim(),
