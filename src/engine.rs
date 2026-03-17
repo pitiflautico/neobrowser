@@ -12,8 +12,24 @@ use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom::RcDom;
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Mutex as TokioMutex;
+
+// ─── Helpers ───
+
+/// ISO 8601 timestamp without chrono dependency.
+fn chrono_now() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = d.as_secs();
+    // Simple UTC timestamp: seconds since epoch as string
+    // For human-readable, the consumer can convert.
+    format!("{secs}")
+}
 
 // ─── Chrome binary discovery ───
 
@@ -55,6 +71,100 @@ fn find_debug_port() -> Option<(u16, String)> {
     None
 }
 
+// ─── CDP Network Types ───
+
+/// A captured network request/response pair from CDP events.
+#[derive(Clone, Debug)]
+struct CdpNetworkEntry {
+    request_id: String,
+    method: String,
+    url: String,
+    request_headers: Value,
+    post_data: Option<String>,
+    resource_type: String,
+    timestamp: f64,
+    response_status: Option<i64>,
+    response_headers: Option<Value>,
+    response_mime: Option<String>,
+    frame_id: String,
+}
+
+impl CdpNetworkEntry {
+    fn to_json(&self) -> Value {
+        let mut obj = json!({
+            "requestId": self.request_id,
+            "method": self.method,
+            "url": self.url,
+            "requestHeaders": self.request_headers,
+            "resourceType": self.resource_type,
+            "timestamp": self.timestamp,
+            "frameId": self.frame_id,
+        });
+        if let Some(ref pd) = self.post_data {
+            obj["postData"] = json!(pd);
+        }
+        if let Some(status) = self.response_status {
+            obj["status"] = json!(status);
+        }
+        if let Some(ref h) = self.response_headers {
+            obj["responseHeaders"] = h.clone();
+        }
+        if let Some(ref m) = self.response_mime {
+            obj["mimeType"] = json!(m);
+        }
+        obj
+    }
+}
+
+/// Rule for intercepting requests and responding with custom data.
+#[derive(Clone, Debug)]
+struct InterceptRule {
+    url_pattern: String,
+    response_body: String,
+    status_code: u16,
+    content_type: String,
+}
+
+// ─── Workflow Mapper ───
+
+/// A single step recorded during workflow mapping.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WorkflowStep {
+    pub step_number: usize,
+    pub action: String,         // "observe", "click", "type", "select", "navigate", etc.
+    pub target: Option<String>, // CSS selector or text label
+    pub value: Option<String>,  // typed text, selected value, etc.
+    pub url: String,
+    pub observation: Value,     // rich page state captured after this step
+    pub network_requests: Vec<Value>, // API calls made during this step
+    pub timestamp: String,
+    pub notes: String,
+}
+
+/// A complete workflow recording — becomes a reusable playbook.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Workflow {
+    pub name: String,
+    pub start_url: String,
+    pub steps: Vec<WorkflowStep>,
+    pub vue_model_schema: Value,          // accumulated Vue/React model structure
+    pub api_endpoints_discovered: Vec<Value>, // all API endpoints seen
+    pub field_map: Value,                 // label → selector mapping for replay
+}
+
+impl Workflow {
+    fn new(name: &str, url: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            start_url: url.to_string(),
+            steps: Vec::new(),
+            vue_model_schema: json!({}),
+            api_endpoints_discovered: Vec::new(),
+            field_map: json!({}),
+        }
+    }
+}
+
 // ─── Session ───
 
 pub struct Session {
@@ -66,6 +176,19 @@ pub struct Session {
     pub last_url: String,
     chrome_process: Option<tokio::process::Child>,
     connected_mode: bool,
+    /// CDP session ID for the active cross-origin iframe (if any).
+    /// When set, eval/click/type/focus commands route through this session.
+    active_frame_session_id: Option<String>,
+    /// Frame ID of the active iframe (from Page.getFrameTree).
+    active_frame_id: Option<String>,
+    /// CDP-level captured network entries (survives navigation, captures cross-origin iframes)
+    cdp_network_entries: Arc<TokioMutex<Vec<CdpNetworkEntry>>>,
+    /// Whether CDP network capture is active
+    cdp_network_active: Arc<std::sync::atomic::AtomicBool>,
+    /// Rules for Fetch.requestPaused interception
+    intercept_rules: Arc<TokioMutex<Vec<InterceptRule>>>,
+    /// Active workflow being recorded (workflow mapper)
+    pub active_workflow: Option<Workflow>,
 }
 
 /// Default persistent profile directory for the AI browser.
@@ -413,6 +536,12 @@ impl Session {
             last_url: String::new(),
             chrome_process: Some(child),
             connected_mode: false,
+            active_frame_session_id: None,
+            active_frame_id: None,
+            cdp_network_entries: Arc::new(TokioMutex::new(Vec::new())),
+            cdp_network_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            intercept_rules: Arc::new(TokioMutex::new(Vec::new())),
+            active_workflow: None,
         })
     }
 
@@ -532,6 +661,12 @@ impl Session {
             last_url: String::new(),
             chrome_process: Some(child),
             connected_mode: false,
+            active_frame_session_id: None,
+            active_frame_id: None,
+            cdp_network_entries: Arc::new(TokioMutex::new(Vec::new())),
+            cdp_network_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            intercept_rules: Arc::new(TokioMutex::new(Vec::new())),
+            active_workflow: None,
         })
     }
 
@@ -599,6 +734,12 @@ impl Session {
             last_url: current_url,
             chrome_process: None,
             connected_mode: true,
+            active_frame_session_id: None,
+            active_frame_id: None,
+            cdp_network_entries: Arc::new(TokioMutex::new(Vec::new())),
+            cdp_network_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            intercept_rules: Arc::new(TokioMutex::new(Vec::new())),
+            active_workflow: None,
         })
     }
 
@@ -1031,8 +1172,14 @@ impl Session {
 
     // ─── CDP helpers ───
 
-    /// Evaluate JS in the page, return the result as string.
+    /// Evaluate JS in the page (or active frame), return the result as string.
+    /// When a frame is active, automatically routes to that frame's context.
     pub async fn eval_string(&self, expression: &str) -> Result<String, Box<dyn std::error::Error>> {
+        // If a frame is active, delegate to frame-aware eval
+        if self.active_frame_id.is_some() {
+            return self.eval_in_active_frame(expression).await;
+        }
+
         let result = self
             .cdp
             .send_to(
@@ -1538,6 +1685,9 @@ impl Session {
     /// This is what agents should use 90% of the time.
     pub async fn see_page(&self) -> Result<String, Box<dyn std::error::Error>> {
         let t0 = Instant::now();
+        // When inside a frame, use document directly (already in frame context).
+        // On main page, use ACTIVE_DOC_JS to auto-detect best frame.
+        let doc_expr = if self.active_frame_id.is_some() { "document" } else { Self::ACTIVE_DOC_JS };
         let js = format!(
             r#"
             (() => {{
@@ -1673,10 +1823,16 @@ impl Session {
                 return lines.join('\n');
             }})()
             "#,
-            active_doc = Self::ACTIVE_DOC_JS,
+            active_doc = doc_expr,
         );
 
-        let result = self.eval_string(&js).await?;
+        let mut result = self.eval_string(&js).await?;
+
+        // When viewing inside a frame, prepend frame context
+        if let Some(ref fid) = self.active_frame_id {
+            let mode = if self.active_frame_session_id.is_some() { "OOP" } else { "same-process" };
+            result = format!("[FRAME: {} ({})]\n{}", fid, mode, result);
+        }
 
         eprintln!(
             "[SEE] {}chars | {}ms",
@@ -2048,7 +2204,170 @@ impl Session {
     }
 
     pub async fn eval(&self, js: &str) -> Result<String, Box<dyn std::error::Error>> {
+        if self.active_frame_id.is_some() {
+            return self.eval_in_active_frame(js).await;
+        }
         self.eval_string(js).await
+    }
+
+    // ─── Frames (cross-origin iframe support via CDP sessions) ───
+
+    /// Returns the CDP session ID for Input.dispatch* commands.
+    /// Reserved for future OOP frame input routing.
+    #[allow(dead_code)]
+    fn active_session_id(&self) -> &str {
+        self.active_frame_session_id.as_deref().unwrap_or(&self.page_session_id)
+    }
+
+    pub async fn list_frames(&self) -> Result<Value, Box<dyn std::error::Error>> {
+        let result = self.cdp.send_to(&self.page_session_id, "Page.getFrameTree", None).await?;
+        let mut frames: Vec<Value> = Vec::new();
+        fn collect_frames(node: &Value, frames: &mut Vec<Value>) {
+            if let Some(frame) = node.get("frame") {
+                frames.push(json!({
+                    "id": frame.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "url": frame.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+                    "name": frame.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "parentId": frame.get("parentId").and_then(|v| v.as_str()).unwrap_or(""),
+                    "securityOrigin": frame.get("securityOrigin").and_then(|v| v.as_str()).unwrap_or(""),
+                }));
+            }
+            if let Some(children) = node.get("childFrames").and_then(|v| v.as_array()) {
+                for child in children { collect_frames(child, frames); }
+            }
+        }
+        collect_frames(&result["frameTree"], &mut frames);
+        for (idx, frame) in frames.iter_mut().enumerate() {
+            let fid = frame["id"].as_str().unwrap_or("").to_string();
+            let score = self.score_frame(&fid).await.unwrap_or(0);
+            frame["index"] = json!(idx);
+            frame["score"] = json!(score);
+        }
+        eprintln!("[ENGINE] list_frames: {} frames found", frames.len());
+        Ok(json!(frames))
+    }
+
+    async fn score_frame(&self, frame_id: &str) -> Result<u64, Box<dyn std::error::Error>> {
+        let world = self.cdp.send_to(&self.page_session_id, "Page.createIsolatedWorld",
+            Some(json!({"frameId": frame_id, "worldName": "neobrowser_frame_score", "grantUniveralAccess": true}))).await?;
+        let ctx = world["executionContextId"].as_u64().ok_or("No executionContextId")?;
+        let result = self.cdp.send_to(&self.page_session_id, "Runtime.evaluate",
+            Some(json!({"expression": "document.querySelectorAll('a,button,input,select,textarea,[role=\"button\"],[role=\"link\"]').length", "contextId": ctx, "returnByValue": true}))).await?;
+        Ok(result["result"]["value"].as_u64().unwrap_or(0))
+    }
+
+    pub async fn switch_frame(&mut self, frame_id: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let tree = self.cdp.send_to(&self.page_session_id, "Page.getFrameTree", None).await?;
+        let main_fid = tree["frameTree"]["frame"]["id"].as_str().unwrap_or("");
+        if frame_id == main_fid { return self.switch_to_main_frame().await; }
+        let frame_url = Self::find_frame_url(&tree["frameTree"], frame_id).unwrap_or_default();
+        // Strategy 1: OOP frame via Target.attachToTarget
+        let targets = self.cdp.send("Target.getTargets", None).await?;
+        let iframe_target = targets["targetInfos"].as_array().and_then(|arr| {
+            arr.iter().find(|t| t["type"].as_str() == Some("iframe")
+                && (t["targetId"].as_str() == Some(frame_id)
+                    || (!frame_url.is_empty() && t["url"].as_str() == Some(frame_url.as_str()))))
+        });
+        if let Some(target) = iframe_target {
+            let tid = target["targetId"].as_str().ok_or("No targetId")?;
+            let r = self.cdp.send("Target.attachToTarget", Some(json!({"targetId": tid, "flatten": true}))).await?;
+            let sid = r["sessionId"].as_str().ok_or("No sessionId")?.to_string();
+            self.cdp.send_to(&sid, "Runtime.enable", None).await?;
+            self.active_frame_session_id = Some(sid.clone());
+            self.active_frame_id = Some(frame_id.to_string());
+            eprintln!("[ENGINE] Switched to OOP frame: {} (session={})", frame_id, &sid[..8.min(sid.len())]);
+            return Ok(format!("switched to frame (OOP, url={})", frame_url));
+        }
+        // Strategy 2: Same-process frame via isolated world
+        let world = self.cdp.send_to(&self.page_session_id, "Page.createIsolatedWorld",
+            Some(json!({"frameId": frame_id, "worldName": "neobrowser_frame", "grantUniveralAccess": true}))).await?;
+        world["executionContextId"].as_u64().ok_or("Failed to create isolated world in frame")?;
+        self.active_frame_session_id = None;
+        self.active_frame_id = Some(frame_id.to_string());
+        eprintln!("[ENGINE] Switched to same-process frame: {} (url={})", frame_id, frame_url);
+        Ok(format!("switched to frame (same-process, url={})", frame_url))
+    }
+
+    fn find_frame_url(node: &Value, target_id: &str) -> Option<String> {
+        if let Some(frame) = node.get("frame") {
+            if frame.get("id").and_then(|v| v.as_str()) == Some(target_id) {
+                return frame.get("url").and_then(|v| v.as_str()).map(String::from);
+            }
+        }
+        if let Some(children) = node.get("childFrames").and_then(|v| v.as_array()) {
+            for child in children {
+                if let Some(url) = Self::find_frame_url(child, target_id) { return Some(url); }
+            }
+        }
+        None
+    }
+
+    pub async fn switch_to_main_frame(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        self.active_frame_session_id = None;
+        self.active_frame_id = None;
+        eprintln!("[ENGINE] Switched to main frame");
+        Ok("switched to main frame".to_string())
+    }
+
+    pub async fn auto_switch_frame(&mut self, text_hint: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let tree = self.cdp.send_to(&self.page_session_id, "Page.getFrameTree", None).await?;
+        let mut fids: Vec<String> = Vec::new();
+        fn collect_ids(node: &Value, ids: &mut Vec<String>) {
+            if let Some(f) = node.get("frame") { if let Some(id) = f.get("id").and_then(|v| v.as_str()) { ids.push(id.to_string()); } }
+            if let Some(ch) = node.get("childFrames").and_then(|v| v.as_array()) { for c in ch { collect_ids(c, ids); } }
+        }
+        collect_ids(&tree["frameTree"], &mut fids);
+        let escaped = text_hint.replace('\\', "\\\\").replace('\'', "\\'");
+        let search_js = format!("!!(document.body && document.body.innerText.includes('{}'))", escaped);
+        for fid in &fids {
+            let world = self.cdp.send_to(&self.page_session_id, "Page.createIsolatedWorld",
+                Some(json!({"frameId": fid, "worldName": "neobrowser_auto_frame", "grantUniveralAccess": true}))).await;
+            let ctx = match world { Ok(w) => match w["executionContextId"].as_u64() { Some(id) => id, None => continue }, Err(_) => continue };
+            let result = self.cdp.send_to(&self.page_session_id, "Runtime.evaluate",
+                Some(json!({"expression": search_js, "contextId": ctx, "returnByValue": true}))).await;
+            if let Ok(r) = result { if r["result"]["value"].as_bool() == Some(true) {
+                eprintln!("[ENGINE] auto_frame: text '{}' found in frame {}", text_hint, fid);
+                return self.switch_frame(fid).await;
+            }}
+        }
+        Err(format!("Text '{}' not found in any frame", text_hint).into())
+    }
+
+    pub async fn eval_in_active_frame(&self, expression: &str) -> Result<String, Box<dyn std::error::Error>> {
+        if let Some(ref fsid) = self.active_frame_session_id {
+            let result = self.cdp.send_to(fsid, "Runtime.evaluate",
+                Some(json!({"expression": expression, "returnByValue": true, "awaitPromise": true}))).await?;
+            if let Some(exc) = result.get("exceptionDetails") {
+                return Err(exc.get("text").and_then(|t| t.as_str()).unwrap_or("JS exception in frame").to_string().into());
+            }
+            return match &result["result"]["value"] { Value::String(s) => Ok(s.clone()), Value::Null => Ok(String::new()), other => Ok(other.to_string()) };
+        }
+        if let Some(ref fid) = self.active_frame_id {
+            let world = self.cdp.send_to(&self.page_session_id, "Page.createIsolatedWorld",
+                Some(json!({"frameId": fid, "worldName": "neobrowser_frame_eval", "grantUniveralAccess": true}))).await?;
+            let ctx = world["executionContextId"].as_u64().ok_or("No executionContextId for frame")?;
+            let result = self.cdp.send_to(&self.page_session_id, "Runtime.evaluate",
+                Some(json!({"expression": expression, "contextId": ctx, "returnByValue": true, "awaitPromise": true}))).await?;
+            if let Some(exc) = result.get("exceptionDetails") {
+                return Err(exc.get("text").and_then(|t| t.as_str()).unwrap_or("JS exception in frame").to_string().into());
+            }
+            return match &result["result"]["value"] { Value::String(s) => Ok(s.clone()), Value::Null => Ok(String::new()), other => Ok(other.to_string()) };
+        }
+        // No frame active — eval directly on the page (avoids recursion with eval_string)
+        let result = self.cdp.send_to(&self.page_session_id, "Runtime.evaluate",
+            Some(json!({"expression": expression, "returnByValue": true, "awaitPromise": true}))).await?;
+        if let Some(exc) = result.get("exceptionDetails") {
+            return Err(exc.get("text").and_then(|t| t.as_str()).unwrap_or("JS exception").to_string().into());
+        }
+        match &result["result"]["value"] { Value::String(s) => Ok(s.clone()), Value::Null => Ok(String::new()), other => Ok(other.to_string()) }
+    }
+
+    pub fn active_frame_info(&self) -> Value {
+        json!({
+            "frame_id": self.active_frame_id.as_deref().unwrap_or("none"),
+            "has_oop_session": self.active_frame_session_id.is_some(),
+            "mode": if self.active_frame_session_id.is_some() { "oop" } else if self.active_frame_id.is_some() { "same-process" } else { "main" }
+        })
     }
 
     // ─── Tabs / Pages ───
@@ -2110,6 +2429,9 @@ impl Session {
         self.target_id = new_target_id;
         self.page_session_id = session_id;
         self.last_url = target["url"].as_str().unwrap_or("").to_string();
+        // Reset frame context when switching tabs
+        self.active_frame_session_id = None;
+        self.active_frame_id = None;
 
         eprintln!("[ENGINE] Switched to tab {index}: {}", self.last_url);
         Ok(())
@@ -2479,44 +2801,236 @@ impl Session {
 
     // ─── Network Intelligence (CDP-level) ───
 
-    /// Start CDP-level network capture (captures headers, status, timing).
-    pub async fn start_cdp_network(&self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Start CDP-level network capture via Network.enable events.
+    /// Captures ALL requests including cross-origin iframes and survives navigation.
+    pub async fn start_cdp_network_capture(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Clear previous entries
+        {
+            let mut entries = self.cdp_network_entries.lock().await;
+            entries.clear();
+        }
+
+        // Enable Network domain
         self.cdp.send_to(&self.page_session_id, "Network.enable", None).await?;
-        // Store captured requests in JS
-        self.eval_string(r#"
-            window.__neo_cdp_net = [];
-            window.__neo_cdp_responses = {};
-        "#).await?;
-        eprintln!("[ENGINE] CDP network capture started");
+
+        // Mark as active
+        self.cdp_network_active.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Listen for Network.requestWillBeSent — captures method, url, headers, postData
+        let entries_clone = self.cdp_network_entries.clone();
+        let active_clone = self.cdp_network_active.clone();
+        self.cdp.on("Network.requestWillBeSent", Arc::new(move |params| {
+            if !active_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let request = &params["request"];
+            let entry = CdpNetworkEntry {
+                request_id: params["requestId"].as_str().unwrap_or("").to_string(),
+                method: request["method"].as_str().unwrap_or("GET").to_string(),
+                url: request["url"].as_str().unwrap_or("").to_string(),
+                request_headers: request["headers"].clone(),
+                post_data: request["postData"].as_str().map(|s| s.to_string()),
+                resource_type: params["type"].as_str().unwrap_or("Other").to_string(),
+                timestamp: params["timestamp"].as_f64().unwrap_or(0.0),
+                response_status: None,
+                response_headers: None,
+                response_mime: None,
+                frame_id: params["frameId"].as_str().unwrap_or("").to_string(),
+            };
+            let entries = entries_clone.clone();
+            tokio::spawn(async move {
+                entries.lock().await.push(entry);
+            });
+        })).await;
+
+        // Listen for Network.responseReceived — captures status, headers, mimeType
+        let entries_clone2 = self.cdp_network_entries.clone();
+        let active_clone2 = self.cdp_network_active.clone();
+        self.cdp.on("Network.responseReceived", Arc::new(move |params| {
+            if !active_clone2.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let request_id = params["requestId"].as_str().unwrap_or("").to_string();
+            let response = &params["response"];
+            let status = response["status"].as_i64();
+            let headers = Some(response["headers"].clone());
+            let mime = response["mimeType"].as_str().map(|s| s.to_string());
+            let entries = entries_clone2.clone();
+            tokio::spawn(async move {
+                let mut entries = entries.lock().await;
+                // Find the matching request entry and update it with response data
+                for entry in entries.iter_mut().rev() {
+                    if entry.request_id == request_id {
+                        entry.response_status = status;
+                        entry.response_headers = headers;
+                        entry.response_mime = mime;
+                        break;
+                    }
+                }
+            });
+        })).await;
+
+        eprintln!("[ENGINE] CDP network capture started (survives navigation, captures iframes)");
         Ok(())
     }
 
-    /// Get response body for a request ID.
+    /// Read CDP-captured network entries. Drains the buffer.
+    /// Optionally filter by URL pattern (simple substring match).
+    pub async fn read_cdp_network(&self, url_filter: Option<&str>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        let mut entries = self.cdp_network_entries.lock().await;
+        let drained: Vec<CdpNetworkEntry> = entries.drain(..).collect();
+        drop(entries);
+
+        let results: Vec<Value> = drained.iter()
+            .filter(|e| {
+                match url_filter {
+                    Some(pat) => e.url.contains(pat),
+                    None => true,
+                }
+            })
+            .map(|e| e.to_json())
+            .collect();
+
+        Ok(results)
+    }
+
+    /// Get response body for a request ID via CDP.
     pub async fn get_response_body(&self, request_id: &str) -> Result<String, Box<dyn std::error::Error>> {
         let result = self.cdp.send_to(
             &self.page_session_id,
             "Network.getResponseBody",
-            Some(serde_json::json!({"requestId": request_id})),
+            Some(json!({"requestId": request_id})),
         ).await?;
         let body = result["body"].as_str().unwrap_or("").to_string();
         Ok(body)
     }
 
-    /// Intercept and modify requests matching a URL pattern.
-    pub async fn intercept_requests(&self, url_pattern: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// Stop CDP network capture and disable Network domain.
+    pub async fn stop_cdp_network_capture(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.cdp_network_active.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.cdp.send_to(&self.page_session_id, "Network.disable", None).await?;
+        eprintln!("[ENGINE] CDP network capture stopped");
+        Ok(())
+    }
+
+    /// Intercept requests matching a URL pattern and respond with custom data.
+    /// Uses Fetch.enable + Fetch.requestPaused -> Fetch.fulfillRequest.
+    pub async fn intercept_requests(
+        &self,
+        url_pattern: &str,
+        response_body: &str,
+        status_code: Option<u16>,
+        content_type: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Store the rule
+        {
+            let mut rules = self.intercept_rules.lock().await;
+            rules.push(InterceptRule {
+                url_pattern: url_pattern.to_string(),
+                response_body: response_body.to_string(),
+                status_code: status_code.unwrap_or(200),
+                content_type: content_type.unwrap_or("application/json").to_string(),
+            });
+        }
+
+        // Enable Fetch domain with the pattern
         self.cdp.send_to(
             &self.page_session_id,
             "Fetch.enable",
-            Some(serde_json::json!({
+            Some(json!({
                 "patterns": [{"urlPattern": url_pattern}]
             })),
         ).await?;
+
+        // Listen for Fetch.requestPaused and fulfill with our custom response
+        let rules_clone = self.intercept_rules.clone();
+        let cdp_tx = self.cdp.clone_tx();
+        let id_counter = self.cdp.shared_id_counter();
+        let session_id = self.page_session_id.clone();
+        self.cdp.on("Fetch.requestPaused", Arc::new(move |params| {
+            let request_id = params["requestId"].as_str().unwrap_or("").to_string();
+            let request_url = params["request"]["url"].as_str().unwrap_or("").to_string();
+            let rules = rules_clone.clone();
+            let cdp_tx = cdp_tx.clone();
+            let id_counter = id_counter.clone();
+            let session_id = session_id.clone();
+            tokio::spawn(async move {
+                let rules = rules.lock().await;
+                // Find matching rule
+                let matched = rules.iter().find(|r| {
+                    // Simple glob: * matches anything
+                    let pat = &r.url_pattern;
+                    if pat.contains('*') {
+                        let parts: Vec<&str> = pat.split('*').collect();
+                        let mut pos = 0usize;
+                        for part in &parts {
+                            if part.is_empty() { continue; }
+                            match request_url[pos..].find(part) {
+                                Some(idx) => pos += idx + part.len(),
+                                None => return false,
+                            }
+                        }
+                        true
+                    } else {
+                        request_url.contains(pat)
+                    }
+                });
+
+                let cmd_id = id_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                if let Some(rule) = matched {
+                    // Encode body as base64 for Fetch.fulfillRequest
+                    use base64::Engine;
+                    let body_b64 = base64::engine::general_purpose::STANDARD.encode(&rule.response_body);
+                    let fulfill = json!({
+                        "id": cmd_id,
+                        "method": "Fetch.fulfillRequest",
+                        "sessionId": session_id,
+                        "params": {
+                            "requestId": request_id,
+                            "responseCode": rule.status_code,
+                            "responseHeaders": [
+                                {"name": "Content-Type", "value": rule.content_type},
+                                {"name": "Access-Control-Allow-Origin", "value": "*"},
+                            ],
+                            "body": body_b64,
+                        }
+                    });
+                    let _ = cdp_tx.send(fulfill.to_string());
+                    eprintln!("[ENGINE] Intercepted & fulfilled: {request_url}");
+                } else {
+                    // Continue the request unmodified
+                    let cont = json!({
+                        "id": cmd_id,
+                        "method": "Fetch.continueRequest",
+                        "sessionId": session_id,
+                        "params": {
+                            "requestId": request_id,
+                        }
+                    });
+                    let _ = cdp_tx.send(cont.to_string());
+                }
+            });
+        })).await;
+
         eprintln!("[ENGINE] Request interception enabled for: {url_pattern}");
         Ok(())
     }
 
-    /// Capture full request/response via JS (more reliable than CDP events for simple cases).
-    pub async fn start_full_network_capture(&self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Clear all intercept rules and disable Fetch domain.
+    pub async fn clear_intercepts(&self) -> Result<(), Box<dyn std::error::Error>> {
+        {
+            let mut rules = self.intercept_rules.lock().await;
+            rules.clear();
+        }
+        self.cdp.send_to(&self.page_session_id, "Fetch.disable", None).await?;
+        eprintln!("[ENGINE] Request interception cleared");
+        Ok(())
+    }
+
+    /// Capture full request/response via JS monkeypatch (original approach).
+    /// Works for same-origin requests only. Gets wiped on navigation.
+    pub async fn start_js_network_capture(&self) -> Result<(), Box<dyn std::error::Error>> {
         self.eval_string(r#"
             window.__neo_full_net = [];
             const origFetch = window.__origFetch || window.fetch;
@@ -2531,11 +3045,10 @@ impl Session {
                     const r = await origFetch.apply(this, args);
                     entry.status = r.status;
                     entry.resHeaders = Object.fromEntries(r.headers.entries());
-                    // Clone response to read body without consuming
                     const clone = r.clone();
                     try {
                         const text = await clone.text();
-                        entry.body = text.substring(0, 4096);  // Cap at 4KB
+                        entry.body = text.substring(0, 4096);
                     } catch(e) {}
                     window.__neo_full_net.push(entry);
                     return r;
@@ -2568,12 +3081,17 @@ impl Session {
             };
             'ok'
         "#).await?;
-        eprintln!("[ENGINE] Full network capture started (headers + bodies)");
+        eprintln!("[ENGINE] JS network capture started (monkeypatch)");
         Ok(())
     }
 
-    /// Read captured network data with bodies.
-    pub async fn read_full_network(&self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    /// Alias: start network capture (defaults to JS mode for backward compat).
+    pub async fn start_full_network_capture(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.start_js_network_capture().await
+    }
+
+    /// Read JS-captured network data with bodies.
+    pub async fn read_js_network(&self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         let result = self.eval_string(r#"
             (() => {
                 const d = window.__neo_full_net || [];
@@ -2585,28 +3103,58 @@ impl Session {
         Ok(reqs)
     }
 
+    /// Alias: read network data (defaults to JS mode for backward compat).
+    pub async fn read_full_network(&self) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        self.read_js_network().await
+    }
+
     /// Export captured network data as simplified HAR.
-    pub async fn export_har(&self) -> Result<Value, Box<dyn std::error::Error>> {
-        let requests = self.read_full_network().await?;
+    /// Reads from whichever capture mode has data (prefers CDP, falls back to JS).
+    pub async fn export_har(&self, source: Option<&str>) -> Result<Value, Box<dyn std::error::Error>> {
+        let requests = match source.unwrap_or("auto") {
+            "cdp" => {
+                self.read_cdp_network(None).await?
+            }
+            "js" => {
+                self.read_js_network().await?
+            }
+            _ => {
+                // auto: try CDP first, fall back to JS
+                let cdp_reqs = self.read_cdp_network(None).await?;
+                if cdp_reqs.is_empty() {
+                    self.read_js_network().await?
+                } else {
+                    cdp_reqs
+                }
+            }
+        };
+
         let entries: Vec<Value> = requests.iter().map(|r| {
-            serde_json::json!({
-                "startedDateTime": r["ts"],
+            // Handle both CDP format and JS format
+            let method = r["method"].as_str().unwrap_or("GET");
+            let url = r["url"].as_str().unwrap_or("");
+            let status = r["status"].as_i64().unwrap_or(0);
+            json!({
+                "startedDateTime": r.get("timestamp").or(r.get("ts")).unwrap_or(&Value::Null),
                 "request": {
-                    "method": r["method"],
-                    "url": r["url"],
-                    "headers": r["reqHeaders"],
+                    "method": method,
+                    "url": url,
+                    "headers": r.get("requestHeaders").or(r.get("reqHeaders")).unwrap_or(&Value::Null),
+                    "postData": r.get("postData").or(r.get("reqBody")).unwrap_or(&Value::Null),
                 },
                 "response": {
-                    "status": r["status"],
-                    "headers": r["resHeaders"],
+                    "status": status,
+                    "headers": r.get("responseHeaders").or(r.get("resHeaders")).unwrap_or(&Value::Null),
                     "content": {
-                        "text": r["body"],
+                        "text": r.get("body").unwrap_or(&Value::Null),
+                        "mimeType": r.get("mimeType").unwrap_or(&Value::Null),
                     }
-                }
+                },
+                "frameId": r.get("frameId").unwrap_or(&Value::Null),
             })
         }).collect();
 
-        Ok(serde_json::json!({
+        Ok(json!({
             "log": {
                 "version": "1.2",
                 "entries": entries,
@@ -2953,6 +3501,997 @@ impl Session {
         let b64 = result["data"].as_str().unwrap_or("").to_string();
         Ok(b64)
     }
+
+    // ─── Form Analysis ───
+
+    /// Analyze all forms on the page, including Vue/React virtual forms.
+    /// Returns structured JSON with fields, types, validation, selects, hidden fields.
+    pub async fn analyze_forms(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let js = r#"
+(() => {
+  try {
+    const results = [];
+
+    function getLabel(el) {
+      try {
+        if (el.id) {
+          const lbl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+          if (lbl) return lbl.textContent.trim();
+        }
+        const parent = el.closest('label');
+        if (parent) {
+          const clone = parent.cloneNode(true);
+          clone.querySelectorAll('input,select,textarea,button').forEach(c => c.remove());
+          const txt = clone.textContent.trim();
+          if (txt) return txt;
+        }
+        if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+        if (el.getAttribute('aria-labelledby')) {
+          const ref = document.getElementById(el.getAttribute('aria-labelledby'));
+          if (ref) return ref.textContent.trim();
+        }
+        const prev = el.previousElementSibling;
+        if (prev && (prev.tagName === 'LABEL' || prev.tagName === 'SPAN'))
+          return prev.textContent.trim();
+        return el.getAttribute('placeholder') || '';
+      } catch(e) { return ''; }
+    }
+
+    function isRequired(el) {
+      try {
+        if (el.required || el.hasAttribute('required')) return true;
+        if (el.getAttribute('aria-required') === 'true') return true;
+        const vv = el.getAttribute('v-validate') || el.getAttribute('data-vv-rules') || '';
+        if (vv.includes('required')) return true;
+        const lbl = getLabel(el);
+        if (lbl && /\*/.test(lbl)) return true;
+        if (el.className && /required/i.test(el.className)) return true;
+        const wrapper = el.closest('.required, .is-required, [class*="required"]');
+        if (wrapper) return true;
+        return false;
+      } catch(e) { return false; }
+    }
+
+    function buildSelector(el) {
+      try {
+        if (el.id) return '#' + CSS.escape(el.id);
+        if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
+        const parent = el.parentElement;
+        if (!parent) return el.tagName.toLowerCase();
+        const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+        const idx = siblings.indexOf(el) + 1;
+        return el.tagName.toLowerCase() + ':nth-of-type(' + idx + ')';
+      } catch(e) { return el.tagName ? el.tagName.toLowerCase() : 'unknown'; }
+    }
+
+    function fieldInfo(el) {
+      try {
+        const tag = el.tagName.toLowerCase();
+        const type = el.getAttribute('type') || tag;
+        const info = {
+          tag: tag,
+          name: el.name || el.getAttribute('data-vv-name') || el.id || null,
+          type: type,
+          required: isRequired(el),
+          label: getLabel(el),
+          placeholder: el.getAttribute('placeholder') || null,
+          value: (type === 'password') ? (el.value ? '***' : '') : (el.value || null),
+          pattern: el.getAttribute('pattern') || null,
+          minlength: el.getAttribute('minlength') ? +el.getAttribute('minlength') : null,
+          maxlength: el.getAttribute('maxlength') ? +el.getAttribute('maxlength') : null,
+          min: el.getAttribute('min') || null,
+          max: el.getAttribute('max') || null,
+          autocomplete: el.getAttribute('autocomplete') || null,
+          disabled: el.disabled || false,
+          readonly: el.readOnly || false,
+          hidden: (type === 'hidden' || el.offsetParent === null),
+          vue_model: el.getAttribute('v-model') || null,
+          css_selector: buildSelector(el),
+        };
+        if (tag === 'select') {
+          info.options = Array.from(el.options).map(o => ({
+            value: o.value,
+            label: o.textContent.trim(),
+            selected: o.selected
+          }));
+        }
+        return info;
+      } catch(e) { return { error: e.message }; }
+    }
+
+    function findSubmit(container) {
+      try {
+        const btn = container.querySelector('button[type="submit"], input[type="submit"]');
+        if (btn) return btn.textContent.trim() || btn.value || 'Submit';
+        const buttons = container.querySelectorAll('button, [role="button"], input[type="button"]');
+        if (buttons.length > 0) {
+          const last = buttons[buttons.length - 1];
+          return last.textContent.trim() || last.value || 'Submit';
+        }
+        return null;
+      } catch(e) { return null; }
+    }
+
+    // 1. Standard <form> elements
+    const forms = document.querySelectorAll('form');
+    const formElements = new Set();
+    forms.forEach((form, idx) => {
+      try {
+        const inputs = form.querySelectorAll('input, select, textarea');
+        inputs.forEach(el => formElements.add(el));
+        const fields = [];
+        const hiddenFields = [];
+        inputs.forEach(el => {
+          const info = fieldInfo(el);
+          if (info.type === 'hidden' || info.hidden) {
+            hiddenFields.push(info);
+          } else {
+            fields.push(info);
+          }
+        });
+        results.push({
+          form_index: idx,
+          source: 'form_tag',
+          action: form.action || null,
+          method: (form.method || 'get').toUpperCase(),
+          id: form.id || null,
+          name: form.getAttribute('name') || null,
+          css_selector: buildSelector(form),
+          fields: fields,
+          hidden_fields: hiddenFields,
+          submit_button: findSubmit(form),
+          field_count: fields.length,
+        });
+      } catch(e) { results.push({ form_index: idx, error: e.message }); }
+    });
+
+    // 2. Detect orphan inputs (not inside any <form>)
+    const allInputs = document.querySelectorAll('input, select, textarea');
+    const orphans = Array.from(allInputs).filter(el => !formElements.has(el) && el.offsetParent !== null);
+    if (orphans.length > 0) {
+      const groups = new Map();
+      orphans.forEach(el => {
+        let container = el.closest('fieldset, [class*="form"], [class*="Form"], [data-form], section, .modal, .dialog, [role="form"]');
+        if (!container) container = el.parentElement;
+        const key = buildSelector(container);
+        if (!groups.has(key)) groups.set(key, { container, elements: [] });
+        groups.get(key).elements.push(el);
+      });
+
+      let vIdx = 0;
+      groups.forEach(({ container, elements }, key) => {
+        try {
+          const fields = [];
+          const hiddenFields = [];
+          elements.forEach(el => {
+            const info = fieldInfo(el);
+            if (info.type === 'hidden') {
+              hiddenFields.push(info);
+            } else {
+              fields.push(info);
+            }
+          });
+          if (fields.length >= 2) {
+            results.push({
+              form_index: forms.length + vIdx,
+              source: 'virtual_form',
+              container_selector: key,
+              fields: fields,
+              hidden_fields: hiddenFields,
+              submit_button: findSubmit(container),
+              field_count: fields.length,
+            });
+            vIdx++;
+          }
+        } catch(e) {}
+      });
+    }
+
+    // 3. Detect Vue/React form patterns via v-model / data-vv-name
+    const vueInputs = document.querySelectorAll('[v-model], [data-vv-name], [v-bind\\:value]');
+    const extraVue = Array.from(vueInputs).filter(el => !formElements.has(el));
+    if (extraVue.length > 0) {
+      const fields = extraVue.map(el => fieldInfo(el));
+      const visible = fields.filter(f => !f.hidden);
+      if (visible.length > 0) {
+        results.push({
+          form_index: results.length,
+          source: 'vue_virtual',
+          framework: 'vue',
+          fields: visible,
+          hidden_fields: fields.filter(f => f.hidden),
+          field_count: visible.length,
+        });
+      }
+    }
+
+    return JSON.stringify({
+      total_forms: results.length,
+      forms: results,
+      url: location.href,
+    });
+  } catch(e) {
+    return JSON.stringify({ error: e.message, url: location.href });
+  }
+})()
+"#;
+        let result = self.eval_string(js).await?;
+        eprintln!("[ENGINE] analyze_forms: {} bytes", result.len());
+        Ok(result)
+    }
+
+    /// Analyze JS bundles on the page for API endpoint patterns.
+    /// Looks at inline scripts, fetch/XHR patterns, and framework stores.
+    pub async fn analyze_api_from_js(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let js = r#"
+(async () => {
+  try {
+    const endpoints = [];
+    const seen = new Set();
+
+    const apiPatterns = [
+      /["'`](\/api\/[^"'`\s]{3,})["'`]/g,
+      /["'`](https?:\/\/[^"'`\s]*\/api\/[^"'`\s]{3,})["'`]/g,
+      /["'`](\/v[0-9]+\/[^"'`\s]{3,})["'`]/g,
+      /["'`](\/graphql[^"'`\s]*)["'`]/g,
+      /["'`](\/rest\/[^"'`\s]{3,})["'`]/g,
+      /["'`](\/ws\/[^"'`\s]{3,})["'`]/g,
+      /fetch\s*\(\s*["'`]([^"'`\s]+)["'`]/g,
+      /axios\s*\.\s*(?:get|post|put|patch|delete)\s*\(\s*["'`]([^"'`\s]+)["'`]/g,
+      /\.(?:get|post|put|patch|delete)\s*\(\s*["'`](\/[^"'`\s]+)["'`]/g,
+      /XMLHttpRequest[\s\S]{0,200}\.open\s*\(\s*["'`]\w+["'`]\s*,\s*["'`]([^"'`\s]+)["'`]/g,
+      /baseURL\s*[:=]\s*["'`]([^"'`\s]+)["'`]/g,
+    ];
+
+    function extractFromText(text, source) {
+      try {
+        for (const pattern of apiPatterns) {
+          pattern.lastIndex = 0;
+          let match;
+          while ((match = pattern.exec(text)) !== null) {
+            const url = match[1];
+            if (!seen.has(url) && url.length < 500 && !/\.(js|css|png|jpg|gif|svg|ico|woff|ttf|eot)($|\?)/.test(url)) {
+              seen.add(url);
+              let method = 'GET';
+              const ctx = text.substring(Math.max(0, match.index - 100), match.index + match[0].length);
+              if (/\.post\s*\(|method:\s*["']POST/i.test(ctx)) method = 'POST';
+              else if (/\.put\s*\(|method:\s*["']PUT/i.test(ctx)) method = 'PUT';
+              else if (/\.patch\s*\(|method:\s*["']PATCH/i.test(ctx)) method = 'PATCH';
+              else if (/\.delete\s*\(|method:\s*["']DELETE/i.test(ctx)) method = 'DELETE';
+              endpoints.push({ url, method, source });
+            }
+          }
+        }
+      } catch(e) {}
+    }
+
+    // 1. Inline scripts
+    const scripts = document.querySelectorAll('script:not([src])');
+    scripts.forEach((s, i) => {
+      try {
+        if (s.textContent.length > 0 && s.textContent.length < 500000) {
+          extractFromText(s.textContent, 'inline_script_' + i);
+        }
+      } catch(e) {}
+    });
+
+    // 2. Window globals (SSR frameworks)
+    const globalChecks = [
+      '__NUXT__', '__NEXT_DATA__', '__APP_CONFIG__', '__VUE_SSR_CONTEXT__',
+      '__INITIAL_STATE__', '__PRELOADED_STATE__',
+    ];
+    for (const g of globalChecks) {
+      try {
+        const obj = window[g];
+        if (obj) {
+          const text = JSON.stringify(obj).substring(0, 200000);
+          extractFromText(text, 'global_' + g);
+        }
+      } catch(e) {}
+    }
+
+    // 3. Vuex/Pinia stores
+    try {
+      if (window.__vue_app__ || document.querySelector('[data-v-app]')) {
+        const app = window.__vue_app__ || document.querySelector('[data-v-app]')?.__vue_app__;
+        if (app && app.config && app.config.globalProperties) {
+          const store = app.config.globalProperties.$store;
+          if (store && store.state) {
+            extractFromText(JSON.stringify(store.state).substring(0, 200000), 'vuex_store');
+          }
+          const pinia = app.config.globalProperties.$pinia;
+          if (pinia && pinia.state && pinia.state.value) {
+            extractFromText(JSON.stringify(pinia.state.value).substring(0, 200000), 'pinia_store');
+          }
+        }
+      }
+    } catch(e) {}
+
+    // 4. External JS bundles (main/app/bundle only, max 3)
+    const extScripts = Array.from(document.querySelectorAll('script[src]'))
+      .filter(s => s.src && (s.src.includes('/chunk') || s.src.includes('/app') || s.src.includes('/main') || s.src.includes('/bundle') || s.src.includes('/vendor')))
+      .slice(0, 3);
+
+    for (const s of extScripts) {
+      try {
+        const resp = await fetch(s.src);
+        if (resp.ok) {
+          const text = await resp.text();
+          if (text.length < 1000000) {
+            extractFromText(text.substring(0, 500000), 'bundle_' + new URL(s.src).pathname.split('/').pop());
+          }
+        }
+      } catch(e) {}
+    }
+
+    // 5. Meta tags with API hints
+    const metas = document.querySelectorAll('meta[name*="api"], meta[name*="endpoint"], meta[property*="api"]');
+    metas.forEach(m => {
+      try {
+        const val = m.content;
+        if (val && val.startsWith('http')) {
+          if (!seen.has(val)) {
+            seen.add(val);
+            endpoints.push({ url: val, method: 'GET', source: 'meta_tag' });
+          }
+        }
+      } catch(e) {}
+    });
+
+    // 6. Manifest link
+    try {
+      const link = document.querySelector('link[rel="manifest"]');
+      if (link && link.href) {
+        endpoints.push({ url: link.href, method: 'GET', source: 'manifest' });
+      }
+    } catch(e) {}
+
+    return JSON.stringify({
+      total_endpoints: endpoints.length,
+      endpoints: endpoints,
+      url: location.href,
+    });
+  } catch(e) {
+    return JSON.stringify({ error: e.message, url: location.href });
+  }
+})()
+"#;
+        let result = self.eval_string(js).await?;
+        eprintln!("[ENGINE] analyze_api_from_js: {} bytes", result.len());
+        Ok(result)
+    }
+
+    // ─── Workflow Mapper ───
+
+    /// Start recording a new workflow.
+    pub fn workflow_start(&mut self, name: &str) {
+        let url = self.last_url.clone();
+        self.active_workflow = Some(Workflow::new(name, &url));
+        eprintln!("[WORKFLOW] Started: {name} at {url}");
+    }
+
+    /// Rich observation of the current page — captures everything an LLM needs
+    /// to understand the page: interactive elements, form fields with full metadata,
+    /// Vue/React component state, visible labels, errors, and dropdown options.
+    pub async fn workflow_observe(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        let t0 = Instant::now();
+
+        // 1. Run the rich observation JS in the browser
+        let js = Self::WORKFLOW_OBSERVE_JS;
+        let raw = self.eval_string(js).await?;
+        let observation: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({"raw": raw}));
+
+        // 2. Also get analyze_forms output for deep field metadata
+        let forms_raw = self.analyze_forms().await.unwrap_or_default();
+        let forms: Value = serde_json::from_str(&forms_raw).unwrap_or(json!(null));
+
+        // 3. Combine into a single rich observation
+        let url = self.last_url.clone();
+        let result = json!({
+            "url": url,
+            "page": observation,
+            "forms": forms,
+            "elapsed_ms": t0.elapsed().as_millis() as u64,
+        });
+
+        // 4. If a workflow is active, record this as an observe step
+        if let Some(ref mut wf) = self.active_workflow {
+            let step_num = wf.steps.len() + 1;
+            let now = chrono_now();
+            wf.steps.push(WorkflowStep {
+                step_number: step_num,
+                action: "observe".into(),
+                target: None,
+                value: None,
+                url: url.clone(),
+                observation: result.clone(),
+                network_requests: Vec::new(),
+                timestamp: now,
+                notes: String::new(),
+            });
+
+            // Accumulate field_map from forms
+            if let Some(forms_arr) = forms.get("forms").and_then(|f| f.as_array()) {
+                for form in forms_arr {
+                    if let Some(fields) = form.get("fields").and_then(|f| f.as_array()) {
+                        for field in fields {
+                            let label = field["label"].as_str().unwrap_or("");
+                            let selector = field["css_selector"].as_str().unwrap_or("");
+                            let name = field["name"].as_str().unwrap_or("");
+                            if !label.is_empty() && !selector.is_empty() {
+                                wf.field_map[label] = json!({
+                                    "selector": selector,
+                                    "name": name,
+                                    "type": field["type"],
+                                    "required": field["required"],
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Accumulate vue_model_schema from observation
+            if let Some(vue) = observation.get("vue_state") {
+                if vue != &json!(null) {
+                    wf.vue_model_schema = vue.clone();
+                }
+            }
+        }
+
+        eprintln!("[WORKFLOW] observe: {}ms", t0.elapsed().as_millis());
+        Ok(result)
+    }
+
+    /// Perform an action during workflow recording: click, type, select, navigate.
+    /// Captures network requests and page state changes.
+    pub async fn workflow_act(
+        &mut self,
+        action: &str,
+        target: &str,
+        value: &str,
+        notes: &str,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        let t0 = Instant::now();
+        let url_before = self.last_url.clone();
+
+        // Start capturing network requests for this action
+        let was_capturing = self.cdp_network_active.load(std::sync::atomic::Ordering::SeqCst);
+        if !was_capturing {
+            self.start_cdp_network_capture().await?;
+        } else {
+            // Drain existing entries so we only get new ones
+            let mut entries = self.cdp_network_entries.lock().await;
+            entries.clear();
+        }
+
+        // Perform the action
+        let action_result = match action {
+            "click" => {
+                let (found, strategy) = self.click_reliable(target).await?;
+                if found {
+                    json!({"ok": true, "strategy": strategy})
+                } else {
+                    json!({"ok": false, "error": format!("target not found: {target}")})
+                }
+            }
+            "type" => {
+                self.focus(target).await?;
+                self.type_text(value).await?;
+                json!({"ok": true, "typed": value.len()})
+            }
+            "select" => {
+                let found = self.select_option(target, value).await?;
+                json!({"ok": found})
+            }
+            "navigate" | "goto" => {
+                self.goto(target).await?;
+                json!({"ok": true, "url": self.last_url.clone()})
+            }
+            "press" => {
+                self.press(value).await?;
+                json!({"ok": true, "key": value})
+            }
+            "scroll" => {
+                let dir = if value.is_empty() { "down" } else { value };
+                self.scroll(dir).await?;
+                json!({"ok": true, "direction": dir})
+            }
+            "hover" => {
+                let found = self.hover(target).await?;
+                json!({"ok": found})
+            }
+            "wait" => {
+                let secs: f64 = value.parse().unwrap_or(1.0);
+                self.wait(secs).await;
+                json!({"ok": true, "waited_secs": secs})
+            }
+            _ => {
+                return Err(format!("Unknown workflow action: {action}").into());
+            }
+        };
+
+        // Small delay for network requests to complete
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // Read network requests made during the action
+        let network = self.read_cdp_network(None).await.unwrap_or_default();
+
+        // Filter to only API-relevant requests (skip static assets)
+        let api_requests: Vec<Value> = network.into_iter()
+            .filter(|r| {
+                let url = r["url"].as_str().unwrap_or("");
+                let rtype = r["resourceType"].as_str().unwrap_or("");
+                // Keep XHR/Fetch/Document, skip Image/Stylesheet/Script/Font
+                matches!(rtype, "XHR" | "Fetch" | "Document" | "Other")
+                    || url.contains("/api/")
+                    || url.contains("/graphql")
+                    || (r["method"].as_str().unwrap_or("") != "GET"
+                        && !url.ends_with(".js")
+                        && !url.ends_with(".css"))
+            })
+            .collect();
+
+        // Stop capturing if we started it
+        if !was_capturing {
+            self.stop_cdp_network_capture().await?;
+        }
+
+        // Capture page state after the action
+        let page_after = self.see_page().await.unwrap_or_default();
+        let url_after = self.last_url.clone();
+
+        let result = json!({
+            "action": action,
+            "target": target,
+            "value": value,
+            "action_result": action_result,
+            "url_before": url_before,
+            "url_after": url_after,
+            "url_changed": url_before != url_after,
+            "network_requests": api_requests,
+            "page_after_summary": page_after.chars().take(2000).collect::<String>(),
+            "elapsed_ms": t0.elapsed().as_millis() as u64,
+        });
+
+        // Record in active workflow
+        if let Some(ref mut wf) = self.active_workflow {
+            let step_num = wf.steps.len() + 1;
+            let now = chrono_now();
+
+            // Accumulate discovered API endpoints
+            for req in &api_requests {
+                let endpoint = json!({
+                    "url": req["url"],
+                    "method": req["method"],
+                    "status": req["status"],
+                    "postData": req["postData"],
+                    "discovered_at_step": step_num,
+                });
+                // Deduplicate by URL+method
+                let key = format!("{}:{}", req["method"].as_str().unwrap_or(""), req["url"].as_str().unwrap_or(""));
+                if !wf.api_endpoints_discovered.iter().any(|e| {
+                    format!("{}:{}", e["method"].as_str().unwrap_or(""), e["url"].as_str().unwrap_or("")) == key
+                }) {
+                    wf.api_endpoints_discovered.push(endpoint);
+                }
+            }
+
+            wf.steps.push(WorkflowStep {
+                step_number: step_num,
+                action: action.into(),
+                target: Some(target.into()),
+                value: if value.is_empty() { None } else { Some(value.into()) },
+                url: url_after,
+                observation: json!({"page_summary": page_after.chars().take(2000).collect::<String>()}),
+                network_requests: api_requests,
+                timestamp: now,
+                notes: notes.into(),
+            });
+        }
+
+        eprintln!("[WORKFLOW] act {action} {target}: {}ms", t0.elapsed().as_millis());
+        Ok(result)
+    }
+
+    /// Save the current workflow as a reusable playbook.
+    pub fn workflow_save(&self, path: &str) -> Result<String, Box<dyn std::error::Error>> {
+        let wf = self.active_workflow.as_ref()
+            .ok_or("No active workflow")?;
+
+        let json = serde_json::to_string_pretty(wf)?;
+        std::fs::write(path, &json)?;
+
+        eprintln!("[WORKFLOW] Saved {} steps to {path}", wf.steps.len());
+        Ok(format!("Saved workflow '{}' ({} steps, {} API endpoints, {} field mappings) to {path}",
+            wf.name, wf.steps.len(), wf.api_endpoints_discovered.len(),
+            wf.field_map.as_object().map(|m| m.len()).unwrap_or(0)))
+    }
+
+    /// Stop recording the current workflow.
+    pub fn workflow_stop(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        let wf = self.active_workflow.take()
+            .ok_or("No active workflow")?;
+
+        let summary = json!({
+            "name": wf.name,
+            "steps": wf.steps.len(),
+            "api_endpoints": wf.api_endpoints_discovered.len(),
+            "field_mappings": wf.field_map.as_object().map(|m| m.len()).unwrap_or(0),
+            "start_url": wf.start_url,
+        });
+
+        eprintln!("[WORKFLOW] Stopped: {}", wf.name);
+        Ok(summary)
+    }
+
+    /// Load a saved workflow and replay it step by step.
+    /// At each step, verifies the page matches expected state.
+    /// Returns results per step and pauses on mismatches.
+    pub async fn workflow_replay(&mut self, path: &str) -> Result<Value, Box<dyn std::error::Error>> {
+        let json_str = std::fs::read_to_string(path)?;
+        let wf: Workflow = serde_json::from_str(&json_str)?;
+        let t0 = Instant::now();
+
+        eprintln!("[WORKFLOW] Replaying '{}' ({} steps)", wf.name, wf.steps.len());
+
+        let mut results = Vec::new();
+        let mut stopped_at: Option<usize> = None;
+
+        for step in &wf.steps {
+            // Skip observe-only steps during replay
+            if step.action == "observe" {
+                results.push(json!({
+                    "step": step.step_number,
+                    "action": "observe",
+                    "outcome": "skipped",
+                }));
+                continue;
+            }
+
+            let target = step.target.as_deref().unwrap_or("");
+            let value = step.value.as_deref().unwrap_or("");
+
+            // Verify we're on the expected URL (allow hash/query differences)
+            let current_url = self.last_url.clone();
+            let url_base = |u: &str| -> String {
+                u.split('?').next().unwrap_or(u).split('#').next().unwrap_or(u).to_string()
+            };
+            let url_match = url_base(&current_url) == url_base(&step.url)
+                || step.action == "navigate" || step.action == "goto";
+
+            if !url_match {
+                results.push(json!({
+                    "step": step.step_number,
+                    "action": step.action,
+                    "outcome": "url_mismatch",
+                    "expected_url": step.url,
+                    "actual_url": current_url,
+                }));
+                stopped_at = Some(step.step_number);
+                break;
+            }
+
+            // Execute the action
+            let action_result = match step.action.as_str() {
+                "click" => {
+                    let (found, strategy) = self.click_reliable(target).await?;
+                    if found {
+                        json!({"ok": true, "strategy": strategy})
+                    } else {
+                        // Try using field_map selector as fallback
+                        if let Some(selector) = wf.field_map.get(target)
+                            .and_then(|f| f["selector"].as_str()) {
+                            let found2 = self.click_css(selector).await.unwrap_or(false);
+                            json!({"ok": found2, "fallback": "field_map_selector"})
+                        } else {
+                            json!({"ok": false, "error": "target not found"})
+                        }
+                    }
+                }
+                "type" => {
+                    // Try to focus via field_map first
+                    let focused = if let Some(selector) = wf.field_map.get(target)
+                        .and_then(|f| f["selector"].as_str()) {
+                        self.click_css(selector).await.unwrap_or(false)
+                    } else {
+                        self.focus(target).await.unwrap_or(false)
+                    };
+                    if focused {
+                        self.type_text(value).await?;
+                        json!({"ok": true})
+                    } else {
+                        json!({"ok": false, "error": "could not focus target"})
+                    }
+                }
+                "select" => {
+                    let found = self.select_option(target, value).await?;
+                    json!({"ok": found})
+                }
+                "navigate" | "goto" => {
+                    self.goto(target).await?;
+                    json!({"ok": true})
+                }
+                "press" => {
+                    self.press(value).await?;
+                    json!({"ok": true})
+                }
+                "scroll" => {
+                    let dir = if value.is_empty() { "down" } else { value };
+                    self.scroll(dir).await?;
+                    json!({"ok": true})
+                }
+                "wait" => {
+                    let secs: f64 = value.parse().unwrap_or(1.0);
+                    self.wait(secs).await;
+                    json!({"ok": true})
+                }
+                _ => json!({"ok": false, "error": format!("unknown action: {}", step.action)}),
+            };
+
+            let ok = action_result["ok"].as_bool().unwrap_or(false);
+            results.push(json!({
+                "step": step.step_number,
+                "action": step.action,
+                "target": target,
+                "outcome": if ok { "ok" } else { "failed" },
+                "detail": action_result,
+            }));
+
+            if !ok {
+                stopped_at = Some(step.step_number);
+                break;
+            }
+
+            // Small delay between steps
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+
+        let completed = results.iter().filter(|r| r["outcome"] == "ok").count();
+        let total = wf.steps.iter().filter(|s| s.action != "observe").count();
+
+        Ok(json!({
+            "workflow": wf.name,
+            "status": if stopped_at.is_some() { "paused" } else { "completed" },
+            "stopped_at_step": stopped_at,
+            "steps_completed": completed,
+            "steps_total": total,
+            "total_ms": t0.elapsed().as_millis() as u64,
+            "results": results,
+            "field_map": wf.field_map,
+        }))
+    }
+
+    /// The rich observation JS — extracts everything about the current page.
+    const WORKFLOW_OBSERVE_JS: &'static str = r#"
+(() => {
+  try {
+    const result = {};
+
+    // 1. Page metadata
+    result.url = location.href;
+    result.title = document.title;
+
+    // 2. All visible text labels ordered top to bottom
+    const labels = [];
+    document.querySelectorAll('label, h1, h2, h3, h4, h5, h6, legend, .label, [class*="label"], th').forEach(el => {
+      if (el.offsetParent === null && el.tagName !== 'BODY') return;
+      const text = el.textContent.trim().substring(0, 120);
+      if (text && text.length > 1) {
+        const rect = el.getBoundingClientRect();
+        labels.push({ text, y: Math.round(rect.top), tag: el.tagName.toLowerCase() });
+      }
+    });
+    labels.sort((a, b) => a.y - b.y);
+    result.labels = labels;
+
+    // 3. All interactive elements with full metadata
+    const interactive = [];
+    document.querySelectorAll('input, textarea, select, button, [role="button"], [role="combobox"], [role="listbox"], [contenteditable="true"]').forEach(el => {
+      if (el.offsetParent === null && el.getAttribute('type') !== 'hidden') return;
+      const tag = el.tagName.toLowerCase();
+      const type = el.getAttribute('type') || tag;
+      const rect = el.getBoundingClientRect();
+
+      const info = {
+        tag,
+        type,
+        name: el.name || el.id || null,
+        value: (type === 'password') ? (el.value ? '***' : '') : (el.value || ''),
+        placeholder: el.getAttribute('placeholder') || null,
+        'aria-label': el.getAttribute('aria-label') || null,
+        required: el.required || el.hasAttribute('required') || el.getAttribute('aria-required') === 'true',
+        disabled: el.disabled || false,
+        readonly: el.readOnly || false,
+        css_selector: buildSelector(el),
+        y: Math.round(rect.top),
+        x: Math.round(rect.left),
+      };
+
+      // Label discovery
+      if (el.id) {
+        const lbl = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (lbl) info.label = lbl.textContent.trim();
+      }
+      if (!info.label) {
+        const parent = el.closest('label');
+        if (parent) {
+          const clone = parent.cloneNode(true);
+          clone.querySelectorAll('input,select,textarea,button').forEach(c => c.remove());
+          info.label = clone.textContent.trim();
+        }
+      }
+      if (!info.label && el.getAttribute('aria-label')) {
+        info.label = el.getAttribute('aria-label');
+      }
+
+      // Select options
+      if (tag === 'select') {
+        info.options = Array.from(el.options).map(o => ({
+          value: o.value, text: o.textContent.trim(), selected: o.selected
+        }));
+        info.selectedText = el.selectedIndex >= 0 ? el.options[el.selectedIndex].textContent.trim() : '';
+      }
+
+      // Validation attributes
+      if (el.getAttribute('pattern')) info.pattern = el.getAttribute('pattern');
+      if (el.getAttribute('minlength')) info.minlength = +el.getAttribute('minlength');
+      if (el.getAttribute('maxlength')) info.maxlength = +el.getAttribute('maxlength');
+      if (el.getAttribute('min')) info.min = el.getAttribute('min');
+      if (el.getAttribute('max')) info.max = el.getAttribute('max');
+
+      // Vue-specific
+      if (el.getAttribute('v-model')) info.vue_model = el.getAttribute('v-model');
+      if (el.getAttribute('data-vv-name')) info.vee_validate_name = el.getAttribute('data-vv-name');
+      const vvRules = el.getAttribute('v-validate') || el.getAttribute('data-vv-rules');
+      if (vvRules) info.validation_rules = vvRules;
+
+      // Button text
+      if (tag === 'button' || el.getAttribute('role') === 'button') {
+        info.text = el.textContent.trim().substring(0, 80);
+      }
+
+      interactive.push(info);
+    });
+    interactive.sort((a, b) => a.y - b.y);
+    result.interactive = interactive;
+
+    // 4. Open dropdown/listbox options
+    const openDropdowns = [];
+    document.querySelectorAll('[role="listbox"], .dropdown-menu.show, .v-select__content, .vs__dropdown-menu, [class*="dropdown"][class*="open"], [class*="dropdown"][class*="show"], ul.show, [aria-expanded="true"] + ul, [aria-expanded="true"] + div').forEach(el => {
+      if (el.offsetParent === null) return;
+      const items = [];
+      el.querySelectorAll('[role="option"], li, .dropdown-item, .v-list-item').forEach(item => {
+        const text = item.textContent.trim().substring(0, 100);
+        if (text) items.push({
+          text,
+          value: item.getAttribute('data-value') || item.getAttribute('value') || text,
+          selected: item.classList.contains('selected') || item.getAttribute('aria-selected') === 'true',
+        });
+      });
+      if (items.length > 0) {
+        openDropdowns.push({ selector: buildSelector(el), items });
+      }
+    });
+    result.open_dropdowns = openDropdowns;
+
+    // 5. Error messages
+    const errors = [];
+    document.querySelectorAll('.error, .is-invalid, .has-error, [class*="error-message"], [class*="field-error"], [role="alert"], .invalid-feedback, .text-danger, .v-messages__message').forEach(el => {
+      if (el.offsetParent === null) return;
+      const text = el.textContent.trim();
+      if (text && text.length > 1 && text.length < 200) {
+        errors.push(text);
+      }
+    });
+    result.errors = [...new Set(errors)];
+
+    // 6. Vue/React component state extraction
+    const vueState = extractVueState();
+    if (vueState) result.vue_state = vueState;
+
+    return JSON.stringify(result);
+  } catch(e) {
+    return JSON.stringify({ error: e.message });
+  }
+
+  function buildSelector(el) {
+    try {
+      if (el.id) return '#' + CSS.escape(el.id);
+      if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
+      const parent = el.parentElement;
+      if (!parent) return el.tagName.toLowerCase();
+      const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+      const idx = siblings.indexOf(el) + 1;
+      return el.tagName.toLowerCase() + ':nth-of-type(' + idx + ')';
+    } catch(e) { return 'unknown'; }
+  }
+
+  function extractVueState() {
+    try {
+      // Strategy 1: Vue 3 app instance (Pinia/Vuex)
+      const appEl = document.querySelector('[data-v-app]') || document.getElementById('app') || document.getElementById('__nuxt');
+      if (appEl && appEl.__vue_app__) {
+        const app = appEl.__vue_app__;
+        const state = {};
+
+        // Vuex store
+        try {
+          const store = app.config.globalProperties.$store;
+          if (store && store.state) {
+            state.vuex = JSON.parse(JSON.stringify(store.state));
+          }
+        } catch(e) {}
+
+        // Pinia stores
+        try {
+          const pinia = app.config.globalProperties.$pinia;
+          if (pinia && pinia.state && pinia.state.value) {
+            state.pinia = JSON.parse(JSON.stringify(pinia.state.value));
+          }
+        } catch(e) {}
+
+        if (Object.keys(state).length > 0) return state;
+      }
+
+      // Strategy 2: Vue 2 — walk from inputs up to find form component data
+      const inputs = document.querySelectorAll('input, select, textarea');
+      const formModels = {};
+      let found = false;
+      for (const input of inputs) {
+        try {
+          let el = input;
+          // Walk up to find __vue__ instance with form data
+          for (let i = 0; i < 15 && el; i++) {
+            const vm = el.__vue__;
+            if (!vm) { el = el.parentElement; continue; }
+
+            // Check for ValidationProvider (vee-validate)
+            if (vm.$options && vm.$options.name === 'ValidationProvider') {
+              const field = vm.fieldName || vm.name || ('field_' + i);
+              formModels['vee_' + field] = {
+                name: field,
+                rules: vm.rules,
+                value: vm.value,
+                errors: vm.errors,
+                valid: vm.flags && vm.flags.valid,
+              };
+              found = true;
+            }
+
+            // Check for component with localForm / form / formData
+            const data = vm.$data;
+            if (data) {
+              for (const key of ['localForm', 'form', 'formData', 'model', 'formModel']) {
+                if (data[key] && typeof data[key] === 'object') {
+                  formModels[vm.$options.name || 'component'] = JSON.parse(JSON.stringify(data[key]));
+                  found = true;
+                  break;
+                }
+              }
+            }
+
+            if (found) break;
+            el = el.parentElement;
+          }
+        } catch(e) {}
+      }
+
+      if (found) return formModels;
+
+      // Strategy 3: React fiber state
+      try {
+        const reactRoot = document.getElementById('root') || document.getElementById('__next');
+        if (reactRoot && reactRoot._reactRootContainer) {
+          return { react: 'detected_but_state_extraction_not_implemented' };
+        }
+      } catch(e) {}
+
+      return null;
+    } catch(e) { return null; }
+  }
+})()
+"#;
 
     // ─── Lifecycle ───
 

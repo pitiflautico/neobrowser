@@ -231,7 +231,7 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["click", "type", "focus", "press", "scroll", "back", "forward", "reload", "eval", "hover", "select", "fill_form", "send_message", "drag", "upload", "clipboard_read", "clipboard_write", "mouse", "highlight", "get_info", "screenshot_annotated"],
+                        "enum": ["click", "type", "focus", "press", "scroll", "back", "forward", "reload", "eval", "hover", "select", "fill_form", "send_message", "drag", "upload", "clipboard_read", "clipboard_write", "mouse", "highlight", "get_info", "screenshot_annotated", "analyze_forms", "analyze_api", "list_frames", "switch_frame", "auto_frame", "main_frame"],
                         "description": "Action type"
                     },
                     "target": {
@@ -463,19 +463,28 @@ fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "browser_network".into(),
-            description: "Advanced network intelligence: capture full requests+responses with headers and bodies, export as HAR.".into(),
+            description: "Advanced network intelligence: capture requests+responses via JS monkeypatch or CDP events. CDP mode survives navigation and captures cross-origin iframe requests.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "op": {
                         "type": "string",
-                        "enum": ["start", "read", "har", "intercept"],
-                        "description": "start: begin full capture (headers+bodies) | read: get captured data | har: export as HAR | intercept: set URL pattern to intercept"
+                        "enum": ["start", "read", "stop", "body", "har", "intercept", "clear_intercepts"],
+                        "description": "start: begin capture | read: get captured data | stop: stop CDP capture | body: get response body by requestId | har: export as HAR | intercept: mock URL responses | clear_intercepts: remove all intercept rules"
                     },
-                    "url_pattern": {
+                    "capture_mode": {
                         "type": "string",
-                        "description": "URL pattern for intercept (e.g. '*api*')"
-                    }
+                        "enum": ["js", "cdp", "both"],
+                        "description": "js: monkeypatch (same-origin only, captures bodies) | cdp: CDP events (all requests incl. cross-origin iframes, survives navigation) | both: run simultaneously. Default: js"
+                    },
+                    "url_pattern": { "type": "string", "description": "URL pattern for intercept (e.g. '*api*')" },
+                    "url_filter": { "type": "string", "description": "URL substring filter for read (CDP mode)" },
+                    "response_body": { "type": "string", "description": "Custom response body for intercept" },
+                    "status_code": { "type": "integer", "description": "HTTP status for intercept (default: 200)" },
+                    "content_type": { "type": "string", "description": "Content-Type for intercept (default: application/json)" },
+                    "request_id": { "type": "string", "description": "Request ID for body retrieval (from CDP capture)" },
+                    "source": { "type": "string", "enum": ["cdp", "js", "auto"], "description": "Data source for HAR export (default: auto)" },
+                    "file": { "type": "string", "description": "File path to save HAR export" }
                 },
                 "required": ["op"]
             }),
@@ -530,6 +539,45 @@ fn tool_definitions() -> Vec<ToolDef> {
                     "id": {
                         "type": "string",
                         "description": "Context ID (for create/destroy)"
+                    }
+                },
+                "required": ["op"]
+            }),
+        },
+        ToolDef {
+            name: "browser_learn".into(),
+            description: "Workflow mapper: explore a web app step by step, document every interaction, and save a reusable playbook. Use 'start' to begin recording, 'observe' for rich page analysis (forms, Vue state, dropdowns), 'act' to perform actions while recording, 'save' to export playbook, 'replay' to re-execute a saved playbook.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["start", "observe", "act", "save", "stop", "replay"],
+                        "description": "start: begin workflow recording | observe: rich page analysis (forms, Vue/React state, errors, dropdowns) | act: perform action + record | save: export playbook to file | stop: end recording | replay: execute saved playbook"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "For start: workflow name (e.g. 'sesame-add-employee')"
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "For act: action type (click, type, select, navigate, press, scroll, hover, wait)"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "For act: target text/label/selector"
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "For act: typed text, selected value, key name, wait seconds"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "For act: human-readable notes about what this step does"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "For save/replay: file path for the playbook JSON"
                     }
                 },
                 "required": ["op"]
@@ -594,6 +642,7 @@ async fn handle_tool(state: &mut McpState, name: &str, args: &Value) -> Result<V
         "browser_trace" => handle_trace(state, args).await,
         "browser_pipeline" => handle_pipeline(state, args).await,
         "browser_pool" => handle_pool(state, args).await,
+        "browser_learn" => handle_learn(state, args).await,
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -1042,6 +1091,50 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
             let selector = args["selector"].as_str().or_else(|| args["target"].as_str()).unwrap_or("");
             session.highlight(selector).await.map_err(|e| format!("{e}"))?;
             ("succeeded", "highlighted".to_string())
+        }
+        "analyze_forms" => {
+            let result = session.analyze_forms().await.map_err(|e| format!("{e}"))?;
+            ("succeeded", result)
+        }
+        "analyze_api" => {
+            let result = session.analyze_api_from_js().await.map_err(|e| format!("{e}"))?;
+            ("succeeded", result)
+        }
+        "list_frames" => {
+            let frames = session.list_frames().await.map_err(|e| format!("{e}"))?;
+            let count = frames.as_array().map(|a| a.len()).unwrap_or(0);
+            let fi = session.active_frame_info();
+            let summary = format!("frames: {} total, active: {} ({})", count, fi["frame_id"].as_str().unwrap_or("main"), fi["mode"].as_str().unwrap_or("main"));
+            ("succeeded", format!("{}\n{}", summary, serde_json::to_string_pretty(&frames).unwrap_or_default()))
+        }
+        "switch_frame" => {
+            let ft = args["target"].as_str().unwrap_or("");
+            if ft.is_empty() { return Err("Missing 'target' for switch_frame (index or URL pattern)".into()); }
+            let frames = session.list_frames().await.map_err(|e| format!("{e}"))?;
+            let arr = frames.as_array().ok_or("No frames")?;
+            if let Ok(idx) = ft.parse::<usize>() {
+                if idx >= arr.len() { return Err(format!("Frame index {} out of range (have {})", idx, arr.len())); }
+                let fid = arr[idx]["id"].as_str().ok_or("No frame id")?;
+                let msg = session.switch_frame(fid).await.map_err(|e| format!("{e}"))?;
+                ("succeeded", msg)
+            } else {
+                let pat = ft.to_lowercase();
+                let found = arr.iter().find(|f| f["url"].as_str().map(|u| u.to_lowercase().contains(&pat)).unwrap_or(false) || f["name"].as_str().map(|n| n.to_lowercase().contains(&pat)).unwrap_or(false));
+                match found {
+                    Some(frame) => { let fid = frame["id"].as_str().ok_or("No frame id")?; let msg = session.switch_frame(fid).await.map_err(|e| format!("{e}"))?; ("succeeded", msg) }
+                    None => ("not_found", format!("No frame matching '{}' found", ft))
+                }
+            }
+        }
+        "auto_frame" => {
+            let text = args["target"].as_str().or_else(|| args["text"].as_str()).unwrap_or("");
+            if text.is_empty() { return Err("Missing text hint for auto_frame".into()); }
+            let msg = session.auto_switch_frame(text).await.map_err(|e| format!("{e}"))?;
+            ("succeeded", msg)
+        }
+        "main_frame" => {
+            let msg = session.switch_to_main_frame().await.map_err(|e| format!("{e}"))?;
+            ("succeeded", msg)
         }
         _ => return Err(format!("Unknown action kind: {kind}")),
     };
@@ -2027,26 +2120,103 @@ async fn handle_network(state: &mut McpState, args: &Value) -> Result<Value, Str
     let op = args["op"].as_str().ok_or("Missing 'op'")?;
     let session = state.ensure_session().await?;
     let session = state.session.as_mut().unwrap();
+    let capture_mode = args["capture_mode"].as_str().unwrap_or("js");
 
     match op {
         "start" => {
-            session.start_full_network_capture().await.map_err(|e| format!("{e}"))?;
-            Ok(serde_json::json!({
-                "ok": true,
-                "effect": "Full network capture started (headers + bodies)",
-            }))
+            match capture_mode {
+                "cdp" => {
+                    session.start_cdp_network_capture().await.map_err(|e| format!("{e}"))?;
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "capture_mode": "cdp",
+                        "effect": "CDP network capture started (survives navigation, captures cross-origin iframes)",
+                    }))
+                }
+                "both" => {
+                    session.start_cdp_network_capture().await.map_err(|e| format!("{e}"))?;
+                    session.start_js_network_capture().await.map_err(|e| format!("{e}"))?;
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "capture_mode": "both",
+                        "effect": "Both CDP and JS network capture started",
+                    }))
+                }
+                _ => {
+                    // "js" or default — backward compatible
+                    session.start_full_network_capture().await.map_err(|e| format!("{e}"))?;
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "capture_mode": "js",
+                        "effect": "JS network capture started (headers + bodies via monkeypatch)",
+                    }))
+                }
+            }
         }
         "read" => {
-            let data = session.read_full_network().await.map_err(|e| format!("{e}"))?;
+            let url_filter = args["url_filter"].as_str();
+            match capture_mode {
+                "cdp" => {
+                    let data = session.read_cdp_network(url_filter).await.map_err(|e| format!("{e}"))?;
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "capture_mode": "cdp",
+                        "requests": data,
+                        "count": data.len(),
+                    }))
+                }
+                "both" => {
+                    let cdp_data = session.read_cdp_network(url_filter).await.map_err(|e| format!("{e}"))?;
+                    let js_data = session.read_js_network().await.map_err(|e| format!("{e}"))?;
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "capture_mode": "both",
+                        "cdp_requests": cdp_data,
+                        "cdp_count": cdp_data.len(),
+                        "js_requests": js_data,
+                        "js_count": js_data.len(),
+                    }))
+                }
+                _ => {
+                    let data = session.read_full_network().await.map_err(|e| format!("{e}"))?;
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "capture_mode": "js",
+                        "requests": data,
+                        "count": data.len(),
+                    }))
+                }
+            }
+        }
+        "stop" => {
+            match capture_mode {
+                "cdp" | "both" => {
+                    session.stop_cdp_network_capture().await.map_err(|e| format!("{e}"))?;
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "effect": "CDP network capture stopped",
+                    }))
+                }
+                _ => {
+                    Ok(serde_json::json!({
+                        "ok": true,
+                        "effect": "JS capture has no explicit stop (wiped on navigation)",
+                    }))
+                }
+            }
+        }
+        "body" => {
+            let request_id = args["request_id"].as_str().ok_or("Missing 'request_id'")?;
+            let body = session.get_response_body(request_id).await.map_err(|e| format!("{e}"))?;
             Ok(serde_json::json!({
                 "ok": true,
-                "requests": data,
-                "count": data.len(),
+                "requestId": request_id,
+                "body": body,
             }))
         }
         "har" => {
-            let har = session.export_har().await.map_err(|e| format!("{e}"))?;
-            // Optionally save to file
+            let source = args["source"].as_str();
+            let har = session.export_har(source).await.map_err(|e| format!("{e}"))?;
             if let Some(file) = args["file"].as_str() {
                 let json = serde_json::to_string_pretty(&har).map_err(|e| format!("{e}"))?;
                 std::fs::write(file, json).map_err(|e| format!("{e}"))?;
@@ -2059,10 +2229,21 @@ async fn handle_network(state: &mut McpState, args: &Value) -> Result<Value, Str
         }
         "intercept" => {
             let pattern = args["url_pattern"].as_str().ok_or("Missing 'url_pattern'")?;
-            session.intercept_requests(pattern).await.map_err(|e| format!("{e}"))?;
+            let body = args["response_body"].as_str().unwrap_or("{}");
+            let status = args["status_code"].as_u64().map(|s| s as u16);
+            let content_type = args["content_type"].as_str();
+            session.intercept_requests(pattern, body, status, content_type)
+                .await.map_err(|e| format!("{e}"))?;
             Ok(serde_json::json!({
                 "ok": true,
                 "effect": format!("Intercepting requests matching: {pattern}"),
+            }))
+        }
+        "clear_intercepts" => {
+            session.clear_intercepts().await.map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": "All intercept rules cleared",
             }))
         }
         _ => Err(format!("Unknown network op: {op}")),
@@ -2287,6 +2468,77 @@ fn substitute_vars(template: &str, vars: &std::collections::HashMap<String, Stri
         result = result.replace(&format!("{{{{{}}}}}", k), v);
     }
     result
+}
+
+// ─── browser_learn handler (workflow mapper) ───
+
+async fn handle_learn(state: &mut McpState, args: &Value) -> Result<Value, String> {
+    let op = args["op"].as_str().ok_or("Missing 'op'")?;
+
+    match op {
+        "start" => {
+            let name = args["name"].as_str().unwrap_or("unnamed");
+            let session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+
+            if session.active_workflow.is_some() {
+                return Err("A workflow is already being recorded. Use 'stop' or 'save' first.".into());
+            }
+
+            session.workflow_start(name);
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": format!("Started workflow recording: '{name}'"),
+                "hint": "Use op='observe' to analyze the page, op='act' to perform actions, op='save' to export the playbook.",
+            }))
+        }
+        "observe" => {
+            let _session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+
+            let result = session.workflow_observe().await.map_err(|e| format!("{e}"))?;
+            Ok(result)
+        }
+        "act" => {
+            let action = args["action"].as_str().ok_or("Missing 'action' (click, type, select, navigate, press, scroll, hover, wait)")?;
+            let target = args["target"].as_str().unwrap_or("");
+            let value = args["value"].as_str().unwrap_or("");
+            let notes = args["notes"].as_str().unwrap_or("");
+
+            let _session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+
+            let result = session.workflow_act(action, target, value, notes).await.map_err(|e| format!("{e}"))?;
+            Ok(result)
+        }
+        "save" => {
+            let path = args["path"].as_str().ok_or("Missing 'path' — where to save the playbook JSON")?;
+            let session = state.session.as_ref().ok_or("No active session")?;
+
+            let msg = session.workflow_save(path).map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": msg,
+            }))
+        }
+        "stop" => {
+            let session = state.session.as_mut().ok_or("No active session")?;
+            let summary = session.workflow_stop().map_err(|e| format!("{e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "summary": summary,
+            }))
+        }
+        "replay" => {
+            let path = args["path"].as_str().ok_or("Missing 'path' — path to the playbook JSON")?;
+            let _session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+
+            let result = session.workflow_replay(path).await.map_err(|e| format!("{e}"))?;
+            Ok(result)
+        }
+        _ => Err(format!("Unknown learn op: {op}. Use: start, observe, act, save, stop, replay")),
+    }
 }
 
 // ─── browser_pool handler ───

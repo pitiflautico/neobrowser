@@ -29,7 +29,7 @@ pub struct CdpSession {
     tx: mpsc::UnboundedSender<String>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>>>,
     listeners: Arc<Mutex<HashMap<String, Vec<EventCallback>>>>,
-    next_id: AtomicU64,
+    next_id: Arc<AtomicU64>,
     alive: Arc<AtomicBool>,
     _recv_handle: JoinHandle<()>,
     _send_handle: JoinHandle<()>,
@@ -128,7 +128,7 @@ impl CdpSession {
             tx,
             pending,
             listeners,
-            next_id: AtomicU64::new(1),
+            next_id: Arc::new(AtomicU64::new(1)),
             alive,
             _recv_handle: recv_handle,
             _send_handle: send_handle,
@@ -223,7 +223,7 @@ impl CdpSession {
             tx,
             pending,
             listeners,
-            next_id: AtomicU64::new(1),
+            next_id: Arc::new(AtomicU64::new(1)),
             alive,
             _recv_handle: recv_handle,
             _send_handle: send_handle,
@@ -299,6 +299,19 @@ impl CdpSession {
 
         let result = tokio::time::timeout(std::time::Duration::from_secs(30), rx).await??;
         result.map_err(|e| e.into())
+    }
+
+    /// Clone the raw send channel for fire-and-forget CDP commands from callbacks.
+    /// Messages sent this way bypass response tracking -- use only for commands
+    /// where you don't need the response (e.g. Fetch.fulfillRequest).
+    pub fn clone_tx(&self) -> mpsc::UnboundedSender<String> {
+        self.tx.clone()
+    }
+
+    /// Get a shareable reference to the ID counter, for use in callbacks
+    /// that need to generate unique command IDs.
+    pub fn shared_id_counter(&self) -> Arc<AtomicU64> {
+        self.next_id.clone()
     }
 
     /// Subscribe to a CDP event.

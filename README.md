@@ -6,7 +6,7 @@
 **Rust browser engine for AI agents.** Raw CDP over WebSocket/Pipe — no Playwright, no chromedriver, no overhead.
 
 - **3.3x faster** than Chrome DevTools MCP, **7.9x less tokens** ([benchmark](#benchmark))
-- **22+ MCP tools** — navigate, click, type, extract, send messages, run pipelines
+- **30+ MCP tools** — navigate, click, type, extract, send messages, learn workflows, run pipelines
 - **Pipe CDP stealth** — `--remote-debugging-pipe` bypasses Cloudflare Turnstile (no TCP port)
 - **Polymorphic identity** — unique fingerprint per session (UA, GPU, screen, canvas, audio)
 - **Session persistence** — login once, cookies survive restarts via SQLite pre-persistence
@@ -122,10 +122,11 @@ Tested against [Chrome DevTools MCP](https://github.com/nichochar/chrome-devtool
 │                    MCP Server                        │
 │                (JSON-RPC / stdio)                    │
 ├─────────────────────────────────────────────────────┤
-│  13 Tools:                                           │
+│  14 Tools:                                           │
 │  Core:     open · observe · act · wait · tabs        │
 │  Auth:     auth · session · api                      │
-│  New:      state · network · trace · pipeline · pool │
+│  Intel:    state · network · trace · learn           │
+│  Auto:     pipeline · pool                           │
 ├─────────────────────────────────────────────────────┤
 │  Engine (raw CDP)  │  Stealth  │  Reliability        │
 │  ┌────────┐ ┌────────┐ ┌──────────┐ ┌───────────┐  │
@@ -134,7 +135,7 @@ Tested against [Chrome DevTools MCP](https://github.com/nichochar/chrome-devtool
 │  │html5ev │ │  / WS  │ │Canvas/GL │ │ fallback  │  │
 │  └────────┘ └────────┘ └──────────┘ └───────────┘  │
 ├─────────────────────────────────────────────────────┤
-│  see_page │ WOM │ Delta │ Vision │ Trace │ Runner   │
+│  see_page│WOM│Delta│Vision│Trace│Runner│Workflow  │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -142,8 +143,8 @@ Tested against [Chrome DevTools MCP](https://github.com/nichochar/chrome-devtool
 
 | File | Purpose |
 |---|---|
-| `engine.rs` | Chrome CDP session — launch, navigate, click, type, eval, frames, see_page, state export, network capture, reliability |
-| `mcp.rs` | MCP server — 13 tools, JSON-RPC loop, pipeline executor |
+| `engine.rs` | Chrome CDP session — launch, navigate, click, type, eval, frames, see_page, state export, network capture, form analysis, workflow learning, reliability |
+| `mcp.rs` | MCP server — 14 tools, JSON-RPC loop, pipeline executor, workflow mapper |
 | `stealth.rs` | Anti-detection: canvas noise, WebGL spoof, AudioContext, plugins, timezone, screen, iframe |
 | `trace.rs` | Per-action tracing with timing, outcomes, success rate stats |
 | `runner.rs` | Pipeline definitions: steps, retry, assertions, variables |
@@ -296,6 +297,73 @@ Variables: `{{var_name}}` substitution in target/value fields.
 {"op": "destroy_all"}
 ```
 Each context gets its own profile directory under `~/.neobrowser/pool/`.
+
+### v0.4.0 Tools
+
+#### browser_act — New actions
+
+**Frame support** — Interact with cross-origin iframes:
+```json
+{"kind": "list_frames"}
+{"kind": "switch_frame", "target": "1"}
+{"kind": "switch_frame", "target": "sesametime.com"}
+{"kind": "auto_frame", "target": "Crear empleado"}
+{"kind": "main_frame"}
+```
+- `list_frames` — list all frames with URLs, scores, and security origins
+- `switch_frame` — switch by index or URL/name pattern match
+- `auto_frame` — auto-detect which frame contains target text and switch to it
+- `main_frame` — switch back to top-level page
+
+All actions (click, type, eval, observe) work automatically inside the active frame. OOP (cross-origin) frames get a dedicated CDP session via `Target.attachToTarget`; same-process frames use `Page.createIsolatedWorld`.
+
+**Form analysis** — Understand forms before filling them:
+```json
+{"kind": "analyze_forms"}
+{"kind": "analyze_api"}
+```
+- `analyze_forms` — finds all forms (including Vue/React virtual forms), extracts fields with name, type, required, label, placeholder, value, validation rules, dropdown options. Detects `v-model`, `data-vv-name` (vee-validate), asterisk labels, `aria-required`.
+- `analyze_api` — scans inline/external JS bundles for API endpoint patterns (fetch, axios, XHR URLs), checks SSR globals (`__NUXT__`, `__NEXT_DATA__`), inspects Vuex/Pinia stores.
+
+#### browser_network — CDP capture mode
+
+```json
+{"op": "start", "capture_mode": "cdp"}
+{"op": "read", "capture_mode": "cdp", "url_filter": "api/v3"}
+{"op": "stop", "capture_mode": "cdp"}
+{"op": "body", "request_id": "33423.108"}
+{"op": "intercept", "url_pattern": "*api*", "response_body": "{\"ok\":true}", "status_code": 200}
+{"op": "clear_intercepts"}
+```
+
+Three capture modes:
+- `js` (default) — monkeypatch fetch/XHR, captures bodies, same-origin only
+- `cdp` — CDP Network events, survives navigation, captures cross-origin iframe requests
+- `both` — run simultaneously
+
+CDP mode enables `Network.enable` and listens for `requestWillBeSent`/`responseReceived`. Use `body` op with a `request_id` to get response bodies via `Network.getResponseBody`.
+
+Intercept uses `Fetch.enable` + `Fetch.requestPaused` to mock API responses with custom body/status.
+
+#### browser_learn — Workflow mapper
+
+Learn complex web app flows step by step, then replay them deterministically.
+
+```json
+{"op": "start", "name": "sesame_create_employee"}
+{"op": "observe"}
+{"op": "act", "action": "click", "target": "Crear empleado", "notes": "Opens creation modal"}
+{"op": "save", "path": "/tmp/sesame_flow.json"}
+{"op": "replay", "path": "/tmp/sesame_flow.json"}
+```
+
+- **start** — begin workflow mapping session
+- **observe** — rich observation: all labels, inputs, Vue/React state (ValidationProvider fields, form models), dropdown options, error messages. Appended to workflow log.
+- **act** — perform action with CDP network capture, log before/after state
+- **save** — export workflow as reusable JSON playbook with field map, API endpoints discovered, and Vue model schema
+- **replay** — replay saved workflow, verifying page state at each step before acting
+
+The workflow mapper solves the "guess and fail" problem: instead of trying to fill a form blindly, first explore with `observe`, document each interaction with `act`, then `save` the playbook. Future runs use `replay` for deterministic execution.
 
 ## Environment Variables
 
