@@ -640,6 +640,42 @@ impl Session {
             })),
         ).await.ok();
 
+        // Pre-inject cookie banner killer for all future navigations
+        self.cdp.send_to(
+            &self.page_session_id,
+            "Page.addScriptToEvaluateOnNewDocument",
+            Some(json!({"source": r#"
+                // Kill cookie consent banners before they render
+                document.cookie='cookieyes-consent=consentid:neo,consent:yes,action:yes,necessary:yes,analytics:yes,advertisement:yes,other:yes;path=/;max-age=31536000';
+                // Block CookieYes script from executing
+                const origCreate = document.createElement.bind(document);
+                document.createElement = function(tag) {
+                    const el = origCreate(tag);
+                    if (tag === 'script') {
+                        const origSet = el.__lookupSetter__('src') || Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src').set;
+                        Object.defineProperty(el, 'src', {
+                            set(v) { if (v && (v.includes('cookieyes') || v.includes('cookie-law'))) { return; } origSet.call(this, v); },
+                            get() { return this.getAttribute('src'); }
+                        });
+                    }
+                    return el;
+                };
+                // Observer to remove any cookie banners that slip through
+                new MutationObserver((muts) => {
+                    for (const m of muts) for (const n of m.addedNodes) {
+                        if (n.nodeType === 1) {
+                            const cl = n.className || '';
+                            if (typeof cl === 'string' && (cl.includes('cky') || cl.includes('cookie-consent') || cl.includes('cc-banner'))) {
+                                n.remove();
+                                document.body.style.overflow = '';
+                                document.documentElement.style.overflow = '';
+                            }
+                        }
+                    }
+                }).observe(document.documentElement, {childList: true, subtree: true});
+            "#})),
+        ).await.ok();
+
         eprintln!("[ENGINE] Stealth applied");
         Ok(())
     }
