@@ -1870,32 +1870,41 @@ impl Session {
     }
 
     pub async fn type_text(&self, text: &str) -> Result<(), Box<dyn std::error::Error>> {
-        for ch in text.chars() {
-            let s = ch.to_string();
-            self.cdp
-                .send_to(
-                    &self.page_session_id,
-                    "Input.dispatchKeyEvent",
-                    Some(json!({
-                        "type": "keyDown",
-                        "text": s,
-                        "key": s,
-                    })),
-                )
-                .await?;
-            self.cdp
-                .send_to(
-                    &self.page_session_id,
-                    "Input.dispatchKeyEvent",
-                    Some(json!({
-                        "type": "keyUp",
-                        "key": s,
-                    })),
-                )
-                .await?;
-            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
-        }
-        eprintln!("[ENGINE] typed {} chars", text.len());
+        // Clear existing value first
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchKeyEvent",
+            Some(json!({"type": "keyDown", "key": "a", "code": "KeyA", "modifiers": 2}))).await?; // Ctrl+A
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchKeyEvent",
+            Some(json!({"type": "keyUp", "key": "a", "code": "KeyA"}))).await?;
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchKeyEvent",
+            Some(json!({"type": "keyDown", "key": "Backspace", "code": "Backspace"}))).await?;
+        self.cdp.send_to(&self.page_session_id, "Input.dispatchKeyEvent",
+            Some(json!({"type": "keyUp", "key": "Backspace", "code": "Backspace"}))).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Use Input.insertText — this triggers InputEvent with inputType='insertText'
+        // which is what Vue v-model, React onChange, and Angular ngModel listen to.
+        // Much more reliable than individual keyDown/keyUp events.
+        self.cdp
+            .send_to(
+                &self.page_session_id,
+                "Input.insertText",
+                Some(json!({"text": text})),
+            )
+            .await?;
+
+        // Small delay then dispatch change event via JS for frameworks that need it
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        self.eval_string(&format!(
+            r#"(() => {{
+                const el = document.activeElement;
+                if (el) {{
+                    el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                }}
+            }})()"#
+        )).await.ok();
+
+        eprintln!("[ENGINE] typed {} chars (insertText)", text.len());
         Ok(())
     }
 
@@ -2143,10 +2152,7 @@ impl Session {
         for (target, value) in fields {
             let focused = self.focus(target).await?;
             if focused {
-                self.eval_string(
-                    "document.activeElement && (document.activeElement.value = '')",
-                )
-                .await?;
+                // type_text already clears with Ctrl+A + Backspace
                 self.type_text(value).await?;
                 results.push(format!(
                     "filled: {target} = {}",
