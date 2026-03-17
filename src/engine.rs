@@ -645,36 +645,39 @@ impl Session {
             &self.page_session_id,
             "Page.addScriptToEvaluateOnNewDocument",
             Some(json!({"source": r#"
-                // Kill cookie consent banners before they render
+                // Set cookie consent BEFORE CookieYes SDK loads
                 document.cookie='cookieyes-consent=consentid:neo,consent:yes,action:yes,necessary:yes,analytics:yes,advertisement:yes,other:yes;path=/;max-age=31536000';
-                // Block CookieYes script from executing
-                const origCreate = document.createElement.bind(document);
-                document.createElement = function(tag) {
-                    const el = origCreate(tag);
-                    if (tag === 'script') {
-                        const origSet = el.__lookupSetter__('src') || Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src').set;
-                        Object.defineProperty(el, 'src', {
-                            set(v) { if (v && (v.includes('cookieyes') || v.includes('cookie-law'))) { return; } origSet.call(this, v); },
-                            get() { return this.getAttribute('src'); }
-                        });
-                    }
-                    return el;
-                };
-                // Observer to remove any cookie banners that slip through
+                // MutationObserver: remove cookie banners as they appear
                 new MutationObserver((muts) => {
                     for (const m of muts) for (const n of m.addedNodes) {
                         if (n.nodeType === 1) {
-                            const cl = n.className || '';
-                            if (typeof cl === 'string' && (cl.includes('cky') || cl.includes('cookie-consent') || cl.includes('cc-banner'))) {
+                            const cl = (typeof n.className === 'string') ? n.className : '';
+                            const id = n.id || '';
+                            if (cl.includes('cky-') || cl.includes('cc-banner') || cl.includes('cookie-consent') ||
+                                id.includes('cky-') || n.getAttribute?.('data-cky-tag')) {
                                 n.remove();
-                                document.body.style.overflow = '';
-                                document.documentElement.style.overflow = '';
+                                document.body?.classList.remove('cky-modal-open');
+                                if (document.body) document.body.style.overflow = '';
+                                if (document.documentElement) document.documentElement.style.overflow = '';
                             }
                         }
                     }
                 }).observe(document.documentElement, {childList: true, subtree: true});
             "#})),
         ).await.ok();
+
+        // Block known cookie consent scripts at network level
+        self.cdp.send_to(&self.page_session_id, "Network.setBlockedURLs", Some(json!({
+            "urls": [
+                "*cookieyes.com*",
+                "*cookie-law*",
+                "*cookie-consent*",
+                "*cookiebot.com*",
+                "*onetrust.com*",
+                "*termly.io/api/v1/snippets*",
+                "*cdn.iubenda.com/cs*",
+            ]
+        }))).await.ok();
 
         eprintln!("[ENGINE] Stealth applied");
         Ok(())
