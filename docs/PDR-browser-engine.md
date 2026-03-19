@@ -1,232 +1,260 @@
-# PDR: NeoRender — Browser Engine for AI
+# PDR: NeoRender — Browser for AI
 
 ## Vision
 
-Un browser real construido a piezas de bajo nivel. Sin parte visual. Output = WOM (Web Object Model), no píxeles. Cada pieza es un módulo reemplazable.
+Un browser REAL sin capa gráfica. Hace todo lo que Chrome hace excepto renderizar píxeles. Output = WOM (mapa semántico para IA). La IA navega como un humano: va a webs, lee, hace click, rellena formularios, envía, lee la respuesta.
 
-## Validated (v0.5.0)
+No es scraping. No es bypass. Es un browser legítimo que habla con webs normalmente — solo que su usuario es una IA en vez de un humano.
 
-| Pieza | Implementación | Status |
-|-------|---------------|--------|
-| JS Engine | deno_core (V8) | ✅ ES modules, eval, event loop |
-| DOM | linkedom | ✅ parseHTML, outerHTML, querySelector |
-| TLS | rquest (BoringSSL Chrome131) | ✅ Pasa Amazon, LinkedIn, SO |
-| HTTP | rquest + cookie_store | ✅ Redirects, cookies auto |
-| Session | NeoSession | ✅ Persistent across navigations |
-| WOM | html5ever re-parse | ⚠️ Debería generarse desde linkedom directo |
+## Qué es un browser
 
-## Architecture Target
+| Capa | Chrome | NeoRender | Status |
+|------|--------|-----------|--------|
+| **Networking** | Chromium net stack | rquest (BoringSSL Chrome131) | ✅ |
+| **TLS** | BoringSSL | BoringSSL (misma lib) | ✅ |
+| **HTTP/2** | nghttp2 | rquest (hyper) | ✅ |
+| **Cookies** | Cookie jar + SQLite | rquest cookie_store + CookieJar | ✅ |
+| **DNS** | System resolver | System resolver (vía tokio) | ✅ |
+| **HTML Parser** | Blink HTML parser | linkedom (spec-compliant) | ✅ |
+| **DOM** | Blink DOM | linkedom DOM | ✅ |
+| **JavaScript** | V8 | V8 (misma engine, vía deno_core) | ✅ |
+| **ES Modules** | V8 module loader | deno_core module loader | ✅ |
+| **CSS Parser** | Blink CSS | ❌ No (no hay layout) | N/A |
+| **Layout** | Blink layout engine | ❌ No (no hay píxeles) | N/A |
+| **Rendering** | Skia/GPU | ❌ No (output = WOM) | N/A |
+| **Events** | Blink event system | linkedom events | ⚠️ Parcial |
+| **Forms** | HTML forms + submit | ❌ Falta | **TODO** |
+| **Navigation** | Blink navigation | goto() persistente | ✅ |
+| **Click** | Input → event dispatch | ❌ Falta | **TODO** |
+| **Type** | Input → event dispatch | ❌ Falta | **TODO** |
+| **Scroll** | Layout-based | N/A (no layout) | N/A |
+| **iframes** | Blink frame tree | ❌ Falta | **TODO** |
+| **Web Workers** | V8 isolates | ❌ Falta | **TODO** |
+| **Service Workers** | V8 + cache API | ❌ Falta | Bajo prio |
+| **localStorage** | LevelDB | SQLite | ✅ |
+| **sessionStorage** | Memory | Memory | ✅ |
+| **Fetch API** | Blink fetch | rquest + Sec-Fetch-* | ✅ |
+| **XMLHttpRequest** | Blink XHR | JS polyfill → fetch | ✅ |
+| **WebSocket** | Chromium WS | ❌ Stub | **TODO** |
+| **Crypto** | BoringSSL | SHA-256 nativo + stubs | ⚠️ Parcial |
+| **Canvas** | Skia | Stub (no-op) | N/A |
+| **Consent/GDPR** | User clicks | Auto-accept | **TODO** |
+
+## Lo que NO es
+
+- No es scraping (navega normalmente, ejecuta JS, respeta robots.txt)
+- No es bypass de seguridad (usa las mismas libs que Chrome)
+- No es headless Chrome (no usa Chrome — es un browser independiente)
+- No elude captchas (si hay captcha, pide ayuda al humano)
+
+## Arquitectura
 
 ```
-┌─────────────────────────────────────────────┐
-│              NeoSession                      │
-│  (persistent runtime, owns all modules)     │
-├─────────────┬───────────┬──────────────────┤
-│ net/        │ dom/      │ web/              │
-│ ┌─────────┐ │ ┌───────┐ │ ┌──────────────┐ │
-│ │ Client  │ │ │Linkedom│ │ │ Fetch Std    │ │
-│ │ (rquest)│ │ │ DOM   │ │ │ CORS, Origin │ │
-│ │ Chrome  │ │ │ Parser│ │ │ Sec-Fetch-*  │ │
-│ │ TLS     │ │ └───────┘ │ │ Referrer     │ │
-│ └─────────┘ │ ┌───────┐ │ └──────────────┘ │
-│ ┌─────────┐ │ │ WOM   │ │ ┌──────────────┐ │
-│ │ Cookie  │ │ │ Gen   │ │ │ Storage      │ │
-│ │ Store   │ │ │(dirct)│ │ │ localStorage │ │
-│ │ (auto)  │ │ └───────┘ │ │ sessionStore │ │
-│ └─────────┘ │           │ │ (SQLite)     │ │
-│ ┌─────────┐ │           │ └──────────────┘ │
-│ │ Session │ │           │ ┌──────────────┐ │
-│ │ Cache   │ │           │ │ Crypto       │ │
-│ │ /domain │ │           │ │ SubtleCrypto │ │
-│ └─────────┘ │           │ │ POW (native) │ │
-├─────────────┤           │ └──────────────┘ │
-│ js/         │           │ ┌──────────────┐ │
-│ ┌─────────┐ │           │ │ Observers    │ │
-│ │ V8      │ │           │ │ Mutation     │ │
-│ │ deno    │ │           │ │ Intersection │ │
-│ │ core    │ │           │ │ Resize       │ │
-│ └─────────┘ │           │ └──────────────┘ │
-│ ┌─────────┐ │           │ ┌──────────────┐ │
-│ │ Module  │ │           │ │ Events       │ │
-│ │ Loader  │ │           │ │ EventTarget  │ │
-│ │ (HTTP)  │ │           │ │ DOM Events   │ │
-│ └─────────┘ │           │ │ Custom       │ │
-│             │           │ └──────────────┘ │
-└─────────────┴───────────┴──────────────────┘
-         ↓ output
-    ┌──────────┐
-    │   WOM    │  Web Object Model
-    │ (actions │  - text, links, forms
-    │  + map)  │  - interactive elements
-    └──────────┘  - API endpoints discovered
+┌─────────────────────────────────────────────────┐
+│                 NeoSession                       │
+│     (persistent browser session for AI)          │
+├──────────┬──────────┬──────────┬────────────────┤
+│ net/     │ dom/     │ js/      │ interact/      │
+│          │          │          │                │
+│ rquest   │ linkedom │ V8      │ click(sel)     │
+│ Chrome   │ HTML     │ deno    │ type(sel,txt)  │
+│ TLS      │ parser   │ core    │ submit(form)   │
+│          │          │          │ select(opt)    │
+│ Fetch    │ DOM tree │ ES      │ check(box)     │
+│ Standard │ Events   │ Modules │ hover(sel)     │
+│ CORS     │ Forms    │ Timers  │ focus(sel)     │
+│ Cookies  │ WOM gen  │ Fetch   │                │
+│          │          │ Storage │                │
+├──────────┴──────────┴──────────┴────────────────┤
+│                    output/                       │
+│                                                  │
+│  WOM = { text, links, forms, buttons, inputs,   │
+│          headings, images, meta, tables }        │
+│                                                  │
+│  "AI-friendly page map — what a user sees,       │
+│   but structured for machine consumption"        │
+└──────────────────────────────────────────────────┘
 ```
 
-## Modules to Build
+## Completado
 
-### Phase 1: Networking (replace manual header hacks)
+### Phase 1: Networking ✅
+- `net/mod.rs`: BrowserNetwork con Fetch Standard
+- `net/headers.rs`: Sec-Fetch-Site/Mode/Dest
+- `net/referrer.rs`: 4 referrer policies
+- rquest Chrome131 TLS (BoringSSL)
+- Cookie store automático en redirects
 
-**`src/neorender/net/mod.rs`** — Fetch Standard implementation
+### Phase 2: WOM from linkedom ✅
+- `js/wom.js`: __wom_extract() — walk DOM in V8
+- Extrae text, links, forms, buttons, headings, meta, images
+- Sin re-parse html5ever
+
+### Phase 3: Storage ✅
+- `storage.rs`: SQLite-backed localStorage
+- Per-domain namespace
+- 4 V8 ops (get/set/remove/clear)
+
+### Phase 4: Web APIs ✅
+- ReadableStream (controller, tee, pipeTo, asyncIterator)
+- WritableStream, TransformStream
+- MessageChannel + MessagePort (async message passing)
+- TextEncoderStream / TextDecoderStream
+- SubtleCrypto (SHA-256 nativo)
+- 50+ polyfills (Canvas, WebSocket, Range, Selection, etc.)
+
+### Phase 5: Error isolation ✅
+- Scripts wrapped in try-catch
+- onerror + onunhandledrejection handlers
+- Analytics/telemetry auto-skip
+
+## Pendiente
+
+### Phase 6: Interaction (PRÓXIMO)
+
+La pieza que convierte el lector en browser. La IA puede navegar pero no interactuar.
+
+**`interact/mod.rs`** + **`js/interact.js`**
 
 ```rust
-pub struct BrowserNetwork {
-    client: rquest::Client,      // Chrome TLS
-    origin: String,              // Current page origin
-    referrer_policy: ReferrerPolicy,
-}
+impl NeoSession {
+    /// Click an element by CSS selector or text content
+    async fn click(&mut self, target: &str) -> Result<(), String>;
 
-impl BrowserNetwork {
-    // Standard fetch() with automatic browser headers
-    pub async fn fetch(&self, request: FetchRequest) -> FetchResponse;
+    /// Type text into an input/textarea
+    async fn type_text(&mut self, target: &str, text: &str) -> Result<(), String>;
 
-    // CORS preflight when needed
-    fn needs_preflight(&self, request: &FetchRequest) -> bool;
+    /// Submit a form (by selector or auto-detect)
+    async fn submit(&mut self, target: &str) -> Result<(), String>;
 
-    // Compute Sec-Fetch-* headers per spec
-    fn sec_fetch_headers(&self, url: &str, mode: RequestMode) -> HeaderMap;
+    /// Select an option in a <select>
+    async fn select(&mut self, target: &str, value: &str) -> Result<(), String>;
 
-    // Referrer policy computation
-    fn compute_referrer(&self, url: &str) -> Option<String>;
+    /// Check/uncheck a checkbox
+    async fn check(&mut self, target: &str, checked: bool) -> Result<(), String>;
 }
 ```
 
-No more manual header injection in ops.rs. The network module handles everything.
-
-### Phase 2: Storage (persist across sessions)
-
-**`src/neorender/storage/mod.rs`**
-
-```rust
-pub struct BrowserStorage {
-    db: rusqlite::Connection,    // SQLite (already a dependency)
-    domain: String,
-}
-
-impl BrowserStorage {
-    pub fn local_storage(&self) -> LocalStorage;      // persists to disk
-    pub fn session_storage(&self) -> SessionStorage;  // memory only
-    pub fn cookies(&self) -> CookieJar;               // syncs with network
-}
-```
-
-Bridge to JS via ops:
-- `op_storage_get(domain, key)` → reads from SQLite
-- `op_storage_set(domain, key, value)` → writes to SQLite
-- No more injecting localStorage via JS eval
-
-### Phase 3: WOM from linkedom (no re-parse)
-
-Currently: linkedom renders DOM → export as HTML → re-parse with html5ever → extract WOM.
-
-Target: linkedom renders DOM → extract WOM directly from V8.
+Internamente:
+1. `click(target)` → find element → dispatch mousedown/mouseup/click events → si es `<a>`, goto(href) → si es `<button type=submit>`, submit form
+2. `type_text(target, text)` → find element → focus → dispatch input/change events → set value
+3. `submit(form)` → collect form data → POST to action URL → goto response
+4. Si click dispara navegación → goto() automático
 
 ```javascript
-// In V8: walk linkedom's DOM tree, output WOM JSON
-globalThis.__wom_extract = function() {
-    const nodes = [];
-    function walk(el, depth) {
-        if (depth > 100) return;
-        const tag = el.tagName?.toLowerCase();
-        if (!tag || ['script','style','noscript','svg'].includes(tag)) return;
+// js/interact.js
+globalThis.__neo_click = function(selector) {
+    const el = document.querySelector(selector)
+        || [...document.querySelectorAll('*')].find(e => e.textContent?.trim() === selector);
+    if (!el) return JSON.stringify({ok:false, error:'not found'});
 
-        const node = { tag };
-        if (el.id) node.id = el.id;
-        if (el.textContent?.trim()) node.text = el.textContent.trim().slice(0, 200);
+    // Dispatch full event sequence (what a real browser does)
+    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+    el.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+    el.click?.();
 
-        // Interactive elements
-        if (tag === 'a' && el.href) node.href = el.href;
-        if (tag === 'input') { node.type = el.type; node.name = el.name; node.placeholder = el.placeholder; }
-        if (tag === 'button') node.text = el.textContent?.trim();
-        if (tag === 'form') { node.action = el.action; node.method = el.method; }
+    // If it's a link, return the href for navigation
+    const href = el.closest('a')?.getAttribute('href');
+    if (href) return JSON.stringify({ok:true, navigate:href});
 
-        // Visible text at block level
-        if (['h1','h2','h3','h4','h5','h6','p','li','td','th','label','span'].includes(tag)) {
-            node.visible_text = el.textContent?.trim()?.slice(0, 500);
-        }
-
-        nodes.push(node);
-        for (const child of el.children || []) walk(child, depth + 1);
+    // If it's a submit button, collect form data
+    const form = el.closest('form');
+    if (form && (el.type === 'submit' || el.tagName === 'BUTTON')) {
+        return JSON.stringify({ok:true, submit:{action:form.action, method:form.method}});
     }
-    walk(document.body, 0);
-    return JSON.stringify(nodes);
+
+    return JSON.stringify({ok:true, clicked:el.tagName});
+};
+
+globalThis.__neo_type = function(selector, text) {
+    const el = document.querySelector(selector)
+        || document.querySelector(`[placeholder*="${selector}" i]`)
+        || document.querySelector(`[name="${selector}"]`);
+    if (!el) return JSON.stringify({ok:false, error:'not found'});
+
+    el.focus?.();
+    el.value = text;
+    el.dispatchEvent(new Event('input', {bubbles:true}));
+    el.dispatchEvent(new Event('change', {bubbles:true}));
+
+    return JSON.stringify({ok:true, typed:text.length});
+};
+
+globalThis.__neo_submit = function(selector) {
+    const form = document.querySelector(selector || 'form');
+    if (!form) return JSON.stringify({ok:false, error:'no form'});
+
+    const data = {};
+    for (const el of form.querySelectorAll('input,select,textarea')) {
+        const name = el.name || el.id;
+        if (name) data[name] = el.value || '';
+    }
+
+    return JSON.stringify({
+        ok:true,
+        action: form.action || location.href,
+        method: (form.method || 'GET').toUpperCase(),
+        data
+    });
 };
 ```
 
-This eliminates the html5ever re-parse step entirely.
+**Flujo completo de interacción:**
+```
+IA: goto("https://google.es")
+    → WOM: {forms:[{action:"/search", fields:["q"]}], buttons:["Aceptar todo"]}
 
-### Phase 4: Web APIs (real implementations, not stubs)
+IA: click("Aceptar todo")
+    → consent accepted, cookie set
 
-Replace stubs with real implementations where linkedom provides them:
+IA: type("q", "restaurantes la eliana")
+    → input filled
 
-| API | Current | Target |
-|-----|---------|--------|
-| MutationObserver | stub (no-op) | linkedom's real implementation |
-| EventTarget | stub/linkedom | linkedom's (already working) |
-| IntersectionObserver | stub | smart stub (mark visible/not) |
-| ResizeObserver | stub | no-op (no layout) |
-| ReadableStream | minimal | functional (for SSE, streaming) |
-| WebSocket | stub | rquest websocket (for live data) |
-| Service Worker | stub | skip (not needed for rendering) |
-
-### Phase 5: Error Isolation
-
-Currently one script error can cascade. Target:
-
-```rust
-// Each script runs in a try-catch at the V8 level
-for script in scripts {
-    match execute_with_catch(&mut runtime, script) {
-        Ok(()) => {},
-        Err(e) => {
-            errors.push(e);
-            // Continue — don't stop the render
-        }
-    }
-}
+IA: submit("form")
+    → POST/GET to /search?q=restaurantes+la+eliana
+    → auto-goto response
+    → WOM: {links:[...restaurants...], text:"10 resultados"}
 ```
 
-Also: separate analytics/tracking scripts from app scripts. Skip analytics entirely.
+### Phase 7: iframes
 
-## File Structure
+Muchas webs usan iframes (Turnstile, ads, embeds). Necesario para:
+- Google reCAPTCHA / Cloudflare Turnstile
+- Payment forms (Stripe)
+- OAuth popups
+- YouTube embeds
 
-```
-src/neorender/
-├── mod.rs              # render_page (legacy, keep as fallback)
-├── session.rs          # NeoSession (persistent browser)
-├── v8_runtime.rs       # V8 + linkedom + module loader
-├── ops.rs              # JS ↔ Rust bridge ops
-├── dom_export.rs       # DOM → HTML (legacy)
-├── net/
-│   ├── mod.rs          # BrowserNetwork (Fetch Standard)
-│   ├── cors.rs         # CORS preflight
-│   ├── referrer.rs     # Referrer policy
-│   └── headers.rs      # Sec-Fetch-*, Origin, etc.
-├── storage/
-│   ├── mod.rs          # BrowserStorage
-│   ├── local.rs        # localStorage (SQLite)
-│   └── session.rs      # sessionStorage (memory)
-└── wom/
-    └── extract.rs      # WOM generation from linkedom
+Implementación: cada iframe = mini NeoSession con su propio document + postMessage bridge.
 
-js/
-├── linkedom.js         # DOM engine (477KB, vendored)
-├── bootstrap.js        # Browser globals + polyfills
-└── wom.js              # WOM extraction (in-V8)
-```
+### Phase 8: WebSocket
 
-## Priority Order
+Para apps en tiempo real:
+- Chat (Slack, Discord)
+- Notifications
+- Live updates
 
-1. **net/ module** — eliminates header hacks, fixes ChatGPT and all sites that check browser behavior
-2. **WOM from linkedom** — eliminates re-parse overhead, cleaner architecture
-3. **storage/ module** — persistent localStorage, real cookie management
-4. **Error isolation** — makes more sites work without patching each one
-5. **Web APIs** — progressive, driven by which sites need what
+Implementación: rquest WebSocket client expuesto como JS WebSocket API.
 
-## Success Metric
+### Phase 9: Consent auto-accept
 
-All 20 top sites render with content via NeoSession, including:
-- ChatGPT (send/receive messages)
-- Amazon (authenticated, orders)
-- LinkedIn (authenticated, feed + messaging)
-- Facebook (at least login page, ideally feed)
+Patrones GDPR comunes:
+- Cookie banners → detect + click accept
+- Google consent → set CONSENT cookie
+- Generic: buscar botones con "Accept", "Aceptar", "OK", "Agree"
 
-Zero Chrome dependency for normal browsing. Chrome only for initial auth + WAF resolution.
+Implementación: después de cada goto(), scan para consent patterns → auto-click.
+
+## Success Metrics
+
+Un browser para IA que puede:
+1. ✅ Navegar a cualquier web (18/20 top sites)
+2. ✅ Leer contenido (WOM)
+3. ⬜ Hacer click en links/buttons
+4. ⬜ Rellenar y enviar formularios
+5. ⬜ Aceptar consent dialogs automáticamente
+6. ⬜ Buscar en Google sin Chrome
+7. ⬜ Enviar mensajes en ChatGPT sin Chrome
+8. ⬜ Login en webs con user/password
+
+Sin Chrome para el 95% de las operaciones. Chrome solo para captchas irresolubles.
