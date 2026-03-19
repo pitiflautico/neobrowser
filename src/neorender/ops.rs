@@ -10,7 +10,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Fetch a URL. SYNC op — runs HTTP on a dedicated thread to avoid async conflicts.
-/// Automatically adds browser-style headers (Origin, Referer, Sec-Fetch-*) from page context.
+/// Delegates to BrowserNetwork for proper Fetch Standard headers (Sec-Fetch-*, Referer, Origin).
+/// Falls back to a fresh client if BrowserNetwork is not in OpState.
 #[op2]
 #[string]
 pub fn op_neorender_fetch(
@@ -31,21 +32,33 @@ pub fn op_neorender_fetch(
 
     eprintln!("[NEORENDER:FETCH] {} {}", method, &url[..url.len().min(100)]);
 
-    // Extract shared client + page origin from OpState (borrow scope limited)
-    let (shared_client, page_origin) = {
+    // Extract BrowserNetwork snapshot from OpState (borrow scope limited)
+    // We clone the Arc<Client> and the origin/url strings — BrowserNetwork itself is not Send.
+    let (client, net_origin, net_url, referrer_policy) = {
         let s = state.borrow();
-        (
-            s.try_borrow::<super::session::SharedClient>().cloned(),
-            s.try_borrow::<super::session::PageOrigin>().cloned(),
-        )
+        if let Some(net) = s.try_borrow::<super::net::BrowserNetworkHandle>() {
+            (
+                Some(net.client.clone()),
+                net.origin.clone(),
+                net.url.clone(),
+                net.referrer_policy.clone(),
+            )
+        } else if let Some(c) = s.try_borrow::<super::session::SharedClient>() {
+            // Backward compat: old SharedClient + PageOrigin
+            let po = s.try_borrow::<super::session::PageOrigin>().cloned();
+            (
+                Some(c.clone()),
+                po.as_ref().map(|p| p.origin.clone()).unwrap_or_default(),
+                po.as_ref().map(|p| p.url.clone()).unwrap_or_default(),
+                super::net::ReferrerPolicy::StrictOriginWhenCrossOrigin,
+            )
+        } else {
+            (None, String::new(), String::new(), super::net::ReferrerPolicy::StrictOriginWhenCrossOrigin)
+        }
     };
 
-    // Clone what we need for the thread
-    let url_clone = url.clone();
-    let method_clone = method.clone();
-    let body_clone = body.clone();
-    let headers_json_clone = headers_json.clone();
-    let has_shared = shared_client.is_some();
+    let body_opt = if body.is_empty() { None } else { Some(body) };
+    let headers_opt = if headers_json.is_empty() { None } else { Some(headers_json) };
 
     // Run HTTP on a dedicated thread (avoids deno_core async conflicts)
     let result = std::thread::spawn(move || {
@@ -55,84 +68,46 @@ pub fn op_neorender_fetch(
             .map_err(|e| format!("Runtime: {e}"))?;
 
         rt.block_on(async {
-            let client = if let Some(c) = shared_client {
-                c.as_ref().clone()
-            } else {
-                rquest::Client::builder()
-                    .impersonate(rquest::Impersonate::Chrome131)
-                    .cookie_store(true)
-                    .redirect(rquest::redirect::Policy::limited(10))
-                    .timeout(std::time::Duration::from_secs(15))
-                    .build()
-                    .map_err(|e| format!("Client: {e}"))?
+            let client = match client {
+                Some(c) => c,
+                None => {
+                    std::sync::Arc::new(
+                        rquest::Client::builder()
+                            .impersonate(rquest::Impersonate::Chrome131)
+                            .cookie_store(true)
+                            .redirect(rquest::redirect::Policy::limited(10))
+                            .timeout(std::time::Duration::from_secs(15))
+                            .build()
+                            .map_err(|e| format!("Client: {e}"))?
+                    )
+                }
             };
 
-            let req = match method_clone.as_str() {
-                "POST" => client.post(&url_clone),
-                "PUT" => client.put(&url_clone),
-                "DELETE" => client.delete(&url_clone),
-                "PATCH" => client.patch(&url_clone),
-                _ => client.get(&url_clone),
-            };
+            let network = super::net::BrowserNetwork::from_parts(
+                client,
+                &net_origin,
+                &net_url,
+                referrer_policy,
+            );
 
-            let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-            let mut req = req
-                .header("User-Agent", ua)
-                .header("Accept", "application/json, text/plain, */*")
-                .header("Accept-Language", "en-US,en;q=0.9,es;q=0.8");
+            let resp = network.fetch(
+                &url,
+                &method,
+                body_opt.as_deref(),
+                headers_opt.as_deref(),
+                super::net::RequestMode::Cors,
+                super::net::RequestDestination::Empty,
+            ).await?;
 
-            // Browser-style headers from page context
-            if let Some(po) = &page_origin {
-                let target_origin = url::Url::parse(&url_clone).ok()
-                    .map(|u| u.origin().ascii_serialization())
-                    .unwrap_or_default();
-                let same_origin = target_origin == po.origin;
+            eprintln!("[NEORENDER:FETCH] → {} ({}B)", resp.status, resp.body.len());
 
-                if method_clone != "GET" || !same_origin {
-                    req = req.header("Origin", &po.origin);
-                }
-                req = req.header("Referer", &po.url);
-                req = req.header("Sec-Fetch-Site", if same_origin { "same-origin" } else { "cross-site" });
-                req = req.header("Sec-Fetch-Mode", "cors");
-                req = req.header("Sec-Fetch-Dest", "empty");
-            }
-
-            // Custom headers from JS
-            if !headers_json_clone.is_empty() {
-                if let Ok(headers) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&headers_json_clone) {
-                    for (key, val) in headers {
-                        if let Some(v) = val.as_str() {
-                            if let Ok(hname) = rquest::header::HeaderName::from_bytes(key.as_bytes()) {
-                                if let Ok(hval) = rquest::header::HeaderValue::from_str(v) {
-                                    req = req.header(hname, hval);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let resp = req
-                .body(if body_clone.is_empty() { String::new() } else { body_clone })
-                .send()
-                .await
-                .map_err(|e| format!("Fetch: {e}"))?;
-
-            let status = resp.status().as_u16();
-
-            let mut resp_headers = serde_json::Map::new();
-            for (name, val) in resp.headers() {
-                if let Ok(v) = val.to_str() {
-                    resp_headers.insert(name.as_str().to_string(), serde_json::Value::String(v.to_string()));
-                }
-            }
-
-            let resp_body = resp.text().await.unwrap_or_default();
-            eprintln!("[NEORENDER:FETCH] → {} ({}B)", status, resp_body.len());
+            let resp_headers: serde_json::Map<String, serde_json::Value> = resp.headers.into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect();
 
             Ok(serde_json::json!({
-                "status": status,
-                "body": resp_body,
+                "status": resp.status,
+                "body": resp.body,
                 "headers": resp_headers,
             }).to_string())
         })

@@ -14,11 +14,14 @@ use std::sync::Arc;
 
 use crate::ghost;
 use super::v8_runtime::{self, ScriptStoreHandle};
+use super::net::BrowserNetwork;
 
 /// Shared HTTP client handle — stored in V8's OpState so fetch ops use the session's client.
+/// Kept for backward compatibility with code that stores SharedClient directly.
 pub type SharedClient = Arc<rquest::Client>;
 
 /// Current page origin — stored in V8's OpState so fetch ops add proper browser headers.
+/// Kept for backward compatibility with code that stores PageOrigin directly.
 #[derive(Clone)]
 pub struct PageOrigin {
     pub origin: String,  // e.g. "https://chatgpt.com"
@@ -29,7 +32,7 @@ pub struct PageOrigin {
 pub struct NeoSession {
     runtime: JsRuntime,
     store: ScriptStoreHandle,
-    client: SharedClient,
+    network: BrowserNetwork,    // Fetch Standard networking (replaces raw client + PageOrigin)
     cookies: ghost::CookieJar,
     url: String,
     navigated: bool, // true after first goto()
@@ -61,7 +64,10 @@ impl NeoSession {
             .map_err(|e| format!("Client build error: {e}"))?;
         let client = Arc::new(client);
 
-        // 2. Load cookies if provided
+        // 2. Create BrowserNetwork
+        let network = BrowserNetwork::new(client.clone());
+
+        // 3. Load cookies if provided
         let mut cookies = ghost::CookieJar::new();
         if let Some(path) = cookies_file {
             match cookies.load_file(path) {
@@ -79,24 +85,24 @@ impl NeoSession {
             }
         }
 
-        // 3. Create V8 runtime with empty HTML (no navigation yet)
+        // 4. Create V8 runtime with empty HTML (no navigation yet)
         let empty_html = "<html><head></head><body></body></html>";
         let empty_url = "about:blank";
         let (mut runtime, store) = v8_runtime::create_runtime_with_html(
             empty_html, empty_url, &cookies, None,
         )?;
 
-        // 4. Store the shared client in V8's OpState so op_neorender_fetch_shared can use it
+        // 5. Store BrowserNetwork handle in V8's OpState so op_neorender_fetch uses it
         {
             let op_state = runtime.op_state();
             let mut state = op_state.borrow_mut();
-            state.put::<SharedClient>(client.clone());
+            state.put::<super::net::BrowserNetworkHandle>(network.to_handle());
         }
 
         Ok(Self {
             runtime,
             store,
-            client,
+            network,
             cookies,
             url: String::new(),
             navigated: false,
@@ -118,7 +124,7 @@ impl NeoSession {
         }
 
         // 2. Fetch with the persistent client
-        let resp = self.client.get(url)
+        let resp = self.network.client().get(url)
             .headers(headers)
             .send()
             .await
@@ -166,7 +172,7 @@ impl NeoSession {
             if let Some(script_url) = &script.url {
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
-                    self.client.get(script_url).send(),
+                    self.network.client().get(script_url).send(),
                 ).await {
                     Ok(Ok(resp)) => {
                         if let Ok(text) = resp.text().await {
@@ -206,7 +212,7 @@ impl NeoSession {
                         if self.store.borrow().scripts.contains_key(&import_url) { continue; }
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(15),
-                            self.client.get(&import_url).send(),
+                            self.network.client().get(&import_url).send(),
                         ).await {
                             Ok(Ok(resp)) => {
                                 if let Ok(text) = resp.text().await {
@@ -245,14 +251,12 @@ impl NeoSession {
             "document.location = location; try { document.baseURI = location.href; } catch {}".to_string()
         ).map_err(|e| format!("doc.location sync: {e}"))?;
 
-        // 9b. Update page origin in OpState (for Sec-Fetch-* headers in fetch op)
+        // 9b. Update BrowserNetwork page context + sync handle to OpState
+        self.network.set_page(&final_url);
         {
-            let origin = url::Url::parse(&final_url).ok()
-                .map(|u| u.origin().ascii_serialization())
-                .unwrap_or_default();
             let op_state = self.runtime.op_state();
             let mut state = op_state.borrow_mut();
-            state.put::<PageOrigin>(PageOrigin { origin, url: final_url.clone() });
+            state.put::<super::net::BrowserNetworkHandle>(self.network.to_handle());
         }
 
         // 10. Update cookie injection for JS-side fetch
@@ -375,7 +379,7 @@ impl NeoSession {
         }
     }
 
-    /// HTTP request using the session's persistent client (same TLS fingerprint + cookies).
+    /// HTTP request using the session's BrowserNetwork (same TLS fingerprint + Fetch Standard headers).
     pub async fn fetch(
         &self,
         url: &str,
@@ -383,54 +387,43 @@ impl NeoSession {
         body: Option<&str>,
         headers: Option<&str>,
     ) -> Result<String, String> {
-        let mut req_headers = rquest::header::HeaderMap::new();
+        // Build a merged headers JSON that includes session cookies + any custom headers
+        let merged_headers = {
+            let mut hdrs = serde_json::Map::new();
 
-        // Inject session cookies
-        if let Some(domain) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
-            if let Some(cookie_header) = self.cookies.header_for(&domain) {
-                if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
-                    req_headers.insert(rquest::header::COOKIE, v);
+            // Inject session cookies
+            if let Some(domain) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
+                if let Some(cookie_header) = self.cookies.header_for(&domain) {
+                    hdrs.insert("cookie".to_string(), serde_json::Value::String(cookie_header));
                 }
             }
-        }
 
-        // Parse custom headers
-        if let Some(headers_json) = headers {
-            if !headers_json.is_empty() {
-                if let Ok(hdrs) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(headers_json) {
-                    for (key, val) in hdrs {
-                        if let Some(v) = val.as_str() {
-                            if let Ok(hname) = rquest::header::HeaderName::from_bytes(key.as_bytes()) {
-                                if let Ok(hval) = rquest::header::HeaderValue::from_str(v) {
-                                    req_headers.insert(hname, hval);
-                                }
-                            }
+            // Merge custom headers (override cookies if explicitly set)
+            if let Some(headers_json) = headers {
+                if !headers_json.is_empty() {
+                    if let Ok(custom) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(headers_json) {
+                        for (k, v) in custom {
+                            hdrs.insert(k, v);
                         }
                     }
                 }
             }
-        }
 
-        let req = match method.to_uppercase().as_str() {
-            "POST" => self.client.post(url),
-            "PUT" => self.client.put(url),
-            "DELETE" => self.client.delete(url),
-            "PATCH" => self.client.patch(url),
-            _ => self.client.get(url),
+            if hdrs.is_empty() { None } else { Some(serde_json::Value::Object(hdrs).to_string()) }
         };
 
-        let mut req = req.headers(req_headers);
-        if let Some(b) = body {
-            req = req.body(b.to_string());
-        }
-
-        let resp = req.send().await.map_err(|e| format!("Fetch error: {e}"))?;
-        let status = resp.status().as_u16();
-        let resp_body = resp.text().await.unwrap_or_default();
+        let resp = self.network.fetch(
+            url,
+            &method.to_uppercase(),
+            body,
+            merged_headers.as_deref(),
+            super::net::RequestMode::Cors,
+            super::net::RequestDestination::Empty,
+        ).await?;
 
         Ok(serde_json::json!({
-            "status": status,
-            "body": resp_body,
+            "status": resp.status,
+            "body": resp.body,
         }).to_string())
     }
 
