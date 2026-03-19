@@ -245,6 +245,11 @@ pub fn create_runtime_with_html(
     runtime.execute_script("<neorender:intercept>", intercept_js)
         .map_err(|e| format!("Intercept load error: {e}"))?;
 
+    // 3c0. Noise removal — strip chat widgets, ad containers, popups BEFORE WOM extraction
+    let noise_js: String = include_str!("../../js/noise.js").to_string();
+    runtime.execute_script("<neorender:noise>", noise_js)
+        .map_err(|e| format!("Noise filter load error: {e}"))?;
+
     // 3c. WOM extraction function — extracts page data directly from linkedom DOM
     let wom_js: String = include_str!("../../js/wom.js").to_string();
     runtime.execute_script("<neorender:wom>", wom_js)
@@ -259,6 +264,16 @@ pub fn create_runtime_with_html(
     let observer_js: String = include_str!("../../js/observer.js").to_string();
     runtime.execute_script("<neorender:observer>", observer_js)
         .map_err(|e| format!("Observer load error: {e}"))?;
+
+    // 3e1. Delta updates — only send what changed after interactions (__neo_take_snapshot, __neo_get_delta)
+    let delta_js: String = include_str!("../../js/delta.js").to_string();
+    runtime.execute_script("<neorender:delta>", delta_js)
+        .map_err(|e| format!("Delta load error: {e}"))?;
+
+    // 3e2. Smart prefetch — predict what the AI will want next (__neo_prefetch_hints)
+    let prefetch_js: String = include_str!("../../js/prefetch.js").to_string();
+    runtime.execute_script("<neorender:prefetch>", prefetch_js)
+        .map_err(|e| format!("Prefetch load error: {e}"))?;
 
     // 3f. Browser bridge — event listeners + interaction API
     let browser_js: String = include_str!("../../js/browser.js").to_string();
@@ -309,6 +324,16 @@ pub fn create_runtime_with_html(
     let extract_js: String = include_str!("../../js/extract.js").to_string();
     runtime.execute_script("<neorender:extract>", extract_js)
         .map_err(|e| format!("Extract load error: {e}"))?;
+
+    // 3h1. Semantic compression — prioritized text blocks for AI
+    let compress_js: String = include_str!("../../js/compress.js").to_string();
+    runtime.execute_script("<neorender:compress>", compress_js)
+        .map_err(|e| format!("Compress load error: {e}"))?;
+
+    // 3h2. Page classification — auto-detect page type
+    let classify_js: String = include_str!("../../js/classify.js").to_string();
+    runtime.execute_script("<neorender:classify>", classify_js)
+        .map_err(|e| format!("Classify load error: {e}"))?;
 
     // 3i. Wait-for-condition helpers
     let wait_js: String = include_str!("../../js/wait.js").to_string();

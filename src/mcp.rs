@@ -851,8 +851,8 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
                             };
 
                             let mut see = format!(
-                                "Page: {}\nURL: {}\nStatus: {}\nEngine: neosession (V8 persistent)\nRender: {}ms, {} scripts\n",
-                                title, result.url, result.status, result.render_time_ms, result.scripts_count,
+                                "Page: {}\nURL: {}\nStatus: {}\nType: {}\nEngine: neosession (V8 persistent)\nRender: {}ms, {} scripts\n",
+                                title, result.url, result.status, result.page_type, result.render_time_ms, result.scripts_count,
                             );
                             if !text.is_empty() {
                                 let t = if text.len() > 8000 { &text[..8000] } else { &text };
@@ -883,6 +883,23 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
                                 }
                             }
 
+                            // Include actions summary
+                            if !result.actions.is_empty() {
+                                see.push_str(&format!("\n--- Actions ({}) ---\n", result.actions.len()));
+                                for action in result.actions.iter().take(25) {
+                                    see.push_str(&format!("  [{}] {} → {}\n", action.action_type, action.text, action.target));
+                                }
+                            }
+
+                            // Build actions JSON array
+                            let actions_json: Vec<serde_json::Value> = result.actions.iter().take(50).map(|a| {
+                                serde_json::json!({
+                                    "type": a.action_type,
+                                    "text": a.text,
+                                    "target": a.target,
+                                })
+                            }).collect();
+
                             return Ok(serde_json::json!({
                                 "ok": true,
                                 "engine": "neosession",
@@ -890,10 +907,12 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
                                 "url": result.url,
                                 "status": result.status,
                                 "title": title,
+                                "page_type": result.page_type,
                                 "links": links_count,
                                 "forms": forms_count,
                                 "inputs": inputs_count,
                                 "buttons": buttons_count,
+                                "actions": actions_json,
                                 "render_ms": result.render_time_ms,
                                 "scripts": result.scripts_count,
                                 "html_bytes": result.html_len,

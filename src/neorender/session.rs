@@ -57,6 +57,37 @@ pub struct PageResult {
     /// WOM data extracted directly from linkedom (avoids html5ever re-parse).
     /// Contains links, forms, inputs, buttons, headings, images, meta as JSON.
     pub wom: Option<serde_json::Value>,
+    /// AI-optimized fields (PDR v4)
+    pub page_type: String,
+    pub compressed_content: String,
+    pub actions: Vec<Action>,
+}
+
+/// Interactable element extracted from the page.
+pub struct Action {
+    pub action_type: String,  // "link", "button", "input", "select"
+    pub text: String,
+    pub target: String,       // selector or href
+}
+
+/// Check if a URL should be skipped during resource fetching (images, CSS, fonts, analytics).
+fn should_skip_resource(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    // Skip non-JS resources
+    lower.ends_with(".css") || lower.ends_with(".png") || lower.ends_with(".jpg") ||
+    lower.ends_with(".jpeg") || lower.ends_with(".gif") || lower.ends_with(".svg") ||
+    lower.ends_with(".ico") || lower.ends_with(".woff") || lower.ends_with(".woff2") ||
+    lower.ends_with(".ttf") || lower.ends_with(".eot") || lower.ends_with(".mp4") ||
+    lower.ends_with(".webm") || lower.ends_with(".mp3") ||
+    // Skip analytics/tracking
+    lower.contains("google-analytics") || lower.contains("googletagmanager") ||
+    lower.contains("gtag/js") || lower.contains("analytics") ||
+    lower.contains("tracking") || lower.contains("pixel") ||
+    lower.contains("facebook.net/en_us/fbevents") ||
+    lower.contains("hotjar") || lower.contains("sentry") ||
+    lower.contains("newrelic") || lower.contains("segment.com") ||
+    lower.contains("doubleclick") || lower.contains("adsense") ||
+    lower.contains("adsbygoogle")
 }
 
 impl NeoSession {
@@ -276,6 +307,9 @@ impl NeoSession {
                 render_time_ms: 0,
                 errors: vec![format!("WAF challenge: {waf}")],
                 wom: None,
+                page_type: String::new(),
+                compressed_content: String::new(),
+                actions: Vec::new(),
             });
         }
 
@@ -288,9 +322,14 @@ impl NeoSession {
         eprintln!("[NEOSESSION] {} scripts ({} external, {} modules) in {}",
             all_scripts.len(), ext_count, mod_count, &final_url[..final_url.len().min(80)]);
 
-        // 5. Fetch external scripts using the persistent client
+        // 5. Fetch external scripts using the persistent client (skip non-essential resources)
+        let mut skipped_resources = 0usize;
         for script in all_scripts.iter_mut() {
             if let Some(script_url) = &script.url {
+                if should_skip_resource(script_url) {
+                    skipped_resources += 1;
+                    continue;
+                }
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
                     self.network.client().get(script_url).send(),
@@ -303,6 +342,9 @@ impl NeoSession {
                     _ => eprintln!("[NEOSESSION] Skip slow script: {}", script_url),
                 }
             }
+        }
+        if skipped_resources > 0 {
+            eprintln!("[NEOSESSION] Skipped {} non-essential resources", skipped_resources);
         }
 
         // 6. Pre-populate module store with fetched scripts
@@ -598,6 +640,13 @@ impl NeoSession {
             }
         }
 
+        // 13d. Remove noise (chat widgets, ads, popups) BEFORE WOM extraction
+        if let Ok(noise_result) = self.eval_internal("__neo_remove_noise()") {
+            if !noise_result.contains("\"removed\":0") && !noise_result.contains("\"removed\": 0") {
+                eprintln!("[NEOSESSION] Noise removal: {}", noise_result);
+            }
+        }
+
         // 14. Extract WOM (title, text, links, forms, etc.) directly from linkedom DOM
         let wom_json_str = self.eval_internal("__wom_extract()")?;
         let wom: Option<serde_json::Value> = serde_json::from_str(&wom_json_str).ok();
@@ -611,12 +660,23 @@ impl NeoSession {
             .unwrap_or("")
             .to_string();
 
+        // 15. AI-optimized: page classification
+        let page_type = self.eval_internal("__neo_classify()")
+            .unwrap_or_else(|_| "content".to_string());
+
+        // 16. AI-optimized: semantic compression (2000 chars default)
+        let compressed_content = self.eval_internal("__neo_compress(2000)")
+            .unwrap_or_else(|_| "[]".to_string());
+
+        // 17. AI-optimized: extract structured actions from WOM
+        let actions = Self::extract_actions_from_wom(&wom);
+
         let render_time = start.elapsed();
         self.url = final_url.clone();
         self.navigated = true;
 
-        eprintln!("[NEOSESSION] Rendered in {:?} — {} bytes, {} scripts, {} errors",
-            render_time, html_len, scripts_count, errors.len());
+        eprintln!("[NEOSESSION] Rendered in {:?} — {} bytes, {} scripts, {} errors, type={}",
+            render_time, html_len, scripts_count, errors.len(), page_type);
 
         Ok(PageResult {
             url: final_url,
@@ -628,6 +688,9 @@ impl NeoSession {
             render_time_ms: render_time.as_millis() as u64,
             errors,
             wom,
+            page_type,
+            compressed_content,
+            actions,
         })
     }
 
@@ -690,6 +753,9 @@ impl NeoSession {
         // 4. Brief event loop
         v8_runtime::run_event_loop(&mut self.runtime, 500).await?;
 
+        // 4b. Remove noise before WOM
+        self.eval_internal("__neo_remove_noise()").ok();
+
         // 5. Extract WOM
         let wom_json_str = self.eval_internal("__wom_extract()")?;
         let wom: Option<serde_json::Value> = serde_json::from_str(&wom_json_str).ok();
@@ -702,6 +768,13 @@ impl NeoSession {
             .and_then(|w| w["text"].as_str())
             .unwrap_or("")
             .to_string();
+
+        // AI-optimized fields
+        let page_type = self.eval_internal("__neo_classify()")
+            .unwrap_or_else(|_| "content".to_string());
+        let compressed_content = self.eval_internal("__neo_compress(2000)")
+            .unwrap_or_else(|_| "[]".to_string());
+        let actions = Self::extract_actions_from_wom(&wom);
 
         self.url = final_url.clone();
         self.navigated = true;
@@ -719,6 +792,9 @@ impl NeoSession {
             render_time_ms: render_time.as_millis() as u64,
             errors: Vec::new(),
             wom,
+            page_type,
+            compressed_content,
+            actions,
         })
     }
 
@@ -833,6 +909,66 @@ impl NeoSession {
     pub fn extract_wom(&mut self) -> Result<serde_json::Value, String> {
         let json_str = self.eval_internal("__wom_extract()")?;
         serde_json::from_str(&json_str).map_err(|e| format!("WOM parse error: {e}"))
+    }
+
+    /// Extract structured actions from WOM JSON (links, buttons, inputs, selects).
+    fn extract_actions_from_wom(wom: &Option<serde_json::Value>) -> Vec<Action> {
+        let mut actions = Vec::new();
+        let Some(wom) = wom else { return actions };
+
+        // Links
+        if let Some(links) = wom["links"].as_array() {
+            for link in links.iter().take(30) {
+                let text = link["text"].as_str().unwrap_or("").trim().to_string();
+                let href = link["href"].as_str().unwrap_or("").to_string();
+                if !text.is_empty() && !href.is_empty() {
+                    actions.push(Action {
+                        action_type: "link".to_string(),
+                        text,
+                        target: href,
+                    });
+                }
+            }
+        }
+
+        // Buttons
+        if let Some(buttons) = wom["buttons"].as_array() {
+            for btn in buttons.iter().take(20) {
+                let text = btn["text"].as_str()
+                    .or_else(|| btn["label"].as_str())
+                    .unwrap_or("").trim().to_string();
+                if !text.is_empty() {
+                    actions.push(Action {
+                        action_type: "button".to_string(),
+                        text: text.clone(),
+                        target: format!("button:has-text(\"{}\")", text),
+                    });
+                }
+            }
+        }
+
+        // Inputs
+        if let Some(inputs) = wom["inputs"].as_array() {
+            for input in inputs.iter().take(20) {
+                let name = input["name"].as_str().unwrap_or("").to_string();
+                let input_type = input["type"].as_str().unwrap_or("text").to_string();
+                let placeholder = input["placeholder"].as_str().unwrap_or("").to_string();
+                let label = if !placeholder.is_empty() { placeholder } else { name.clone() };
+                if !name.is_empty() || !label.is_empty() {
+                    actions.push(Action {
+                        action_type: "input".to_string(),
+                        text: label,
+                        target: if !name.is_empty() {
+                            format!("input[name=\"{}\"]", name)
+                        } else {
+                            format!("input[type=\"{}\"]", input_type)
+                        },
+                    });
+                }
+            }
+        }
+
+        actions
     }
 
     /// Current URL.
