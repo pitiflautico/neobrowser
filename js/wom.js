@@ -154,5 +154,42 @@ globalThis.__wom_extract = function() {
     // Clean up text: collapse excessive newlines
     result.text = result.text.replace(/\n{3,}/g, '\n\n').trim();
 
+    // Check for Next.js __NEXT_DATA__ (BBC, Notion, etc.)
+    if (result.text.trim().length < 50) {
+        const nextData = document.querySelector('script#__NEXT_DATA__');
+        if (nextData) {
+            try {
+                const data = JSON.parse(nextData.textContent);
+                const props = data.props?.pageProps;
+                if (props) {
+                    // Extract text from common Next.js patterns
+                    const extractText = (obj, depth) => {
+                        if (depth > 5 || !obj) return '';
+                        if (typeof obj === 'string') return obj.length > 10 ? obj + ' ' : '';
+                        if (Array.isArray(obj)) return obj.map(i => extractText(i, depth+1)).join('');
+                        if (typeof obj === 'object') {
+                            let t = '';
+                            for (const [k, v] of Object.entries(obj)) {
+                                if (['title','headline','text','body','description','summary','content','name'].includes(k)) {
+                                    t += extractText(v, depth+1);
+                                }
+                            }
+                            if (!t) { // fallback: extract all strings
+                                for (const v of Object.values(obj)) t += extractText(v, depth+1);
+                            }
+                            return t;
+                        }
+                        return '';
+                    };
+                    const nextText = extractText(props, 0);
+                    if (nextText.length > result.text.length) {
+                        result.text = nextText.replace(/\s{3,}/g, '\n').trim();
+                        result.meta['_source'] = 'next.js __NEXT_DATA__';
+                    }
+                }
+            } catch {}
+        }
+    }
+
     return JSON.stringify(result);
 };

@@ -201,6 +201,22 @@ function solveTurnstile(dx, p) {
     };
     m[8] = function(e, t) { m[e] = m[t]; };
     m[10] = 'window';
+    // 13: TRY_CALL — call with error capture
+    m[13] = function(e, t) {
+        var args = Array.prototype.slice.call(arguments, 2);
+        try {
+            var fn = m[t];
+            if (typeof fn === 'function') {
+                var fargs = args.map(function(a) { return m[a]; });
+                m[e] = fn.apply(null, fargs);
+            } else {
+                // Array/property access
+                m[e] = m[t];
+            }
+        } catch (ex) {
+            m[e] = '' + ex;
+        }
+    };
     m[14] = function(e, t) { if (typeof m[t] === 'string') m[e] = JSON.parse(m[t]); };
     m[15] = function(e, t) { m[e] = JSON.stringify(m[t]); };
     m[17] = function(e, t) {
@@ -242,6 +258,28 @@ function solveTurnstile(dx, p) {
         }
     };
     m[21] = function() {};
+    // 22: TEMP_STACK_CALL — like 17 but with temp stack
+    m[22] = function(e, t) {
+        var args = Array.prototype.slice.call(arguments, 2);
+        var i = args.map(function(a) { return m[a]; });
+        var tv = m[t];
+        var res = null;
+        if (typeof tv === 'function') {
+            try { res = tv.apply(null, i); } catch (ex) {}
+        } else if (typeof tv === 'string') {
+            // Same string-based dispatch as m[17]
+            if (tv === 'window.performance.now') res = performance.now() - startTime + Math.random();
+            else if (tv === 'window.Object.create') res = new OrderedMap();
+            else if (tv === 'window.Object.keys') {
+                if (typeof i[0] === 'string' && i[0] === 'window.localStorage') {
+                    res = ['STATSIG_LOCAL_STORAGE_INTERNAL_STORE_V4','STATSIG_LOCAL_STORAGE_STABLE_ID',
+                        'client-correlated-secret','oai/apps/capExpiresAt','oai-did',
+                        'STATSIG_LOCAL_STORAGE_LOGGING_REQUEST','UiState.isNavigationCollapsed.1'];
+                } else { res = []; }
+            } else if (tv === 'window.Math.random') res = Math.random();
+        }
+        m[e] = res;
+    };
     m[23] = function(e, t) {
         var args = Array.prototype.slice.call(arguments, 2);
         if (m[e] !== null && m[e] !== undefined) {
@@ -253,6 +291,8 @@ function solveTurnstile(dx, p) {
         var tv = m[t], nv = m[n];
         if (typeof tv === 'string' && typeof nv === 'string') m[e] = tv + '.' + nv;
     };
+    // 34: MOVE — move value (copy + delete source)
+    m[34] = function(e, t) { m[e] = m[t]; delete m[t]; };
 
     m[9] = tokens;
     m[16] = p;
