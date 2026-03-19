@@ -166,6 +166,13 @@ impl NeoSession {
 
         let html = resp.text().await.map_err(|e| format!("Body error: {e}"))?;
 
+        // 2b. Log this navigation request in V8's network log (so __neo_get_network_log captures it)
+        let log_js = format!(
+            "if(globalThis.__neo_network_log)globalThis.__neo_network_log.push({{method:'GET',url:{},status:{},size:{},duration:0,timestamp:Date.now()}});",
+            serde_json::to_string(&final_url).unwrap_or_default(), status, html.len()
+        );
+        self.runtime.execute_script("<neosession:netlog>", log_js).ok();
+
         // 3. WAF check
         if let Some(waf) = super::detect_waf_challenge(&html) {
             return Ok(PageResult {
