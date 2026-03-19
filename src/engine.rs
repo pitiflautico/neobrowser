@@ -456,9 +456,9 @@ impl Session {
             "--window-size=1440,900".to_string(),
         ];
         if headless {
-            args.push("--headless=new".to_string());
-            args.push("--use-gl=swiftshader".to_string());
-            args.push("--use-angle=swiftshader-webgl".to_string());
+            // Ghost mode: real Chrome, window offscreen — undetectable by Cloudflare.
+            // Never use --headless (changes JS fingerprint, detectable).
+            args.push("--window-position=-32000,-32000".to_string());
         }
 
         // Chrome --remote-debugging-pipe reads from fd 3 and writes to fd 4.
@@ -587,9 +587,8 @@ impl Session {
             "--window-size=1440,900".to_string(),
         ];
         if headless {
-            args.push("--headless=new".to_string());
-            args.push("--use-gl=swiftshader".to_string());
-            args.push("--use-angle=swiftshader-webgl".to_string());
+            // Ghost mode: real Chrome, window offscreen — undetectable by Cloudflare.
+            args.push("--window-position=-32000,-32000".to_string());
         }
 
         let child = tokio::process::Command::new(chrome)
@@ -601,7 +600,7 @@ impl Session {
         eprintln!("[ENGINE] Chrome launching on port {port}...");
 
         // Wait for Chrome to be ready (poll /json/version)
-        let client = reqwest::Client::builder()
+        let client = rquest::Client::builder()
             .timeout(std::time::Duration::from_secs(2))
             .build()?;
 
@@ -672,7 +671,7 @@ impl Session {
 
     /// Connect to an already-running Chrome via its debug port.
     pub async fn connect_port(port: u16) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = reqwest::Client::builder()
+        let client = rquest::Client::builder()
             .timeout(std::time::Duration::from_secs(2))
             .build()?;
 

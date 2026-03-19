@@ -9,8 +9,8 @@ categories = ["web-programming", "command-line-utilities"]
 edition = "2021"
 
 [dependencies]
-# HTTP client — async, TLS, cookies, compression
-reqwest = { version = "0.12", features = ["rustls-tls", "cookies", "gzip", "brotli", "json"] }
+# HTTP client — Chrome TLS fingerprint (BoringSSL), cookies, compression
+rquest = { version = "1.5", features = ["cookies", "gzip", "brotli", "json"] }
 
 # HTML parser — Servo's (spec-compliant, fast)
 html5ever = "0.38"
@@ -43,6 +43,14 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 os_pipe = "1"
 libc = "0.2"
+regex-lite = "0.1"
+
+# JS engine — Boa (lightweight fallback)
+boa_engine = "0.21"
+boa_runtime = "0.21"
+
+# NeoRender — V8 engine for SPA rendering (AI's own browser)
+deno_core = "0.311"
 
 [profile.release]
 opt-level = 3

@@ -1,6 +1,6 @@
 //! NeoBrowser-RS: AI browser with dual engine + WOM output.
 //!
-//! LIGHT: reqwest + html5ever (no Chrome, no JS, fast)
+//! LIGHT: rquest + html5ever (no Chrome, no JS, fast)
 //! CHROME: chromiumoxide CDP (full browser, JS, cookies)
 //! VISION: intelligent page perception (type, state, actions, content)
 //! WOM: Web Object Model — AI-native structured output with stable IDs
@@ -10,8 +10,11 @@ mod cdp;
 mod cors_proxy;
 mod delta;
 mod engine;
+mod ghost;
+mod ghost_dom;
 mod identity;
 mod mcp;
+mod neorender;
 mod pool;
 mod runner;
 mod semantic;
@@ -114,7 +117,7 @@ enum Command {
 
 async fn fetch_and_see(url: &str, max_lines: usize) -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
-    let client = reqwest::Client::builder()
+    let client = rquest::Client::builder()
         .user_agent(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
              AppleWebKit/537.36 (KHTML, like Gecko) \
@@ -122,7 +125,7 @@ async fn fetch_and_see(url: &str, max_lines: usize) -> Result<(), Box<dyn std::e
         )
         .gzip(true)
         .brotli(true)
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(rquest::redirect::Policy::limited(5))
         .build()?;
 
     let resp = client.get(url).send().await?;
@@ -169,7 +172,7 @@ async fn browse_and_see(url: &str, max_lines: usize) -> Result<(), Box<dyn std::
 
 async fn wom_see(url: &str, compact_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
-    let client = reqwest::Client::builder()
+    let client = rquest::Client::builder()
         .user_agent(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
              AppleWebKit/537.36 (KHTML, like Gecko) \
@@ -177,7 +180,7 @@ async fn wom_see(url: &str, compact_mode: bool) -> Result<(), Box<dyn std::error
         )
         .gzip(true)
         .brotli(true)
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(rquest::redirect::Policy::limited(5))
         .build()?;
 
     let resp = client.get(url).send().await?;
@@ -211,7 +214,7 @@ async fn wom_see(url: &str, compact_mode: bool) -> Result<(), Box<dyn std::error
 // ─── Auto mode ───
 
 async fn auto_see(url: &str, max_lines: usize) -> Result<(), Box<dyn std::error::Error>> {
-    let client = reqwest::Client::builder()
+    let client = rquest::Client::builder()
         .user_agent(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
              AppleWebKit/537.36 (KHTML, like Gecko) \
@@ -219,7 +222,7 @@ async fn auto_see(url: &str, max_lines: usize) -> Result<(), Box<dyn std::error:
         )
         .gzip(true)
         .brotli(true)
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(rquest::redirect::Policy::limited(5))
         .build()?;
 
     let resp = client.get(url).send().await?;

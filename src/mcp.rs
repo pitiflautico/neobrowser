@@ -10,7 +10,70 @@ use std::io::{self, BufRead, Write};
 use crate::auth;
 use crate::engine;
 use crate::delta;
+use crate::ghost;
 use crate::wom;
+
+use html5ever::tendril::TendrilSink;
+
+// ─── Session cache — persists cookies per domain for neorender reuse ───
+
+fn session_cache_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let dir = std::path::PathBuf::from(&home).join(".neobrowser").join("sessions");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn domain_from_url(url: &str) -> String {
+    url::Url::parse(url).ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+fn session_cache_path(domain: &str) -> std::path::PathBuf {
+    session_cache_dir().join(format!("{}.json", domain.replace('.', "_")))
+}
+
+fn load_session_cache(domain: &str) -> Option<String> {
+    let path = session_cache_path(domain);
+    if path.exists() {
+        eprintln!("[SESSION] Found cached session for {}", domain);
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// Save current Chrome session cookies to domain cache
+async fn save_session_to_cache(session: &engine::Session, url: &str) -> Result<(), String> {
+    let domain = domain_from_url(url);
+    if domain.is_empty() { return Ok(()); }
+
+    let path = session_cache_path(&domain);
+
+    // Export cookies via CDP
+    let cookies = session.get_all_cookies().await.unwrap_or_default();
+    if cookies.is_empty() { return Ok(()); }
+
+    // Also grab localStorage
+    let ls_result = session.eval_string(
+        "JSON.stringify(Object.fromEntries(Object.entries(localStorage)))"
+    ).await.unwrap_or_else(|_| "{}".to_string());
+    let local_storage: serde_json::Value = serde_json::from_str(&ls_result).unwrap_or(serde_json::json!({}));
+
+    let state = serde_json::json!({
+        "url": url,
+        "cookies": cookies,
+        "localStorage": local_storage,
+        "savedAt": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+    });
+
+    std::fs::write(&path, serde_json::to_string_pretty(&state).unwrap_or_default())
+        .map_err(|e| format!("Cache write: {e}"))?;
+
+    eprintln!("[SESSION] Cached {} cookies for {} → {}", cookies.len(), domain, path.display());
+    Ok(())
+}
 
 // ─── JSON-RPC types ───
 
@@ -90,6 +153,8 @@ struct ToolContent {
 
 struct McpState {
     session: Option<engine::Session>,
+    ghost: Option<ghost::GhostBrowser>,
+    neo_session: Option<crate::neorender::session::NeoSession>,
     wom_revision: u64,
     prev_wom: Option<wom::WomDocument>,
     auth_state: auth::AuthState,
@@ -103,6 +168,8 @@ impl McpState {
         auth::ensure_dirs().ok();
         Self {
             session: None,
+            ghost: None,
+            neo_session: None,
             wom_revision: 0,
             prev_wom: None,
             auth_state: auth::AuthState::Idle,
@@ -117,7 +184,6 @@ impl McpState {
         if let Some(ref session) = self.session {
             if !session.is_alive() {
                 eprintln!("[MCP] Session dead — dropping for recovery");
-                // Take and drop the dead session (don't call close — it's already dead)
                 let _ = self.session.take();
                 self.wom_revision = 0;
                 self.prev_wom = None;
@@ -125,46 +191,110 @@ impl McpState {
         }
 
         if self.session.is_none() {
-            let headless = std::env::var("NEOBROWSER_HEADLESS").unwrap_or_default() == "1";
-            let stealth = std::env::var("NEOBROWSER_STEALTH").unwrap_or_default() == "1";
+            self.launch_session(None).await?;
+        }
+        Ok(self.session.as_mut().unwrap())
+    }
 
-            // Pre-persist cookies if configured
-            if let Ok(cookie_paths) = std::env::var("NEOBROWSER_COOKIES") {
-                let profile_dir = engine::default_profile_dir();
-                for path in cookie_paths.split(',') {
-                    let path = path.trim();
-                    if !path.is_empty() {
-                        match engine::persist_cookies_to_profile(&profile_dir, path) {
-                            Ok(n) => eprintln!("[MCP] Pre-persisted {n} cookies from {path}"),
-                            Err(e) => eprintln!("[MCP] Cookie persist warning: {e}"),
-                        }
+    async fn launch_session(&mut self, force_headed: Option<bool>) -> Result<(), String> {
+        let headless = match force_headed {
+            Some(true) => false,  // force headed
+            Some(false) => true,  // force headless
+            None => std::env::var("NEOBROWSER_HEADLESS").unwrap_or_default() == "1",
+        };
+        let stealth = std::env::var("NEOBROWSER_STEALTH").unwrap_or_default() == "1";
+
+        // Pre-persist cookies if configured
+        if let Ok(cookie_paths) = std::env::var("NEOBROWSER_COOKIES") {
+            let profile_dir = engine::default_profile_dir();
+            for path in cookie_paths.split(',') {
+                let path = path.trim();
+                if !path.is_empty() {
+                    match engine::persist_cookies_to_profile(&profile_dir, path) {
+                        Ok(n) => eprintln!("[MCP] Pre-persisted {n} cookies from {path}"),
+                        Err(e) => eprintln!("[MCP] Cookie persist warning: {e}"),
                     }
                 }
             }
+        }
 
-            let session = if stealth {
-                // STEALTH: pipe CDP, no TCP port, no connect_running
-                eprintln!("[MCP] Stealth mode (pipe CDP, no TCP port)");
-                engine::Session::launch_stealth(None, headless)
-                    .await
-                    .map_err(|e| format!("Failed to launch stealth Chrome: {e}"))?
-            } else {
-                // Normal: try connecting to running Chrome, fall back to launching
-                match engine::Session::connect_running().await {
-                    Ok(s) => {
-                        eprintln!("[MCP] Connected to running Chrome");
-                        s
-                    }
-                    Err(_) => {
-                        engine::Session::launch_ex(None, headless)
-                            .await
-                            .map_err(|e| format!("Failed to launch Chrome: {e}"))?
+        let mode = if headless { "headless" } else { "headed" };
+        eprintln!("[MCP] Launching Chrome ({mode})");
+
+        let session = if stealth && headless {
+            eprintln!("[MCP] Stealth mode (pipe CDP, no TCP port)");
+            engine::Session::launch_stealth(None, true)
+                .await
+                .map_err(|e| format!("Failed to launch stealth Chrome: {e}"))?
+        } else {
+            match engine::Session::connect_running().await {
+                Ok(s) => {
+                    eprintln!("[MCP] Connected to running Chrome");
+                    s
+                }
+                Err(_) => {
+                    engine::Session::launch_ex(None, headless)
+                        .await
+                        .map_err(|e| format!("Failed to launch Chrome: {e}"))?
+                }
+            }
+        };
+        self.session = Some(session);
+        Ok(())
+    }
+
+    /// Detect Cloudflare challenge and restart headed if needed.
+    /// Returns true if it restarted and the caller should retry.
+    async fn cloudflare_fallback(&mut self, url: &str) -> bool {
+        let is_cloudflare = if let Some(ref session) = self.session {
+            match session.eval("document.title").await {
+                Ok(title) => title.contains("Un momento") || title.contains("Just a moment"),
+                Err(_) => false,
+            }
+        } else {
+            return false;
+        };
+
+        if !is_cloudflare {
+            return false;
+        }
+
+        let is_headless = std::env::var("NEOBROWSER_HEADLESS").unwrap_or_default() == "1";
+        if !is_headless {
+            return false; // already headed, can't help
+        }
+
+        eprintln!("[MCP] Cloudflare detected in headless — restarting headed to pass challenge");
+
+        // Close headless session
+        if let Some(mut s) = self.session.take() {
+            let _ = s.close().await;
+        }
+        self.wom_revision = 0;
+        self.prev_wom = None;
+
+        // Relaunch headed
+        if let Err(e) = self.launch_session(Some(true)).await {
+            eprintln!("[MCP] Headed relaunch failed: {e}");
+            return false;
+        }
+
+        // Navigate again
+        if let Some(ref mut session) = self.session {
+            let _ = session.goto(url).await;
+            // Wait for Cloudflare to pass
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                if let Ok(title) = session.eval("document.title").await {
+                    if !title.contains("Un momento") && !title.contains("Just a moment") {
+                        eprintln!("[MCP] Cloudflare passed! Continuing headed.");
+                        return true;
                     }
                 }
-            };
-            self.session = Some(session);
+            }
         }
-        Ok(self.session.as_mut().unwrap())
+        eprintln!("[MCP] Cloudflare still blocking after headed restart");
+        false
     }
 
     fn next_revision(&mut self) -> u64 {
@@ -186,9 +316,9 @@ fn tool_definitions() -> Vec<ToolDef> {
                     "url": { "type": "string", "description": "URL to open" },
                     "mode": {
                         "type": "string",
-                        "enum": ["light", "chrome", "auto"],
-                        "default": "chrome",
-                        "description": "Engine mode: light (HTTP only), chrome (full browser), auto"
+                        "enum": ["auto", "light", "neorender", "chrome"],
+                        "default": "auto",
+                        "description": "auto: Ghost→NeoRender→Chrome | light: HTTP only | neorender: V8 JS execution (no Chrome) | chrome: full browser"
                     },
                     "cookies_file": {
                         "type": "string",
@@ -510,7 +640,7 @@ fn tool_definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "browser_pipeline".into(),
-            description: "Run deterministic automation pipelines: sequences of goto/click/type/wait/assert/extract steps with retry and control flow.".into(),
+            description: "Run deterministic automation pipelines. Actions: goto, click, type, press, wait, eval, extract, screenshot, send_message (contenteditable+click send), wait_stable (poll until text stops changing), save (write to file). Steps have retry, timeout, assert, store_as, on_fail.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -649,6 +779,7 @@ async fn handle_tool(state: &mut McpState, name: &str, args: &Value) -> Result<V
 
 async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String> {
     let url = args["url"].as_str().ok_or("Missing 'url'")?;
+    let mode = args["mode"].as_str().unwrap_or("auto");
 
     // Check allowed domains
     if let Ok(domains) = std::env::var("NEOBROWSER_ALLOWED_DOMAINS") {
@@ -669,7 +800,415 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
         }
     }
 
-    // Ensure session exists
+    // ─── NeoRender mode: force V8 JS execution ───
+    if mode == "neorender" {
+        let domain = domain_from_url(url);
+
+        // ─── NeoSession path: persistent session (preferred) ───
+        {
+            // Create NeoSession if not exists
+            if state.neo_session.is_none() {
+                let cookies_file = args["cookies_file"].as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| load_session_cache(&domain));
+                match crate::neorender::session::NeoSession::new(cookies_file.as_deref()) {
+                    Ok(ns) => {
+                        eprintln!("[MCP] Created new NeoSession");
+                        state.neo_session = Some(ns);
+                    }
+                    Err(e) => {
+                        eprintln!("[MCP] NeoSession creation failed: {e} — falling back to render_page");
+                    }
+                }
+            } else {
+                // Existing session — load additional cookies if provided
+                if let Some(neo) = state.neo_session.as_mut() {
+                    if let Some(cookies_file) = args["cookies_file"].as_str() {
+                        neo.cookies_mut().load_file(cookies_file).ok();
+                    }
+                }
+            }
+
+            if let Some(neo) = state.neo_session.as_mut() {
+                match neo.goto(url).await {
+                    Ok(result) => {
+                        // Check for WAF — if detected, drop NeoSession and fall through
+                        let is_waf = result.errors.iter().any(|e| e.starts_with("WAF challenge:"));
+                        if !is_waf {
+                            // Success — build response from NeoSession result
+                            let rendered_html = neo.export_html().unwrap_or_default();
+                            let dom = html5ever::parse_document(
+                                markup5ever_rcdom::RcDom::default(), Default::default()
+                            ).from_utf8().read_from(&mut rendered_html.as_bytes())
+                                .map_err(|e| format!("Re-parse error: {e}"))?;
+
+                            let title = if result.title.is_empty() { extract_title_from_dom(&dom) } else { result.title.clone() };
+                            let text = if result.text.is_empty() { extract_text_from_dom(&dom) } else { result.text.clone() };
+                            let links_count = count_elements(&dom, "a");
+                            let forms_count = count_elements(&dom, "form");
+                            let inputs_count = count_elements(&dom, "input");
+                            let buttons_count = count_elements(&dom, "button");
+
+                            let mut see = format!(
+                                "Page: {}\nURL: {}\nStatus: {}\nEngine: neosession (V8 persistent)\nRender: {}ms, {} scripts\n",
+                                title, result.url, result.status, result.render_time_ms, result.scripts_count,
+                            );
+                            if !text.is_empty() {
+                                let t = if text.len() > 8000 { &text[..8000] } else { &text };
+                                see.push_str(&format!("\n--- Text ---\n{}\n", t.trim()));
+                            }
+                            if !result.errors.is_empty() {
+                                see.push_str(&format!("\n--- Errors ({}) ---\n", result.errors.len()));
+                                for err in &result.errors {
+                                    see.push_str(&format!("  {}\n", err));
+                                }
+                            }
+                            if links_count > 0 || forms_count > 0 || inputs_count > 0 || buttons_count > 0 {
+                                see.push_str(&format!("\n--- Elements ---\nLinks: {}, Forms: {}, Inputs: {}, Buttons: {}\n",
+                                    links_count, forms_count, inputs_count, buttons_count));
+                            }
+
+                            let body_start = rendered_html.find("<body").unwrap_or(0);
+                            let body_preview = &rendered_html[body_start..];
+                            let body_preview = if body_preview.len() > 2000 { &body_preview[..2000] } else { body_preview };
+                            see.push_str(&format!("\n--- Body Preview ---\n{}\n", body_preview));
+
+                            return Ok(serde_json::json!({
+                                "ok": true,
+                                "engine": "neosession",
+                                "persistent": true,
+                                "url": result.url,
+                                "status": result.status,
+                                "title": title,
+                                "links": links_count,
+                                "forms": forms_count,
+                                "inputs": inputs_count,
+                                "buttons": buttons_count,
+                                "render_ms": result.render_time_ms,
+                                "scripts": result.scripts_count,
+                                "html_bytes": rendered_html.len(),
+                                "errors": result.errors,
+                                "page": see,
+                            }));
+                        }
+                        // WAF detected — drop session and fall through to legacy path
+                        eprintln!("[MCP] NeoSession hit WAF — falling back to render_page + Chrome recovery");
+                        state.neo_session = None;
+                    }
+                    Err(e) => {
+                        eprintln!("[MCP] NeoSession goto failed: {e} — falling back to render_page");
+                        state.neo_session = None;
+                    }
+                }
+            }
+        }
+
+        // ─── Legacy fallback: render_page (creates/destroys per call) ───
+        let ghost = state.ghost.get_or_insert_with(|| ghost::GhostBrowser::new());
+        // Load cookies: explicit file > session cache > env var
+        if let Some(cookies_file) = args["cookies_file"].as_str() {
+            ghost.load_cookies(cookies_file).ok();
+        } else if let Some(cached) = load_session_cache(&domain) {
+            ghost.load_cookies(&cached).ok();
+        }
+        if let Ok(cookie_paths) = std::env::var("NEOBROWSER_COOKIES") {
+            for path in cookie_paths.split(',') {
+                let path = path.trim();
+                if !path.is_empty() { ghost.load_cookies(path).ok(); }
+            }
+        }
+        // Load localStorage from state file if present
+        let cookies_source = args["cookies_file"].as_str()
+            .map(|s| s.to_string())
+            .or_else(|| load_session_cache(&domain));
+        let local_storage: Option<std::collections::HashMap<String, String>> = cookies_source.as_deref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+            .and_then(|v| v["localStorage"].as_object().cloned())
+            .map(|obj| obj.into_iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+                .collect());
+
+        let ghost = state.ghost.as_mut().unwrap();
+        let result = crate::neorender::render_page(ghost, url, local_storage.as_ref()).await?;
+
+        // WAF detected → try to resolve via Chrome with human assistance
+        let is_waf = result.errors.iter().any(|e| e.starts_with("WAF challenge:"));
+        if is_waf {
+            eprintln!("[NEORENDER] WAF blocked — escalating to Chrome for human resolution");
+
+            // Launch fresh Chrome (headed for human interaction)
+            // Kill old session if exists — WAF needs a clean browser
+            if state.session.is_some() {
+                eprintln!("[SESSION] Closing old Chrome session for WAF resolution");
+                state.session = None;
+            }
+            let session = match engine::Session::launch_stealth(None, false).await {
+                Ok(s) => { state.session = Some(s); state.session.as_mut().unwrap() },
+                Err(e) => {
+                    return Ok(serde_json::json!({
+                        "ok": false, "engine": "neorender",
+                        "blocked": result.errors.first().unwrap_or(&String::new()),
+                        "error": format!("Chrome launch failed: {e}"),
+                        "url": url,
+                    }));
+                }
+            };
+
+            // Navigate to the blocked URL
+            eprintln!("[SESSION] Navigating Chrome to: {}", url);
+            if let Err(e) = session.goto(url).await {
+                eprintln!("[SESSION] Chrome goto failed: {e}");
+            }
+
+            // Wait for page to stabilize (human resolves captcha/challenge)
+            eprintln!("[SESSION] Waiting for human to resolve WAF challenge at: {}", url);
+            eprintln!("[SESSION] The page is open in Chrome — resolve the challenge and the browser will capture the session.");
+
+            // Wait up to 60s for the page to change (challenge resolved)
+            for _wait in 0..12 {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                // Check if we're past the challenge (URL changed or page has content)
+                let current_url = session.eval_string("location.href").await.unwrap_or_default();
+                let body_len = session.eval_string("document.body?.innerText?.length || 0").await
+                    .unwrap_or_else(|_| "0".to_string())
+                    .parse::<usize>().unwrap_or(0);
+                eprintln!("[SESSION] Check: url={} body={}B", &current_url[..current_url.len().min(60)], body_len);
+
+                if body_len > 200 && !current_url.contains("challenge") {
+                    eprintln!("[SESSION] Challenge appears resolved! Capturing session...");
+                    // Save session to cache
+                    save_session_to_cache(session, url).await.ok();
+
+                    // Retry neorender with the fresh cookies
+                    let ghost = state.ghost.get_or_insert_with(|| ghost::GhostBrowser::new());
+                    if let Some(cached) = load_session_cache(&domain) {
+                        ghost.load_cookies(&cached).ok();
+                    }
+                    let ls2: Option<std::collections::HashMap<String, String>> = load_session_cache(&domain)
+                        .and_then(|p| std::fs::read_to_string(p).ok())
+                        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+                        .and_then(|v| v["localStorage"].as_object().cloned())
+                        .map(|obj| obj.into_iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string())))
+                            .collect());
+                    let ghost = state.ghost.as_mut().unwrap();
+                    let retry = crate::neorender::render_page(ghost, url, ls2.as_ref()).await;
+                    if let Ok(retry_result) = retry {
+                        if !retry_result.errors.iter().any(|e| e.starts_with("WAF challenge:")) {
+                            eprintln!("[SESSION] Neorender retry succeeded after human resolution!");
+                            // Use retry_result instead — jump to the rendering path below
+                            let dom = html5ever::parse_document(
+                                markup5ever_rcdom::RcDom::default(), Default::default()
+                            ).from_utf8().read_from(&mut retry_result.html.as_bytes())
+                                .map_err(|e| format!("Re-parse error: {e}"))?;
+
+                            let title = extract_title_from_dom(&dom);
+                            let text = extract_text_from_dom(&dom);
+
+                            return Ok(serde_json::json!({
+                                "ok": true,
+                                "engine": "neorender",
+                                "human_resolved": true,
+                                "url": retry_result.url,
+                                "status": retry_result.status,
+                                "title": title,
+                                "html_bytes": retry_result.html.len(),
+                                "page": format!("Page: {}\nURL: {}\nEngine: neorender (human-assisted)\n\n--- Text ---\n{}\n",
+                                    title, retry_result.url, &text[..text.len().min(8000)]),
+                            }));
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // If we get here, human didn't resolve or retry failed — return WAF error with instructions
+            return Ok(serde_json::json!({
+                "ok": false,
+                "engine": "neorender",
+                "blocked": result.errors.first().unwrap_or(&String::new()),
+                "action": "human_resolve",
+                "instructions": format!("WAF challenge at {}. Chrome is open — resolve the challenge manually, then call browser_open again.", url),
+                "url": url,
+            }));
+        }
+
+        let dom = html5ever::parse_document(
+            markup5ever_rcdom::RcDom::default(), Default::default()
+        ).from_utf8().read_from(&mut result.html.as_bytes())
+            .map_err(|e| format!("Re-parse error: {e}"))?;
+
+        let title = extract_title_from_dom(&dom);
+        let text = extract_text_from_dom(&dom);
+        let links_count = count_elements(&dom, "a");
+        let forms_count = count_elements(&dom, "form");
+        let inputs_count = count_elements(&dom, "input");
+        let buttons_count = count_elements(&dom, "button");
+
+        let mut see = format!(
+            "Page: {}\nURL: {}\nStatus: {}\nEngine: neorender (V8)\nRender: {}ms, {} scripts\n",
+            title, result.url, result.status, result.render_time_ms, result.scripts_count,
+        );
+        if !text.is_empty() {
+            let t = if text.len() > 8000 { &text[..8000] } else { &text };
+            see.push_str(&format!("\n--- Text ---\n{}\n", t.trim()));
+        }
+
+        if !result.errors.is_empty() {
+            see.push_str(&format!("\n--- Errors ({}) ---\n", result.errors.len()));
+            for err in &result.errors {
+                see.push_str(&format!("  {}\n", err));
+            }
+        }
+
+        // Elements summary
+        if links_count > 0 || forms_count > 0 || inputs_count > 0 || buttons_count > 0 {
+            see.push_str(&format!("\n--- Elements ---\nLinks: {}, Forms: {}, Inputs: {}, Buttons: {}\n",
+                links_count, forms_count, inputs_count, buttons_count));
+        }
+
+        // Debug: show body content (skip head which is just meta tags)
+        let body_start = result.html.find("<body").unwrap_or(0);
+        let body_preview = &result.html[body_start..];
+        let body_preview = if body_preview.len() > 2000 { &body_preview[..2000] } else { body_preview };
+        see.push_str(&format!("\n--- Body Preview ---\n{}\n", body_preview));
+
+        return Ok(serde_json::json!({
+            "ok": true,
+            "engine": "neorender",
+            "url": result.url,
+            "status": result.status,
+            "title": title,
+            "links": links_count,
+            "forms": forms_count,
+            "inputs": inputs_count,
+            "buttons": buttons_count,
+            "render_ms": result.render_time_ms,
+            "scripts": result.scripts_count,
+            "html_bytes": result.html.len(),
+            "errors": result.errors,
+            "page": see,
+        }));
+    }
+
+    // ─── Ghost mode: pure HTTP, no Chrome ───
+    if mode == "light" || mode == "auto" {
+        let ghost = state.ghost.get_or_insert_with(|| ghost::GhostBrowser::new());
+
+        // Load cookies if provided
+        if let Some(cookies_file) = args["cookies_file"].as_str() {
+            ghost.load_cookies(cookies_file).ok();
+        }
+        // Also load from env
+        if let Ok(cookie_paths) = std::env::var("NEOBROWSER_COOKIES") {
+            for path in cookie_paths.split(',') {
+                let path = path.trim();
+                if !path.is_empty() {
+                    ghost.load_cookies(path).ok();
+                }
+            }
+        }
+
+        match ghost.goto(url).await {
+            Ok(page) => {
+                // Check if we got a real page or a Cloudflare challenge
+                let is_challenge = page.title.contains("moment")
+                    || page.title.contains("momento")
+                    || page.title.contains("Attention Required")
+                    || (page.status == 403 && page.html_len < 10000);
+
+                if is_challenge && mode == "auto" {
+                    eprintln!("[GHOST] Challenge detected, falling back to Chrome");
+                    // Fall through to Chrome mode below
+                } else if page.is_spa && mode == "auto" {
+                    // SPA detected → NeoRender (V8 JS execution)
+                    eprintln!("[GHOST] SPA detected — launching NeoRender (V8)...");
+                    let ghost = state.ghost.as_mut().unwrap();
+                    match crate::neorender::render_page(ghost, url, None).await {
+                        Ok(result) if result.errors.iter().any(|e| e.starts_with("WAF challenge:")) => {
+                            eprintln!("[NEORENDER] WAF detected, falling back to Chrome");
+                            // Fall through to Chrome
+                        }
+                        Ok(result) => {
+                            // Re-parse rendered HTML → extract page info
+                            let dom = html5ever::parse_document(
+                                markup5ever_rcdom::RcDom::default(), Default::default()
+                            ).from_utf8().read_from(&mut result.html.as_bytes())
+                                .map_err(|e| format!("Re-parse error: {e}"))?;
+
+                            let title = extract_title_from_dom(&dom);
+                            let text = extract_text_from_dom(&dom);
+                            let links_count = count_elements(&dom, "a");
+                            let forms_count = count_elements(&dom, "form");
+                            let inputs_count = count_elements(&dom, "input");
+                            let buttons_count = count_elements(&dom, "button");
+
+                            let mut see = format!(
+                                "Page: {}\nURL: {}\nStatus: {}\nEngine: neorender (V8)\nRender: {}ms, {} scripts\n",
+                                title, result.url, result.status,
+                                result.render_time_ms, result.scripts_count,
+                            );
+                            if !text.is_empty() {
+                                let t = if text.len() > 8000 { &text[..8000] } else { &text };
+                                see.push_str(&format!("\n--- Text ---\n{}\n", t.trim()));
+                            }
+                            see.push_str(&format!(
+                                "\n--- Elements ---\nLinks: {}, Forms: {}, Inputs: {}, Buttons: {}\n",
+                                links_count, forms_count, inputs_count, buttons_count,
+                            ));
+
+                            return Ok(serde_json::json!({
+                                "ok": true,
+                                "engine": "neorender",
+                                "url": result.url,
+                                "status": result.status,
+                                "title": title,
+                                "is_spa": true,
+                                "links": links_count,
+                                "forms": forms_count,
+                                "inputs": inputs_count,
+                                "buttons": buttons_count,
+                                "render_ms": result.render_time_ms,
+                                "scripts": result.scripts_count,
+                                "html_bytes": result.html.len(),
+                                "page": see,
+                            }));
+                        }
+                        Err(e) => {
+                            eprintln!("[NEORENDER] Failed ({e}), falling back to Chrome");
+                            // Fall through to Chrome
+                        }
+                    }
+                } else {
+                    let see = page.to_see(8000);
+                    return Ok(serde_json::json!({
+                        "ok": true,
+                        "engine": "ghost",
+                        "url": page.url,
+                        "status": page.status,
+                        "title": page.title,
+                        "is_spa": page.is_spa,
+                        "links": page.links.len(),
+                        "forms": page.forms.len(),
+                        "inputs": page.inputs.len(),
+                        "buttons": page.buttons.len(),
+                        "apis": page.apis.len(),
+                        "html_bytes": page.html_len,
+                        "page": see,
+                    }));
+                }
+            }
+            Err(e) => {
+                if mode == "light" {
+                    return Err(format!("Ghost fetch failed: {e}"));
+                }
+                eprintln!("[GHOST] Failed ({e}), falling back to Chrome");
+            }
+        }
+    }
+
+    // ─── Chrome mode: full browser ───
     let session = state.ensure_session().await?;
 
     // Load cookies if provided (browser-level, works on about:blank)
@@ -677,13 +1216,8 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
         session.load_cookies(cookies_file).await.map_err(|e| format!("{e}"))?;
     }
 
-    // Navigate — stealth is NOT applied yet (Cloudflare would detect it)
     session.goto(url).await.map_err(|e| format!("{e}"))?;
-
-    // Apply stealth AFTER navigation (after Cloudflare challenge passes)
-    session.apply_stealth().await.ok(); // ignore errors, stealth is best-effort
-
-    // Auto-dismiss cookie banners
+    session.apply_stealth().await.ok();
     session.dismiss_cookie_banners().await.ok();
 
     // Get WOM
@@ -695,6 +1229,7 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
 
     let result = serde_json::json!({
         "ok": true,
+        "engine": "chrome",
         "url": doc.page.url,
         "page_class": doc.page.page_class,
         "revision": doc.session.revision,
@@ -823,6 +1358,70 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
     } else {
         None
     };
+
+    // ─── NeoSession shortcut: eval/fetch without Chrome ───
+    if let Some(neo) = state.neo_session.as_mut() {
+        match kind {
+            "eval" => {
+                let js = args["text"].as_str().ok_or("Missing 'text' for eval")?;
+                // Use async eval if JS contains async patterns (fetch, await, Promise, .then)
+                let is_async = js.contains("await") || js.contains("fetch(") || js.contains(".then(") || js.contains("async");
+                let result = if is_async {
+                    neo.eval_async(js, 120_000).await.map_err(|e| format!("{e}"))?
+                } else {
+                    neo.eval(js).map_err(|e| format!("{e}"))?
+                };
+                let elapsed = act_t0.elapsed().as_millis() as u64;
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "engine": "neosession",
+                    "outcome": "succeeded",
+                    "effect": format!("eval_result: {result}"),
+                    "elapsed_ms": elapsed,
+                }));
+            }
+            "neo_fetch" => {
+                let fetch_url = args["url"].as_str().ok_or("Missing 'url' for neo_fetch")?;
+                let method = args["method"].as_str().unwrap_or("GET");
+                let body = args["body"].as_str();
+                let hdrs = args["headers"].as_str();
+                let result = neo.fetch(fetch_url, method, body, hdrs).await
+                    .map_err(|e| format!("{e}"))?;
+                let elapsed = act_t0.elapsed().as_millis() as u64;
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "engine": "neosession",
+                    "outcome": "succeeded",
+                    "effect": format!("fetch_result: {result}"),
+                    "elapsed_ms": elapsed,
+                }));
+            }
+            "neo_export_html" => {
+                let html = neo.export_html().map_err(|e| format!("{e}"))?;
+                let elapsed = act_t0.elapsed().as_millis() as u64;
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "engine": "neosession",
+                    "outcome": "succeeded",
+                    "effect": format!("html_bytes: {}", html.len()),
+                    "html": html,
+                    "elapsed_ms": elapsed,
+                }));
+            }
+            "neo_export_text" => {
+                let text = neo.export_text().map_err(|e| format!("{e}"))?;
+                let elapsed = act_t0.elapsed().as_millis() as u64;
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "engine": "neosession",
+                    "outcome": "succeeded",
+                    "effect": text,
+                    "elapsed_ms": elapsed,
+                }));
+            }
+            _ => {} // Fall through to Chrome session for other actions
+        }
+    }
 
     let session = state.ensure_session().await?;
     let session = state.session.as_mut().unwrap();
@@ -2296,8 +2895,7 @@ async fn handle_pipeline(state: &mut McpState, args: &Value) -> Result<Value, St
         return Err("Need 'pipeline' or 'pipeline_json'".into());
     };
 
-    let session = state.ensure_session().await?;
-    let session = state.session.as_mut().unwrap();
+    state.ensure_session().await?;
 
     let t0 = std::time::Instant::now();
     let mut results = Vec::new();
@@ -2316,6 +2914,7 @@ async fn handle_pipeline(state: &mut McpState, args: &Value) -> Result<Value, St
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
 
+            let session = state.session.as_mut().unwrap();
             let result = match step.action.as_str() {
                 "goto" => {
                     let url = substitute_vars(&step.target, &variables);
@@ -2390,6 +2989,76 @@ async fn handle_pipeline(state: &mut McpState, args: &Value) -> Result<Value, St
                         Err(e) => Err(format!("{e}")),
                     }
                 }
+                "send_message" => {
+                    // target = input CSS selector, value = text to send
+                    // Optional: step.assert_text can hold button selector (default: auto-detect)
+                    let input_sel = substitute_vars(&step.target, &variables);
+                    let text = substitute_vars(&step.value, &variables);
+                    let btn_sel = step.assert_text.as_deref().unwrap_or("");
+                    match session.send_message(&text, &input_sel, btn_sel).await {
+                        Ok(r) if r == "SENT" => Ok(format!("sent {} chars", text.len())),
+                        Ok(r) => Err(format!("send_message: {r}")),
+                        Err(e) => Err(format!("{e}")),
+                    }
+                }
+                "wait_stable" => {
+                    // Wait until page text stops changing (streaming done).
+                    // target = optional JS selector for content area
+                    // timeout_ms = max wait (default 30000)
+                    let js = if step.target.is_empty() {
+                        "document.body.innerText".to_string()
+                    } else {
+                        let sel = substitute_vars(&step.target, &variables);
+                        format!("(document.querySelector('{sel}')||document.body).innerText")
+                    };
+                    let timeout = if step.timeout_ms > 0 { step.timeout_ms } else { 30000 };
+                    let mut prev = String::new();
+                    let mut stable_count = 0u32;
+                    let start = std::time::Instant::now();
+                    loop {
+                        if start.elapsed().as_millis() as u64 > timeout {
+                            // Store whatever we have
+                            if let Some(var_name) = &step.store_as {
+                                variables.insert(var_name.clone(), prev.clone());
+                            }
+                            break Err("timeout waiting for stable content".into());
+                        }
+                        match session.eval(&js).await {
+                            Ok(current) => {
+                                if current == prev && !current.is_empty() {
+                                    stable_count += 1;
+                                    if stable_count >= 3 {
+                                        if let Some(var_name) = &step.store_as {
+                                            variables.insert(var_name.clone(), current.clone());
+                                        }
+                                        break Ok(format!("stable after {}ms", start.elapsed().as_millis()));
+                                    }
+                                } else {
+                                    stable_count = 0;
+                                    prev = current;
+                                }
+                            }
+                            Err(_) => { stable_count = 0; }
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                    }
+                }
+                "save" => {
+                    // Save variable or page text to file.
+                    // target = file path, value = variable name (or empty for page text)
+                    let path = substitute_vars(&step.target, &variables);
+                    let content = if step.value.is_empty() {
+                        session.eval("document.body.innerText").await
+                            .unwrap_or_default()
+                    } else {
+                        let var_name = substitute_vars(&step.value, &variables);
+                        variables.get(&var_name).cloned().unwrap_or_default()
+                    };
+                    match std::fs::write(&path, &content) {
+                        Ok(_) => Ok(format!("saved {} bytes to {path}", content.len())),
+                        Err(e) => Err(format!("save failed: {e}")),
+                    }
+                }
                 _ => Err(format!("Unknown step action: {}", step.action)),
             };
 
@@ -2418,6 +3087,7 @@ async fn handle_pipeline(state: &mut McpState, args: &Value) -> Result<Value, St
         }
 
         // Record trace if enabled
+        let session = state.session.as_mut().unwrap();
         if state.trace.is_enabled() {
             let url = session.last_url.clone();
             state.trace.record(
@@ -2716,4 +3386,59 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("[MCP] Server stopped");
     Ok(())
+}
+
+// ─── NeoRender helpers ───
+
+fn extract_title_from_dom(dom: &markup5ever_rcdom::RcDom) -> String {
+    fn find(node: &markup5ever_rcdom::Handle) -> Option<String> {
+        if let markup5ever_rcdom::NodeData::Element { name, .. } = &node.data {
+            if name.local.as_ref() == "title" {
+                let text: String = node.children.borrow().iter()
+                    .filter_map(|c| match &c.data {
+                        markup5ever_rcdom::NodeData::Text { contents } => Some(contents.borrow().to_string()),
+                        _ => None,
+                    }).collect();
+                if !text.trim().is_empty() { return Some(text.trim().to_string()); }
+            }
+        }
+        for child in node.children.borrow().iter() {
+            if let Some(t) = find(child) { return Some(t); }
+        }
+        None
+    }
+    find(&dom.document).unwrap_or_default()
+}
+
+fn extract_text_from_dom(dom: &markup5ever_rcdom::RcDom) -> String {
+    fn collect(node: &markup5ever_rcdom::Handle, depth: usize) -> String {
+        if depth > 200 { return String::new(); }
+        let mut text = String::new();
+        if let markup5ever_rcdom::NodeData::Element { name, .. } = &node.data {
+            let tag = name.local.as_ref();
+            if matches!(tag, "script" | "style" | "noscript" | "svg" | "head") { return String::new(); }
+        }
+        if let markup5ever_rcdom::NodeData::Text { contents } = &node.data {
+            let t = contents.borrow().to_string();
+            let t = t.trim();
+            if !t.is_empty() { text.push_str(t); text.push(' '); }
+        }
+        for child in node.children.borrow().iter() {
+            text.push_str(&collect(child, depth + 1));
+        }
+        text
+    }
+    collect(&dom.document, 0)
+}
+
+fn count_elements(dom: &markup5ever_rcdom::RcDom, tag_name: &str) -> usize {
+    fn count(node: &markup5ever_rcdom::Handle, tag: &str) -> usize {
+        let mut n = 0;
+        if let markup5ever_rcdom::NodeData::Element { name, .. } = &node.data {
+            if name.local.as_ref() == tag { n += 1; }
+        }
+        for child in node.children.borrow().iter() { n += count(child, tag); }
+        n
+    }
+    count(&dom.document, tag_name)
 }

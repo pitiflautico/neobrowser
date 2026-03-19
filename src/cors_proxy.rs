@@ -15,9 +15,9 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[PROXY] CORS proxy listening on http://127.0.0.1:{port}");
     eprintln!("[PROXY] Usage: fetch('http://127.0.0.1:{port}/https://target.com/path')");
 
-    let client = reqwest::Client::builder()
+    let client = rquest::Client::builder()
         .danger_accept_invalid_certs(true)
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .redirect(rquest::redirect::Policy::limited(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
@@ -79,7 +79,7 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             };
 
             // Extract headers from request
-            let mut headers = reqwest::header::HeaderMap::new();
+            let mut headers = rquest::header::HeaderMap::new();
             for line in request.lines().skip(1) {
                 if line.is_empty() {
                     break;
@@ -94,8 +94,8 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                         continue;
                     }
                     if let (Ok(k), Ok(v)) = (
-                        reqwest::header::HeaderName::from_bytes(key.as_bytes()),
-                        reqwest::header::HeaderValue::from_str(value),
+                        rquest::header::HeaderName::from_bytes(key.as_bytes()),
+                        rquest::header::HeaderValue::from_str(value),
                     ) {
                         headers.insert(k, v);
                     }

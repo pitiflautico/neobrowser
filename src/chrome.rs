@@ -148,7 +148,7 @@ impl Session {
     pub async fn connect_port(port: u16) -> Result<Self, Box<dyn std::error::Error>> {
         // Try HTTP discovery first
         let url = format!("http://127.0.0.1:{port}/json/version");
-        let client = reqwest::Client::builder()
+        let client = rquest::Client::builder()
             .timeout(std::time::Duration::from_secs(2))
             .build()?;
 

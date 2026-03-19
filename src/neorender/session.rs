@@ -1,0 +1,468 @@
+//! NeoSession — persistent headless browser session.
+//!
+//! Unlike render_page (create/destroy per call), NeoSession keeps the V8 runtime,
+//! HTTP client, and cookie jar alive across navigations. This enables:
+//! - Session cookies persisting between pages
+//! - Module cache surviving across goto() calls
+//! - eval() in the current page context
+//! - fetch() using the same Chrome TLS fingerprint + cookies
+
+use deno_core::JsRuntime;
+use std::rc::Rc;
+use std::cell::RefCell;
+use std::sync::Arc;
+
+use crate::ghost;
+use super::v8_runtime::{self, ScriptStoreHandle};
+
+/// Shared HTTP client handle — stored in V8's OpState so fetch ops use the session's client.
+pub type SharedClient = Arc<rquest::Client>;
+
+/// Current page origin — stored in V8's OpState so fetch ops add proper browser headers.
+#[derive(Clone)]
+pub struct PageOrigin {
+    pub origin: String,  // e.g. "https://chatgpt.com"
+    pub url: String,     // e.g. "https://chatgpt.com/"
+}
+
+/// Persistent browser session: V8 runtime + HTTP client + cookies.
+pub struct NeoSession {
+    runtime: JsRuntime,
+    store: ScriptStoreHandle,
+    client: SharedClient,
+    cookies: ghost::CookieJar,
+    url: String,
+    navigated: bool, // true after first goto()
+}
+
+/// Result from a goto() navigation.
+pub struct PageResult {
+    pub url: String,
+    pub status: u16,
+    pub title: String,
+    pub text: String,
+    pub html_len: usize,
+    pub scripts_count: usize,
+    pub render_time_ms: u64,
+    pub errors: Vec<String>,
+}
+
+impl NeoSession {
+    /// Create a new session. Optionally loads cookies from a JSON file.
+    /// Does NOT navigate — call goto() after creation.
+    pub fn new(cookies_file: Option<&str>) -> Result<Self, String> {
+        // 1. Build rquest client with Chrome TLS + cookie store
+        let client = rquest::Client::builder()
+            .impersonate(rquest::Impersonate::Chrome131)
+            .cookie_store(true)
+            .redirect(rquest::redirect::Policy::limited(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("Client build error: {e}"))?;
+        let client = Arc::new(client);
+
+        // 2. Load cookies if provided
+        let mut cookies = ghost::CookieJar::new();
+        if let Some(path) = cookies_file {
+            match cookies.load_file(path) {
+                Ok(n) => eprintln!("[NEOSESSION] Loaded {n} cookies from {path}"),
+                Err(e) => eprintln!("[NEOSESSION] Cookie load warning: {e}"),
+            }
+        }
+        // Also check NEOBROWSER_COOKIES env
+        if let Ok(paths) = std::env::var("NEOBROWSER_COOKIES") {
+            for path in paths.split(',') {
+                let path = path.trim();
+                if !path.is_empty() {
+                    cookies.load_file(path).ok();
+                }
+            }
+        }
+
+        // 3. Create V8 runtime with empty HTML (no navigation yet)
+        let empty_html = "<html><head></head><body></body></html>";
+        let empty_url = "about:blank";
+        let (mut runtime, store) = v8_runtime::create_runtime_with_html(
+            empty_html, empty_url, &cookies, None,
+        )?;
+
+        // 4. Store the shared client in V8's OpState so op_neorender_fetch_shared can use it
+        {
+            let op_state = runtime.op_state();
+            let mut state = op_state.borrow_mut();
+            state.put::<SharedClient>(client.clone());
+        }
+
+        Ok(Self {
+            runtime,
+            store,
+            client,
+            cookies,
+            url: String::new(),
+            navigated: false,
+        })
+    }
+
+    /// Navigate to a URL. Reuses the existing V8 runtime — just replaces the DOM.
+    pub async fn goto(&mut self, url: &str) -> Result<PageResult, String> {
+        let start = std::time::Instant::now();
+
+        // 1. Build headers with cookies
+        let mut headers = rquest::header::HeaderMap::new();
+        if let Some(domain) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
+            if let Some(cookie_header) = self.cookies.header_for(&domain) {
+                if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
+                    headers.insert(rquest::header::COOKIE, v);
+                }
+            }
+        }
+
+        // 2. Fetch with the persistent client
+        let resp = self.client.get(url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {e}"))?;
+
+        let status = resp.status().as_u16();
+        let final_url = resp.url().to_string();
+
+        // Store response cookies
+        if let Some(domain) = resp.url().host_str() {
+            for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
+                if let Ok(s) = cookie.to_str() {
+                    self.cookies.store_from_header(domain, s);
+                }
+            }
+        }
+
+        let html = resp.text().await.map_err(|e| format!("Body error: {e}"))?;
+
+        // 3. WAF check
+        if let Some(waf) = super::detect_waf_challenge(&html) {
+            return Ok(PageResult {
+                url: final_url,
+                status,
+                title: String::new(),
+                text: String::new(),
+                html_len: html.len(),
+                scripts_count: 0,
+                render_time_ms: 0,
+                errors: vec![format!("WAF challenge: {waf}")],
+            });
+        }
+
+        let html_len = html.len();
+
+        // 4. Extract scripts
+        let mut all_scripts = super::extract_all_scripts(&html, &final_url);
+        let ext_count = all_scripts.iter().filter(|s| s.url.is_some()).count();
+        let mod_count = all_scripts.iter().filter(|s| s.is_module).count();
+        eprintln!("[NEOSESSION] {} scripts ({} external, {} modules) in {}",
+            all_scripts.len(), ext_count, mod_count, &final_url[..final_url.len().min(80)]);
+
+        // 5. Fetch external scripts using the persistent client
+        for script in all_scripts.iter_mut() {
+            if let Some(script_url) = &script.url {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    self.client.get(script_url).send(),
+                ).await {
+                    Ok(Ok(resp)) => {
+                        if let Ok(text) = resp.text().await {
+                            script.content = Some(text);
+                        }
+                    }
+                    _ => eprintln!("[NEOSESSION] Skip slow script: {}", script_url),
+                }
+            }
+        }
+
+        // 6. Pre-populate module store with fetched scripts
+        {
+            let mut s = self.store.borrow_mut();
+            for script in &all_scripts {
+                if let (Some(url), Some(content)) = (&script.url, &script.content) {
+                    s.scripts.insert(url.clone(), content.clone());
+                }
+            }
+        }
+
+        // 7. Pre-fetch ES module imports (depth 3)
+        {
+            let mut to_scan: Vec<(String, String)> = Vec::new();
+            for script in &all_scripts {
+                if script.is_module {
+                    if let (Some(url), Some(content)) = (&script.url, &script.content) {
+                        to_scan.push((url.clone(), content.clone()));
+                    }
+                }
+            }
+            for _depth in 0..3 {
+                let mut next_round = Vec::new();
+                for (script_url, content) in &to_scan {
+                    let imports = super::extract_es_imports(content, script_url);
+                    for import_url in imports {
+                        if self.store.borrow().scripts.contains_key(&import_url) { continue; }
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(15),
+                            self.client.get(&import_url).send(),
+                        ).await {
+                            Ok(Ok(resp)) => {
+                                if let Ok(text) = resp.text().await {
+                                    self.store.borrow_mut().scripts.insert(import_url.clone(), text.clone());
+                                    next_round.push((import_url, text));
+                                }
+                            }
+                            _ => eprintln!("[NEOSESSION] Skip slow import: {}", import_url),
+                        }
+                    }
+                }
+                to_scan = next_round;
+                if to_scan.is_empty() { break; }
+            }
+        }
+
+        // 8. Re-parse HTML into the existing runtime (replace DOM, not runtime)
+        let escaped_html = html.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
+        let reparse_js = format!(
+            r#"{{
+                const {{ document: newDoc }} = __linkedom_parseHTML(`{}`);
+                globalThis.document = newDoc;
+                try {{ Object.defineProperty(newDoc, 'currentScript', {{ value: null, writable: true, configurable: true }}); }} catch {{}}
+                if (newDoc.cookie === undefined) newDoc.cookie = '';
+                try {{ newDoc.defaultView = globalThis; }} catch {{}}
+                globalThis.__neorender_export = function() {{ return document.documentElement.outerHTML; }};
+            }}"#,
+            escaped_html
+        );
+        self.runtime.execute_script("<neosession:reparse>", reparse_js)
+            .map_err(|e| format!("DOM reparse error: {e}"))?;
+
+        // 9. Update location
+        v8_runtime::set_location(&mut self.runtime, &final_url)?;
+        self.runtime.execute_script("<neosession:doc_location>",
+            "document.location = location; try { document.baseURI = location.href; } catch {}".to_string()
+        ).map_err(|e| format!("doc.location sync: {e}"))?;
+
+        // 9b. Update page origin in OpState (for Sec-Fetch-* headers in fetch op)
+        {
+            let origin = url::Url::parse(&final_url).ok()
+                .map(|u| u.origin().ascii_serialization())
+                .unwrap_or_default();
+            let op_state = self.runtime.op_state();
+            let mut state = op_state.borrow_mut();
+            state.put::<PageOrigin>(PageOrigin { origin, url: final_url.clone() });
+        }
+
+        // 10. Update cookie injection for JS-side fetch
+        let cookie_map = self.cookies.all_headers();
+        if !cookie_map.is_empty() {
+            let cookies_json = serde_json::to_string(&cookie_map).unwrap_or_default();
+            let js = format!("globalThis.__neorender_cookies = {};", cookies_json);
+            self.runtime.execute_script("<neosession:cookies>", js)
+                .map_err(|e| format!("Cookie update: {e}"))?;
+        }
+
+        // 11. Execute scripts in document order
+        let scripts_count = all_scripts.len();
+        let mut errors = Vec::new();
+        let mut first_module = true;
+        for (i, script) in all_scripts.into_iter().enumerate() {
+            let Some(content) = script.content else { continue };
+            let script_url = script.url.as_deref().unwrap_or(&final_url);
+            let name = if script.url.is_some() { format!("script:{i}") } else { format!("inline:{i}") };
+
+            let err = if script.is_module {
+                if first_module {
+                    first_module = false;
+                    v8_runtime::execute_module(&mut self.runtime, script_url, name).await
+                } else {
+                    v8_runtime::execute_side_module(&mut self.runtime, script_url, name).await
+                }
+            } else {
+                v8_runtime::execute_script(&mut self.runtime, content, name)
+            };
+            if let Some(e) = err {
+                errors.push(e);
+            }
+        }
+
+        // 12. Fire lifecycle events
+        let lifecycle_js = r#"
+            try { document.dispatchEvent(new Event('DOMContentLoaded', {bubbles:true})); } catch(e){}
+            try { dispatchEvent(new Event('DOMContentLoaded', {bubbles:true})); } catch(e){}
+            try { dispatchEvent(new Event('load')); } catch(e){}
+            try { document.readyState = 'interactive'; } catch(e){}
+            try { document.readyState = 'complete'; } catch(e){}
+        "#;
+        self.runtime.execute_script("<neosession:lifecycle>", lifecycle_js.to_string())
+            .map_err(|e| format!("Lifecycle error: {e}"))?;
+
+        // 13. Run event loop
+        v8_runtime::run_event_loop(&mut self.runtime, 10_000).await?;
+
+        // 14. Extract title + text from rendered DOM
+        let title = self.eval_internal("document.title || ''")?;
+        let text = self.eval_internal(
+            "document.body ? document.body.innerText || document.body.textContent || '' : ''"
+        )?;
+
+        let render_time = start.elapsed();
+        self.url = final_url.clone();
+        self.navigated = true;
+
+        eprintln!("[NEOSESSION] Rendered in {:?} — {} bytes, {} scripts, {} errors",
+            render_time, html_len, scripts_count, errors.len());
+
+        Ok(PageResult {
+            url: final_url,
+            status,
+            title,
+            text,
+            html_len,
+            scripts_count,
+            render_time_ms: render_time.as_millis() as u64,
+            errors,
+        })
+    }
+
+    /// Execute arbitrary JS in the current page context.
+    /// For async code (Promises, fetch), use eval_async.
+    pub fn eval(&mut self, js: &str) -> Result<String, String> {
+        if !self.navigated {
+            return Err("No page loaded — call goto() first".to_string());
+        }
+        self.eval_internal(js)
+    }
+
+    /// Execute async JS — runs the event loop to resolve Promises.
+    /// Wraps the result in a global and polls until resolved.
+    pub async fn eval_async(&mut self, js: &str, timeout_ms: u64) -> Result<String, String> {
+        if !self.navigated {
+            return Err("No page loaded — call goto() first".to_string());
+        }
+        // Wrap in async executor: store result in global when resolved
+        let wrapped = format!(
+            r#"globalThis.__eval_done = false; globalThis.__eval_result = "pending";
+            Promise.resolve((async () => {{ {} }})()).then(
+                r => {{ globalThis.__eval_result = typeof r === 'string' ? r : JSON.stringify(r); globalThis.__eval_done = true; }},
+                e => {{ globalThis.__eval_result = "error:" + e; globalThis.__eval_done = true; }}
+            );"#,
+            js
+        );
+        self.runtime.execute_script("<neosession:eval_async>", wrapped)
+            .map_err(|e| format!("Eval async error: {e}"))?;
+
+        // Run event loop until done or timeout
+        v8_runtime::run_event_loop(&mut self.runtime, timeout_ms).await?;
+
+        // Read result
+        self.eval_internal("globalThis.__eval_result")
+    }
+
+    /// Internal eval — works even before navigation.
+    fn eval_internal(&mut self, js: &str) -> Result<String, String> {
+        let result = self.runtime.execute_script("<neosession:eval>", js.to_string())
+            .map_err(|e| format!("Eval error: {e}"))?;
+
+        let scope = &mut self.runtime.handle_scope();
+        let local = deno_core::v8::Local::new(scope, result);
+        if let Some(s) = local.to_string(scope) {
+            Ok(s.to_rust_string_lossy(scope))
+        } else {
+            Ok("undefined".to_string())
+        }
+    }
+
+    /// HTTP request using the session's persistent client (same TLS fingerprint + cookies).
+    pub async fn fetch(
+        &self,
+        url: &str,
+        method: &str,
+        body: Option<&str>,
+        headers: Option<&str>,
+    ) -> Result<String, String> {
+        let mut req_headers = rquest::header::HeaderMap::new();
+
+        // Inject session cookies
+        if let Some(domain) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
+            if let Some(cookie_header) = self.cookies.header_for(&domain) {
+                if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
+                    req_headers.insert(rquest::header::COOKIE, v);
+                }
+            }
+        }
+
+        // Parse custom headers
+        if let Some(headers_json) = headers {
+            if !headers_json.is_empty() {
+                if let Ok(hdrs) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(headers_json) {
+                    for (key, val) in hdrs {
+                        if let Some(v) = val.as_str() {
+                            if let Ok(hname) = rquest::header::HeaderName::from_bytes(key.as_bytes()) {
+                                if let Ok(hval) = rquest::header::HeaderValue::from_str(v) {
+                                    req_headers.insert(hname, hval);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let req = match method.to_uppercase().as_str() {
+            "POST" => self.client.post(url),
+            "PUT" => self.client.put(url),
+            "DELETE" => self.client.delete(url),
+            "PATCH" => self.client.patch(url),
+            _ => self.client.get(url),
+        };
+
+        let mut req = req.headers(req_headers);
+        if let Some(b) = body {
+            req = req.body(b.to_string());
+        }
+
+        let resp = req.send().await.map_err(|e| format!("Fetch error: {e}"))?;
+        let status = resp.status().as_u16();
+        let resp_body = resp.text().await.unwrap_or_default();
+
+        Ok(serde_json::json!({
+            "status": status,
+            "body": resp_body,
+        }).to_string())
+    }
+
+    /// Export current DOM as HTML string.
+    pub fn export_html(&mut self) -> Result<String, String> {
+        self.eval_internal("globalThis.document.documentElement.outerHTML")
+    }
+
+    /// Export visible text from current DOM.
+    pub fn export_text(&mut self) -> Result<String, String> {
+        self.eval_internal(
+            "document.body ? document.body.innerText || document.body.textContent || '' : ''"
+        )
+    }
+
+    /// Current URL.
+    pub fn current_url(&self) -> &str {
+        &self.url
+    }
+
+    /// Is the session navigated to a page?
+    pub fn is_navigated(&self) -> bool {
+        self.navigated
+    }
+
+    /// Get a reference to the cookie jar.
+    pub fn cookies(&self) -> &ghost::CookieJar {
+        &self.cookies
+    }
+
+    /// Get a mutable reference to the cookie jar (for loading additional cookies).
+    pub fn cookies_mut(&mut self) -> &mut ghost::CookieJar {
+        &mut self.cookies
+    }
+}
