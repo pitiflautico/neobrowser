@@ -20,6 +20,8 @@ deno_core::extension!(
         ops::op_storage_remove,
         ops::op_storage_clear,
         ops::op_chatgpt_pow,
+        ops::op_cookie_get,
+        ops::op_cookie_set,
     ],
 );
 

@@ -10,6 +10,7 @@ pub mod dom_export;
 pub mod session;
 pub mod net;
 pub mod storage;
+pub mod cookie_jar;
 pub mod interact;
 pub mod rate_limit;
 pub mod dom_tree;

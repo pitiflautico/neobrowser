@@ -52,6 +52,12 @@ pub fn op_neorender_fetch(
         limiter.wait_if_needed(&domain);
     }
 
+    // Extract cookie jar handle from OpState (for storing Set-Cookie from responses)
+    let cookie_jar: Option<super::cookie_jar::CookieJarHandle> = {
+        let s = state.borrow();
+        s.try_borrow::<CookieJarOpHandle>().map(|h| h.0.clone())
+    };
+
     // Extract BrowserNetwork snapshot from OpState (borrow scope limited)
     // We clone the Arc<Client> and the origin/url strings — BrowserNetwork itself is not Send.
     let (client, net_origin, net_url, referrer_policy) = {
@@ -120,6 +126,19 @@ pub fn op_neorender_fetch(
             ).await?;
 
             eprintln!("[NEORENDER:FETCH] → {} ({}B)", resp.status, resp.body.len());
+
+            // Store Set-Cookie headers in the unified jar
+            if let Some(ref jar) = cookie_jar {
+                if let Some(set_cookie) = resp.headers.get("set-cookie") {
+                    // May contain multiple cookies separated by newlines (from multi-value header)
+                    for cookie_str in set_cookie.split('\n') {
+                        let cookie_str = cookie_str.trim();
+                        if !cookie_str.is_empty() {
+                            jar.store_from_header(&url, cookie_str);
+                        }
+                    }
+                }
+            }
 
             let resp_headers: serde_json::Map<String, serde_json::Value> = resp.headers.into_iter()
                 .map(|(k, v)| (k, serde_json::Value::String(v)))
@@ -259,6 +278,31 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 #[op2(fast)]
 pub fn op_neorender_log(#[string] msg: String) {
     eprintln!("[NEORENDER:JS] {}", msg);
+}
+
+// ─── Cookie ops (UnifiedCookieJar) ───
+
+/// Shared handle to UnifiedCookieJar — stored in OpState.
+pub struct CookieJarOpHandle(pub super::cookie_jar::CookieJarHandle);
+
+#[op2]
+#[string]
+pub fn op_cookie_get(state: Rc<RefCell<OpState>>) -> Result<String, AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<CookieJarOpHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No cookie jar"))?;
+    Ok(handle.0.js_cookie_string(&domain))
+}
+
+#[op2(fast)]
+pub fn op_cookie_set(state: Rc<RefCell<OpState>>, #[string] cookie_str: String) -> Result<(), AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<CookieJarOpHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No cookie jar"))?;
+    handle.0.store_from_js(&domain, &cookie_str);
+    Ok(())
 }
 
 // ─── Storage ops (SQLite-backed localStorage) ───

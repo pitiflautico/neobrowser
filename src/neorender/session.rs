@@ -16,6 +16,7 @@ use crate::ghost;
 use super::v8_runtime::{self, ScriptStoreHandle};
 use super::net::BrowserNetwork;
 use super::storage::BrowserStorage;
+use super::cookie_jar::{UnifiedCookieJar, CookieJarHandle};
 
 /// Shared HTTP client handle — stored in V8's OpState so fetch ops use the session's client.
 /// Kept for backward compatibility with code that stores SharedClient directly.
@@ -34,7 +35,8 @@ pub struct NeoSession {
     runtime: JsRuntime,
     store: ScriptStoreHandle,
     network: BrowserNetwork,    // Fetch Standard networking (replaces raw client + PageOrigin)
-    cookies: ghost::CookieJar,
+    cookies: ghost::CookieJar,  // Legacy jar (backward compat for ghost path)
+    cookie_jar: CookieJarHandle, // Unified SQLite-backed jar (source of truth)
     storage: Option<Arc<BrowserStorage>>,  // SQLite-backed localStorage
     url: String,
     navigated: bool, // true after first goto()
@@ -72,19 +74,25 @@ impl NeoSession {
         // 2. Create BrowserNetwork
         let network = BrowserNetwork::new(client.clone());
 
-        // 3. Load cookies if provided
-        let mut cookies = ghost::CookieJar::new();
+        // 3. Create UnifiedCookieJar (SQLite-backed, source of truth)
+        let cookie_jar = Arc::new(UnifiedCookieJar::new()?);
+
+        // 3b. Load cookies into unified jar
+        let mut cookies = ghost::CookieJar::new(); // Legacy jar kept for compat
         if let Some(path) = cookies_file {
-            match cookies.load_file(path) {
-                Ok(n) => eprintln!("[NEOSESSION] Loaded {n} cookies from {path}"),
+            match cookie_jar.load_from_file(path) {
+                Ok(n) => eprintln!("[NEOSESSION] Loaded {n} cookies into unified jar from {path}"),
                 Err(e) => eprintln!("[NEOSESSION] Cookie load warning: {e}"),
             }
+            // Also load into legacy jar for backward compat
+            cookies.load_file(path).ok();
         }
         // Also check NEOBROWSER_COOKIES env
         if let Ok(paths) = std::env::var("NEOBROWSER_COOKIES") {
             for path in paths.split(',') {
                 let path = path.trim();
                 if !path.is_empty() {
+                    cookie_jar.load_from_file(path).ok();
                     cookies.load_file(path).ok();
                 }
             }
@@ -109,14 +117,15 @@ impl NeoSession {
             }
         };
 
-        // 6. Store BrowserNetwork handle + storage in V8's OpState
+        // 6. Store BrowserNetwork handle + storage + cookie jar in V8's OpState
         {
             let op_state = runtime.op_state();
             let mut state = op_state.borrow_mut();
             state.put::<super::net::BrowserNetworkHandle>(network.to_handle());
+            state.put::<super::ops::CookieJarOpHandle>(super::ops::CookieJarOpHandle(cookie_jar.clone()));
+            state.put::<super::ops::StorageDomain>(super::ops::StorageDomain(String::new()));
             if let Some(ref s) = storage {
                 state.put::<super::ops::StorageHandle>(super::ops::StorageHandle(s.clone()));
-                state.put::<super::ops::StorageDomain>(super::ops::StorageDomain(String::new()));
             }
         }
 
@@ -125,6 +134,7 @@ impl NeoSession {
             store,
             network,
             cookies,
+            cookie_jar,
             storage,
             url: String::new(),
             navigated: false,
@@ -133,32 +143,62 @@ impl NeoSession {
 
     /// Navigate to a URL. Reuses the existing V8 runtime — just replaces the DOM.
     pub async fn goto(&mut self, url: &str) -> Result<PageResult, String> {
+        self.navigate(url, "GET", None, None).await
+    }
+
+    /// Submit a form via POST (or GET). Called by goto() for GET, and by form submission for POST.
+    pub async fn submit_raw(&mut self, url: &str, method: &str, body: Option<&str>, content_type: Option<&str>) -> Result<PageResult, String> {
+        self.navigate(url, method, body, content_type).await
+    }
+
+    /// Unified navigation pipeline — all navigations go through here.
+    /// 1. Build request with cookies from unified jar
+    /// 2. Send HTTP request
+    /// 3. Process Set-Cookie → unified jar
+    /// 4. Handle redirects (rquest follows automatically with cookies)
+    /// 5. Parse HTML
+    /// 6. Execute scripts
+    /// 7. Auto-consent
+    /// 8. Extract WOM
+    async fn navigate(&mut self, url: &str, method: &str, body: Option<&str>, content_type: Option<&str>) -> Result<PageResult, String> {
         let start = std::time::Instant::now();
 
-        // 1. Build headers with cookies
+        // 1. Build headers with cookies from unified jar
         let mut headers = rquest::header::HeaderMap::new();
-        if let Some(domain) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
-            if let Some(cookie_header) = self.cookies.header_for(&domain) {
-                if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
-                    headers.insert(rquest::header::COOKIE, v);
-                }
+        if let Some(cookie_header) = self.cookie_jar.cookie_header_for(url) {
+            if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
+                headers.insert(rquest::header::COOKIE, v);
+            }
+        }
+        if let Some(ct) = content_type {
+            if let Ok(v) = rquest::header::HeaderValue::from_str(ct) {
+                headers.insert(rquest::header::CONTENT_TYPE, v);
             }
         }
 
-        // 2. Fetch with the persistent client
-        let resp = self.network.client().get(url)
-            .headers(headers)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP error: {e}"))?;
+        // 2. Send HTTP request
+        let resp = match method.to_uppercase().as_str() {
+            "POST" => {
+                let mut req = self.network.client().post(url).headers(headers);
+                if let Some(b) = body {
+                    req = req.body(b.to_string());
+                }
+                req.send().await
+            }
+            _ => {
+                self.network.client().get(url).headers(headers).send().await
+            }
+        }.map_err(|e| format!("HTTP error: {e}"))?;
 
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
 
-        // Store response cookies
-        if let Some(domain) = resp.url().host_str() {
-            for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
-                if let Ok(s) = cookie.to_str() {
+        // 3. Process Set-Cookie → unified jar + legacy jar
+        for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
+            if let Ok(s) = cookie.to_str() {
+                self.cookie_jar.store_from_header(&final_url, s);
+                // Also store in legacy jar for backward compat
+                if let Some(domain) = resp.url().host_str() {
                     self.cookies.store_from_header(domain, s);
                 }
             }
@@ -305,8 +345,8 @@ impl NeoSession {
             state.put::<super::ops::StorageDomain>(super::ops::StorageDomain(domain.clone()));
         }
 
-        // 10. Update cookie injection for JS-side fetch
-        let cookie_map = self.cookies.all_headers();
+        // 10. Update cookie injection for JS-side fetch (uses both unified jar and legacy map)
+        let cookie_map = self.cookie_jar.all_headers();
         if !cookie_map.is_empty() {
             let cookies_json = serde_json::to_string(&cookie_map).unwrap_or_default();
             let js = format!("globalThis.__neorender_cookies = {};", cookies_json);
@@ -463,13 +503,11 @@ impl NeoSession {
                             let body_str = serializer.finish();
                             eprintln!("[NEOSESSION] Submitting Google consent form to {}", consent_url);
 
-                            // Build headers with cookies
+                            // Build headers with cookies from unified jar
                             let mut consent_headers = rquest::header::HeaderMap::new();
-                            if let Some(d) = url::Url::parse(&consent_url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
-                                if let Some(ch) = self.cookies.header_for(&d) {
-                                    if let Ok(v) = rquest::header::HeaderValue::from_str(&ch) {
-                                        consent_headers.insert(rquest::header::COOKIE, v);
-                                    }
+                            if let Some(ch) = self.cookie_jar.cookie_header_for(&consent_url) {
+                                if let Ok(v) = rquest::header::HeaderValue::from_str(&ch) {
+                                    consent_headers.insert(rquest::header::COOKIE, v);
                                 }
                             }
                             consent_headers.insert(
@@ -485,10 +523,12 @@ impl NeoSession {
                                 .send()
                                 .await
                             {
-                                // Store consent cookies
-                                if let Some(d) = consent_resp.url().host_str() {
-                                    for cookie in consent_resp.headers().get_all(rquest::header::SET_COOKIE) {
-                                        if let Ok(s) = cookie.to_str() {
+                                // Store consent cookies in unified jar + legacy jar
+                                let consent_final_url = consent_resp.url().to_string();
+                                for cookie in consent_resp.headers().get_all(rquest::header::SET_COOKIE) {
+                                    if let Ok(s) = cookie.to_str() {
+                                        self.cookie_jar.store_from_header(&consent_final_url, s);
+                                        if let Some(d) = consent_resp.url().host_str() {
                                             self.cookies.store_from_header(d, s);
                                         }
                                     }
@@ -544,13 +584,11 @@ impl NeoSession {
     /// the essential goto logic (fetch + render + WOM). Reuses the same start time
     /// so render_time_ms reflects the total including consent.
     async fn goto_consent_retry(&mut self, url: &str, start: std::time::Instant) -> Result<PageResult, String> {
-        // 1. Fetch with updated consent cookies
+        // 1. Fetch with updated consent cookies from unified jar
         let mut headers = rquest::header::HeaderMap::new();
-        if let Some(domain) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
-            if let Some(cookie_header) = self.cookies.header_for(&domain) {
-                if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
-                    headers.insert(rquest::header::COOKIE, v);
-                }
+        if let Some(cookie_header) = self.cookie_jar.cookie_header_for(url) {
+            if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
+                headers.insert(rquest::header::COOKIE, v);
             }
         }
 
@@ -563,10 +601,11 @@ impl NeoSession {
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
 
-        // Store response cookies
-        if let Some(domain) = resp.url().host_str() {
-            for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
-                if let Ok(s) = cookie.to_str() {
+        // Store response cookies in unified jar + legacy jar
+        for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
+            if let Ok(s) = cookie.to_str() {
+                self.cookie_jar.store_from_header(&final_url, s);
+                if let Some(domain) = resp.url().host_str() {
                     self.cookies.store_from_header(domain, s);
                 }
             }
@@ -692,11 +731,9 @@ impl NeoSession {
         let merged_headers = {
             let mut hdrs = serde_json::Map::new();
 
-            // Inject session cookies
-            if let Some(domain) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
-                if let Some(cookie_header) = self.cookies.header_for(&domain) {
-                    hdrs.insert("cookie".to_string(), serde_json::Value::String(cookie_header));
-                }
+            // Inject session cookies from unified jar
+            if let Some(cookie_header) = self.cookie_jar.cookie_header_for(url) {
+                hdrs.insert("cookie".to_string(), serde_json::Value::String(cookie_header));
             }
 
             // Merge custom headers (override cookies if explicitly set)
@@ -757,13 +794,18 @@ impl NeoSession {
         self.navigated
     }
 
-    /// Get a reference to the cookie jar.
+    /// Get a reference to the legacy cookie jar (backward compat).
     pub fn cookies(&self) -> &ghost::CookieJar {
         &self.cookies
     }
 
-    /// Get a mutable reference to the cookie jar (for loading additional cookies).
+    /// Get a mutable reference to the legacy cookie jar (for loading additional cookies).
     pub fn cookies_mut(&mut self) -> &mut ghost::CookieJar {
         &mut self.cookies
+    }
+
+    /// Get a reference to the unified cookie jar (source of truth, SQLite-backed).
+    pub fn cookie_jar(&self) -> &CookieJarHandle {
+        &self.cookie_jar
     }
 }

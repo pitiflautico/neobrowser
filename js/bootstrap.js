@@ -29,8 +29,15 @@ globalThis.self = globalThis;
 
 // document.currentScript must be null (prevents infinite recursion in some libs)
 try { Object.defineProperty(document, 'currentScript', { value: null, writable: true, configurable: true }); } catch {}
-// document.cookie must be a string (linkedom leaves it undefined)
-if (document.cookie === undefined) document.cookie = '';
+
+// document.cookie — backed by UnifiedCookieJar via Rust ops (SQLite-persisted).
+// Reads exclude HttpOnly cookies. Writes go to the unified jar.
+// Falls back to empty string if ops not available (e.g. initial bootstrap).
+Object.defineProperty(document, 'cookie', {
+    get() { try { return ops.op_cookie_get(); } catch { return ''; } },
+    set(val) { try { ops.op_cookie_set(val); } catch {} },
+    configurable: true,
+});
 
 // Sync linkedom internals with our globals
 if (__win && __win !== globalThis) {

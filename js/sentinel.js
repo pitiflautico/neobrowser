@@ -297,14 +297,31 @@ function solveTurnstile(dx, p) {
     m[9] = tokens;
     m[16] = p;
 
-    for (var ti = 0; ti < tokens.length; ti++) {
-        try {
-            var token = tokens[ti];
-            var opcode = token[0];
-            var targs = token.slice(1);
-            var fn = m[opcode];
-            if (typeof fn === 'function') fn.apply(null, targs);
-        } catch (e) { /* skip like real impl */ }
+    // Execute token list, then check if m[9] was replaced (inner bytecode)
+    function runTokens(toks) {
+        for (var ti = 0; ti < toks.length; ti++) {
+            try {
+                var token = toks[ti];
+                var opcode = token[0];
+                var targs = token.slice(1);
+                var fn = m[opcode];
+                if (typeof fn === 'function') fn.apply(null, targs);
+            } catch (e) { /* skip like real impl */ }
+        }
+    }
+
+    // Run outer layer
+    var prevM9 = m[9];
+    runTokens(tokens);
+
+    // If m[9] was replaced with a new token list (inner bytecode), execute it
+    if (m[9] !== prevM9 && Array.isArray(m[9])) {
+        var innerTokens = m[9];
+        runTokens(innerTokens);
+        // Check for yet another layer
+        if (m[9] !== innerTokens && Array.isArray(m[9])) {
+            runTokens(m[9]);
+        }
     }
 
     return result;
@@ -347,11 +364,22 @@ globalThis.__chatgpt_sentinel = async function() {
         } catch (e) { /* non-fatal */ }
     }
 
-    // 5. Solve PoW (FNV-1a hash)
+    // 5. Solve PoW (SHA3-512 via Rust op — native speed)
     var powToken = '';
     if (sentinel.proofofwork && sentinel.proofofwork.required) {
-        var powConfig = buildConfig(); // fresh config for PoW
-        powToken = solvePow(sentinel.proofofwork.seed, sentinel.proofofwork.difficulty, powConfig);
+        var powConfig = buildConfig();
+        try {
+            var powResultJson = Deno.core.ops.op_chatgpt_pow(
+                sentinel.proofofwork.seed,
+                sentinel.proofofwork.difficulty,
+                JSON.stringify(powConfig)
+            );
+            var powResult = JSON.parse(powResultJson);
+            powToken = powResult.token || '';
+        } catch (e) {
+            // Fallback to FNV-1a if Rust op fails
+            powToken = solvePow(sentinel.proofofwork.seed, sentinel.proofofwork.difficulty, powConfig);
+        }
     }
 
     return JSON.stringify({
