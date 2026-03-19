@@ -32,6 +32,26 @@ pub fn op_neorender_fetch(
 
     eprintln!("[NEORENDER:FETCH] {} {}", method, &url[..url.len().min(100)]);
 
+    // Rate limiting — per-domain token bucket (lazy-init if not in OpState)
+    if let Some(domain) = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
+        let handle: super::rate_limit::RateLimiterHandle = {
+            let s = state.borrow();
+            match s.try_borrow::<super::rate_limit::RateLimiterHandle>() {
+                Some(h) => h.clone(),
+                None => {
+                    drop(s);
+                    let h: super::rate_limit::RateLimiterHandle =
+                        std::sync::Arc::new(std::sync::Mutex::new(super::rate_limit::RateLimiter::new()));
+                    let cloned = h.clone();
+                    state.borrow_mut().put::<super::rate_limit::RateLimiterHandle>(h);
+                    cloned
+                }
+            }
+        };
+        let mut limiter = handle.lock().unwrap();
+        limiter.wait_if_needed(&domain);
+    }
+
     // Extract BrowserNetwork snapshot from OpState (borrow scope limited)
     // We clone the Arc<Client> and the origin/url strings — BrowserNetwork itself is not Send.
     let (client, net_origin, net_url, referrer_policy) = {

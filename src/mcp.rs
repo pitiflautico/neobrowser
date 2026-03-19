@@ -1390,6 +1390,74 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
                     "elapsed_ms": elapsed,
                 }));
             }
+            "click" => {
+                use crate::neorender::interact::ClickResult;
+                let result = neo.click(&target).await?;
+                let elapsed = act_t0.elapsed().as_millis() as u64;
+                let (outcome, effect) = match &result {
+                    ClickResult::Clicked { tag, text } => {
+                        ("succeeded", format!("clicked: {} '{}'", tag, text))
+                    }
+                    ClickResult::Navigated { url } => {
+                        ("navigated", format!("click_navigated: {}", url))
+                    }
+                    ClickResult::Submitted { url, method } => {
+                        ("submitted", format!("click_submitted: {} {}", method, url))
+                    }
+                };
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "engine": "neosession",
+                    "outcome": outcome,
+                    "effect": effect,
+                    "elapsed_ms": elapsed,
+                }));
+            }
+            "type" => {
+                let text = args["text"].as_str().ok_or("Missing 'text' for type action")?;
+                neo.type_text(&target, text)?;
+                let elapsed = act_t0.elapsed().as_millis() as u64;
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "engine": "neosession",
+                    "outcome": "succeeded",
+                    "effect": format!("typed: {} chars into '{}'", text.len(), target),
+                    "elapsed_ms": elapsed,
+                }));
+            }
+            "submit" => {
+                use crate::neorender::interact::SubmitResult;
+                let form_target = if raw_target.is_empty() { None } else { Some(raw_target) };
+                let result = neo.submit(form_target).await?;
+                let elapsed = act_t0.elapsed().as_millis() as u64;
+                let (outcome, effect) = match &result {
+                    SubmitResult::Submitted { url, method } => {
+                        ("succeeded", format!("submitted: {} {}", method, url))
+                    }
+                    SubmitResult::Failed { error } => {
+                        ("failed", format!("submit_failed: {}", error))
+                    }
+                };
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "engine": "neosession",
+                    "outcome": outcome,
+                    "effect": effect,
+                    "elapsed_ms": elapsed,
+                }));
+            }
+            "select" => {
+                let value = args["value"].as_str().ok_or("Missing 'value' for select action")?;
+                neo.select(&target, value)?;
+                let elapsed = act_t0.elapsed().as_millis() as u64;
+                return Ok(serde_json::json!({
+                    "ok": true,
+                    "engine": "neosession",
+                    "outcome": "succeeded",
+                    "effect": format!("selected: '{}' in '{}'", value, target),
+                    "elapsed_ms": elapsed,
+                }));
+            }
             "neo_fetch" => {
                 let fetch_url = args["url"].as_str().ok_or("Missing 'url' for neo_fetch")?;
                 let method = args["method"].as_str().unwrap_or("GET");

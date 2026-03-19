@@ -232,10 +232,30 @@ pub fn create_runtime_with_html(
     runtime.execute_script("<neorender:bootstrap>", boot_js)
         .map_err(|e| format!("Bootstrap error: {e}"))?;
 
-    // 3b. WOM extraction function — extracts page data directly from linkedom DOM
+    // 3b. Request interceptor — wraps fetch to log all network requests
+    let intercept_js: String = include_str!("../../js/intercept.js").to_string();
+    runtime.execute_script("<neorender:intercept>", intercept_js)
+        .map_err(|e| format!("Intercept load error: {e}"))?;
+
+    // 3c. WOM extraction function — extracts page data directly from linkedom DOM
     let wom_js: String = include_str!("../../js/wom.js").to_string();
     runtime.execute_script("<neorender:wom>", wom_js)
         .map_err(|e| format!("WOM load error: {e}"))?;
+
+    // 3d. DOM tree extraction — full DOM as JSON tree (__neo_dom_tree)
+    let dom_tree_js: String = include_str!("../../js/dom_tree.js").to_string();
+    runtime.execute_script("<neorender:dom_tree>", dom_tree_js)
+        .map_err(|e| format!("DOM tree load error: {e}"))?;
+
+    // 3e. Observer — MutationObserver + snapshot diff (__neo_get_mutations, __neo_get_diff)
+    let observer_js: String = include_str!("../../js/observer.js").to_string();
+    runtime.execute_script("<neorender:observer>", observer_js)
+        .map_err(|e| format!("Observer load error: {e}"))?;
+
+    // 3f. Browser bridge — event listeners + interaction API
+    let browser_js: String = include_str!("../../js/browser.js").to_string();
+    runtime.execute_script("<neorender:browser>", browser_js)
+        .map_err(|e| format!("Browser bridge load error: {e}"))?;
 
     // 4. Set location (after bootstrap, so location object exists)
     set_location(&mut runtime, url)?;

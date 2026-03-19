@@ -342,8 +342,46 @@ impl NeoSession {
         self.runtime.execute_script("<neosession:lifecycle>", lifecycle_js.to_string())
             .map_err(|e| format!("Lifecycle error: {e}"))?;
 
-        // 13. Run event loop
-        v8_runtime::run_event_loop(&mut self.runtime, 10_000).await?;
+        // 13. Run event loop with stability detection
+        //     Poll DOM node count every 100ms. Stable = no change for 500ms (5 consecutive checks).
+        //     Timeout at 15s to avoid hanging on pages with infinite timers.
+        {
+            let stability_timeout = std::time::Duration::from_secs(15);
+            let poll_interval = std::time::Duration::from_millis(100);
+            let stable_threshold = 5u32; // 5 polls * 100ms = 500ms of no change
+            let stability_start = std::time::Instant::now();
+            let mut last_node_count: i64 = -1;
+            let mut stable_count: u32 = 0;
+
+            loop {
+                // Run event loop for one poll interval
+                v8_runtime::run_event_loop(&mut self.runtime, poll_interval.as_millis() as u64).await?;
+
+                // Check DOM node count
+                let count_str = self.eval_internal(
+                    "document.querySelectorAll('*').length"
+                ).unwrap_or_else(|_| "0".to_string());
+                let node_count: i64 = count_str.parse().unwrap_or(0);
+
+                if node_count == last_node_count {
+                    stable_count += 1;
+                    if stable_count >= stable_threshold {
+                        eprintln!("[NEOSESSION] DOM stable at {} nodes after {:?}",
+                            node_count, stability_start.elapsed());
+                        break;
+                    }
+                } else {
+                    stable_count = 0;
+                    last_node_count = node_count;
+                }
+
+                if stability_start.elapsed() >= stability_timeout {
+                    eprintln!("[NEOSESSION] Stability timeout ({}ms) at {} nodes",
+                        stability_timeout.as_millis(), node_count);
+                    break;
+                }
+            }
+        }
 
         // 14. Extract WOM (title, text, links, forms, etc.) directly from linkedom DOM
         let wom_json_str = self.eval_internal("__wom_extract()")?;

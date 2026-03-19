@@ -10,6 +10,14 @@ pub mod dom_export;
 pub mod session;
 pub mod net;
 pub mod storage;
+pub mod interact;
+pub mod rate_limit;
+pub mod dom_tree;
+pub mod network_log;
+pub mod wait;
+pub mod extract;
+pub mod pool;
+pub mod stealth;
 
 use crate::ghost;
 
