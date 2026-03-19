@@ -1430,21 +1430,46 @@ async fn handle_act(state: &mut McpState, args: &Value) -> Result<Value, String>
                 let form_target = if raw_target.is_empty() { None } else { Some(raw_target) };
                 let result = neo.submit(form_target).await?;
                 let elapsed = act_t0.elapsed().as_millis() as u64;
-                let (outcome, effect) = match &result {
-                    SubmitResult::Submitted { url, method } => {
-                        ("succeeded", format!("submitted: {} {}", method, url))
+                match result {
+                    SubmitResult::Submitted { ref url, ref method } => {
+                        // Submit navigated — return the new page (like goto)
+                        let rendered_html = neo.export_html().unwrap_or_default();
+                        let dom = html5ever::parse_document(
+                            markup5ever_rcdom::RcDom::default(), Default::default()
+                        ).from_utf8().read_from(&mut rendered_html.as_bytes())
+                            .map_err(|e| format!("Re-parse: {e}"))?;
+                        let title = extract_title_from_dom(&dom);
+                        let text = extract_text_from_dom(&dom);
+                        let links_count = count_elements(&dom, "a");
+                        let buttons_count = count_elements(&dom, "button");
+                        let mut see = format!("Page: {}\nURL: {}\nMethod: {}\nEngine: neosession\n", title, url, method);
+                        if !text.is_empty() {
+                            let t = if text.len() > 8000 { &text[..8000] } else { &text };
+                            see.push_str(&format!("\n--- Text ---\n{}\n", t.trim()));
+                        }
+                        return Ok(serde_json::json!({
+                            "ok": true,
+                            "engine": "neosession",
+                            "outcome": "navigated",
+                            "url": url,
+                            "title": title,
+                            "links": links_count,
+                            "buttons": buttons_count,
+                            "html_bytes": rendered_html.len(),
+                            "page": see,
+                            "elapsed_ms": elapsed,
+                        }));
                     }
                     SubmitResult::Failed { error } => {
-                        ("failed", format!("submit_failed: {}", error))
+                        return Ok(serde_json::json!({
+                            "ok": false,
+                            "engine": "neosession",
+                            "outcome": "failed",
+                            "effect": format!("submit_failed: {}", error),
+                            "elapsed_ms": elapsed,
+                        }));
                     }
-                };
-                return Ok(serde_json::json!({
-                    "ok": true,
-                    "engine": "neosession",
-                    "outcome": outcome,
-                    "effect": effect,
-                    "elapsed_ms": elapsed,
-                }));
+                }
             }
             "select" => {
                 let value = args["value"].as_str().ok_or("Missing 'value' for select action")?;
