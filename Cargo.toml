@@ -52,6 +52,9 @@ boa_runtime = "0.21"
 # NeoRender — V8 engine for SPA rendering (AI's own browser)
 deno_core = "0.311"
 
+# SHA3 for ChatGPT proof-of-work (SHA3-512 hashcash)
+sha3 = "0.10"
+
 [profile.release]
 opt-level = 3
 lto = true

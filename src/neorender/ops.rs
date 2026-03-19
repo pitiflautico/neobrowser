@@ -306,3 +306,101 @@ pub fn op_storage_clear(state: Rc<RefCell<OpState>>) -> Result<(), AnyError> {
         .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
     handle.0.clear(&domain).map_err(|e| deno_core::error::generic_error(e))
 }
+
+// ─── ChatGPT Sentinel: SHA3-512 Proof-of-Work solver ───
+
+/// ChatGPT-specific PoW solver using SHA3-512.
+/// Takes: seed, difficulty (hex), config JSON array (19 elements).
+/// Returns: 'gAAAAAC' + base64(solution) — the complete proof token.
+///
+/// The config array has slots 3 and 9 that get replaced with (i, i>>1) per iteration.
+/// Each iteration: JSON-encode config, base64 it, SHA3-512(seed + base64), check prefix.
+#[op2]
+#[string]
+pub fn op_chatgpt_pow(
+    #[string] seed: String,
+    #[string] difficulty: String,
+    #[string] config_json: String,
+) -> Result<String, AnyError> {
+    use sha3::{Sha3_512, Digest};
+    use base64::Engine;
+
+    let max_iters: u32 = 500_000;
+    eprintln!("[SENTINEL:POW] seed={}... diff={}", &seed[..seed.len().min(16)], difficulty);
+    let t0 = std::time::Instant::now();
+
+    // Parse config array
+    let config: Vec<serde_json::Value> = serde_json::from_str(&config_json)
+        .map_err(|e| deno_core::error::generic_error(format!("Bad config JSON: {e}")))?;
+    if config.len() < 12 {
+        return Err(deno_core::error::generic_error(format!("Config too short: {} elements", config.len())));
+    }
+
+    // Pre-build static JSON parts (everything except slots 3 and 9)
+    // Format: [config[0], config[1], config[2], <i>, config[4]...config[8], <i>>1>, config[10]...]
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let sep = serde_json::to_string(&config[..3]).unwrap_or_default();
+    let part1 = format!("{},", &sep[..sep.len()-1]); // "[c0,c1,c2,"
+
+    let mid: Vec<&serde_json::Value> = config[4..9].iter().collect();
+    let mid_str = serde_json::to_string(&mid).unwrap_or_default();
+    let part2 = format!(",{},", &mid_str[1..mid_str.len()-1]); // ",c4,c5,c6,c7,c8,"
+
+    let tail: Vec<&serde_json::Value> = config[10..].iter().collect();
+    let tail_str = serde_json::to_string(&tail).unwrap_or_default();
+    let part3 = format!(",{}]", &tail_str[1..]); // ",c10,c11,...,c18]"  (tail_str starts with "[")
+
+    let difficulty_bytes = decode_hex(&difficulty);
+    if difficulty_bytes.is_empty() {
+        eprintln!("[SENTINEL:POW] Warning: could not decode difficulty hex");
+    }
+
+    let seed_bytes = seed.as_bytes();
+
+    for i in 0u32..max_iters {
+        // Build JSON: part1 + i + part2 + (i>>1) + part3
+        let json_bytes = format!("{}{}{}{}{}", part1, i, part2, i >> 1, part3);
+
+        // Base64 encode
+        let encoded = b64.encode(json_bytes.as_bytes());
+
+        // SHA3-512(seed + base64)
+        let mut hasher = Sha3_512::new();
+        hasher.update(seed_bytes);
+        hasher.update(encoded.as_bytes());
+        let hash = hasher.finalize();
+
+        // Check if hash prefix <= difficulty
+        let hash_bytes = &hash[..difficulty_bytes.len().min(hash.len())];
+        if hash_bytes <= difficulty_bytes.as_slice() {
+            let elapsed = t0.elapsed();
+            eprintln!("[SENTINEL:POW] Solved in {} iters ({:?})", i, elapsed);
+            let token = format!("gAAAAAC{}", encoded);
+            return Ok(serde_json::json!({
+                "token": token,
+                "found": true,
+                "iters": i,
+                "elapsed_ms": elapsed.as_millis() as u64,
+            }).to_string());
+        }
+    }
+
+    // Fallback token
+    let elapsed = t0.elapsed();
+    eprintln!("[SENTINEL:POW] Not found in {} iters ({:?})", max_iters, elapsed);
+    let fallback = format!("wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D{}",
+        b64.encode(format!("\"{}\"", seed).as_bytes()));
+    Ok(serde_json::json!({
+        "token": format!("gAAAAAC{}", fallback),
+        "found": false,
+        "elapsed_ms": elapsed.as_millis() as u64,
+    }).to_string())
+}
+
+/// Decode hex string to bytes (no external crate needed).
+fn decode_hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&s[i..i+2.min(s.len()-i)], 16).ok())
+        .collect()
+}

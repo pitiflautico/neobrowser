@@ -19,6 +19,7 @@ deno_core::extension!(
         ops::op_storage_set,
         ops::op_storage_remove,
         ops::op_storage_clear,
+        ops::op_chatgpt_pow,
     ],
 );
 
@@ -276,6 +277,11 @@ pub fn create_runtime_with_html(
     let wait_js: String = include_str!("../../js/wait.js").to_string();
     runtime.execute_script("<neorender:wait>", wait_js)
         .map_err(|e| format!("Wait load error: {e}"))?;
+
+    // 3j. ChatGPT Sentinel — Turnstile VM + PoW solver
+    let sentinel_js: String = include_str!("../../js/sentinel.js").to_string();
+    runtime.execute_script("<neorender:sentinel>", sentinel_js)
+        .map_err(|e| format!("Sentinel load error: {e}"))?;
 
     // 4. Set location (after bootstrap, so location object exists)
     set_location(&mut runtime, url)?;
