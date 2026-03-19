@@ -113,15 +113,21 @@ globalThis.__neo_click = function(target) {
     let el = null;
     try { el = document.querySelector(target); } catch {}
     if (!el) {
-        // Try finding by text content (case-insensitive)
+        // Try finding by text content — exact match first, then partial
         const all = document.querySelectorAll('a, button, input[type="submit"], [role="button"], [onclick]');
+        const targetLower = target.toLowerCase();
+        let partialMatch = null;
         for (const candidate of all) {
             const text = (candidate.textContent || candidate.value || '').trim();
-            if (text.toLowerCase().includes(target.toLowerCase())) {
-                el = candidate;
-                break;
+            const textLower = text.toLowerCase();
+            // Exact match (whole text equals target)
+            if (textLower === targetLower) { el = candidate; break; }
+            // First partial match (fallback)
+            if (!partialMatch && textLower.includes(targetLower) && text.length < target.length * 5) {
+                partialMatch = candidate;
             }
         }
+        if (!el) el = partialMatch;
     }
     // Also try by aria-label, title, placeholder
     if (!el) {
@@ -160,10 +166,16 @@ globalThis.__neo_click = function(target) {
 
 globalThis.__neo_type = function(target, text) {
     let el = null;
-    try { el = document.querySelector(target); } catch {}
+    // Try CSS selector first (only match typeable elements)
+    try {
+        el = document.querySelector(target);
+        if (el && !['INPUT','TEXTAREA','SELECT'].includes(el.tagName)) el = null;
+    } catch {}
+    // Search by name/placeholder/aria-label — ONLY in input/textarea/select
     if (!el) {
         try {
-            el = document.querySelector('[name="' + target + '"], [placeholder*="' + target + '" i], [aria-label*="' + target + '" i], #' + target);
+            const candidates = document.querySelectorAll('input[name="' + target + '"], textarea[name="' + target + '"], select[name="' + target + '"], input[placeholder*="' + target + '" i], textarea[placeholder*="' + target + '" i], input[aria-label*="' + target + '" i], textarea[aria-label*="' + target + '" i], input#' + target + ', textarea#' + target);
+            el = candidates[0] || null;
         } catch {}
     }
     if (!el) {
