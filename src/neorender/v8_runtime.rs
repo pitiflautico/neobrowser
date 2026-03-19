@@ -15,6 +15,10 @@ deno_core::extension!(
         ops::op_neorender_timer,
         ops::op_neorender_pow,
         ops::op_neorender_log,
+        ops::op_storage_get,
+        ops::op_storage_set,
+        ops::op_storage_remove,
+        ops::op_storage_clear,
     ],
 );
 
@@ -276,8 +280,11 @@ pub fn populate_dom(runtime: &mut JsRuntime, html: &str) -> Result<(), String> {
 }
 
 /// Execute a regular (non-module) script.
+/// Wraps in try-catch for error isolation — script errors don't crash the render.
 pub fn execute_script(runtime: &mut JsRuntime, script: String, name: String) -> Option<String> {
-    match runtime.execute_script("<page>", script) {
+    // Wrap in try-catch so uncaught errors don't abort V8
+    let wrapped = format!("try {{ {} }} catch(__e) {{ /* non-fatal */ }}", script);
+    match runtime.execute_script("<page>", wrapped) {
         Ok(_) => None,
         Err(e) => {
             let msg = format!("[{}] {}", name, first_line(&e.to_string()));

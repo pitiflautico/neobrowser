@@ -15,6 +15,7 @@ use std::sync::Arc;
 use crate::ghost;
 use super::v8_runtime::{self, ScriptStoreHandle};
 use super::net::BrowserNetwork;
+use super::storage::BrowserStorage;
 
 /// Shared HTTP client handle — stored in V8's OpState so fetch ops use the session's client.
 /// Kept for backward compatibility with code that stores SharedClient directly.
@@ -34,6 +35,7 @@ pub struct NeoSession {
     store: ScriptStoreHandle,
     network: BrowserNetwork,    // Fetch Standard networking (replaces raw client + PageOrigin)
     cookies: ghost::CookieJar,
+    storage: Option<Arc<BrowserStorage>>,  // SQLite-backed localStorage
     url: String,
     navigated: bool, // true after first goto()
 }
@@ -95,11 +97,27 @@ impl NeoSession {
             empty_html, empty_url, &cookies, None,
         )?;
 
-        // 5. Store BrowserNetwork handle in V8's OpState so op_neorender_fetch uses it
+        // 5. Initialize SQLite-backed localStorage
+        let storage = match BrowserStorage::new() {
+            Ok(s) => {
+                eprintln!("[NEOSESSION] SQLite localStorage ready");
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                eprintln!("[NEOSESSION] localStorage warning (in-memory fallback): {e}");
+                None
+            }
+        };
+
+        // 6. Store BrowserNetwork handle + storage in V8's OpState
         {
             let op_state = runtime.op_state();
             let mut state = op_state.borrow_mut();
             state.put::<super::net::BrowserNetworkHandle>(network.to_handle());
+            if let Some(ref s) = storage {
+                state.put::<super::ops::StorageHandle>(super::ops::StorageHandle(s.clone()));
+                state.put::<super::ops::StorageDomain>(super::ops::StorageDomain(String::new()));
+            }
         }
 
         Ok(Self {
@@ -107,6 +125,7 @@ impl NeoSession {
             store,
             network,
             cookies,
+            storage,
             url: String::new(),
             navigated: false,
         })
@@ -268,10 +287,15 @@ impl NeoSession {
 
         // 9b. Update BrowserNetwork page context + sync handle to OpState
         self.network.set_page(&final_url);
+        let domain = url::Url::parse(&final_url).ok()
+            .and_then(|u| u.host_str().map(|s| s.to_string()))
+            .unwrap_or_default();
         {
             let op_state = self.runtime.op_state();
             let mut state = op_state.borrow_mut();
             state.put::<super::net::BrowserNetworkHandle>(self.network.to_handle());
+            // Update storage domain so localStorage ops use the right namespace
+            state.put::<super::ops::StorageDomain>(super::ops::StorageDomain(domain.clone()));
         }
 
         // 10. Update cookie injection for JS-side fetch

@@ -240,3 +240,49 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 pub fn op_neorender_log(#[string] msg: String) {
     eprintln!("[NEORENDER:JS] {}", msg);
 }
+
+// ─── Storage ops (SQLite-backed localStorage) ───
+
+/// Domain for storage ops — stored in OpState, set on navigation.
+#[derive(Clone)]
+pub struct StorageDomain(pub String);
+
+/// Shared handle to BrowserStorage — stored in OpState.
+pub struct StorageHandle(pub std::sync::Arc<super::storage::BrowserStorage>);
+
+#[op2]
+#[string]
+pub fn op_storage_get(state: Rc<RefCell<OpState>>, #[string] key: String) -> Result<String, AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<StorageHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
+    Ok(handle.0.get(&domain, &key).unwrap_or_default())
+}
+
+#[op2(fast)]
+pub fn op_storage_set(state: Rc<RefCell<OpState>>, #[string] key: String, #[string] value: String) -> Result<(), AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<StorageHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
+    handle.0.set(&domain, &key, &value).map_err(|e| deno_core::error::generic_error(e))
+}
+
+#[op2(fast)]
+pub fn op_storage_remove(state: Rc<RefCell<OpState>>, #[string] key: String) -> Result<(), AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<StorageHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
+    handle.0.remove(&domain, &key).map_err(|e| deno_core::error::generic_error(e))
+}
+
+#[op2(fast)]
+pub fn op_storage_clear(state: Rc<RefCell<OpState>>) -> Result<(), AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<StorageHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
+    handle.0.clear(&domain).map_err(|e| deno_core::error::generic_error(e))
+}

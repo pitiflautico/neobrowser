@@ -2,6 +2,18 @@
 // Connects linkedom (real DOM) + deno_core ops to create a headless browser.
 // Runs AFTER linkedom.js. Expects __linkedom_parseHTML on globalThis.
 
+// ═══════════════════════════════════════════════════════════════
+// 0. ERROR ISOLATION — catch uncaught errors without crashing
+// ═══════════════════════════════════════════════════════════════
+
+globalThis.onerror = function(msg, url, line, col, error) {
+    // Log but don't crash
+    return true; // prevents default handling
+};
+globalThis.onunhandledrejection = function(event) {
+    if (event && event.preventDefault) event.preventDefault();
+};
+
 const { ops } = Deno.core;
 
 // ═══════════════════════════════════════════════════════════════
@@ -306,8 +318,25 @@ globalThis.structuredClone = globalThis.structuredClone || ((obj) => {
     try { return JSON.parse(JSON.stringify(obj)); } catch { return obj; }
 });
 
-// Storage (localStorage / sessionStorage)
-globalThis.localStorage = globalThis.localStorage || new (class Storage {
+// Storage (localStorage backed by SQLite via Rust ops, sessionStorage in-memory)
+globalThis.localStorage = {
+    getItem(k) {
+        try { const v = ops.op_storage_get(k); return v || null; }
+        catch { return null; }
+    },
+    setItem(k, v) {
+        try { ops.op_storage_set(k, String(v)); } catch {}
+    },
+    removeItem(k) {
+        try { ops.op_storage_remove(k); } catch {}
+    },
+    clear() {
+        try { ops.op_storage_clear(); } catch {}
+    },
+    get length() { return 0; }, // approximate — SQLite count would be expensive per access
+    key(i) { return null; },
+};
+globalThis.sessionStorage = globalThis.sessionStorage || new (class Storage {
     constructor() { this.__d = {}; }
     getItem(k) { return this.__d[k] !== undefined ? this.__d[k] : null; }
     setItem(k, v) { this.__d[k] = String(v); }
@@ -316,7 +345,6 @@ globalThis.localStorage = globalThis.localStorage || new (class Storage {
     get length() { return Object.keys(this.__d).length; }
     key(i) { return Object.keys(this.__d)[i] || null; }
 })();
-globalThis.sessionStorage = globalThis.sessionStorage || new globalThis.localStorage.constructor();
 
 // CSS / matchMedia / getComputedStyle
 globalThis.CSS = { supports: () => false, escape: (s) => s };

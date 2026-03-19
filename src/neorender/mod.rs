@@ -9,6 +9,7 @@ pub mod v8_runtime;
 pub mod dom_export;
 pub mod session;
 pub mod net;
+pub mod storage;
 
 use crate::ghost;
 
