@@ -257,6 +257,11 @@ pub fn create_runtime_with_html(
     runtime.execute_script("<neorender:browser>", browser_js)
         .map_err(|e| format!("Browser bridge load error: {e}"))?;
 
+    // 3f2. Consent auto-accept — dismisses cookie dialogs after navigation
+    let consent_js: String = include_str!("../../js/consent.js").to_string();
+    runtime.execute_script("<neorender:consent>", consent_js)
+        .map_err(|e| format!("Consent load error: {e}"))?;
+
     // 3g. Stealth patches (navigator.webdriver, plugins, screen)
     let stealth_js: String = include_str!("../../js/stealth.js").to_string();
     runtime.execute_script("<neorender:stealth>", stealth_js)

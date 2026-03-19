@@ -390,6 +390,123 @@ impl NeoSession {
             }
         }
 
+        // 13b. Auto-accept consent dialogs (cookie banners, GDPR prompts)
+        if let Ok(consent_result) = self.eval_internal("__neo_auto_consent()") {
+            if consent_result.contains("\"ok\":true") {
+                eprintln!("[NEOSESSION] Auto-accepted consent dialog: {}", consent_result);
+                // Run event loop briefly to process any DOM changes from consent acceptance
+                v8_runtime::run_event_loop(&mut self.runtime, 500).await?;
+            }
+        }
+
+        // 13c. Google consent redirect detection
+        //      Google shows "Before you continue" / "Antes de ir a Google" on consent.google.com
+        //      or on the main page itself. Detect via title and submit the consent form via HTTP,
+        //      then re-navigate to get the actual content.
+        {
+            let title_check = self.eval_internal("document.title || ''").unwrap_or_default();
+            let is_google_consent = title_check.contains("Before you continue")
+                || title_check.contains("Antes de ir a Google")
+                || title_check.contains("Avant d'accéder à Google")
+                || title_check.contains("Bevor Sie zu Google")
+                || final_url.contains("consent.google");
+
+            if is_google_consent {
+                eprintln!("[NEOSESSION] Google consent page detected, attempting bypass");
+                // Try to extract and submit the consent form action
+                let form_data = self.eval_internal(r#"
+                    (function() {
+                        const form = document.querySelector('form[action*="consent"]')
+                            || document.querySelector('form[action*="save"]')
+                            || document.querySelector('form');
+                        if (!form) return JSON.stringify({found: false});
+                        const action = form.getAttribute('action') || '';
+                        const inputs = {};
+                        form.querySelectorAll('input[type="hidden"]').forEach(i => {
+                            if (i.name) inputs[i.name] = i.value || '';
+                        });
+                        return JSON.stringify({found: true, action: action, inputs: inputs});
+                    })()
+                "#).unwrap_or_default();
+
+                if let Ok(form_info) = serde_json::from_str::<serde_json::Value>(&form_data) {
+                    if form_info["found"] == true {
+                        let action = form_info["action"].as_str().unwrap_or("");
+                        let consent_url = if action.starts_with("http") {
+                            action.to_string()
+                        } else if action.starts_with('/') {
+                            // Resolve relative to origin
+                            url::Url::parse(&final_url)
+                                .ok()
+                                .map(|u| format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or(""), action))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+
+                        if !consent_url.is_empty() {
+                            // Build form body using url::form_urlencoded
+                            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+                            let mut has_consent_field = false;
+                            if let Some(inputs) = form_info["inputs"].as_object() {
+                                for (k, v) in inputs {
+                                    let val = v.as_str().unwrap_or("");
+                                    serializer.append_pair(k, val);
+                                    if k == "set_eom" || k == "consent" {
+                                        has_consent_field = true;
+                                    }
+                                }
+                            }
+                            if !has_consent_field {
+                                serializer.append_pair("set_eom", "true");
+                            }
+                            let body_str = serializer.finish();
+                            eprintln!("[NEOSESSION] Submitting Google consent form to {}", consent_url);
+
+                            // Build headers with cookies
+                            let mut consent_headers = rquest::header::HeaderMap::new();
+                            if let Some(d) = url::Url::parse(&consent_url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
+                                if let Some(ch) = self.cookies.header_for(&d) {
+                                    if let Ok(v) = rquest::header::HeaderValue::from_str(&ch) {
+                                        consent_headers.insert(rquest::header::COOKIE, v);
+                                    }
+                                }
+                            }
+                            consent_headers.insert(
+                                rquest::header::CONTENT_TYPE,
+                                rquest::header::HeaderValue::from_static("application/x-www-form-urlencoded"),
+                            );
+
+                            // POST consent form
+                            if let Ok(consent_resp) = self.network.client()
+                                .post(&consent_url)
+                                .headers(consent_headers)
+                                .body(body_str)
+                                .send()
+                                .await
+                            {
+                                // Store consent cookies
+                                if let Some(d) = consent_resp.url().host_str() {
+                                    for cookie in consent_resp.headers().get_all(rquest::header::SET_COOKIE) {
+                                        if let Ok(s) = cookie.to_str() {
+                                            self.cookies.store_from_header(d, s);
+                                        }
+                                    }
+                                }
+                                eprintln!("[NEOSESSION] Google consent submitted (status {}), re-fetching {}",
+                                    consent_resp.status(), url);
+
+                                // Re-fetch the original URL with consent cookies now set.
+                                // We update cookies in V8 and return the second page result
+                                // by performing a second goto via goto_consent_retry.
+                                return self.goto_consent_retry(url, start).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // 14. Extract WOM (title, text, links, forms, etc.) directly from linkedom DOM
         let wom_json_str = self.eval_internal("__wom_extract()")?;
         let wom: Option<serde_json::Value> = serde_json::from_str(&wom_json_str).ok();
@@ -419,6 +536,98 @@ impl NeoSession {
             scripts_count,
             render_time_ms: render_time.as_millis() as u64,
             errors,
+            wom,
+        })
+    }
+
+    /// Re-fetch after consent form submission. Avoids async recursion by duplicating
+    /// the essential goto logic (fetch + render + WOM). Reuses the same start time
+    /// so render_time_ms reflects the total including consent.
+    async fn goto_consent_retry(&mut self, url: &str, start: std::time::Instant) -> Result<PageResult, String> {
+        // 1. Fetch with updated consent cookies
+        let mut headers = rquest::header::HeaderMap::new();
+        if let Some(domain) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
+            if let Some(cookie_header) = self.cookies.header_for(&domain) {
+                if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
+                    headers.insert(rquest::header::COOKIE, v);
+                }
+            }
+        }
+
+        let resp = self.network.client().get(url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error (consent retry): {e}"))?;
+
+        let status = resp.status().as_u16();
+        let final_url = resp.url().to_string();
+
+        // Store response cookies
+        if let Some(domain) = resp.url().host_str() {
+            for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
+                if let Ok(s) = cookie.to_str() {
+                    self.cookies.store_from_header(domain, s);
+                }
+            }
+        }
+
+        let html = resp.text().await.map_err(|e| format!("Body error: {e}"))?;
+        let html_len = html.len();
+
+        // 2. Replace DOM
+        let html_json = serde_json::to_string(&html).unwrap_or_default();
+        let inject_js = format!("globalThis.__neo_html = {};", html_json);
+        self.runtime.execute_script("<neosession:inject_html>", inject_js)
+            .map_err(|e| format!("HTML injection error: {e}"))?;
+
+        let reparse_js = r#"{
+            const { document: freshDoc } = __linkedom_parseHTML(globalThis.__neo_html);
+            if (freshDoc.head) document.head.innerHTML = freshDoc.head.innerHTML;
+            if (freshDoc.body) document.body.innerHTML = freshDoc.body.innerHTML;
+            for (const attr of freshDoc.documentElement.attributes || []) {
+                try { document.documentElement.setAttribute(attr.name, attr.value); } catch {}
+            }
+            try { document.location = location; } catch {}
+            delete globalThis.__neo_html;
+        }"#;
+        self.runtime.execute_script("<neosession:reparse>", reparse_js.to_string())
+            .map_err(|e| format!("DOM reparse error: {e}"))?;
+
+        // 3. Update location
+        v8_runtime::set_location(&mut self.runtime, &final_url)?;
+
+        // 4. Brief event loop
+        v8_runtime::run_event_loop(&mut self.runtime, 500).await?;
+
+        // 5. Extract WOM
+        let wom_json_str = self.eval_internal("__wom_extract()")?;
+        let wom: Option<serde_json::Value> = serde_json::from_str(&wom_json_str).ok();
+
+        let title = wom.as_ref()
+            .and_then(|w| w["title"].as_str())
+            .unwrap_or("")
+            .to_string();
+        let text = wom.as_ref()
+            .and_then(|w| w["text"].as_str())
+            .unwrap_or("")
+            .to_string();
+
+        self.url = final_url.clone();
+        self.navigated = true;
+
+        let render_time = start.elapsed();
+        eprintln!("[NEOSESSION] Consent retry rendered in {:?} — {} bytes", render_time, html_len);
+
+        Ok(PageResult {
+            url: final_url,
+            status,
+            title,
+            text,
+            html_len,
+            scripts_count: 0,
+            render_time_ms: render_time.as_millis() as u64,
+            errors: Vec::new(),
             wom,
         })
     }
