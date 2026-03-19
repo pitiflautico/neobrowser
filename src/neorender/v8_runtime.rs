@@ -257,6 +257,21 @@ pub fn create_runtime_with_html(
     runtime.execute_script("<neorender:browser>", browser_js)
         .map_err(|e| format!("Browser bridge load error: {e}"))?;
 
+    // 3g. Stealth patches (navigator.webdriver, plugins, screen)
+    let stealth_js: String = include_str!("../../js/stealth.js").to_string();
+    runtime.execute_script("<neorender:stealth>", stealth_js)
+        .map_err(|e| format!("Stealth load error: {e}"))?;
+
+    // 3h. Auto-extraction (tables, articles, forms, structured data)
+    let extract_js: String = include_str!("../../js/extract.js").to_string();
+    runtime.execute_script("<neorender:extract>", extract_js)
+        .map_err(|e| format!("Extract load error: {e}"))?;
+
+    // 3i. Wait-for-condition helpers
+    let wait_js: String = include_str!("../../js/wait.js").to_string();
+    runtime.execute_script("<neorender:wait>", wait_js)
+        .map_err(|e| format!("Wait load error: {e}"))?;
+
     // 4. Set location (after bootstrap, so location object exists)
     set_location(&mut runtime, url)?;
 
