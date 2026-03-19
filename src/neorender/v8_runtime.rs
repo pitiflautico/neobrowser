@@ -230,6 +230,11 @@ pub fn create_runtime_with_html(
         }
     }
 
+    // 2b. Crypto — full SubtleCrypto (digest, HMAC, importKey, etc.)
+    let crypto_js: String = include_str!("../../js/crypto.js").to_string();
+    runtime.execute_script("<neorender:crypto>", crypto_js)
+        .map_err(|e| format!("Crypto load error: {e}"))?;
+
     // 3. Bootstrap — parses HTML via linkedom, sets up fetch/timers/globals
     let boot_js: String = include_str!("../../js/bootstrap.js").to_string();
     runtime.execute_script("<neorender:bootstrap>", boot_js)
@@ -260,7 +265,32 @@ pub fn create_runtime_with_html(
     runtime.execute_script("<neorender:browser>", browser_js)
         .map_err(|e| format!("Browser bridge load error: {e}"))?;
 
-    // 3f2. Consent auto-accept — dismisses cookie dialogs after navigation
+    // 3f1. History API + Navigation events — pushState/replaceState/popstate for SPAs
+    let history_js: String = include_str!("../../js/history.js").to_string();
+    runtime.execute_script("<neorender:history>", history_js)
+        .map_err(|e| format!("History API load error: {e}"))?;
+
+    // 3f2. Iframes — intercepts iframe creation, fetches + parses nested documents
+    let iframe_js: String = include_str!("../../js/iframe.js").to_string();
+    runtime.execute_script("<neorender:iframe>", iframe_js)
+        .map_err(|e| format!("Iframe load error: {e}"))?;
+
+    // 3f3. Custom Elements (Web Components) — registry polyfill for GitHub, Twitch, etc.
+    let custom_elements_js: String = include_str!("../../js/custom_elements.js").to_string();
+    runtime.execute_script("<neorender:custom_elements>", custom_elements_js)
+        .map_err(|e| format!("Custom Elements load error: {e}"))?;
+
+    // 3f4. WebSocket — functional stub so sites don't break on WebSocket checks
+    let websocket_js: String = include_str!("../../js/websocket.js").to_string();
+    runtime.execute_script("<neorender:websocket>", websocket_js)
+        .map_err(|e| format!("WebSocket load error: {e}"))?;
+
+    // 3f5. EventSource (SSE) — fetches text/event-stream and parses SSE events
+    let eventsource_js: String = include_str!("../../js/eventsource.js").to_string();
+    runtime.execute_script("<neorender:eventsource>", eventsource_js)
+        .map_err(|e| format!("EventSource load error: {e}"))?;
+
+    // 3f6. Consent auto-accept — dismisses cookie dialogs after navigation
     let consent_js: String = include_str!("../../js/consent.js").to_string();
     runtime.execute_script("<neorender:consent>", consent_js)
         .map_err(|e| format!("Consent load error: {e}"))?;
@@ -269,6 +299,11 @@ pub fn create_runtime_with_html(
     let stealth_js: String = include_str!("../../js/stealth.js").to_string();
     runtime.execute_script("<neorender:stealth>", stealth_js)
         .map_err(|e| format!("Stealth load error: {e}"))?;
+
+    // 3g2. Web APIs — common APIs that sites check for (Permissions, Clipboard, matchMedia, etc.)
+    let webapis_js: String = include_str!("../../js/webapis.js").to_string();
+    runtime.execute_script("<neorender:webapis>", webapis_js)
+        .map_err(|e| format!("WebAPIs load error: {e}"))?;
 
     // 3h. Auto-extraction (tables, articles, forms, structured data)
     let extract_js: String = include_str!("../../js/extract.js").to_string();
@@ -284,6 +319,21 @@ pub fn create_runtime_with_html(
     let sentinel_js: String = include_str!("../../js/sentinel.js").to_string();
     runtime.execute_script("<neorender:sentinel>", sentinel_js)
         .map_err(|e| format!("Sentinel load error: {e}"))?;
+
+    // 3k. IndexedDB — in-memory stub (prevents SPA crashes)
+    let indexeddb_js: String = include_str!("../../js/indexeddb.js").to_string();
+    runtime.execute_script("<neorender:indexeddb>", indexeddb_js)
+        .map_err(|e| format!("IndexedDB load error: {e}"))?;
+
+    // 3l. Shadow DOM — attachShadow polyfill
+    let shadow_dom_js: String = include_str!("../../js/shadow_dom.js").to_string();
+    runtime.execute_script("<neorender:shadow_dom>", shadow_dom_js)
+        .map_err(|e| format!("Shadow DOM load error: {e}"))?;
+
+    // 3m. Cache API — in-memory stub (Service Worker caching)
+    let cache_api_js: String = include_str!("../../js/cache_api.js").to_string();
+    runtime.execute_script("<neorender:cache_api>", cache_api_js)
+        .map_err(|e| format!("Cache API load error: {e}"))?;
 
     // 4. Set location (after bootstrap, so location object exists)
     set_location(&mut runtime, url)?;

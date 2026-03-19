@@ -364,7 +364,7 @@ globalThis.__chatgpt_sentinel = async function() {
         } catch (e) { /* non-fatal */ }
     }
 
-    // 5. Solve PoW (SHA3-512 via Rust op — native speed)
+    // 5. Solve PoW (SHA3-512 via Rust native op)
     var powToken = '';
     if (sentinel.proofofwork && sentinel.proofofwork.required) {
         var powConfig = buildConfig();
@@ -377,7 +377,7 @@ globalThis.__chatgpt_sentinel = async function() {
             var powResult = JSON.parse(powResultJson);
             powToken = powResult.token || '';
         } catch (e) {
-            // Fallback to FNV-1a if Rust op fails
+            // Fallback to FNV-1a
             powToken = solvePow(sentinel.proofofwork.seed, sentinel.proofofwork.difficulty, powConfig);
         }
     }
@@ -411,11 +411,36 @@ globalThis.__chatgpt_send = async function(message, model, conversationId, paren
             id: crypto.randomUUID(),
             author: { role: 'user' },
             content: { content_type: 'text', parts: [message] },
+            metadata: {},
         }],
         model: model,
         parent_message_id: parentMessageId,
         timezone_offset_min: new Date().getTimezoneOffset(),
+        timezone: 'America/Los_Angeles',
         history_and_training_disabled: false,
+        conversation_mode: { kind: 'primary_assistant' },
+        force_paragen: false,
+        force_paragen_model_slug: '',
+        force_rate_limit: false,
+        force_use_sse: true,
+        suggestions: [],
+        supported_encodings: [],
+        system_hints: [],
+        paragen_cot_summary_display_override: 'allow',
+        paragen_stream_type_override: null,
+        conversation_origin: null,
+        client_contextual_info: {
+            is_dark_mode: false,
+            time_since_loaded: Math.floor(Math.random() * 450) + 50,
+            page_height: Math.floor(Math.random() * 500) + 500,
+            page_width: Math.floor(Math.random() * 1000) + 1000,
+            pixel_ratio: 1.5,
+            screen_height: Math.floor(Math.random() * 400) + 800,
+            screen_width: Math.floor(Math.random() * 1000) + 1200,
+        },
+        reset_rate_limits: false,
+        variant_purpose: 'comparison_implicit',
+        websocket_request_id: crypto.randomUUID(),
     };
     if (conversationId) body.conversation_id = conversationId;
 

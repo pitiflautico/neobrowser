@@ -19,6 +19,7 @@ pub mod wait;
 pub mod extract;
 pub mod pool;
 pub mod stealth;
+pub mod http_cache;
 
 use crate::ghost;
 

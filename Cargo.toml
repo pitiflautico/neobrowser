@@ -55,6 +55,9 @@ deno_core = "0.311"
 # SHA3 for ChatGPT proof-of-work (SHA3-512 hashcash)
 sha3 = "0.10"
 
+# HTTP date parsing (for cache headers)
+httpdate = "1"
+
 [profile.release]
 opt-level = 3
 lto = true
