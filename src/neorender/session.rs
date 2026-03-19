@@ -48,6 +48,9 @@ pub struct PageResult {
     pub scripts_count: usize,
     pub render_time_ms: u64,
     pub errors: Vec<String>,
+    /// WOM data extracted directly from linkedom (avoids html5ever re-parse).
+    /// Contains links, forms, inputs, buttons, headings, images, meta as JSON.
+    pub wom: Option<serde_json::Value>,
 }
 
 impl NeoSession {
@@ -155,6 +158,7 @@ impl NeoSession {
                 scripts_count: 0,
                 render_time_ms: 0,
                 errors: vec![format!("WAF challenge: {waf}")],
+                wom: None,
             });
         }
 
@@ -229,20 +233,31 @@ impl NeoSession {
             }
         }
 
-        // 8. Re-parse HTML into the existing runtime (replace DOM, not runtime)
-        let escaped_html = html.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
-        let reparse_js = format!(
-            r#"{{
-                const {{ document: newDoc }} = __linkedom_parseHTML(`{}`);
-                globalThis.document = newDoc;
-                try {{ Object.defineProperty(newDoc, 'currentScript', {{ value: null, writable: true, configurable: true }}); }} catch {{}}
-                if (newDoc.cookie === undefined) newDoc.cookie = '';
-                try {{ newDoc.defaultView = globalThis; }} catch {{}}
-                globalThis.__neorender_export = function() {{ return document.documentElement.outerHTML; }};
-            }}"#,
-            escaped_html
-        );
-        self.runtime.execute_script("<neosession:reparse>", reparse_js)
+        // 8. Replace DOM content in the existing runtime
+        //    Instead of creating a new document (breaks references), update the existing one
+        let html_json = serde_json::to_string(&html).unwrap_or_default();
+        let inject_js = format!("globalThis.__neo_html = {};", html_json);
+        self.runtime.execute_script("<neosession:inject_html>", inject_js)
+            .map_err(|e| format!("HTML injection error: {e}"))?;
+
+        let reparse_js = r#"{
+            // Parse into a fresh document
+            const { document: freshDoc } = __linkedom_parseHTML(globalThis.__neo_html);
+            // Copy head and body content into the existing document
+            // (preserves document identity — no broken references)
+            if (freshDoc.head) document.head.innerHTML = freshDoc.head.innerHTML;
+            if (freshDoc.body) document.body.innerHTML = freshDoc.body.innerHTML;
+            // Copy <html> attributes
+            for (const attr of freshDoc.documentElement.attributes || []) {
+                try { document.documentElement.setAttribute(attr.name, attr.value); } catch {}
+            }
+            try { Object.defineProperty(document, 'currentScript', { value: null, writable: true, configurable: true }); } catch {}
+            if (document.cookie === undefined) document.cookie = '';
+            try { document.defaultView = globalThis; } catch {}
+            try { document.location = location; } catch {}
+            delete globalThis.__neo_html;
+        }"#;
+        self.runtime.execute_script("<neosession:reparse>", reparse_js.to_string())
             .map_err(|e| format!("DOM reparse error: {e}"))?;
 
         // 9. Update location
@@ -306,11 +321,18 @@ impl NeoSession {
         // 13. Run event loop
         v8_runtime::run_event_loop(&mut self.runtime, 10_000).await?;
 
-        // 14. Extract title + text from rendered DOM
-        let title = self.eval_internal("document.title || ''")?;
-        let text = self.eval_internal(
-            "document.body ? document.body.innerText || document.body.textContent || '' : ''"
-        )?;
+        // 14. Extract WOM (title, text, links, forms, etc.) directly from linkedom DOM
+        let wom_json_str = self.eval_internal("__wom_extract()")?;
+        let wom: Option<serde_json::Value> = serde_json::from_str(&wom_json_str).ok();
+
+        let title = wom.as_ref()
+            .and_then(|w| w["title"].as_str())
+            .unwrap_or("")
+            .to_string();
+        let text = wom.as_ref()
+            .and_then(|w| w["text"].as_str())
+            .unwrap_or("")
+            .to_string();
 
         let render_time = start.elapsed();
         self.url = final_url.clone();
@@ -328,6 +350,7 @@ impl NeoSession {
             scripts_count,
             render_time_ms: render_time.as_millis() as u64,
             errors,
+            wom,
         })
     }
 
@@ -437,6 +460,13 @@ impl NeoSession {
         self.eval_internal(
             "document.body ? document.body.innerText || document.body.textContent || '' : ''"
         )
+    }
+
+    /// Extract WOM (Web Object Model) from current DOM — links, forms, buttons, etc.
+    /// Runs __wom_extract() in V8, returns parsed JSON.
+    pub fn extract_wom(&mut self) -> Result<serde_json::Value, String> {
+        let json_str = self.eval_internal("__wom_extract()")?;
+        serde_json::from_str(&json_str).map_err(|e| format!("WOM parse error: {e}"))
     }
 
     /// Current URL.

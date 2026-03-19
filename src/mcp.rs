@@ -835,19 +835,20 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
                         // Check for WAF — if detected, drop NeoSession and fall through
                         let is_waf = result.errors.iter().any(|e| e.starts_with("WAF challenge:"));
                         if !is_waf {
-                            // Success — build response from NeoSession result
-                            let rendered_html = neo.export_html().unwrap_or_default();
-                            let dom = html5ever::parse_document(
-                                markup5ever_rcdom::RcDom::default(), Default::default()
-                            ).from_utf8().read_from(&mut rendered_html.as_bytes())
-                                .map_err(|e| format!("Re-parse error: {e}"))?;
+                            // Success — build response from WOM (extracted in V8, no html5ever re-parse)
+                            let title = result.title.clone();
+                            let text = result.text.clone();
 
-                            let title = if result.title.is_empty() { extract_title_from_dom(&dom) } else { result.title.clone() };
-                            let text = if result.text.is_empty() { extract_text_from_dom(&dom) } else { result.text.clone() };
-                            let links_count = count_elements(&dom, "a");
-                            let forms_count = count_elements(&dom, "form");
-                            let inputs_count = count_elements(&dom, "input");
-                            let buttons_count = count_elements(&dom, "button");
+                            let (links_count, forms_count, inputs_count, buttons_count) = if let Some(ref wom) = result.wom {
+                                (
+                                    wom["links"].as_array().map(|a| a.len()).unwrap_or(0),
+                                    wom["forms"].as_array().map(|a| a.len()).unwrap_or(0),
+                                    wom["inputs"].as_array().map(|a| a.len()).unwrap_or(0),
+                                    wom["buttons"].as_array().map(|a| a.len()).unwrap_or(0),
+                                )
+                            } else {
+                                (0, 0, 0, 0)
+                            };
 
                             let mut see = format!(
                                 "Page: {}\nURL: {}\nStatus: {}\nEngine: neosession (V8 persistent)\nRender: {}ms, {} scripts\n",
@@ -868,10 +869,19 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
                                     links_count, forms_count, inputs_count, buttons_count));
                             }
 
-                            let body_start = rendered_html.find("<body").unwrap_or(0);
-                            let body_preview = &rendered_html[body_start..];
-                            let body_preview = if body_preview.len() > 2000 { &body_preview[..2000] } else { body_preview };
-                            see.push_str(&format!("\n--- Body Preview ---\n{}\n", body_preview));
+                            // Include headings summary if available
+                            if let Some(ref wom) = result.wom {
+                                if let Some(headings) = wom["headings"].as_array() {
+                                    if !headings.is_empty() {
+                                        see.push_str("\n--- Headings ---\n");
+                                        for h in headings.iter().take(20) {
+                                            let level = h["level"].as_u64().unwrap_or(0);
+                                            let htext = h["text"].as_str().unwrap_or("");
+                                            see.push_str(&format!("  H{}: {}\n", level, htext));
+                                        }
+                                    }
+                                }
+                            }
 
                             return Ok(serde_json::json!({
                                 "ok": true,
@@ -886,7 +896,7 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
                                 "buttons": buttons_count,
                                 "render_ms": result.render_time_ms,
                                 "scripts": result.scripts_count,
-                                "html_bytes": rendered_html.len(),
+                                "html_bytes": result.html_len,
                                 "errors": result.errors,
                                 "page": see,
                             }));

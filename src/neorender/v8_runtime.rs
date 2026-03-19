@@ -228,6 +228,11 @@ pub fn create_runtime_with_html(
     runtime.execute_script("<neorender:bootstrap>", boot_js)
         .map_err(|e| format!("Bootstrap error: {e}"))?;
 
+    // 3b. WOM extraction function — extracts page data directly from linkedom DOM
+    let wom_js: String = include_str!("../../js/wom.js").to_string();
+    runtime.execute_script("<neorender:wom>", wom_js)
+        .map_err(|e| format!("WOM load error: {e}"))?;
+
     // 4. Set location (after bootstrap, so location object exists)
     set_location(&mut runtime, url)?;
 
