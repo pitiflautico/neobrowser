@@ -130,11 +130,30 @@ class NeoResponse {
         this.redirected = false;
         this.type = 'basic';
         this.url = '';
+        this.bodyUsed = false;
+        // .body as a ReadableStream (lazy — created on first access)
+        const self = this;
+        Object.defineProperty(this, 'body', {
+            get() {
+                if (!self._bodyStream) {
+                    const text = self._body;
+                    self._bodyStream = new ReadableStream({
+                        start(controller) {
+                            if (text) controller.enqueue(new TextEncoder().encode(text));
+                            controller.close();
+                        }
+                    });
+                }
+                return self._bodyStream;
+            },
+            configurable: true
+        });
     }
-    async text() { return this._body; }
-    async json() { return JSON.parse(this._body); }
-    async arrayBuffer() { return new TextEncoder().encode(this._body).buffer; }
-    async blob() { return new Blob([this._body]); }
+    _markUsed() { if (this.bodyUsed) throw new TypeError('Body already consumed'); this.bodyUsed = true; }
+    async text() { this._markUsed(); return this._body; }
+    async json() { this._markUsed(); return JSON.parse(this._body); }
+    async arrayBuffer() { this._markUsed(); return new TextEncoder().encode(this._body).buffer; }
+    async blob() { this._markUsed(); return new Blob([this._body]); }
     clone() { return new NeoResponse(this.status, this._body, this._headers); }
 }
 
@@ -340,7 +359,6 @@ globalThis.DOMParser = globalThis.DOMParser || class { parseFromString(html) { r
 globalThis.MutationObserver = __win.MutationObserver || class { constructor(cb){} observe(){} disconnect(){} takeRecords(){return [];} };
 globalThis.IntersectionObserver = class { constructor(cb,opts){} observe(){} unobserve(){} disconnect(){} };
 globalThis.ResizeObserver = class { constructor(cb){} observe(){} unobserve(){} disconnect(){} };
-globalThis.MessageChannel = globalThis.MessageChannel || class { constructor(){ const noop={postMessage(){},addEventListener(){},removeEventListener(){},onmessage:null}; this.port1=noop; this.port2=noop; } };
 globalThis.BroadcastChannel = globalThis.BroadcastChannel || class { constructor(){} postMessage(){} addEventListener(){} close(){} };
 globalThis.Worker = globalThis.Worker || class { constructor(){} postMessage(){} addEventListener(){} terminate(){} };
 
@@ -352,6 +370,42 @@ globalThis.KeyboardEvent = globalThis.KeyboardEvent || class extends Event { con
 globalThis.FocusEvent = globalThis.FocusEvent || class extends Event { constructor(t,o={}){super(t,o);} };
 globalThis.InputEvent = globalThis.InputEvent || class extends Event { constructor(t,o={}){super(t,o);this.data=o.data||'';} };
 globalThis.PopStateEvent = globalThis.PopStateEvent || class extends Event { constructor(t,o={}){super(t,o);this.state=o.state||null;} };
+
+// MessageEvent
+globalThis.MessageEvent = globalThis.MessageEvent || class MessageEvent extends Event {
+    constructor(type, init = {}) {
+        super(type, init);
+        this.data = init.data;
+        this.origin = init.origin || '';
+        this.source = init.source || null;
+        this.ports = init.ports || [];
+    }
+};
+// MessagePort with actual async message passing
+globalThis.MessagePort = class MessagePort extends EventTarget {
+    constructor() { super(); this._other = null; this._closed = false; this.onmessage = null; }
+    postMessage(data) {
+        if (this._other && !this._other._closed) {
+            const target = this._other;
+            const event = new MessageEvent('message', { data });
+            Promise.resolve().then(() => {
+                target.dispatchEvent(event);
+                if (target.onmessage) target.onmessage(event);
+            });
+        }
+    }
+    close() { this._closed = true; }
+    start() {}
+};
+// MessageChannel with connected ports
+globalThis.MessageChannel = class MessageChannel {
+    constructor() {
+        this.port1 = new MessagePort();
+        this.port2 = new MessagePort();
+        this.port1._other = this.port2;
+        this.port2._other = this.port1;
+    }
+};
 
 // window as EventTarget
 if (!globalThis.addEventListener) {
@@ -367,41 +421,260 @@ if (!globalThis.addEventListener) {
     }
 }
 
+// window.postMessage (must be after addEventListener is available)
+globalThis.postMessage = function(data, origin) {
+    const event = new MessageEvent('message', { data, origin: origin || (typeof location !== 'undefined' ? location.origin : '') });
+    Promise.resolve().then(() => globalThis.dispatchEvent(event));
+};
+
 // ═══════════════════════════════════════════════════════════════
 // 7b. STREAMS + CRYPTO — required by ChatGPT, Next.js, modern SPAs
 // ═══════════════════════════════════════════════════════════════
 
-// ReadableStream (minimal but functional for fetch response streaming)
+// ReadableStream — proper implementation supporting controller, async iteration, tee, pipeTo
 if (typeof globalThis.ReadableStream === 'undefined') {
     globalThis.ReadableStream = class ReadableStream {
-        constructor(source) {
-            this._source = source;
-            this._controller = { enqueue(chunk) { this._chunks = this._chunks || []; this._chunks.push(chunk); }, close() { this._closed = true; }, error(e) { this._error = e; }, _chunks: [], _closed: false };
-            if (source && source.start) try { source.start(this._controller); } catch {}
-        }
-        getReader() {
-            const ctrl = this._controller;
-            let idx = 0;
-            return {
-                read() {
-                    if (idx < (ctrl._chunks||[]).length) return Promise.resolve({value: ctrl._chunks[idx++], done: false});
-                    if (ctrl._closed) return Promise.resolve({value: undefined, done: true});
-                    return Promise.resolve({value: undefined, done: true});
+        constructor(underlyingSource) {
+            this._locked = false;
+            this._disturbed = false;
+            this._state = 'readable'; // 'readable' | 'closed' | 'errored'
+            this._storedError = undefined;
+            this._queue = [];
+            this._waiters = []; // pending read() resolvers
+            const stream = this;
+            this._controller = {
+                enqueue(chunk) {
+                    if (stream._state !== 'readable') return;
+                    if (stream._waiters.length > 0) {
+                        const waiter = stream._waiters.shift();
+                        waiter({ value: chunk, done: false });
+                    } else {
+                        stream._queue.push(chunk);
+                    }
                 },
-                releaseLock() {},
-                cancel() { return Promise.resolve(); }
+                close() {
+                    if (stream._state !== 'readable') return;
+                    stream._state = 'closed';
+                    // Resolve all pending readers with done
+                    while (stream._waiters.length > 0) {
+                        stream._waiters.shift()({ value: undefined, done: true });
+                    }
+                },
+                error(e) {
+                    if (stream._state !== 'readable') return;
+                    stream._state = 'errored';
+                    stream._storedError = e;
+                    while (stream._waiters.length > 0) {
+                        // Reject pending reads — but we store as resolve with error marker
+                        stream._waiters.shift()({ value: undefined, done: true });
+                    }
+                },
+                get desiredSize() { return stream._queue.length > 0 ? 0 : 1; }
             };
+            if (underlyingSource) {
+                if (underlyingSource.start) {
+                    try { underlyingSource.start(this._controller); } catch (e) { this._controller.error(e); }
+                }
+                this._pullFn = underlyingSource.pull || null;
+                this._cancelFn = underlyingSource.cancel || null;
+            }
+        }
+        get locked() { return this._locked; }
+        getReader() {
+            if (this._locked) throw new TypeError('ReadableStream is locked');
+            this._locked = true;
+            const stream = this;
+            const reader = {
+                get closed() {
+                    return stream._state === 'closed' ? Promise.resolve(undefined) :
+                           stream._state === 'errored' ? Promise.reject(stream._storedError) :
+                           new Promise((resolve) => { /* never resolves until close */ });
+                },
+                read() {
+                    stream._disturbed = true;
+                    if (stream._queue.length > 0) {
+                        return Promise.resolve({ value: stream._queue.shift(), done: false });
+                    }
+                    if (stream._state === 'closed') {
+                        return Promise.resolve({ value: undefined, done: true });
+                    }
+                    if (stream._state === 'errored') {
+                        return Promise.reject(stream._storedError);
+                    }
+                    // Pull if available
+                    if (stream._pullFn) {
+                        try { stream._pullFn(stream._controller); } catch {}
+                    }
+                    // If pull synchronously enqueued something
+                    if (stream._queue.length > 0) {
+                        return Promise.resolve({ value: stream._queue.shift(), done: false });
+                    }
+                    if (stream._state === 'closed') {
+                        return Promise.resolve({ value: undefined, done: true });
+                    }
+                    // Wait for future enqueue
+                    return new Promise((resolve) => { stream._waiters.push(resolve); });
+                },
+                releaseLock() { stream._locked = false; },
+                cancel(reason) { return stream.cancel(reason); }
+            };
+            return reader;
+        }
+        cancel(reason) {
+            this._state = 'closed';
+            this._queue = [];
+            if (this._cancelFn) try { this._cancelFn(reason); } catch {}
+            return Promise.resolve();
+        }
+        tee() {
+            const reader = this.getReader();
+            let cancelled1 = false, cancelled2 = false;
+            function makeBranch(setCancelled) {
+                const queue = [];
+                const waiters = [];
+                return { queue, waiters, cancelled: false };
+            }
+            const b1 = makeBranch(), b2 = makeBranch();
+            function pump() {
+                reader.read().then(({ value, done }) => {
+                    if (done) {
+                        for (const b of [b1, b2]) {
+                            while (b.waiters.length) b.waiters.shift()({ value: undefined, done: true });
+                            b.cancelled = true;
+                        }
+                        return;
+                    }
+                    for (const b of [b1, b2]) {
+                        if (b.waiters.length > 0) {
+                            b.waiters.shift()({ value, done: false });
+                        } else {
+                            b.queue.push(value);
+                        }
+                    }
+                    pump();
+                });
+            }
+            pump();
+            function makeBranchStream(branch) {
+                return new ReadableStream({
+                    pull(controller) {
+                        if (branch.queue.length > 0) {
+                            controller.enqueue(branch.queue.shift());
+                        }
+                    },
+                    start(controller) {
+                        // Override: directly wire into branch
+                        const origPull = branch;
+                    }
+                });
+            }
+            // Simpler tee: return streams that read from branches
+            const stream1 = new ReadableStream({ start() {} });
+            const stream2 = new ReadableStream({ start() {} });
+            stream1._queue = b1.queue; stream1._waiters = b1.waiters;
+            stream2._queue = b2.queue; stream2._waiters = b2.waiters;
+            return [stream1, stream2];
+        }
+        async pipeTo(dest, options) {
+            const reader = this.getReader();
+            const writer = dest.getWriter();
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    await writer.write(value);
+                }
+                await writer.close();
+            } finally {
+                reader.releaseLock();
+                writer.releaseLock();
+            }
+        }
+        pipeThrough(transform) {
+            this.pipeTo(transform.writable).catch(() => {});
+            return transform.readable;
         }
         [Symbol.asyncIterator]() {
             const reader = this.getReader();
-            return { next() { return reader.read(); }, return() { reader.releaseLock(); return Promise.resolve({done:true}); } };
+            return {
+                next() { return reader.read().then(r => r.done ? { value: undefined, done: true } : r); },
+                return() { reader.releaseLock(); return Promise.resolve({ value: undefined, done: true }); },
+                [Symbol.asyncIterator]() { return this; }
+            };
         }
-        tee() { return [this, this]; }
-        pipeTo() { return Promise.resolve(); }
-        pipeThrough(transform) { return transform.readable || this; }
     };
-    globalThis.WritableStream = class WritableStream { constructor(){} getWriter(){ return {write(){return Promise.resolve()},close(){return Promise.resolve()},releaseLock(){}}; } };
-    globalThis.TransformStream = class TransformStream { constructor(){ this.readable = new ReadableStream(); this.writable = new WritableStream(); } };
+
+    globalThis.WritableStream = class WritableStream {
+        constructor(underlyingSink) {
+            this._locked = false;
+            this._sink = underlyingSink || {};
+            this._state = 'writable';
+            if (this._sink.start) try { this._sink.start(this); } catch {}
+        }
+        get locked() { return this._locked; }
+        getWriter() {
+            if (this._locked) throw new TypeError('WritableStream is locked');
+            this._locked = true;
+            const stream = this;
+            return {
+                write(chunk) {
+                    if (stream._sink.write) return Promise.resolve(stream._sink.write(chunk));
+                    return Promise.resolve();
+                },
+                close() {
+                    if (stream._sink.close) return Promise.resolve(stream._sink.close());
+                    stream._state = 'closed';
+                    return Promise.resolve();
+                },
+                abort(reason) {
+                    if (stream._sink.abort) return Promise.resolve(stream._sink.abort(reason));
+                    return Promise.resolve();
+                },
+                releaseLock() { stream._locked = false; },
+                get ready() { return Promise.resolve(); },
+                get closed() { return stream._state === 'closed' ? Promise.resolve() : new Promise(() => {}); },
+                get desiredSize() { return 1; }
+            };
+        }
+        abort(reason) { this._state = 'closed'; return Promise.resolve(); }
+        close() { this._state = 'closed'; return Promise.resolve(); }
+    };
+
+    globalThis.TransformStream = class TransformStream {
+        constructor(transformer) {
+            const queue = [];
+            const waiters = [];
+            let readableClosed = false;
+            this.writable = new WritableStream({
+                write(chunk) {
+                    let transformed = chunk;
+                    if (transformer && transformer.transform) {
+                        const ctrl = {
+                            enqueue(c) { transformed = c; }
+                        };
+                        transformer.transform(chunk, ctrl);
+                    }
+                    if (waiters.length > 0) {
+                        waiters.shift()({ value: transformed, done: false });
+                    } else {
+                        queue.push(transformed);
+                    }
+                },
+                close() {
+                    readableClosed = true;
+                    while (waiters.length) waiters.shift()({ value: undefined, done: true });
+                }
+            });
+            this.readable = new ReadableStream({
+                pull(controller) {
+                    // Handled via queue/waiters above
+                }
+            });
+            // Wire the readable to our queue
+            this.readable._queue = queue;
+            this.readable._waiters = waiters;
+        }
+    };
 }
 
 // SubtleCrypto with real SHA-256 (pure JS, needed for proof-of-work)
@@ -521,6 +794,51 @@ globalThis.Range = globalThis.Range || class Range { setStart(){} setEnd(){} col
 globalThis.Selection = globalThis.Selection || class Selection { getRangeAt(){return new Range();} removeAllRanges(){} addRange(){} toString(){return '';} };
 if (!document.getSelection) document.getSelection = () => new Selection();
 if (!document.createRange) document.createRange = () => new Range();
+
+// ═══════════════════════════════════════════════════════════════
+// 8b. MODERN WEB APIs — TextEncoderStream, Promise.withResolvers
+// ═══════════════════════════════════════════════════════════════
+
+// TextEncoderStream / TextDecoderStream (Streams API)
+if (typeof globalThis.TextEncoderStream === 'undefined') {
+    globalThis.TextEncoderStream = class TextEncoderStream {
+        constructor() {
+            this.encoding = 'utf-8';
+            const encoder = new TextEncoder();
+            const ts = new TransformStream({
+                transform(chunk, controller) {
+                    const encoded = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
+                    controller.enqueue(encoded);
+                }
+            });
+            this.readable = ts.readable;
+            this.writable = ts.writable;
+        }
+    };
+    globalThis.TextDecoderStream = class TextDecoderStream {
+        constructor(label) {
+            this.encoding = label || 'utf-8';
+            const decoder = new TextDecoder(this.encoding);
+            const ts = new TransformStream({
+                transform(chunk, controller) {
+                    const decoded = decoder.decode(chunk, { stream: true });
+                    if (decoded) controller.enqueue(decoded);
+                }
+            });
+            this.readable = ts.readable;
+            this.writable = ts.writable;
+        }
+    };
+}
+
+// Promise.withResolvers (ES2024)
+if (!Promise.withResolvers) {
+    Promise.withResolvers = function() {
+        let resolve, reject;
+        const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+        return { promise, resolve, reject };
+    };
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 9. EXPORT — render DOM as HTML for Rust to extract
