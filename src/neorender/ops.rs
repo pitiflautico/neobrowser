@@ -148,7 +148,8 @@ pub fn op_neorender_pow(#[string] seed: String, #[string] difficulty: String, #[
             sha256_hex(input.as_bytes())
         };
 
-        if hash.starts_with(&difficulty) {
+        // ChatGPT PoW: hash hex prefix must be <= difficulty (comparison, not exact match)
+        if hash[..difficulty.len()] <= *difficulty {
             let elapsed = t0.elapsed();
             eprintln!("[NEORENDER:POW] Found nonce {} in {:?} ({} iters)", i, elapsed, i);
             return Ok(serde_json::json!({
