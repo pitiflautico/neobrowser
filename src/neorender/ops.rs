@@ -381,7 +381,7 @@ pub fn op_chatgpt_pow(
     }
 
     // Pre-build static JSON parts (everything except slots 3 and 9)
-    // Format: [config[0], config[1], config[2], <i>, config[4]...config[8], <i>>1>, config[10]...]
+    // Format: [config[0], config[1], config[2], <nonce>, config[4]...config[8], <elapsed_ms>, config[10]...]
     let b64 = base64::engine::general_purpose::STANDARD;
     let sep = serde_json::to_string(&config[..3]).unwrap_or_default();
     let part1 = format!("{},", &sep[..sep.len()-1]); // "[c0,c1,c2,"
@@ -392,7 +392,7 @@ pub fn op_chatgpt_pow(
 
     let tail: Vec<&serde_json::Value> = config[10..].iter().collect();
     let tail_str = serde_json::to_string(&tail).unwrap_or_default();
-    let part3 = format!(",{}]", &tail_str[1..]); // ",c10,c11,...,c18]"  (tail_str starts with "[")
+    let part3 = format!(",{}]", &tail_str[1..]); // ",c10,c11,...,c18]"
 
     let difficulty_bytes = decode_hex(&difficulty);
     if difficulty_bytes.is_empty() {
@@ -402,8 +402,9 @@ pub fn op_chatgpt_pow(
     let seed_bytes = seed.as_bytes();
 
     for i in 0u32..max_iters {
-        // Build JSON: part1 + i + part2 + (i>>1) + part3
-        let json_bytes = format!("{}{}{}{}{}", part1, i, part2, i >> 1, part3);
+        let elapsed_ms = t0.elapsed().as_millis() as u64;
+        // Build JSON: part1 + nonce + part2 + elapsed_ms + part3
+        let json_bytes = format!("{}{}{}{}{}", part1, i, part2, elapsed_ms, part3);
 
         // Base64 encode
         let encoded = b64.encode(json_bytes.as_bytes());
@@ -419,7 +420,7 @@ pub fn op_chatgpt_pow(
         if hash_bytes <= difficulty_bytes.as_slice() {
             let elapsed = t0.elapsed();
             eprintln!("[SENTINEL:POW] Solved in {} iters ({:?})", i, elapsed);
-            let token = format!("gAAAAAC{}", encoded);
+            let token = format!("gAAAAAB{}", encoded);
             return Ok(serde_json::json!({
                 "token": token,
                 "found": true,

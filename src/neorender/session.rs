@@ -17,6 +17,7 @@ use super::v8_runtime::{self, ScriptStoreHandle};
 use super::net::BrowserNetwork;
 use super::storage::BrowserStorage;
 use super::cookie_jar::{UnifiedCookieJar, CookieJarHandle};
+use super::http_cache::HttpCache;
 
 /// Shared HTTP client handle — stored in V8's OpState so fetch ops use the session's client.
 /// Kept for backward compatibility with code that stores SharedClient directly.
@@ -38,6 +39,7 @@ pub struct NeoSession {
     cookies: ghost::CookieJar,  // Legacy jar (backward compat for ghost path)
     cookie_jar: CookieJarHandle, // Unified SQLite-backed jar (source of truth)
     storage: Option<Arc<BrowserStorage>>,  // SQLite-backed localStorage
+    cache: HttpCache,            // HTTP response cache (50MB default, LRU eviction)
     url: String,
     navigated: bool, // true after first goto()
 }
@@ -136,6 +138,7 @@ impl NeoSession {
             cookies,
             cookie_jar,
             storage,
+            cache: HttpCache::new(50),
             url: String::new(),
             navigated: false,
         })
@@ -153,7 +156,7 @@ impl NeoSession {
 
     /// Unified navigation pipeline — all navigations go through here.
     /// 1. Build request with cookies from unified jar
-    /// 2. Send HTTP request
+    /// 2. Check HTTP cache / send HTTP request
     /// 3. Process Set-Cookie → unified jar
     /// 4. Handle redirects (rquest follows automatically with cookies)
     /// 5. Parse HTML
@@ -176,35 +179,83 @@ impl NeoSession {
             }
         }
 
-        // 2. Send HTTP request
-        let resp = match method.to_uppercase().as_str() {
-            "POST" => {
+        let is_get = method.eq_ignore_ascii_case("GET");
+
+        // 2. HTTP cache check + send request
+        let (status, final_url, html): (u16, String, String) = if is_get {
+            // Check for fresh cached response
+            if let Some(cached) = self.cache.get(url) {
+                eprintln!("[NEOSESSION] Cache HIT: {}", &url[..url.len().min(80)]);
+                (cached.status, url.to_string(), cached.body)
+            } else {
+                // Add conditional headers (If-None-Match, If-Modified-Since) for revalidation
+                let cond_headers: std::collections::HashMap<String, String> = self.cache.conditional_headers(url);
+                for (k, v) in &cond_headers {
+                    if let (Ok(name), Ok(val)) = (
+                        rquest::header::HeaderName::from_bytes(k.as_bytes()),
+                        rquest::header::HeaderValue::from_str(v),
+                    ) {
+                        headers.insert(name, val);
+                    }
+                }
+
+                let resp = self.network.client().get(url).headers(headers).send().await
+                    .map_err(|e| format!("HTTP error: {e}"))?;
+                let resp_status = resp.status().as_u16();
+                let resp_final_url = resp.url().to_string();
+
+                // Process Set-Cookie
+                for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
+                    if let Ok(s) = cookie.to_str() {
+                        self.cookie_jar.store_from_header(&resp_final_url, s);
+                        if let Some(domain) = resp.url().host_str() {
+                            self.cookies.store_from_header(domain, s);
+                        }
+                    }
+                }
+
+                // 304 Not Modified — use cached body
+                if resp_status == 304 {
+                    self.cache.touch(url);
+                    if let Some(cached) = self.cache.get(url) {
+                        eprintln!("[NEOSESSION] Cache 304 revalidated: {}", &url[..url.len().min(80)]);
+                        (cached.status, resp_final_url, cached.body)
+                    } else {
+                        let resp_html = resp.text().await.map_err(|e| format!("Body error: {e}"))?;
+                        (resp_status, resp_final_url, resp_html)
+                    }
+                } else {
+                    // Collect response headers for cache decision
+                    let resp_headers_map: std::collections::HashMap<String, String> = resp.headers().iter()
+                        .filter_map(|(k, v)| {
+                            v.to_str().ok().map(|vs| (k.as_str().to_string(), vs.to_string()))
+                        })
+                        .collect();
+                    let resp_html = resp.text().await.map_err(|e| format!("Body error: {e}"))?;
+                    self.cache.store(&resp_final_url, resp_status, &resp_headers_map, &resp_html);
+                    (resp_status, resp_final_url, resp_html)
+                }
+            }
+        } else {
+            // Non-GET: no caching
+            let resp = {
                 let mut req = self.network.client().post(url).headers(headers);
-                if let Some(b) = body {
-                    req = req.body(b.to_string());
-                }
-                req.send().await
-            }
-            _ => {
-                self.network.client().get(url).headers(headers).send().await
-            }
-        }.map_err(|e| format!("HTTP error: {e}"))?;
-
-        let status = resp.status().as_u16();
-        let final_url = resp.url().to_string();
-
-        // 3. Process Set-Cookie → unified jar + legacy jar
-        for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
-            if let Ok(s) = cookie.to_str() {
-                self.cookie_jar.store_from_header(&final_url, s);
-                // Also store in legacy jar for backward compat
-                if let Some(domain) = resp.url().host_str() {
-                    self.cookies.store_from_header(domain, s);
+                if let Some(b) = body { req = req.body(b.to_string()); }
+                req.send().await.map_err(|e| format!("HTTP error: {e}"))?
+            };
+            let resp_status = resp.status().as_u16();
+            let resp_final_url = resp.url().to_string();
+            for cookie in resp.headers().get_all(rquest::header::SET_COOKIE) {
+                if let Ok(s) = cookie.to_str() {
+                    self.cookie_jar.store_from_header(&resp_final_url, s);
+                    if let Some(domain) = resp.url().host_str() {
+                        self.cookies.store_from_header(domain, s);
+                    }
                 }
             }
-        }
-
-        let html = resp.text().await.map_err(|e| format!("Body error: {e}"))?;
+            let resp_html = resp.text().await.map_err(|e| format!("Body error: {e}"))?;
+            (resp_status, resp_final_url, resp_html)
+        };
 
         // 2b. Log this navigation request in V8's network log (so __neo_get_network_log captures it)
         let log_js = format!(
