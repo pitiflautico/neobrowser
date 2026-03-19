@@ -166,7 +166,7 @@ globalThis.DOMRect = globalThis.DOMRect || class DOMRect {
 };
 globalThis.DOMRectReadOnly = globalThis.DOMRect;
 
-// Element.getBoundingClientRect (no layout, return 0s)
+// Element.getBoundingClientRect — basic fallback (overridden by layout.js with realistic values)
 if (typeof Element !== 'undefined' && !Element.prototype.getBoundingClientRect) {
     Element.prototype.getBoundingClientRect = function() { return new DOMRect(0,0,0,0); };
     Element.prototype.getClientRects = function() { return [new DOMRect(0,0,0,0)]; };

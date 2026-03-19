@@ -320,6 +320,11 @@ pub fn create_runtime_with_html(
     runtime.execute_script("<neorender:webapis>", webapis_js)
         .map_err(|e| format!("WebAPIs load error: {e}"))?;
 
+    // 3g3. Layout stubs — realistic fake dimensions for fingerprint checks (Turnstile, etc.)
+    let layout_js: String = include_str!("../../js/layout.js").to_string();
+    runtime.execute_script("<neorender:layout>", layout_js)
+        .map_err(|e| format!("Layout load error: {e}"))?;
+
     // 3h. Auto-extraction (tables, articles, forms, structured data)
     let extract_js: String = include_str!("../../js/extract.js").to_string();
     runtime.execute_script("<neorender:extract>", extract_js)
