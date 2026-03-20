@@ -501,12 +501,16 @@ pub async fn execute_module(runtime: &mut JsRuntime, url: &str, name: String) ->
         Ok(Ok(())) => {}
     }
 
-    match eval_result.await {
-        Ok(()) => None,
-        Err(e) => {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), eval_result).await {
+        Ok(Ok(())) => { eprintln!("[NEORENDER] Module eval OK: {name}"); None },
+        Ok(Err(e)) => {
             let msg = format!("[{}] {}", name, first_line(&e.to_string()));
             eprintln!("[NEORENDER] Module eval error: {msg}");
             Some(msg)
+        }
+        Err(_) => {
+            eprintln!("[NEORENDER] Module eval TIMEOUT (5s): {name} — top-level await unresolved");
+            None // Non-fatal — module loaded but TLA blocked
         }
     }
 }
@@ -538,12 +542,16 @@ pub async fn execute_side_module(runtime: &mut JsRuntime, url: &str, name: Strin
         Ok(Ok(())) => {}
     }
 
-    match eval_result.await {
-        Ok(()) => None,
-        Err(e) => {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), eval_result).await {
+        Ok(Ok(())) => { eprintln!("[NEORENDER] Side module eval OK: {name}"); None },
+        Ok(Err(e)) => {
             let msg = format!("[{}] {}", name, first_line(&e.to_string()));
             eprintln!("[NEORENDER] Side module eval error: {msg}");
             Some(msg)
+        }
+        Err(_) => {
+            eprintln!("[NEORENDER] Side module eval TIMEOUT (5s): {name} — TLA unresolved");
+            None
         }
     }
 }

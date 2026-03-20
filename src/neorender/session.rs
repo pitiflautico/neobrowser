@@ -531,6 +531,9 @@ impl NeoSession {
             let script_url = script.url.as_deref().unwrap_or(&final_url);
             let name = if script.url.is_some() { format!("script:{i}") } else { format!("inline:{i}") };
 
+            eprintln!("[NEOSESSION] Executing {name} module={} preload={} url={}",
+                script.is_module, script.preload_only, script.url.as_deref().unwrap_or("inline"));
+
             // Before first module: fix SSR stream (inline scripts created it, module reads it)
             if script.is_module && first_module {
                 self.runtime.execute_script("<neosession:fix_stream_before_module>", r#"
