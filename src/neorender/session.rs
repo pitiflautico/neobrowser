@@ -542,6 +542,21 @@ impl NeoSession {
                 // method on Object.prototype that returns empty array.
                 // The object has 'availableHints' but no 'getAll' (not Headers — it's
                 // React Router's SSR response context). In headless mode, no 103 hints.
+                // Promise.allSettled polyfill — vendor module uses it but V8 may not expose it
+                // in module scope. Force it on the global Promise.
+                self.runtime.execute_script("<neosession:promise_allsettled>", r#"
+                    if (typeof Promise.allSettled !== 'function') {
+                        Promise.allSettled = function(promises) {
+                            return Promise.all(Array.from(promises).map(p =>
+                                Promise.resolve(p).then(
+                                    value => ({ status: 'fulfilled', value }),
+                                    reason => ({ status: 'rejected', reason })
+                                )
+                            ));
+                        };
+                    }
+                "#.to_string()).ok();
+
                 // Approach: define getAll on Object.prototype as a non-enumerable fallback.
                 // This catches ANY object that doesn't have its own getAll.
                 // Returns [] (no early hints in headless mode).
@@ -622,7 +637,7 @@ impl NeoSession {
 
                     // Patch: if getAll is not a function, provide a fallback
                     let code_patched = format!(
-                        "globalThis.__neo_getAll_patch = true;\n{}\n",
+                        "if(!Promise.allSettled)Promise.allSettled=function(p){{return Promise.all(Array.from(p).map(x=>Promise.resolve(x).then(v=>({{status:'fulfilled',value:v}}),r=>({{status:'rejected',reason:r}}))))}};\n{}\n",
                         code
                     );
                     let script_js = format!("(async () => {{ try {{ {} }} catch(e) {{ if (e.message?.includes('getAll')) {{ console.error?.('hydrate: getAll missing, retrying with patch'); try {{ const p = Object.getPrototypeOf(e.target || {{}}); if (!p.getAll) p.getAll = function(n) {{ return []; }}; }} catch {{}} }} else {{ console.error?.('hydrate error:', e.message, e.stack?.split('\\n').slice(0,5).join(' | ')); }} }} }})();", code_patched);
@@ -644,6 +659,10 @@ impl NeoSession {
                 errors.push(e);
             }
         }
+
+        // 11b. Run event loop to resolve dynamic imports from async IIFE scripts
+        // The inline module converted to async script fires import() that needs event loop.
+        v8_runtime::run_event_loop(&mut self.runtime, 5000).await.ok();
 
         // 12. Fire lifecycle events
         let lifecycle_js = r#"

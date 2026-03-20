@@ -918,3 +918,15 @@ if (!Promise.withResolvers) {
 globalThis.__neorender_export = function() {
     return document.documentElement.outerHTML;
 };
+
+// Promise.allSettled polyfill (ES2020) — needed by React Router
+if (typeof Promise.allSettled !== 'function') {
+    Promise.allSettled = function(promises) {
+        return Promise.all(Array.from(promises).map(p =>
+            Promise.resolve(p).then(
+                value => ({ status: 'fulfilled', value }),
+                reason => ({ status: 'rejected', reason })
+            )
+        ));
+    };
+}
