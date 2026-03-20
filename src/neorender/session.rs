@@ -11,6 +11,7 @@ use deno_core::JsRuntime;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::Arc;
+use std::path::PathBuf;
 
 use crate::ghost;
 use super::v8_runtime::{self, ScriptStoreHandle};
@@ -18,6 +19,21 @@ use super::net::BrowserNetwork;
 use super::storage::BrowserStorage;
 use super::cookie_jar::{UnifiedCookieJar, CookieJarHandle};
 use super::http_cache::HttpCache;
+
+/// Compute the disk cache path for a pre-fetched JS module URL.
+/// Layout: `~/.neobrowser/cache/modules/{hash}.js`
+fn module_cache_path(url: &str) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".neobrowser")
+            .join("cache")
+            .join("modules")
+            .join(format!("{:016x}.js", hasher.finish())),
+    )
+}
 
 /// Shared HTTP client handle — stored in V8's OpState so fetch ops use the session's client.
 /// Kept for backward compatibility with code that stores SharedClient directly.
@@ -349,11 +365,20 @@ impl NeoSession {
 
         // 5. Fetch external scripts using the persistent client (skip non-essential resources)
         let mut skipped_resources = 0usize;
+        let mut module_cache_hits = 0usize;
         for script in all_scripts.iter_mut() {
             if let Some(script_url) = &script.url {
                 if should_skip_resource(script_url) {
                     skipped_resources += 1;
                     continue;
+                }
+                // Check disk cache first
+                if let Some(cache_path) = module_cache_path(script_url) {
+                    if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+                        script.content = Some(cached);
+                        module_cache_hits += 1;
+                        continue;
+                    }
                 }
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
@@ -363,11 +388,21 @@ impl NeoSession {
                     },
                 ).await {
                     Ok(Ok(text)) => {
+                        // Write to disk cache
+                        if let Some(cache_path) = module_cache_path(script_url) {
+                            if let Some(parent) = cache_path.parent() {
+                                std::fs::create_dir_all(parent).ok();
+                            }
+                            std::fs::write(&cache_path, &text).ok();
+                        }
                         script.content = Some(text);
                     }
                     _ => eprintln!("[NEOSESSION] Skip slow script: {}", script_url),
                 }
             }
+        }
+        if module_cache_hits > 0 {
+            eprintln!("[NEOSESSION] Module cache hits: {module_cache_hits} scripts");
         }
         if skipped_resources > 0 {
             eprintln!("[NEOSESSION] Skipped {} non-essential resources", skipped_resources);
@@ -397,6 +432,7 @@ impl NeoSession {
             }
             let prefetch_start = std::time::Instant::now();
             let prefetch_budget = std::time::Duration::from_secs(8);
+            let mut prefetch_cache_hits = 0usize;
             for depth in 0..2 {  // depth 0 + 1 — catches transitive imports in vendor bundles
                 // Collect all unique imports not yet in store
                 let mut urls_to_fetch: Vec<String> = Vec::new();
@@ -421,12 +457,18 @@ impl NeoSession {
                 }
                 eprintln!("[NEOSESSION] Pre-fetch depth {depth}: {} imports to fetch", urls_to_fetch.len());
 
-                // Fetch all imports in parallel
+                // Fetch all imports in parallel (with disk cache)
                 let client = self.network.client().clone();
                 let futures: Vec<_> = urls_to_fetch.iter().map(|url| {
                     let c = client.clone();
                     let u = url.clone();
                     async move {
+                        // Check disk cache first
+                        if let Some(cache_path) = module_cache_path(&u) {
+                            if let Ok(cached) = tokio::fs::read_to_string(&cache_path).await {
+                                return Some((u, cached, true)); // true = cache hit
+                            }
+                        }
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(10),
                             async {
@@ -434,7 +476,16 @@ impl NeoSession {
                                 resp.text().await
                             },
                         ).await {
-                            Ok(Ok(text)) => Some((u, text)),
+                            Ok(Ok(text)) => {
+                                // Write to disk cache
+                                if let Some(cache_path) = module_cache_path(&u) {
+                                    if let Some(parent) = cache_path.parent() {
+                                        tokio::fs::create_dir_all(parent).await.ok();
+                                    }
+                                    tokio::fs::write(&cache_path, &text).await.ok();
+                                }
+                                Some((u, text, false))
+                            }
                             _ => None,
                         }
                     }
@@ -443,7 +494,8 @@ impl NeoSession {
 
                 let mut next_round = Vec::new();
                 for result in results.into_iter().flatten() {
-                    let (url, text) = result;
+                    let (url, text, was_cached) = result;
+                    if was_cached { prefetch_cache_hits += 1; }
                     self.store.borrow_mut().scripts.insert(url.clone(), text.clone());
                     next_round.push((url, text));
                 }
@@ -455,8 +507,8 @@ impl NeoSession {
                     break;
                 }
             }
-            eprintln!("[NEOSESSION] Pre-fetch total: {}ms, {} modules in store",
-                prefetch_start.elapsed().as_millis(), self.store.borrow().scripts.len());
+            eprintln!("[NEOSESSION] Pre-fetch total: {}ms, {} modules in store ({} from disk cache)",
+                prefetch_start.elapsed().as_millis(), self.store.borrow().scripts.len(), prefetch_cache_hits);
         }
 
         // 7b. Selective module stubbing — mark heavy non-essential modules
