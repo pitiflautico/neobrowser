@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NeoRender — The browser without a rendering engine</title>
+  <meta name="description" content="V8 + DOM + Chrome TLS. Loads pages, executes JavaScript, hydrates React — at Chrome speed, without Chrome.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+  <div class="container">
+    <a href="#" class="logo">NeoRender</a>
+    <div class="links">
+      <a href="#install">Docs</a>
+      <a href="https://github.com/nichochar/neobrowser" target="_blank">GitHub</a>
+      <a href="#mcp-tools">MCP Tools</a>
+      <a href="../es/" class="lang">ES</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container">
+    <div class="badge">Open Source &middot; MIT &middot; Built in Rust</div>
+    <h1>The browser without<br>a <span class="gradient-text">rendering engine.</span></h1>
+    <p class="subtitle">V8 + DOM + Chrome TLS. Loads pages, executes JavaScript, hydrates React — at Chrome speed, without Chrome.</p>
+    <div class="cta">
+      <a href="#install" class="btn btn-primary">Get Started</a>
+      <a href="https://github.com/nichochar/neobrowser" target="_blank" class="btn btn-secondary">GitHub</a>
+    </div>
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value accent">3.1s</div>
+        <div class="stat-label">ChatGPT load</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value green">19/20</div>
+        <div class="stat-label">Cloudflare bypass</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value accent">38K</div>
+        <div class="stat-label">lines of code</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value green">15MB</div>
+        <div class="stat-label">binary</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- The Problem -->
+<section class="alt">
+  <div class="container">
+    <div class="section-header text-center">
+      <h2>Browsers weren't built for AI</h2>
+    </div>
+    <div class="grid grid-3">
+      <div class="card">
+        <div class="card-icon accent">30M</div>
+        <h3>Chromium is 30M lines</h3>
+        <p>Your agent doesn't need pixels, GPU, or a compositor.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon accent">&#9888;</div>
+        <h3>Headless is still heavy</h3>
+        <p>Playwright spins up full Chrome for every page.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon accent">&#128683;</div>
+        <h3>Detection is easy</h3>
+        <p>Bot fingerprints get blocked before your agent can read.</p>
+      </div>
+    </div>
+    <p style="text-align:center;margin-top:40px;font-size:1.05rem;max-width:640px;margin-left:auto;margin-right:auto;">
+      NeoRender strips the browser to its skeleton:<br><strong style="color:var(--text)">JavaScript engine + HTTP client + DOM.</strong>
+    </p>
+  </div>
+</section>
+
+<!-- How It Works -->
+<section>
+  <div class="container">
+    <div class="section-header text-center">
+      <h2>What's inside</h2>
+    </div>
+    <div class="arch-box mx-auto" style="max-width:640px;margin-bottom:40px;">
+      <div style="color:var(--text-muted);margin-bottom:6px;">HTTP Layer</div>
+      <div class="layer"><span class="block">rquest</span><span class="block" style="font-size:0.75rem;">Chrome 136 TLS fingerprint</span></div>
+      <div class="arch-arrow">&darr;</div>
+      <div style="color:var(--text-muted);margin-bottom:6px;">DOM Layer</div>
+      <div class="layer"><span class="block green">linkedom</span><span class="block green" style="font-size:0.75rem;">No rendering — pure DOM</span></div>
+      <div class="arch-arrow">&darr;</div>
+      <div style="color:var(--text-muted);margin-bottom:6px;">JS Layer</div>
+      <div class="layer"><span class="block">V8 via deno_core</span><span class="block" style="font-size:0.75rem;">ES modules + React hydration</span></div>
+      <div class="arch-arrow">&darr;</div>
+      <div style="color:var(--text-muted);margin-bottom:6px;">Cache</div>
+      <div class="layer"><span class="block green">V8 bytecode</span><span class="block green">HTTP module cache</span></div>
+      <div class="arch-arrow">&darr;</div>
+      <div style="color:var(--text-muted);margin-bottom:6px;">Output</div>
+      <div class="layer"><span class="block">MCP tools (35+)</span><span class="block" style="font-size:0.75rem;">&rarr; AI agent</span></div>
+    </div>
+    <div class="grid grid-3">
+      <div class="card">
+        <div class="card-icon green">&#9881;</div>
+        <h3>React Hydration</h3>
+        <p>First engine to hydrate React Router 7 in headless V8.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon green">&#128274;</div>
+        <h3>Chrome TLS</h3>
+        <p>JA3/JA4 identical to Chrome 136. Cloudflare can't tell the difference.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon green">&#9889;</div>
+        <h3>Bytecode Cache</h3>
+        <p>V8 compiles once, caches bytecode. Subsequent loads skip compilation.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Benchmarks -->
+<section class="alt">
+  <div class="container">
+    <div class="section-header text-center">
+      <h2>Speed</h2>
+    </div>
+    <div class="table-wrap mx-auto" style="max-width:800px;margin-bottom:40px;">
+      <table>
+        <thead>
+          <tr><th>Metric</th><th>NeoRender</th><th>Chrome</th><th>Playwright</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>ChatGPT (cached)</td><td><strong style="color:var(--green)">3.1s</strong></td><td>3-5s</td><td>8s+</td></tr>
+          <tr><td>Binary size</td><td><strong style="color:var(--green)">15MB</strong></td><td>300MB+</td><td>280MB+</td></tr>
+          <tr><td>Cloudflare pass</td><td><strong style="color:var(--green)">19/20</strong></td><td>20/20</td><td>2/20</td></tr>
+          <tr><td>Memory</td><td><strong style="color:var(--green)">~100MB</strong></td><td>~500MB</td><td>~300MB</td></tr>
+          <tr><td>Token cost</td><td><strong style="color:var(--green)">4K chars</strong></td><td>140K chars</td><td>140K chars</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="terminal mx-auto" style="max-width:640px;">
+      <div class="terminal-bar">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+      </div>
+      <pre><span class="t-prompt">$</span> <span class="t-cmd">time neobrowser see https://chatgpt.com</span>
+<span class="t-out">[NeoRender] 362 modules · React hydrated · routeModules=true</span>
+<span class="t-hi">Rendered in 3.1s</span>
+
+<span class="t-prompt">$</span> <span class="t-cmd">python3 -c "from aibrowser.chat_server import gpt; ..."</span>
+<span class="t-out">Pong</span>
+<span class="t-accent">ChatGPT | 4529ms via rquest</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- MCP Tools -->
+<section id="mcp-tools">
+  <div class="container">
+    <div class="section-header text-center">
+      <h2>35+ tools for AI agents</h2>
+    </div>
+    <div class="grid grid-3" style="margin-bottom:40px;">
+      <div class="card">
+        <div class="card-icon accent">&#8599;</div>
+        <h3>Navigate</h3>
+        <p>open, click, type, scroll</p>
+      </div>
+      <div class="card">
+        <div class="card-icon accent">&#128269;</div>
+        <h3>Extract</h3>
+        <p>see, forms, tables, links</p>
+      </div>
+      <div class="card">
+        <div class="card-icon accent">&#127760;</div>
+        <h3>Network</h3>
+        <p>fetch, intercept, mock, record</p>
+      </div>
+      <div class="card">
+        <div class="card-icon green">&#128273;</div>
+        <h3>Session</h3>
+        <p>auth, cookies, state, export</p>
+      </div>
+      <div class="card">
+        <div class="card-icon green">&#9881;</div>
+        <h3>Automation</h3>
+        <p>pipeline, pool, learn</p>
+      </div>
+      <div class="card">
+        <div class="card-icon green">&#128268;</div>
+        <h3>API</h3>
+        <p>browser_fetch — Chrome TLS HTTP without browser</p>
+      </div>
+    </div>
+    <div class="terminal mx-auto" style="max-width:540px;">
+      <div class="terminal-bar">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+      </div>
+      <pre><span class="t-out">// claude_desktop_config.json</span>
+{
+  <span class="t-accent">"mcpServers"</span>: {
+    <span class="t-accent">"neobrowser"</span>: {
+      <span class="t-cmd">"command"</span>: <span class="t-hi">"neobrowser_rs"</span>,
+      <span class="t-cmd">"args"</span>: [<span class="t-hi">"mcp"</span>]
+    }
+  }
+}</pre>
+    </div>
+  </div>
+</section>
+
+<!-- Comparison -->
+<section class="alt">
+  <div class="container">
+    <div class="section-header text-center">
+      <h2>How it compares</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Feature</th><th>NeoRender</th><th>Playwright</th><th>Firecrawl</th><th>Browser Use</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>JS execution</td><td><span class="check">&#10003;</span> V8</td><td><span class="check">&#10003;</span> Chrome</td><td><span class="check">&#10003;</span> Chrome</td><td><span class="check">&#10003;</span> Chrome</td></tr>
+          <tr><td>React hydration</td><td><span class="check">&#10003;</span></td><td><span class="check">&#10003;</span></td><td><span class="cross">&#10007;</span></td><td><span class="check">&#10003;</span></td></tr>
+          <tr><td>Chrome required</td><td><span class="check">&#10007;</span>*</td><td><span class="cross">&#10003;</span></td><td><span class="cross">&#10003;</span> (cloud)</td><td><span class="cross">&#10003;</span></td></tr>
+          <tr><td>Self-hosted</td><td><span class="check">&#10003;</span></td><td><span class="check">&#10003;</span></td><td>Optional</td><td><span class="check">&#10003;</span></td></tr>
+          <tr><td>Cloudflare bypass</td><td><strong style="color:var(--green)">19/20</strong></td><td>~2/20</td><td>Cloud</td><td>~2/20</td></tr>
+          <tr><td>Token efficiency</td><td><strong style="color:var(--green)">35x</strong></td><td>1x</td><td>3x</td><td>1x</td></tr>
+          <tr><td>Binary size</td><td><strong style="color:var(--green)">15MB</strong></td><td>300MB</td><td>Cloud</td><td>300MB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="text-align:center;margin-top:16px;font-size:0.82rem;color:var(--text-muted);">*Chrome only needed for captcha fallback via CDP mode.</p>
+  </div>
+</section>
+
+<!-- Get Started -->
+<section id="install" class="install-section">
+  <div class="container text-center">
+    <div class="section-header text-center">
+      <h2 style="max-width:none">Start in 30 seconds</h2>
+    </div>
+    <div class="terminal" style="max-width:640px;margin:0 auto 32px;">
+      <div class="terminal-bar">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+      </div>
+      <pre><span class="t-prompt">$</span> <span class="t-cmd">git clone https://github.com/nichochar/neobrowser.git</span>
+<span class="t-prompt">$</span> <span class="t-cmd">cd neobrowser && cargo build --release</span>
+
+<span class="t-out"># Browse a page</span>
+<span class="t-prompt">$</span> <span class="t-cmd">./target/release/neobrowser_rs see https://example.com</span>
+
+<span class="t-out"># As MCP server</span>
+<span class="t-prompt">$</span> <span class="t-cmd">./target/release/neobrowser_rs mcp</span></pre>
+    </div>
+    <div class="cta" style="display:flex;gap:14px;justify-content:center;">
+      <a href="#" class="btn btn-primary">Documentation</a>
+      <a href="https://github.com/nichochar/neobrowser" target="_blank" class="btn btn-secondary">GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- Open Source -->
+<section class="alt">
+  <div class="container text-center">
+    <h2>Open source. MIT license.</h2>
+    <div class="oss-stats">
+      <div class="oss-stat"><strong>38,000</strong> lines of Rust + JavaScript</div>
+      <div class="oss-stat"><strong>30</strong> JS modules</div>
+      <div class="oss-stat"><strong>17</strong> Rust modules</div>
+    </div>
+    <p style="margin-bottom:24px;">Built by Dani Perez + Claude Opus</p>
+    <a href="https://github.com/nichochar/neobrowser" target="_blank" class="btn btn-ghost">Contributing Guide &rarr;</a>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="#">Docs</a>
+      <a href="https://github.com/nichochar/neobrowser">GitHub</a>
+      <a href="https://opensource.org/licenses/MIT">MIT License</a>
+    </div>
+    <p>Built with Rust, V8, and stubbornness.</p>
+  </div>
+</footer>
+
+</body>
+</html>
