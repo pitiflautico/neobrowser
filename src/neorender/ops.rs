@@ -26,7 +26,9 @@ pub fn op_neorender_fetch(
         || url.contains("beacon") || url.contains("sentry") || url.contains("newrelic")
         || url.contains("amplitude") || url.contains("segment.") || url.contains("hotjar")
         || url.contains("googletagmanager") || url.contains("doubleclick")
-        || url.contains("apfc") {
+        || url.contains("apfc")
+        || url.contains("/rgstr") || url.contains("/ces/") || url.contains("ab.chatgpt")
+        || url.contains("/v1/m") || url.contains("statsig") || url.contains("featuregates") {
         return Ok(r#"{"status":200,"body":"","headers":{}}"#.to_string());
     }
 
