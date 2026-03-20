@@ -569,6 +569,21 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "required": ["url"]
             }),
         },
+        ToolDef {
+            name: "browser_fetch".into(),
+            description: "HTTP request with Chrome 136 TLS fingerprint. No Chrome needed. Uses rquest directly with cookies from profile. For API calls, SSE streams, JSON endpoints.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "URL to request" },
+                    "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"], "default": "GET" },
+                    "headers": { "type": "object", "description": "Extra headers", "additionalProperties": { "type": "string" } },
+                    "body": { "type": "string", "description": "Request body" },
+                    "cookies_file": { "type": "string", "description": "Path to cookies JSON file" }
+                },
+                "required": ["url"]
+            }),
+        },
         // ── New tools: state, network, trace, pipeline, pool ──
         ToolDef {
             name: "browser_state".into(),
@@ -769,6 +784,7 @@ async fn handle_tool(state: &mut McpState, name: &str, args: &Value) -> Result<V
         "browser_session" => handle_session(state, args).await,
         "browser_auth" => handle_auth(state, args).await,
         "browser_api" => handle_api(state, args).await,
+        "browser_fetch" => handle_fetch(args).await,
         "browser_state" => handle_state(state, args).await,
         "browser_network" => handle_network(state, args).await,
         "browser_trace" => handle_trace(state, args).await,
@@ -2695,6 +2711,49 @@ async fn handle_auth(state: &mut McpState, args: &Value) -> Result<Value, String
 
         _ => Err(format!("Unknown auth op: {op}")),
     }
+}
+
+// ─── browser_fetch handler (rquest direct, no Chrome) ───
+
+async fn handle_fetch(args: &Value) -> Result<Value, String> {
+    let url = args["url"].as_str().ok_or("Missing 'url'")?;
+    let method = args["method"].as_str().unwrap_or("GET");
+    let body = args["body"].as_str();
+
+    let mut ghost = crate::ghost::GhostBrowser::new();
+
+    // Load cookies
+    if let Some(cookies_file) = args["cookies_file"].as_str() {
+        ghost.load_cookies(cookies_file)?;
+    }
+
+    // Add custom headers
+    let extra_headers: Vec<(String, String)> = if let Some(headers) = args["headers"].as_object() {
+        headers.iter()
+            .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+            .collect()
+    } else {
+        vec![]
+    };
+
+    // Make the request with Chrome 136 TLS + custom headers
+    let result = ghost.call_api_with_headers(url, method, body, &extra_headers).await?;
+
+    let status = result["status"].as_u64().unwrap_or(0);
+    let data = &result["data"];
+    let text = if data.is_string() {
+        data.as_str().unwrap_or("").to_string()
+    } else {
+        serde_json::to_string_pretty(data).unwrap_or_default()
+    };
+
+    Ok(serde_json::json!({
+        "ok": status >= 200 && status < 400,
+        "status": status,
+        "body": if text.len() > 10000 { text[..10000].to_string() } else { text },
+        "engine": "rquest",
+        "note": "Direct HTTP with Chrome 136 TLS — no browser"
+    }))
 }
 
 // ─── browser_api handler ───

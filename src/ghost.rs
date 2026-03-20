@@ -652,17 +652,25 @@ impl GhostBrowser {
 
     /// Call a discovered API endpoint directly — the AI's equivalent of "clicking"
     pub async fn call_api(&mut self, url: &str, method: &str, body: Option<&str>) -> Result<serde_json::Value, String> {
+        self.call_api_with_headers(url, method, body, &[]).await
+    }
+
+    /// Call API with custom headers (e.g. Authorization: Bearer ...)
+    pub async fn call_api_with_headers(&mut self, url: &str, method: &str, body: Option<&str>, extra: &[(String, String)]) -> Result<serde_json::Value, String> {
         let mut headers = self.chrome_headers(url);
         headers.insert(ACCEPT, HeaderValue::from_static("application/json, text/plain, */*"));
         headers.insert(
             rquest::header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
-        // Add XMLHttpRequest header — many APIs check this
-        headers.insert(
-            "X-Requested-With",
-            HeaderValue::from_static("XMLHttpRequest"),
-        );
+        for (k, v) in extra {
+            if let (Ok(name), Ok(val)) = (
+                rquest::header::HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
+            ) {
+                headers.insert(name, val);
+            }
+        }
 
         let resp = match method.to_uppercase().as_str() {
             "POST" => {
