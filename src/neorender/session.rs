@@ -472,7 +472,39 @@ impl NeoSession {
                 .map_err(|e| format!("Cookie update: {e}"))?;
         }
 
-        // 10b. pipeThrough patch is in bootstrap.js (runs before any page scripts).
+        // 10b. After inline scripts create __reactRouterContext.stream with data,
+        // replace it with a pre-resolved stream that doesn't use pipeThrough.
+        // The original stream has chunks in _queue but pipeThrough creates async
+        // V8 promises that block module evaluation.
+        self.runtime.execute_script("<neosession:fix_ssr_stream>", r#"
+            try {
+                const ctx = window.__reactRouterContext;
+                if (ctx?.stream?._queue?.length > 0) {
+                    // Extract raw chunks from queue before pipeThrough consumed them
+                    const rawChunks = [...ctx.stream._queue];
+                    const encoder = new TextEncoder();
+                    // Create a new simple stream with all data pre-loaded + closed
+                    ctx.stream = new ReadableStream({
+                        start(controller) {
+                            for (const chunk of rawChunks) {
+                                // Encode strings to Uint8Array (turbo-stream expects bytes)
+                                if (typeof chunk === 'string') {
+                                    controller.enqueue(encoder.encode(chunk));
+                                } else if (chunk instanceof Uint8Array) {
+                                    controller.enqueue(chunk);
+                                } else {
+                                    // Object with numeric keys = byte-like
+                                    const bytes = new Uint8Array(Object.keys(chunk).length);
+                                    for (const [k, v] of Object.entries(chunk)) bytes[parseInt(k)] = v;
+                                    controller.enqueue(bytes);
+                                }
+                            }
+                            controller.close();
+                        }
+                    });
+                }
+            } catch {}
+        "#.to_string()).ok();
 
         // 10c. Swallow unhandled promise rejections (non-fatal).
         // React Router streaming hydration causes null.then() errors that are
@@ -499,20 +531,56 @@ impl NeoSession {
             let script_url = script.url.as_deref().unwrap_or(&final_url);
             let name = if script.url.is_some() { format!("script:{i}") } else { format!("inline:{i}") };
 
+            // Before first module: fix SSR stream (inline scripts created it, module reads it)
+            if script.is_module && first_module {
+                self.runtime.execute_script("<neosession:fix_stream_before_module>", r#"
+                    try {
+                        const ctx = window.__reactRouterContext;
+                        if (ctx?.stream?._queue?.length > 0) {
+                            const rawChunks = [...ctx.stream._queue];
+                            const encoder = new TextEncoder();
+                            ctx.stream = new ReadableStream({
+                                start(controller) {
+                                    for (const chunk of rawChunks) {
+                                        if (typeof chunk === 'string') controller.enqueue(encoder.encode(chunk));
+                                        else if (chunk instanceof Uint8Array) controller.enqueue(chunk);
+                                        else {
+                                            const bytes = new Uint8Array(Object.keys(chunk).length);
+                                            for (const [k,v] of Object.entries(chunk)) bytes[parseInt(k)] = v;
+                                            controller.enqueue(bytes);
+                                        }
+                                    }
+                                    controller.close();
+                                }
+                            });
+                        }
+                    } catch {}
+                "#.to_string()).ok();
+            }
+
             let err = if script.is_module {
-                // For inline modules (no URL), inject content into store with a synthetic URL
-                let module_url = if script.url.is_none() {
-                    let synthetic = format!("{}/inline-module-{}.js", final_url.trim_end_matches('/'), i);
-                    self.store.borrow_mut().scripts.insert(synthetic.clone(), content.clone());
-                    synthetic
+                // For inline modules: convert static imports to dynamic import()
+                // to avoid top-level await blocking mod_evaluate.
+                if script.url.is_none() {
+                    // Rewrite: import{x}from"./foo.js" → const {x} = await import("./foo.js")
+                    // But simpler: wrap entire module in an async IIFE executed as script
+                    let module_url = format!("{}/inline-module-{}.js", final_url.trim_end_matches('/'), i);
+                    self.store.borrow_mut().scripts.insert(module_url.clone(), content.clone());
+                    // Execute as module but with generous timeout for streaming
+                    if first_module {
+                        first_module = false;
+                        v8_runtime::execute_module(&mut self.runtime, &module_url, name).await
+                    } else {
+                        v8_runtime::execute_side_module(&mut self.runtime, &module_url, name).await
+                    }
                 } else {
-                    script_url.to_string()
-                };
-                if first_module {
-                    first_module = false;
-                    v8_runtime::execute_module(&mut self.runtime, &module_url, name).await
-                } else {
-                    v8_runtime::execute_side_module(&mut self.runtime, &module_url, name).await
+                    let module_url = script_url.to_string();
+                    if first_module {
+                        first_module = false;
+                        v8_runtime::execute_module(&mut self.runtime, &module_url, name).await
+                    } else {
+                        v8_runtime::execute_side_module(&mut self.runtime, &module_url, name).await
+                    }
                 }
             } else {
                 v8_runtime::execute_script(&mut self.runtime, content, name)
