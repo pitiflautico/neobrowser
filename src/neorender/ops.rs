@@ -21,7 +21,7 @@ pub fn op_neorender_fetch(
     #[string] body: String,
     #[string] headers_json: String,
 ) -> Result<String, AnyError> {
-    // Skip telemetry/analytics
+    // Skip telemetry/analytics/logging — these block V8 with sync HTTP
     if url.contains("telemetry") || url.contains("analytics") || url.contains("tracking")
         || url.contains("beacon") || url.contains("sentry") || url.contains("newrelic")
         || url.contains("amplitude") || url.contains("segment.") || url.contains("hotjar")
@@ -31,7 +31,18 @@ pub fn op_neorender_fetch(
         || url.contains("/v1/m") || url.contains("statsig") || url.contains("featuregates")
         || url.contains("datadoghq") || url.contains("browser-intake") || url.contains("oai/log")
         || url.contains("cdn.mxpnl.com") || url.contains("sentry.io") || url.contains("fullstory")
-        || url.contains("launchdarkly") {
+        || url.contains("launchdarkly")
+        // Google services
+        || url.contains("ogads-pa.") || url.contains("play.google.com/log")
+        || url.contains("google.com/$rpc") || url.contains("googleads")
+        || url.contains("/gen_204") || url.contains("/client_204")
+        // Common ad/tracking patterns
+        || url.contains("/log?") || url.contains("/pixel") || url.contains("/collect")
+        || url.contains("/events") || url.contains("adservice") || url.contains("adserver")
+        || url.contains("facebook.com/tr") || url.contains("bat.bing.com")
+        || url.contains("linkedin.com/li/track") || url.contains("/api/v1/events")
+        // Video/media (not needed for data extraction)
+        || url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8") {
         return Ok(r#"{"status":200,"body":"","headers":{}}"#.to_string());
     }
 
@@ -107,7 +118,7 @@ pub fn op_neorender_fetch(
                             .emulation(rquest_util::Emulation::Chrome136)
                             .cookie_store(true)
                             .redirect(rquest::redirect::Policy::limited(10))
-                            .timeout(std::time::Duration::from_secs(15))
+                            .timeout(std::time::Duration::from_secs(1)) // Minimal: sync fetch blocks V8
                             .build()
                             .map_err(|e| format!("Client: {e}"))?
                     )
@@ -160,13 +171,18 @@ pub fn op_neorender_fetch(
     result.map_err(|e| deno_core::error::generic_error(e))
 }
 
-/// Timer — SYNC no-op. Returns void. JS wrapper creates the Promise.
-/// Real delays are unnecessary for headless operation.
-/// Module init code (setInterval, setTimeout) runs at full speed.
+/// Timer — SYNC with minimal delay. Returns void. JS wrapper creates the Promise.
+/// 1ms floor prevents infinite CPU loops from setTimeout(fn, 0) chains.
+/// Max 10ms cap keeps things fast while allowing V8 to yield.
 #[op2(fast)]
-pub fn op_neorender_timer(#[smi] _ms: u32) {
-    // No sleep — headless browser doesn't need real-time delays.
-    // All timing is handled by Promise microtask ordering.
+pub fn op_neorender_timer(#[smi] ms: u32) {
+    // Minimal sleep: prevents CPU-bound infinite loops from sites that
+    // use setTimeout(fn, 0) chains (Google, Amazon, YouTube).
+    // 1ms is enough to let tokio/OS schedule other work.
+    let delay = if ms == 0 { 0 } else { ms.min(10).max(1) };
+    if delay > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+    }
 }
 
 /// SHA-256 proof-of-work solver — native speed (~10M hash/s vs ~100K in JS).
