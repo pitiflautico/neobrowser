@@ -522,11 +522,36 @@ impl NeoSession {
                 .unwrap_or(1_000_000); // 1MB default
 
             if threshold > 0 {
-                // Build set of essential URLs from HTML-declared scripts/modulepreloads
-                let essential_urls: std::collections::HashSet<String> = all_scripts.iter()
+                // Build set of essential URLs: HTML-declared + their direct imports
+                let mut essential_urls: std::collections::HashSet<String> = all_scripts.iter()
                     .filter_map(|s| s.url.as_ref())
                     .cloned()
                     .collect();
+                // Also protect direct imports of essential modules (depth 1)
+                {
+                    let store = self.store.borrow();
+                    let mut extra_essential = Vec::new();
+                    for url in essential_urls.iter() {
+                        if let Some(content) = store.scripts.get(url) {
+                            for imp in super::extract_es_imports(content, url) {
+                                extra_essential.push(imp);
+                            }
+                        }
+                    }
+                    // Also protect imports from inline modules (content, no url)
+                    for script in &all_scripts {
+                        if script.url.is_none() {
+                            if let Some(content) = &script.content {
+                                let base = &final_url;
+                                for imp in super::extract_es_imports(content, base) {
+                                    extra_essential.push(imp);
+                                }
+                            }
+                        }
+                    }
+                    drop(store);
+                    essential_urls.extend(extra_essential);
+                }
 
                 let store = self.store.borrow();
                 let mut to_stub: Vec<(String, usize)> = Vec::new();
