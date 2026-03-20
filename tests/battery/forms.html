@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html><head><title>Form Test</title></head>
+<body>
+<h1>Login</h1>
+<form id="login" action="/login" method="POST">
+  <input type="email" name="email" placeholder="Email" required>
+  <input type="password" name="password" placeholder="Password">
+  <select name="role"><option value="user">User</option><option value="admin">Admin</option></select>
+  <input type="checkbox" name="remember" id="remember"><label for="remember">Remember me</label>
+  <button type="submit">Sign In</button>
+</form>
+<form id="search" action="/search" method="GET">
+  <input type="text" name="q" placeholder="Search...">
+  <button type="submit">Search</button>
+</form>
+</body></html>

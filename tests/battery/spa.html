@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head><title>SPA Test</title></head>
+<body>
+<div id="app">Loading...</div>
+<script>
+document.getElementById('app').innerHTML = '<h1>SPA Loaded</h1><p>Dynamic content via JavaScript</p><button id="btn">Click me</button>';
+document.getElementById('btn').addEventListener('click', () => {
+  document.getElementById('app').innerHTML += '<p>Button clicked!</p>';
+});
+// Simulate async data loading
+setTimeout(() => {
+  const el = document.createElement('div');
+  el.id = 'async-data';
+  el.textContent = 'Async data loaded after 100ms';
+  document.getElementById('app').appendChild(el);
+}, 100);
+</script>
+</body></html>

@@ -171,6 +171,7 @@ struct McpState {
     session: Option<engine::Session>,
     ghost: Option<ghost::GhostBrowser>,
     neo_session: Option<crate::neorender::session::NeoSession>,
+    neo_session_domain: Option<String>,
     wom_revision: u64,
     prev_wom: Option<wom::WomDocument>,
     auth_state: auth::AuthState,
@@ -189,6 +190,7 @@ impl McpState {
             session: None,
             ghost: None,
             neo_session: None,
+            neo_session_domain: None,
             wom_revision: 0,
             prev_wom: None,
             auth_state: auth::AuthState::Idle,
@@ -870,22 +872,30 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
 
         // ─── NeoSession path: persistent session (preferred) ───
         {
-            // Create NeoSession if not exists
-            if state.neo_session.is_none() {
+            // Recreate NeoSession when domain changes — V8 modules from previous
+            // domains cause panics in deno_core (already-evaluated assertion).
+            let need_new = state.neo_session.is_none()
+                || state.neo_session_domain.as_deref() != Some(&domain);
+            if need_new {
+                if state.neo_session.is_some() {
+                    eprintln!("[MCP] Domain changed to {domain} — recreating NeoSession");
+                    state.neo_session = None;
+                }
                 let cookies_file = args["cookies_file"].as_str()
                     .map(|s| s.to_string())
                     .or_else(|| load_session_cache(&domain));
                 match crate::neorender::session::NeoSession::new(cookies_file.as_deref()) {
                     Ok(ns) => {
-                        eprintln!("[MCP] Created new NeoSession");
+                        eprintln!("[MCP] Created new NeoSession for {domain}");
                         state.neo_session = Some(ns);
+                        state.neo_session_domain = Some(domain.clone());
                     }
                     Err(e) => {
                         eprintln!("[MCP] NeoSession creation failed: {e} — falling back to render_page");
                     }
                 }
             } else {
-                // Existing session — load additional cookies if provided
+                // Same domain — load additional cookies if provided
                 if let Some(neo) = state.neo_session.as_mut() {
                     if let Some(cookies_file) = args["cookies_file"].as_str() {
                         neo.cookies_mut().load_file(cookies_file).ok();

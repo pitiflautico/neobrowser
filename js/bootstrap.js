@@ -272,9 +272,9 @@ globalThis.setInterval = function(fn, ms, ...args) {
     __timerCallbacks.set(id, true);
     let ticks = 0;
     function tick() {
-        if (!__timerCallbacks.has(id) || ticks++ > 50) return;
+        if (!__timerCallbacks.has(id) || ticks++ > 10) return;
         try { fn(...args); } catch(e) {}
-        if (ticks <= 5) {
+        if (ticks <= 3) {
             // Fast mode: immediate via microtask (no timer delay)
             queueMicrotask(tick);
         } else {

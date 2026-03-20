@@ -747,19 +747,51 @@ pub fn populate_dom(runtime: &mut JsRuntime, html: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Execute a regular (non-module) script.
+/// Execute a regular (non-module) script with a 3s timeout.
 /// Wraps in try-catch for error isolation — script errors don't crash the render.
+/// Uses V8 isolate termination to kill scripts that run too long.
 pub fn execute_script(runtime: &mut JsRuntime, script: String, name: String) -> Option<String> {
     // Wrap in try-catch so uncaught errors don't abort V8
     let wrapped = format!("try {{ {} }} catch(__e) {{ /* non-fatal */ }}", script);
-    match runtime.execute_script("<page>", wrapped) {
+
+    // Get a thread-safe handle to terminate execution if it hangs
+    let isolate_handle = runtime.v8_isolate().thread_safe_handle();
+    let script_name = name.clone();
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancelled_clone = cancelled.clone();
+    let timer = std::thread::spawn(move || {
+        // Sleep in small increments so we can check cancellation
+        for _ in 0..300 { // 300 x 10ms = 3s
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+        }
+        if !cancelled_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("[NEORENDER] Script execution TIMEOUT (3s): {script_name} — terminating V8");
+            isolate_handle.terminate_execution();
+        }
+    });
+
+    let result = match runtime.execute_script("<page>", wrapped) {
         Ok(_) => None,
         Err(e) => {
             let msg = format!("[{}] {}", name, first_line(&e.to_string()));
             eprintln!("[NEORENDER] Script error (non-fatal): {msg}");
             Some(msg)
         }
+    };
+
+    // Cancel the timer so it doesn't terminate a future script
+    cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    timer.join().ok();
+
+    // If V8 was terminated, cancel the termination so subsequent scripts can run
+    if runtime.v8_isolate().is_execution_terminating() {
+        runtime.v8_isolate().cancel_terminate_execution();
     }
+
+    result
 }
 
 /// Load and execute an ES module using deno_core's native module system.

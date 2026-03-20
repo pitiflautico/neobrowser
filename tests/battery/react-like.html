@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html><head><title>React-like SPA</title></head>
+<body>
+<div id="root"></div>
+<script>
+// Simulate React-like rendering
+function render(component, container) {
+  container.innerHTML = '';
+  const el = document.createElement('div');
+  el.innerHTML = component;
+  container.appendChild(el);
+}
+
+// Initial render
+render('<h1>React-like App</h1><p>Server rendered content</p>', document.getElementById('root'));
+
+// "Hydration" — add interactivity after initial render
+setTimeout(() => {
+  const root = document.getElementById('root');
+  const btn = document.createElement('button');
+  btn.textContent = 'Hydrated Button';
+  btn.id = 'hydrated-btn';
+  root.appendChild(btn);
+
+  const status = document.createElement('p');
+  status.id = 'hydration-status';
+  status.textContent = 'Hydration complete';
+  root.appendChild(status);
+}, 200);
+</script>
+</body></html>

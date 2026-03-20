@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html><head><title>JS Heavy Test</title></head>
+<body>
+<div id="root">Initial</div>
+<script>
+// Multiple setIntervals (should not cause infinite loop)
+let count1 = 0, count2 = 0, count3 = 0;
+const i1 = setInterval(() => { count1++; if(count1 > 5) clearInterval(i1); }, 100);
+const i2 = setInterval(() => { count2++; if(count2 > 3) clearInterval(i2); }, 200);
+const i3 = setInterval(() => { count3++; if(count3 > 4) clearInterval(i3); }, 150);
+
+// setTimeout chain
+setTimeout(() => {
+  document.getElementById('root').textContent = 'After timeouts: ' + (count1+count2+count3);
+  setTimeout(() => {
+    document.getElementById('root').textContent += ' | Chain complete';
+  }, 50);
+}, 500);
+
+// fetch() call (will fail on localhost but should not crash)
+fetch('/api/data').then(r => r.json()).catch(() => {
+  const el = document.createElement('p');
+  el.id = 'fetch-result';
+  el.textContent = 'Fetch handled gracefully';
+  document.body.appendChild(el);
+});
+</script>
+</body></html>

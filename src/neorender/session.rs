@@ -364,10 +364,15 @@ impl NeoSession {
             all_scripts.len(), ext_count, mod_count, &final_url[..final_url.len().min(80)]);
 
         // 5. Fetch external scripts using the persistent client (skip non-essential resources)
+        let script_fetch_budget = std::time::Instant::now();
         let mut skipped_resources = 0usize;
         let mut module_cache_hits = 0usize;
         for script in all_scripts.iter_mut() {
             if let Some(script_url) = &script.url {
+                if script_fetch_budget.elapsed() > std::time::Duration::from_secs(5) {
+                    eprintln!("[NEOSESSION] Script fetch budget exhausted (5s), skipping remaining");
+                    break;
+                }
                 if should_skip_resource(script_url) {
                     skipped_resources += 1;
                     continue;
@@ -689,11 +694,35 @@ impl NeoSession {
         let scripts_count = all_scripts.len();
         let mut errors = Vec::new();
         let mut first_module = true;
+        let exec_budget = std::time::Instant::now();
+        let exec_budget_limit = std::time::Duration::from_secs(6);
         for (i, script) in all_scripts.into_iter().enumerate() {
             // modulepreload scripts are pre-fetched to store but not executed.
             // They'll be loaded by V8 when the inline module imports them.
             if script.preload_only { continue; }
+            if exec_budget.elapsed() > exec_budget_limit {
+                eprintln!("[NEOSESSION] Script execution budget exhausted ({}s), skipping {} remaining scripts",
+                    exec_budget_limit.as_secs(), scripts_count.saturating_sub(i));
+                break;
+            }
             let Some(content) = script.content else { continue };
+
+            // Skip heavy non-module scripts (>200KB). These are typically framework
+            // bundles (Google, Amazon, etc.) that provide interactivity but not content.
+            // Content is already in the server-rendered HTML.
+            let max_script_bytes: usize = std::env::var("NEOBROWSER_MAX_SCRIPT_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200_000);
+            if !script.is_module && max_script_bytes > 0 && content.len() > max_script_bytes {
+                let short_url = script.url.as_deref()
+                    .and_then(|u| u.rsplit('/').next())
+                    .unwrap_or("inline");
+                eprintln!("[NEOSESSION] Skipping heavy script ({:.0}KB): {}",
+                    content.len() as f64 / 1024.0, short_url);
+                continue;
+            }
+
             let script_url = script.url.as_deref().unwrap_or(&final_url);
             let name = if script.url.is_some() { format!("script:{i}") } else { format!("inline:{i}") };
 
@@ -884,7 +913,7 @@ impl NeoSession {
             let stability_timeout = if scripts_count > 10 {
                 std::time::Duration::from_secs(5)  // SPA with many modules — faster cutoff
             } else {
-                std::time::Duration::from_secs(15) // Simple page — original timeout
+                std::time::Duration::from_secs(5) // Simple page — reduced from 15s
             };
             let poll_interval = std::time::Duration::from_millis(200);
             let stable_threshold = 5u32; // 5 polls * 200ms = 1s of no change
