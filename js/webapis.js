@@ -205,3 +205,26 @@ globalThis.speechSynthesis = globalThis.speechSynthesis || {
     getVoices() { return []; }, speaking: false, pending: false, paused: false,
 };
 
+
+// document.activeElement — React checks this during hydration
+if (typeof document !== 'undefined') {
+    try {
+        if (!document.activeElement) {
+            Object.defineProperty(document, 'activeElement', {
+                get() { return document.body || null; },
+                configurable: true
+            });
+        }
+    } catch {}
+}
+
+// Event.composedPath — React 19 event system
+if (typeof Event !== 'undefined' && !Event.prototype.composedPath) {
+    Event.prototype.composedPath = function() {
+        const path = [];
+        let node = this.target;
+        while (node) { path.push(node); node = node.parentNode; }
+        if (typeof window !== 'undefined') path.push(window);
+        return path;
+    };
+}

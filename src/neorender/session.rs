@@ -534,8 +534,28 @@ impl NeoSession {
             eprintln!("[NEOSESSION] Executing {name} module={} preload={} url={}",
                 script.is_module, script.preload_only, script.url.as_deref().unwrap_or("inline"));
 
-            // Before first module: fix SSR stream (inline scripts created it, module reads it)
+            // Before first module: patch React Router context + fix SSR stream
             if script.is_module && first_module {
+                // Task 1.1: Make getAll() available on ANY object that gets called with it.
+                // The object is created inside vendor module closure — unreachable via
+                // __reactRouterContext patching. Instead, define getAll as a default
+                // method on Object.prototype that returns empty array.
+                // The object has 'availableHints' but no 'getAll' (not Headers — it's
+                // React Router's SSR response context). In headless mode, no 103 hints.
+                // Approach: define getAll on Object.prototype as a non-enumerable fallback.
+                // This catches ANY object that doesn't have its own getAll.
+                // Returns [] (no early hints in headless mode).
+                self.runtime.execute_script("<neosession:patch_getall>", r#"
+                    if (!Object.prototype.getAll) {
+                        Object.defineProperty(Object.prototype, 'getAll', {
+                            value: function(name) { return []; },
+                            configurable: true,
+                            writable: true,
+                            enumerable: false,
+                        });
+                    }
+                "#.to_string()).ok();
+
                 self.runtime.execute_script("<neosession:fix_stream_before_module>", r#"
                     try {
                         const ctx = window.__reactRouterContext;
