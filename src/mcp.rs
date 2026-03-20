@@ -2796,7 +2796,7 @@ async fn handle_fetch(args: &Value) -> Result<Value, String> {
     Ok(serde_json::json!({
         "ok": status >= 200 && status < 400,
         "status": status,
-        "body": if text.len() > 10000 { text[..10000].to_string() } else { text },
+        "body": text,  // No truncation — API responses need full body for token extraction
         "engine": "rquest",
         "note": "Direct HTTP with Chrome 136 TLS — no browser"
     }))
