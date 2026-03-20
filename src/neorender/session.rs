@@ -472,20 +472,7 @@ impl NeoSession {
                 .map_err(|e| format!("Cookie update: {e}"))?;
         }
 
-        // 10b. Close SSR streaming ReadableStream.
-        // React Router awaits this stream. We close the controller first,
-        // then cancel the stream to unblock any pending reads.
-        self.runtime.execute_script("<neosession:close_ssr_stream>", r#"
-            try {
-                const ctx = window.__reactRouterContext;
-                if (ctx?.streamController) {
-                    try { ctx.streamController.close(); } catch {}
-                }
-                if (ctx?.stream) {
-                    try { ctx.stream.cancel(); } catch {}
-                }
-            } catch {}
-        "#.to_string()).ok();
+        // 10b. pipeThrough patch is in bootstrap.js (runs before any page scripts).
 
         // 10c. Swallow unhandled promise rejections (non-fatal).
         // React Router streaming hydration causes null.then() errors that are

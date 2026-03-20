@@ -2,6 +2,19 @@
 // Connects linkedom (real DOM) + deno_core ops to create a headless browser.
 // Runs AFTER linkedom.js. Expects __linkedom_parseHTML on globalThis.
 
+// READABLESTREAM PIPETHROUGH PATCH — must run before ANY page scripts.
+// React Router SSR does stream.pipeThrough(new TextEncoderStream())
+// which creates V8 internal pipe promises that block module evaluation.
+// Fix: return the SAME stream (skip encoding). React Router's turbo-stream
+// decoder handles both string and Uint8Array input.
+if (typeof ReadableStream !== 'undefined') {
+    ReadableStream.prototype.pipeThrough = function(transform, options) {
+        // Return self — skip the transform entirely.
+        // The SSR stream has string chunks. turbo-stream's decode() can handle strings.
+        return this;
+    };
+}
+
 // View Transitions API polyfill is in layout.js (needs document to exist first)
 
 // ═══════════════════════════════════════════════════════════════
