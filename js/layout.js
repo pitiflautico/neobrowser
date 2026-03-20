@@ -337,3 +337,16 @@ if (typeof document !== 'undefined' && !document.startViewTransition) {
         };
     };
 }
+
+
+// ═══════════════════════════════════════════════════════════════
+// ERROR TRAP — capture unhandled rejections with stack traces
+// ═══════════════════════════════════════════════════════════════
+globalThis.__neo_hydration_errors = [];
+globalThis.addEventListener('unhandledrejection', (e) => {
+    const err = e.reason;
+    globalThis.__neo_hydration_errors.push({
+        message: err?.message || String(err),
+        stack: err?.stack?.split('\n').slice(0, 5),
+    });
+});
