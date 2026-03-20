@@ -2,6 +2,8 @@
 // Connects linkedom (real DOM) + deno_core ops to create a headless browser.
 // Runs AFTER linkedom.js. Expects __linkedom_parseHTML on globalThis.
 
+// View Transitions API polyfill is in layout.js (needs document to exist first)
+
 // ═══════════════════════════════════════════════════════════════
 // 0. ERROR ISOLATION — catch uncaught errors without crashing
 // ═══════════════════════════════════════════════════════════════

@@ -477,16 +477,27 @@ impl NeoSession {
         let mut errors = Vec::new();
         let mut first_module = true;
         for (i, script) in all_scripts.into_iter().enumerate() {
+            // modulepreload scripts are pre-fetched to store but not executed.
+            // They'll be loaded by V8 when the inline module imports them.
+            if script.preload_only { continue; }
             let Some(content) = script.content else { continue };
             let script_url = script.url.as_deref().unwrap_or(&final_url);
             let name = if script.url.is_some() { format!("script:{i}") } else { format!("inline:{i}") };
 
             let err = if script.is_module {
+                // For inline modules (no URL), inject content into store with a synthetic URL
+                let module_url = if script.url.is_none() {
+                    let synthetic = format!("{}/inline-module-{}.js", final_url.trim_end_matches('/'), i);
+                    self.store.borrow_mut().scripts.insert(synthetic.clone(), content.clone());
+                    synthetic
+                } else {
+                    script_url.to_string()
+                };
                 if first_module {
                     first_module = false;
-                    v8_runtime::execute_module(&mut self.runtime, script_url, name).await
+                    v8_runtime::execute_module(&mut self.runtime, &module_url, name).await
                 } else {
-                    v8_runtime::execute_side_module(&mut self.runtime, script_url, name).await
+                    v8_runtime::execute_side_module(&mut self.runtime, &module_url, name).await
                 }
             } else {
                 v8_runtime::execute_script(&mut self.runtime, content, name)

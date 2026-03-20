@@ -490,9 +490,15 @@ pub async fn execute_module(runtime: &mut JsRuntime, url: &str, name: String) ->
 
     let eval_result = runtime.mod_evaluate(mod_id);
 
-    // Run event loop to resolve imports and execute
-    if let Err(e) = runtime.run_event_loop(PollEventLoopOptions::default()).await {
-        eprintln!("[NEORENDER] Module event loop error: {e}");
+    // Run event loop to resolve imports and execute.
+    // Errors from React/SSR hydration (e.g. stream .then() on null) are non-fatal.
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        runtime.run_event_loop(PollEventLoopOptions::default()),
+    ).await {
+        Ok(Err(e)) => eprintln!("[NEORENDER] Module event loop error (non-fatal): {e}"),
+        Err(_) => eprintln!("[NEORENDER] Module event loop timeout (10s)"),
+        Ok(Ok(())) => {}
     }
 
     match eval_result.await {
@@ -520,9 +526,16 @@ pub async fn execute_side_module(runtime: &mut JsRuntime, url: &str, name: Strin
 
     let eval_result = runtime.mod_evaluate(mod_id);
 
-    // Run event loop to resolve imports and execute
-    if let Err(e) = runtime.run_event_loop(PollEventLoopOptions::default()).await {
-        eprintln!("[NEORENDER] Side module event loop error: {e}");
+    // Run event loop to resolve imports and execute.
+    // Errors here are often from React internals (Suspense, lazy) that recover gracefully.
+    // We log but don't fail — the module is still usable for imports.
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.run_event_loop(PollEventLoopOptions::default()),
+    ).await {
+        Ok(Err(e)) => eprintln!("[NEORENDER] Side module event loop error (non-fatal): {e}"),
+        Err(_) => eprintln!("[NEORENDER] Side module event loop timeout (5s)"),
+        Ok(Ok(())) => {}
     }
 
     match eval_result.await {

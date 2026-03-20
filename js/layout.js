@@ -319,3 +319,21 @@ globalThis.getComputedStyle = function(el, pseudo) {
         }
     });
 };
+
+// ═══════════════════════════════════════════════════════════════
+// VIEW TRANSITIONS API — React 19+ uses document.startViewTransition()
+// Without this, React's hydration crashes with "null.then()" error.
+// ═══════════════════════════════════════════════════════════════
+if (typeof document !== 'undefined' && !document.startViewTransition) {
+    document.startViewTransition = function(callbackOrOptions) {
+        const cb = typeof callbackOrOptions === 'function' ? callbackOrOptions : callbackOrOptions?.update;
+        const result = cb ? cb() : undefined;
+        const done = result instanceof Promise ? result : Promise.resolve();
+        return {
+            finished: done,
+            ready: Promise.resolve(),
+            updateCallbackDone: done,
+            skipTransition: function() {},
+        };
+    };
+}

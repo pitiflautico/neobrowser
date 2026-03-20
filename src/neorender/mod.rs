@@ -253,6 +253,7 @@ pub(crate) struct ScriptInfo {
     pub(crate) url: Option<String>,     // None for inline
     pub(crate) content: Option<String>, // None for external (fetched later)
     pub(crate) is_module: bool,
+    pub(crate) preload_only: bool,      // modulepreload: fetch but don't execute
 }
 
 pub(crate) fn extract_all_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo> {
@@ -292,7 +293,7 @@ pub(crate) fn extract_all_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo>
                     else if let Ok(base_url) = url::Url::parse(base) {
                         base_url.join(&src).map(|u| u.to_string()).unwrap_or(src)
                     } else { src };
-                    scripts.push(ScriptInfo { url: Some(full), content: None, is_module });
+                    scripts.push(ScriptInfo { url: Some(full), content: None, is_module, preload_only: false });
                 } else {
                     drop(attrs_ref);
                     let text: String = node.children.borrow().iter()
@@ -302,7 +303,7 @@ pub(crate) fn extract_all_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo>
                         })
                         .collect();
                     if !text.trim().is_empty() {
-                        scripts.push(ScriptInfo { url: None, content: Some(text), is_module });
+                        scripts.push(ScriptInfo { url: None, content: Some(text), is_module, preload_only: false });
                     }
                 }
             }
@@ -332,8 +333,9 @@ pub(crate) fn extract_all_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo>
                         else if let Ok(base_url) = url::Url::parse(base) {
                             base_url.join(&href).map(|u| u.to_string()).unwrap_or(href)
                         } else { href };
-                        // Add as a module script (content will be fetched in step 5)
-                        scripts.push(ScriptInfo { url: Some(full), content: None, is_module: true });
+                        // modulepreload: fetch to store but DON'T execute as top-level.
+                        // The browser pre-fetches these but only executes them when imported.
+                        scripts.push(ScriptInfo { url: Some(full), content: None, is_module: true, preload_only: true });
                     }
                 }
             }
