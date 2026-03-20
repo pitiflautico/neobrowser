@@ -1,303 +1,537 @@
 <!DOCTYPE html>
-<html lang="es">
+<html class="dark" lang="es">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NeoRender — El navegador sin motor de renderizado</title>
-  <meta name="description" content="V8 + DOM + Chrome TLS. Carga páginas, ejecuta JavaScript, hidrata React — a velocidad de Chrome, sin Chrome.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="../assets/style.css">
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>NeoRender — El Primer Navegador Creado para IA</title>
+<meta name="description" content="NeoRender es un motor de navegacion para IA. Carga cualquier web, ejecuta JavaScript, devuelve datos estructurados. 38K lineas de Rust. Open source."/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "background": "#0a0a12",
+        "surface": "#0a0a12",
+        "surface-low": "#11111a",
+        "surface-high": "#1a1a26",
+        "surface-highest": "#222230",
+        "primary": "#818cf8",
+        "primary-dim": "#6366f1",
+        "secondary": "#34d399",
+        "secondary-dim": "#10b981",
+        "tertiary": "#f472b6",
+        "tertiary-dim": "#ec4899",
+        "on-surface": "#f0f0f8",
+        "on-surface-variant": "#9898aa",
+        "outline-variant": "#494651",
+      },
+      fontFamily: {
+        "headline": ["Space Grotesk", "sans-serif"],
+        "body": ["Inter", "sans-serif"],
+      },
+    },
+  },
+}
+</script>
+<style>
+body {
+  background-color: #0a0a12;
+  color: #f0f0f8;
+  overflow-x: hidden;
+}
+.glass-panel {
+  background: rgba(26, 26, 38, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+.glass-nav {
+  background: rgba(10, 10, 18, 0.7);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+.neon-glow-primary {
+  box-shadow: 0 0 32px 0 rgba(129, 140, 248, 0.15);
+}
+.neon-glow-secondary {
+  box-shadow: 0 0 32px 0 rgba(52, 211, 153, 0.15);
+}
+.neon-glow-tertiary {
+  box-shadow: 0 0 32px 0 rgba(244, 114, 182, 0.15);
+}
+.refraction-border {
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-20px) scale(1.02); }
+}
+@keyframes float-slower {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(15px) scale(0.98); }
+}
+.float-slow { animation: float-slow 8s ease-in-out infinite; }
+.float-slower { animation: float-slower 12s ease-in-out infinite; }
+.gradient-text {
+  background: linear-gradient(135deg, #818cf8, #34d399, #f472b6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.terminal-line::before {
+  content: "$ ";
+  color: #34d399;
+}
+</style>
 </head>
-<body>
+<body class="font-body selection:bg-primary/30">
 
 <!-- Nav -->
-<nav>
-  <div class="container">
-    <a href="#" class="logo">NeoRender</a>
-    <div class="links">
-      <a href="#install">Docs</a>
-      <a href="https://github.com/nichochar/neobrowser" target="_blank">GitHub</a>
-      <a href="#mcp-tools">MCP Tools</a>
-      <a href="../en/" class="lang">EN</a>
+<nav class="fixed top-0 w-full z-50 glass-nav shadow-[0_1px_20px_rgba(129,140,248,0.08)]">
+  <div class="flex items-center justify-between px-6 md:px-8 py-4 max-w-7xl mx-auto">
+    <div class="flex items-center gap-2">
+      <span class="material-symbols-outlined text-primary text-2xl" style="font-variation-settings: 'FILL' 1;">public</span>
+      <span class="text-xl font-bold tracking-tighter text-on-surface font-headline">NEORENDER</span>
+    </div>
+    <div class="hidden md:flex items-center gap-8 font-headline tracking-tight text-sm">
+      <a class="text-on-surface-variant hover:text-on-surface transition-colors" href="#features">Capacidades</a>
+      <a class="text-on-surface-variant hover:text-on-surface transition-colors" href="#how-it-works">Arquitectura</a>
+      <a class="text-on-surface-variant hover:text-on-surface transition-colors" href="#developers">Docs</a>
+      <a class="text-on-surface-variant hover:text-on-surface transition-colors" href="https://github.com/pitiflautico/neobrowser">GitHub</a>
+    </div>
+    <div class="flex items-center gap-4">
+      <a href="../en/" class="text-xs font-label uppercase tracking-widest text-on-surface-variant hover:text-on-surface transition-colors">EN</a>
+      <a href="#get-started" class="bg-primary text-background px-5 py-2 rounded-lg font-medium text-sm hover:shadow-[0_0_20px_rgba(129,140,248,0.4)] transition-all active:scale-95">
+        Empezar
+      </a>
     </div>
   </div>
 </nav>
 
+<main class="pt-20">
+
 <!-- Hero -->
-<section class="hero">
-  <div class="container">
-    <div class="badge">Open Source &middot; MIT &middot; Hecho en Rust</div>
-    <h1>El navegador sin<br><span class="gradient-text">motor de renderizado.</span></h1>
-    <p class="subtitle">V8 + DOM + Chrome TLS. Carga páginas, ejecuta JavaScript, hidrata React — a velocidad de Chrome, sin Chrome.</p>
-    <div class="cta">
-      <a href="#install" class="btn btn-primary">Empezar</a>
-      <a href="https://github.com/nichochar/neobrowser" target="_blank" class="btn btn-secondary">GitHub</a>
+<section class="relative min-h-[90vh] flex items-center justify-center overflow-hidden px-6 py-24">
+  <div class="absolute inset-0 z-0">
+    <div class="absolute top-1/4 -left-32 w-[500px] h-[500px] bg-primary/15 rounded-full blur-[150px] float-slow"></div>
+    <div class="absolute bottom-1/4 -right-32 w-[400px] h-[400px] bg-secondary/10 rounded-full blur-[130px] float-slower"></div>
+    <div class="absolute top-1/2 left-1/2 -translate-x-1/2 w-[300px] h-[300px] bg-tertiary/8 rounded-full blur-[120px]"></div>
+  </div>
+  <div class="relative z-10 max-w-5xl mx-auto text-center">
+    <div class="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 mb-10 refraction-border">
+      <span class="w-2 h-2 rounded-full bg-secondary animate-pulse"></span>
+      <span class="text-xs font-label uppercase tracking-[0.15em] text-on-surface-variant">AI Browser Engine &middot; Open Source &middot; v0.9</span>
     </div>
-    <div class="stats">
-      <div class="stat">
-        <div class="stat-value accent">3.1s</div>
-        <div class="stat-label">carga ChatGPT</div>
+    <h1 class="text-5xl md:text-7xl lg:text-8xl font-headline font-bold tracking-tighter text-on-surface leading-[0.95] mb-8">
+      El Primer Navegador<br/><span class="gradient-text">Creado para IA.</span>
+    </h1>
+    <p class="text-lg md:text-xl text-on-surface-variant max-w-2xl mx-auto mb-12 leading-relaxed">
+      Dale a tu agente de IA ojos y manos reales en la web. NeoRender carga cualquier web, ejecuta JavaScript, y devuelve datos estructurados — en segundos.
+    </p>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+      <a href="#get-started" class="w-full sm:w-auto px-10 py-4 bg-primary text-background rounded-xl font-bold text-lg hover:shadow-[0_0_30px_rgba(129,140,248,0.4)] transition-all active:scale-95">
+        Empezar
+      </a>
+      <a href="#benchmarks" class="w-full sm:w-auto px-10 py-4 glass-panel border border-white/10 rounded-xl font-bold text-lg text-secondary hover:bg-white/5 transition-all refraction-border">
+        Ver en accion
+      </a>
+    </div>
+
+    <!-- Terminal -->
+    <div class="mt-16 md:mt-20 max-w-3xl mx-auto rounded-2xl overflow-hidden glass-panel border border-white/5 refraction-border neon-glow-primary text-left">
+      <div class="flex items-center gap-2 px-5 py-3 border-b border-white/5">
+        <div class="w-3 h-3 rounded-full bg-tertiary/60"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+        <div class="w-3 h-3 rounded-full bg-secondary/60"></div>
+        <span class="ml-3 text-xs text-on-surface-variant font-mono">neorender</span>
       </div>
-      <div class="stat">
-        <div class="stat-value green">19/20</div>
-        <div class="stat-label">bypass Cloudflare</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value accent">38K</div>
-        <div class="stat-label">líneas de código</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value green">15MB</div>
-        <div class="stat-label">binario</div>
+      <div class="p-5 md:p-6 font-mono text-sm leading-relaxed space-y-1">
+        <div class="text-on-surface-variant terminal-line">neorender see https://chatgpt.com</div>
+        <div class="text-on-surface-variant/70">[NeoRender] 362 modules loaded &middot; React hydrated</div>
+        <div class="text-on-surface-variant/70">[NeoRender] 27 nodes &middot; 8 links &middot; 8 buttons</div>
+        <div class="text-secondary">Rendered in 3.1s</div>
+        <div class="h-3"></div>
+        <div class="text-on-surface-variant terminal-line">neorender see https://linkedin.com/feed</div>
+        <div class="text-on-surface-variant/70">[NeoRender] 8.7MB &middot; 35 links &middot; 14 buttons</div>
+        <div class="text-secondary">Rendered in 1.2s</div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- The Problem -->
-<section class="alt">
-  <div class="container">
-    <div class="section-header text-center">
-      <h2>Los navegadores no se hicieron para la IA</h2>
+<!-- Stats -->
+<section class="py-20 px-6">
+  <div class="max-w-5xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-6 md:gap-8">
+    <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
+      <div class="text-4xl md:text-5xl font-headline font-bold text-secondary">3.1s</div>
+      <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">ChatGPT en 3 segundos</div>
     </div>
-    <div class="grid grid-3">
-      <div class="card">
-        <div class="card-icon accent">30M</div>
-        <h3>Chromium tiene 30M de líneas</h3>
-        <p>Tu agente no necesita píxeles, GPU ni compositor.</p>
-      </div>
-      <div class="card">
-        <div class="card-icon accent">&#9888;</div>
-        <h3>Headless sigue siendo pesado</h3>
-        <p>Playwright levanta un Chrome completo por cada página.</p>
-      </div>
-      <div class="card">
-        <div class="card-icon accent">&#128683;</div>
-        <h3>La detección es fácil</h3>
-        <p>Las huellas de bot se bloquean antes de que tu agente pueda leer.</p>
+    <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
+      <div class="text-4xl md:text-5xl font-headline font-bold text-primary">19/20</div>
+      <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Sitios top soportados</div>
+    </div>
+    <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
+      <div class="text-4xl md:text-5xl font-headline font-bold text-tertiary">35+</div>
+      <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Herramientas MCP listas</div>
+    </div>
+    <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
+      <div class="text-4xl md:text-5xl font-headline font-bold text-on-surface">38K</div>
+      <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Lineas de Rust y JS</div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section id="features" class="py-24 md:py-32 px-6 max-w-7xl mx-auto">
+  <div class="mb-16">
+    <span class="font-label text-secondary uppercase tracking-[0.25em] text-sm font-semibold">Capacidades</span>
+    <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">Que hace NeoRender</h2>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-12 gap-5">
+    <!-- Large: Modern Web -->
+    <div class="md:col-span-8 group relative overflow-hidden rounded-2xl bg-surface-high/40 border border-white/5 p-8 md:p-10 neon-glow-primary transition-all duration-500 hover:scale-[1.005] refraction-border">
+      <span class="material-symbols-outlined text-primary text-4xl mb-5 block">language</span>
+      <h3 class="text-2xl md:text-3xl font-headline font-bold mb-4">Entiende las web apps modernas</h3>
+      <p class="text-on-surface-variant text-lg max-w-lg leading-relaxed">React, Vue, Angular — ejecucion JavaScript completa. No es scraping de HTML. Tu IA ve lo que ve un humano.</p>
+      <div class="mt-8 flex items-center gap-3 px-4 py-3 rounded-xl bg-background/50 border border-white/5 max-w-sm">
+        <div class="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center flex-shrink-0">
+          <span class="material-symbols-outlined text-primary text-lg">bolt</span>
+        </div>
+        <span class="text-sm text-on-surface-variant">Hidratacion React Router 7 en V8 — las SPAs funcionan</span>
       </div>
     </div>
-    <p style="text-align:center;margin-top:40px;font-size:1.05rem;max-width:640px;margin-left:auto;margin-right:auto;">
-      NeoRender reduce el navegador a su esqueleto:<br><strong style="color:var(--text)">motor JavaScript + cliente HTTP + DOM.</strong>
-    </p>
+    <!-- Small: Invisible -->
+    <div class="md:col-span-4 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-3xl mb-5 block">visibility_off</span>
+      <h3 class="text-xl font-headline font-bold mb-3">Invisible para las webs</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">Fingerprint TLS real de Chrome. Los sitios web no pueden distinguirlo de un humano navegando.</p>
+    </div>
+    <!-- Medium: Fast -->
+    <div class="md:col-span-6 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-tertiary text-3xl mb-5 block">bolt</span>
+      <h3 class="text-xl font-headline font-bold mb-3">Velocidad absurda</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">3.1s para cargar ChatGPT completo. Cache de bytecode V8. 362 modulos en 0.6s desde disco.</p>
+    </div>
+    <!-- Medium: Tools -->
+    <div class="md:col-span-6 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-primary text-3xl mb-5 block">construction</span>
+      <h3 class="text-xl font-headline font-bold mb-3">35+ herramientas para agentes IA</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">Navegar, hacer click, escribir, extraer, rellenar formularios, enviar mensajes. Todo lo que una IA necesita en la web.</p>
+    </div>
+    <!-- Small: Light -->
+    <div class="md:col-span-4 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-3xl mb-5 block">memory</span>
+      <h3 class="text-xl font-headline font-bold mb-3">15MB. Eso es todo.</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">Sin Chrome. Sin Electron. Sin GPU. Un unico binario que tu IA ejecuta en cualquier parte.</p>
+    </div>
+    <!-- Large: Production -->
+    <div class="md:col-span-8 group relative overflow-hidden rounded-2xl bg-surface-high/40 border border-white/5 p-8 md:p-10 neon-glow-secondary transition-all duration-500 hover:scale-[1.005] refraction-border">
+      <span class="material-symbols-outlined text-secondary text-4xl mb-5 block">verified</span>
+      <h3 class="text-2xl md:text-3xl font-headline font-bold mb-4">Listo para produccion</h3>
+      <p class="text-on-surface-variant text-lg max-w-lg leading-relaxed">38.000 lineas de Rust. Probado en los 20 sitios mas visitados. Persistencia de cookies, gestion de sesiones, recuperacion de errores.</p>
+    </div>
   </div>
 </section>
 
 <!-- How It Works -->
-<section>
-  <div class="container">
-    <div class="section-header text-center">
-      <h2>Qué hay dentro</h2>
+<section id="how-it-works" class="py-24 md:py-32 px-6">
+  <div class="max-w-4xl mx-auto">
+    <div class="mb-16 text-center">
+      <span class="font-label text-primary uppercase tracking-[0.25em] text-sm font-semibold">Arquitectura</span>
+      <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">Tres capas. Sin atajos.</h2>
     </div>
-    <div class="arch-box mx-auto" style="max-width:640px;margin-bottom:40px;">
-      <div style="color:var(--text-muted);margin-bottom:6px;">Capa HTTP</div>
-      <div class="layer"><span class="block">rquest</span><span class="block" style="font-size:0.75rem;">Huella TLS Chrome 136</span></div>
-      <div class="arch-arrow">&darr;</div>
-      <div style="color:var(--text-muted);margin-bottom:6px;">Capa DOM</div>
-      <div class="layer"><span class="block green">linkedom</span><span class="block green" style="font-size:0.75rem;">Sin renderizado — DOM puro</span></div>
-      <div class="arch-arrow">&darr;</div>
-      <div style="color:var(--text-muted);margin-bottom:6px;">Capa JS</div>
-      <div class="layer"><span class="block">V8 via deno_core</span><span class="block" style="font-size:0.75rem;">ES modules + hidratación React</span></div>
-      <div class="arch-arrow">&darr;</div>
-      <div style="color:var(--text-muted);margin-bottom:6px;">Caché</div>
-      <div class="layer"><span class="block green">Bytecode V8</span><span class="block green">Caché de módulos HTTP</span></div>
-      <div class="arch-arrow">&darr;</div>
-      <div style="color:var(--text-muted);margin-bottom:6px;">Salida</div>
-      <div class="layer"><span class="block">MCP tools (35+)</span><span class="block" style="font-size:0.75rem;">&rarr; Agente IA</span></div>
+    <div class="space-y-4">
+      <!-- HTTP Layer -->
+      <div class="glass-panel rounded-2xl border border-white/5 p-8 refraction-border neon-glow-secondary transition-all hover:scale-[1.005]">
+        <div class="flex items-start gap-5">
+          <div class="w-12 h-12 rounded-xl bg-secondary/10 flex items-center justify-center flex-shrink-0">
+            <span class="material-symbols-outlined text-secondary text-2xl">wifi</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h3 class="text-xl font-headline font-bold">Capa HTTP</h3>
+              <span class="text-xs font-label px-2 py-0.5 rounded bg-secondary/10 text-secondary uppercase tracking-wider">rquest</span>
+            </div>
+            <p class="text-on-surface-variant leading-relaxed">Habla HTTP exactamente como Chrome 136. Mismo handshake TLS, mismas cabeceras, mismo fingerprint.</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-center">
+        <span class="material-symbols-outlined text-on-surface-variant/30 text-2xl">arrow_downward</span>
+      </div>
+      <!-- DOM Layer -->
+      <div class="glass-panel rounded-2xl border border-white/5 p-8 refraction-border neon-glow-primary transition-all hover:scale-[1.005]">
+        <div class="flex items-start gap-5">
+          <div class="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+            <span class="material-symbols-outlined text-primary text-2xl">account_tree</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h3 class="text-xl font-headline font-bold">Capa DOM</h3>
+              <span class="text-xs font-label px-2 py-0.5 rounded bg-primary/10 text-primary uppercase tracking-wider">linkedom</span>
+            </div>
+            <p class="text-on-surface-variant leading-relaxed">DOM completo en memoria. Elementos, atributos, selectores, eventos. Todo lo que JavaScript espera de un navegador.</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-center">
+        <span class="material-symbols-outlined text-on-surface-variant/30 text-2xl">arrow_downward</span>
+      </div>
+      <!-- JS Layer -->
+      <div class="glass-panel rounded-2xl border border-white/5 p-8 refraction-border neon-glow-tertiary transition-all hover:scale-[1.005]">
+        <div class="flex items-start gap-5">
+          <div class="w-12 h-12 rounded-xl bg-tertiary/10 flex items-center justify-center flex-shrink-0">
+            <span class="material-symbols-outlined text-tertiary text-2xl">code</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h3 class="text-xl font-headline font-bold">Capa JavaScript</h3>
+              <span class="text-xs font-label px-2 py-0.5 rounded bg-tertiary/10 text-tertiary uppercase tracking-wider">V8 via deno_core</span>
+            </div>
+            <p class="text-on-surface-variant leading-relaxed">El mismo V8 que impulsa Chrome y Node.js. Ejecuta React, carga ES modules, hidrata SPAs.</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-center">
+        <span class="material-symbols-outlined text-on-surface-variant/30 text-2xl">arrow_downward</span>
+      </div>
+      <!-- Output -->
+      <div class="text-center py-4">
+        <div class="inline-flex items-center gap-3 px-6 py-3 rounded-full bg-surface-high border border-white/5 refraction-border">
+          <span class="material-symbols-outlined text-secondary">output</span>
+          <span class="font-headline font-semibold">Datos estructurados</span>
+          <span class="material-symbols-outlined text-on-surface-variant/50">arrow_forward</span>
+          <span class="font-headline font-semibold text-primary">Tu agente IA</span>
+        </div>
+      </div>
     </div>
-    <div class="grid grid-3">
-      <div class="card">
-        <div class="card-icon green">&#9881;</div>
-        <h3>Hidratación React</h3>
-        <p>El primer motor que hidrata React Router 7 en V8 headless.</p>
+  </div>
+</section>
+
+<!-- For Developers -->
+<section id="developers" class="py-24 md:py-32 px-6 max-w-7xl mx-auto">
+  <div class="mb-16">
+    <span class="font-label text-tertiary uppercase tracking-[0.25em] text-sm font-semibold">Integracion</span>
+    <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">Conectar y listo</h2>
+  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-16">
+    <!-- MCP Config -->
+    <div class="rounded-2xl glass-panel border border-white/5 overflow-hidden refraction-border">
+      <div class="flex items-center gap-2 px-5 py-3 border-b border-white/5">
+        <span class="material-symbols-outlined text-on-surface-variant text-sm">data_object</span>
+        <span class="text-xs text-on-surface-variant font-mono">claude_desktop_config.json</span>
       </div>
-      <div class="card">
-        <div class="card-icon green">&#128274;</div>
-        <h3>TLS de Chrome</h3>
-        <p>JA3/JA4 idéntico a Chrome 136. Cloudflare no nota la diferencia.</p>
+      <div class="p-5 md:p-6 font-mono text-sm leading-relaxed">
+        <div class="text-on-surface-variant/60">{</div>
+        <div class="pl-4"><span class="text-tertiary">"mcpServers"</span>: {</div>
+        <div class="pl-8"><span class="text-secondary">"neorender"</span>: {</div>
+        <div class="pl-12"><span class="text-primary">"command"</span>: <span class="text-on-surface">"neorender"</span>,</div>
+        <div class="pl-12"><span class="text-primary">"args"</span>: [<span class="text-on-surface">"mcp"</span>]</div>
+        <div class="pl-8">}</div>
+        <div class="pl-4">}</div>
+        <div class="text-on-surface-variant/60">}</div>
       </div>
-      <div class="card">
-        <div class="card-icon green">&#9889;</div>
-        <h3>Caché de Bytecode</h3>
-        <p>V8 compila una vez y cachea el bytecode. Las cargas posteriores se saltan la compilación.</p>
+    </div>
+    <!-- Description -->
+    <div class="flex flex-col justify-center">
+      <p class="text-lg text-on-surface-variant leading-relaxed mb-6">Funciona con Claude Code, Cursor, Windsurf, y cualquier herramienta IA compatible con MCP.</p>
+      <p class="text-on-surface-variant leading-relaxed">Agrega la configuracion, reinicia tu editor. Tu IA ya puede navegar la web, rellenar formularios, extraer datos y automatizar flujos en cualquier sitio.</p>
+    </div>
+  </div>
+  <!-- Tool categories -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-primary text-2xl mt-0.5">explore</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Navegar</h4>
+        <p class="text-sm text-on-surface-variant">Abrir paginas, click, escribir, scroll</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-2xl mt-0.5">analytics</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Extraer</h4>
+        <p class="text-sm text-on-surface-variant">Leer contenido, formularios, tablas, enlaces</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-tertiary text-2xl mt-0.5">wifi</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Red</h4>
+        <p class="text-sm text-on-surface-variant">Peticiones HTTP, interceptar, mockear</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-primary text-2xl mt-0.5">key</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Sesiones</h4>
+        <p class="text-sm text-on-surface-variant">Cookies, autenticacion, persistencia de estado</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-2xl mt-0.5">smart_toy</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Automatizar</h4>
+        <p class="text-sm text-on-surface-variant">Pipelines, flujos, procesos multi-paso</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-tertiary text-2xl mt-0.5">api</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">API directa</h4>
+        <p class="text-sm text-on-surface-variant">HTTP con TLS de Chrome sin overhead del navegador</p>
       </div>
     </div>
   </div>
 </section>
 
 <!-- Benchmarks -->
-<section class="alt">
-  <div class="container">
-    <div class="section-header text-center">
-      <h2>Velocidad</h2>
+<section id="benchmarks" class="py-24 md:py-32 px-6">
+  <div class="max-w-4xl mx-auto">
+    <div class="mb-16 text-center">
+      <span class="font-label text-secondary uppercase tracking-[0.25em] text-sm font-semibold">Rendimiento</span>
+      <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">No te fies de nuestra palabra.</h2>
     </div>
-    <div class="table-wrap mx-auto" style="max-width:800px;margin-bottom:40px;">
-      <table>
-        <thead>
-          <tr><th>Métrica</th><th>NeoRender</th><th>Chrome</th><th>Playwright</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>ChatGPT (cacheado)</td><td><strong style="color:var(--green)">3.1s</strong></td><td>3-5s</td><td>8s+</td></tr>
-          <tr><td>Tamaño binario</td><td><strong style="color:var(--green)">15MB</strong></td><td>300MB+</td><td>280MB+</td></tr>
-          <tr><td>Bypass Cloudflare</td><td><strong style="color:var(--green)">19/20</strong></td><td>20/20</td><td>2/20</td></tr>
-          <tr><td>Memoria</td><td><strong style="color:var(--green)">~100MB</strong></td><td>~500MB</td><td>~300MB</td></tr>
-          <tr><td>Coste en tokens</td><td><strong style="color:var(--green)">4K chars</strong></td><td>140K chars</td><td>140K chars</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="terminal mx-auto" style="max-width:640px;">
-      <div class="terminal-bar">
-        <span class="terminal-dot"></span>
-        <span class="terminal-dot"></span>
-        <span class="terminal-dot"></span>
+    <div class="rounded-2xl glass-panel border border-white/5 overflow-hidden refraction-border neon-glow-secondary">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left">
+          <thead>
+            <tr class="border-b border-white/5">
+              <th class="px-6 py-4 font-headline font-semibold text-on-surface-variant text-sm"></th>
+              <th class="px-6 py-4 font-headline font-semibold text-secondary text-sm">NeoRender</th>
+              <th class="px-6 py-4 font-headline font-semibold text-on-surface-variant text-sm">Headless tradicional</th>
+            </tr>
+          </thead>
+          <tbody class="text-sm">
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Cargar ChatGPT</td>
+              <td class="px-6 py-4 text-secondary font-semibold">3.1s</td>
+              <td class="px-6 py-4 text-on-surface-variant">8s+</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Uso de memoria</td>
+              <td class="px-6 py-4 text-secondary font-semibold">~100MB</td>
+              <td class="px-6 py-4 text-on-surface-variant">~500MB</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Tamano del binario</td>
+              <td class="px-6 py-4 text-secondary font-semibold">15MB</td>
+              <td class="px-6 py-4 text-on-surface-variant">300MB+</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Sitios soportados</td>
+              <td class="px-6 py-4 text-on-surface font-semibold">19/20</td>
+              <td class="px-6 py-4 text-on-surface-variant">20/20</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Eficiencia en tokens</td>
+              <td class="px-6 py-4 text-secondary font-semibold">35x mejor</td>
+              <td class="px-6 py-4 text-on-surface-variant">Base</td>
+            </tr>
+            <tr>
+              <td class="px-6 py-4 text-on-surface-variant">Hidratacion React</td>
+              <td class="px-6 py-4 text-on-surface font-semibold">Si</td>
+              <td class="px-6 py-4 text-on-surface-variant">Si</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
-      <pre><span class="t-prompt">$</span> <span class="t-cmd">time neobrowser see https://chatgpt.com</span>
-<span class="t-out">[NeoRender] 362 modules · React hydrated · routeModules=true</span>
-<span class="t-hi">Rendered in 3.1s</span>
-
-<span class="t-prompt">$</span> <span class="t-cmd">python3 -c "from aibrowser.chat_server import gpt; ..."</span>
-<span class="t-out">Pong</span>
-<span class="t-accent">ChatGPT | 4529ms via rquest</span></pre>
-    </div>
-  </div>
-</section>
-
-<!-- MCP Tools -->
-<section id="mcp-tools">
-  <div class="container">
-    <div class="section-header text-center">
-      <h2>35+ herramientas para agentes IA</h2>
-    </div>
-    <div class="grid grid-3" style="margin-bottom:40px;">
-      <div class="card">
-        <div class="card-icon accent">&#8599;</div>
-        <h3>Navegar</h3>
-        <p>open, click, type, scroll</p>
-      </div>
-      <div class="card">
-        <div class="card-icon accent">&#128269;</div>
-        <h3>Extraer</h3>
-        <p>see, forms, tables, links</p>
-      </div>
-      <div class="card">
-        <div class="card-icon accent">&#127760;</div>
-        <h3>Red</h3>
-        <p>fetch, intercept, mock, record</p>
-      </div>
-      <div class="card">
-        <div class="card-icon green">&#128273;</div>
-        <h3>Sesión</h3>
-        <p>auth, cookies, state, export</p>
-      </div>
-      <div class="card">
-        <div class="card-icon green">&#9881;</div>
-        <h3>Automatización</h3>
-        <p>pipeline, pool, learn</p>
-      </div>
-      <div class="card">
-        <div class="card-icon green">&#128268;</div>
-        <h3>API</h3>
-        <p>browser_fetch — HTTP con TLS de Chrome, sin navegador</p>
+      <div class="px-6 py-4 border-t border-white/5">
+        <p class="text-xs text-on-surface-variant/60">Headless tradicional = Playwright / Puppeteer / Chrome headless</p>
       </div>
     </div>
-    <div class="terminal mx-auto" style="max-width:540px;">
-      <div class="terminal-bar">
-        <span class="terminal-dot"></span>
-        <span class="terminal-dot"></span>
-        <span class="terminal-dot"></span>
-      </div>
-      <pre><span class="t-out">// claude_desktop_config.json</span>
-{
-  <span class="t-accent">"mcpServers"</span>: {
-    <span class="t-accent">"neobrowser"</span>: {
-      <span class="t-cmd">"command"</span>: <span class="t-hi">"neobrowser_rs"</span>,
-      <span class="t-cmd">"args"</span>: [<span class="t-hi">"mcp"</span>]
-    }
-  }
-}</pre>
-    </div>
-  </div>
-</section>
-
-<!-- Comparison -->
-<section class="alt">
-  <div class="container">
-    <div class="section-header text-center">
-      <h2>Comparativa</h2>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr><th>Característica</th><th>NeoRender</th><th>Playwright</th><th>Firecrawl</th><th>Browser Use</th></tr>
-        </thead>
-        <tbody>
-          <tr><td>Ejecución JS</td><td><span class="check">&#10003;</span> V8</td><td><span class="check">&#10003;</span> Chrome</td><td><span class="check">&#10003;</span> Chrome</td><td><span class="check">&#10003;</span> Chrome</td></tr>
-          <tr><td>Hidratación React</td><td><span class="check">&#10003;</span></td><td><span class="check">&#10003;</span></td><td><span class="cross">&#10007;</span></td><td><span class="check">&#10003;</span></td></tr>
-          <tr><td>Requiere Chrome</td><td><span class="check">&#10007;</span>*</td><td><span class="cross">&#10003;</span></td><td><span class="cross">&#10003;</span> (cloud)</td><td><span class="cross">&#10003;</span></td></tr>
-          <tr><td>Auto-hospedado</td><td><span class="check">&#10003;</span></td><td><span class="check">&#10003;</span></td><td>Opcional</td><td><span class="check">&#10003;</span></td></tr>
-          <tr><td>Bypass Cloudflare</td><td><strong style="color:var(--green)">19/20</strong></td><td>~2/20</td><td>Cloud</td><td>~2/20</td></tr>
-          <tr><td>Eficiencia en tokens</td><td><strong style="color:var(--green)">35x</strong></td><td>1x</td><td>3x</td><td>1x</td></tr>
-          <tr><td>Tamaño binario</td><td><strong style="color:var(--green)">15MB</strong></td><td>300MB</td><td>Cloud</td><td>300MB</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p style="text-align:center;margin-top:16px;font-size:0.82rem;color:var(--text-muted);">*Chrome solo necesario para fallback de captcha via modo CDP.</p>
   </div>
 </section>
 
 <!-- Get Started -->
-<section id="install" class="install-section">
-  <div class="container text-center">
-    <div class="section-header text-center">
-      <h2 style="max-width:none">Empieza en 30 segundos</h2>
+<section id="get-started" class="py-24 md:py-32 px-6">
+  <div class="max-w-3xl mx-auto">
+    <div class="mb-12 text-center">
+      <span class="font-label text-primary uppercase tracking-[0.25em] text-sm font-semibold">Inicio rapido</span>
+      <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">Funcionando en 60 segundos.</h2>
     </div>
-    <div class="terminal" style="max-width:640px;margin:0 auto 32px;">
-      <div class="terminal-bar">
-        <span class="terminal-dot"></span>
-        <span class="terminal-dot"></span>
-        <span class="terminal-dot"></span>
+    <div class="rounded-2xl glass-panel border border-white/5 overflow-hidden refraction-border neon-glow-primary">
+      <div class="flex items-center gap-2 px-5 py-3 border-b border-white/5">
+        <div class="w-3 h-3 rounded-full bg-tertiary/60"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+        <div class="w-3 h-3 rounded-full bg-secondary/60"></div>
+        <span class="ml-3 text-xs text-on-surface-variant font-mono">terminal</span>
       </div>
-      <pre><span class="t-prompt">$</span> <span class="t-cmd">git clone https://github.com/nichochar/neobrowser.git</span>
-<span class="t-prompt">$</span> <span class="t-cmd">cd neobrowser && cargo build --release</span>
-
-<span class="t-out"># Navegar una página</span>
-<span class="t-prompt">$</span> <span class="t-cmd">./target/release/neobrowser_rs see https://example.com</span>
-
-<span class="t-out"># Como servidor MCP</span>
-<span class="t-prompt">$</span> <span class="t-cmd">./target/release/neobrowser_rs mcp</span></pre>
+      <div class="p-5 md:p-6 font-mono text-sm leading-loose space-y-1">
+        <div class="text-on-surface-variant/50"># Instalar</div>
+        <div class="text-on-surface-variant terminal-line">git clone https://github.com/pitiflautico/neobrowser.git</div>
+        <div class="text-on-surface-variant terminal-line">cd neobrowser && cargo build --release</div>
+        <div class="h-3"></div>
+        <div class="text-on-surface-variant/50"># Navegar cualquier web</div>
+        <div class="text-on-surface-variant terminal-line">./target/release/neobrowser_rs see https://example.com</div>
+        <div class="h-3"></div>
+        <div class="text-on-surface-variant/50"># Lanzar servidor MCP para tu IA</div>
+        <div class="text-on-surface-variant terminal-line">./target/release/neobrowser_rs mcp</div>
+      </div>
     </div>
-    <div class="cta" style="display:flex;gap:14px;justify-content:center;">
-      <a href="#" class="btn btn-primary">Documentación</a>
-      <a href="https://github.com/nichochar/neobrowser" target="_blank" class="btn btn-secondary">GitHub</a>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mt-8">
+      <a href="#developers" class="w-full sm:w-auto px-8 py-3 bg-surface-high border border-white/5 rounded-xl font-semibold text-on-surface hover:bg-surface-highest transition-all refraction-border text-center">
+        <span class="material-symbols-outlined text-sm align-middle mr-1">description</span> Documentacion
+      </a>
+      <a href="https://github.com/pitiflautico/neobrowser" class="w-full sm:w-auto px-8 py-3 bg-surface-high border border-white/5 rounded-xl font-semibold text-on-surface hover:bg-surface-highest transition-all refraction-border text-center">
+        <span class="material-symbols-outlined text-sm align-middle mr-1">code</span> Repositorio GitHub
+      </a>
     </div>
   </div>
 </section>
 
 <!-- Open Source -->
-<section class="alt">
-  <div class="container text-center">
-    <h2>Código abierto. Licencia MIT.</h2>
-    <div class="oss-stats">
-      <div class="oss-stat"><strong>38,000</strong> líneas de Rust + JavaScript</div>
-      <div class="oss-stat"><strong>30</strong> módulos JS</div>
-      <div class="oss-stat"><strong>17</strong> módulos Rust</div>
+<section class="py-24 md:py-32 px-6">
+  <div class="max-w-4xl mx-auto text-center">
+    <span class="font-label text-secondary uppercase tracking-[0.25em] text-sm font-semibold">Comunidad</span>
+    <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 mb-6 tracking-tight">Construido en abierto. Licencia MIT.</h2>
+    <div class="flex flex-wrap items-center justify-center gap-4 mb-8">
+      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">38K lineas</span>
+      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">30 modulos JS</span>
+      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">17 modulos Rust</span>
     </div>
-    <p style="margin-bottom:24px;">Creado por Dani Perez + Claude Opus</p>
-    <a href="https://github.com/nichochar/neobrowser" target="_blank" class="btn btn-ghost">Guía de contribución &rarr;</a>
+    <p class="text-lg text-on-surface-variant max-w-2xl mx-auto mb-12 leading-relaxed">
+      Construido por Dani Perez y Claude Opus — un humano y una IA creando un navegador para agentes de IA.
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-6">
+      <a href="https://github.com/pitiflautico/neobrowser" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-primary/30 transition-all refraction-border">
+        <span class="material-symbols-outlined text-primary">code</span>
+        <span class="font-headline font-semibold">GitHub</span>
+      </a>
+      <a href="#" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-secondary/30 transition-all refraction-border">
+        <span class="material-symbols-outlined text-secondary">forum</span>
+        <span class="font-headline font-semibold">Discord</span>
+      </a>
+      <a href="#" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-tertiary/30 transition-all refraction-border">
+        <span class="material-symbols-outlined text-tertiary">group</span>
+        <span class="font-headline font-semibold">Contribuir</span>
+      </a>
+    </div>
   </div>
 </section>
 
+</main>
+
 <!-- Footer -->
-<footer>
-  <div class="container">
-    <div class="footer-links">
-      <a href="#">Docs</a>
-      <a href="https://github.com/nichochar/neobrowser">GitHub</a>
-      <a href="https://opensource.org/licenses/MIT">Licencia MIT</a>
+<footer class="border-t border-white/5 py-12 px-6">
+  <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2">
+      <span class="material-symbols-outlined text-primary text-sm" style="font-variation-settings: 'FILL' 1;">public</span>
+      <span class="font-headline font-bold text-on-surface-variant tracking-tighter">NeoRender</span>
+      <span class="text-on-surface-variant/50 text-sm ml-1">AI Browser Engine</span>
     </div>
-    <p>Construido con Rust, V8 y terquedad.</p>
+    <div class="flex flex-wrap justify-center gap-6">
+      <a class="text-xs text-on-surface-variant hover:text-on-surface transition-colors" href="#developers">Docs</a>
+      <a class="text-xs text-on-surface-variant hover:text-on-surface transition-colors" href="https://github.com/pitiflautico/neobrowser">GitHub</a>
+      <a class="text-xs text-on-surface-variant hover:text-on-surface transition-colors" href="#">Licencia MIT</a>
+    </div>
+    <p class="text-xs text-on-surface-variant/50">Hecho con Rust, V8 y determinacion.</p>
   </div>
 </footer>
 
