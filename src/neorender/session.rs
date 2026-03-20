@@ -472,6 +472,19 @@ impl NeoSession {
                 .map_err(|e| format!("Cookie update: {e}"))?;
         }
 
+        // 10b. Swallow unhandled promise rejections (non-fatal).
+        // React Router streaming hydration causes null.then() errors that are
+        // caught by deno_core as fatal. This tells deno_core to handle them silently.
+        self.runtime.execute_script("<neosession:rejection_handler>", r#"
+            globalThis.__neo_swallowed_rejections = [];
+            Deno.core.setUnhandledPromiseRejectionHandler((promise, reason) => {
+                const msg = reason?.message || String(reason);
+                const stack = reason?.stack || '';
+                globalThis.__neo_swallowed_rejections.push({msg, stack: stack.split('\n').slice(0,6)});
+                return true;
+            });
+        "#.to_string()).ok();
+
         // 11. Execute scripts in document order
         let scripts_count = all_scripts.len();
         let mut errors = Vec::new();

@@ -155,12 +155,12 @@ pub fn op_neorender_fetch(
     result.map_err(|e| deno_core::error::generic_error(e))
 }
 
-/// Sleep — SYNC to avoid async op conflicts in deno_core 0.311.
-/// Capped at 100ms. < 5ms is no-op (animation frames).
-#[op2(fast)]
-pub fn op_neorender_timer(#[smi] ms: u32) -> () {
+/// Async timer — returns a Promise that resolves after ms milliseconds.
+/// Capped at 100ms. < 5ms resolves immediately.
+#[op2(async)]
+pub async fn op_neorender_timer(#[smi] ms: u32) {
     if ms > 5 {
-        std::thread::sleep(std::time::Duration::from_millis(ms.min(100) as u64));
+        tokio::time::sleep(std::time::Duration::from_millis(ms.min(100) as u64)).await;
     }
 }
 
