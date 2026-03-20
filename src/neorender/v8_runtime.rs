@@ -68,10 +68,19 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         {
             let store = self.store.borrow();
             if let Some(code) = store.scripts.get(&url) {
-                eprintln!("[NEORENDER:LOADER] store: {} ({}B)", url.rsplit('/').next().unwrap_or(&url), code.len());
+                let short = url.rsplit('/').next().unwrap_or(&url);
+                eprintln!("[NEORENDER:LOADER] store: {} ({}B)", short, code.len());
+                // Prepend polyfills that modules need but deno_core may not expose.
+                // Promise.allSettled exists in V8 but some module evaluation contexts
+                // don't see it. Injecting it at the top of each module ensures it's available.
+                let patched = if code.contains(".allSettled(") {
+                    format!("if(!Promise.allSettled)Promise.allSettled=function(p){{return Promise.all([...p].map(x=>Promise.resolve(x).then(v=>({{status:'fulfilled',value:v}}),r=>({{status:'rejected',reason:r}}))))}};{}", code)
+                } else {
+                    code.clone()
+                };
                 return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
                     ModuleType::JavaScript,
-                    ModuleSourceCode::String(code.clone().into()),
+                    ModuleSourceCode::String(patched.into()),
                     module_specifier,
                     None,
                 )));
