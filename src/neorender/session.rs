@@ -565,17 +565,49 @@ impl NeoSession {
                 // For inline modules: convert static imports to dynamic import()
                 // to avoid top-level await blocking mod_evaluate.
                 if script.url.is_none() {
-                    // Rewrite: import{x}from"./foo.js" → const {x} = await import("./foo.js")
-                    // But simpler: wrap entire module in an async IIFE executed as script
-                    let module_url = format!("{}/inline-module-{}.js", final_url.trim_end_matches('/'), i);
-                    self.store.borrow_mut().scripts.insert(module_url.clone(), content.clone());
-                    // Execute as module but with generous timeout for streaming
-                    if first_module {
-                        first_module = false;
-                        v8_runtime::execute_module(&mut self.runtime, &module_url, name).await
-                    } else {
-                        v8_runtime::execute_side_module(&mut self.runtime, &module_url, name).await
-                    }
+                    // Convert inline ES module to async IIFE script.
+                    // Static imports → dynamic import() to avoid TLA blocking.
+                    use regex_lite::Regex;
+                    let base = url::Url::parse(&final_url).ok()
+                        .map(|u| u.origin().ascii_serialization())
+                        .unwrap_or_default();
+
+                    let mut code = content.clone();
+
+                    // import "path" → await import("path")
+                    let re_bare = Regex::new(r#"import\s*"([^"]+)""#).unwrap();
+                    code = re_bare.replace_all(&code, |caps: &regex_lite::Captures| {
+                        let path = &caps[1];
+                        let full = if path.starts_with('/') { format!("{}{}", base, path) } else { path.to_string() };
+                        format!("await import(\"{}\")", full)
+                    }).to_string();
+
+                    // import * as name from "path" → const name = await import("path")
+                    let re_star = Regex::new(r#"import\s*\*\s*as\s+(\w+)\s+from\s*"([^"]+)""#).unwrap();
+                    code = re_star.replace_all(&code, |caps: &regex_lite::Captures| {
+                        let name = &caps[1];
+                        let path = &caps[2];
+                        let full = if path.starts_with('/') { format!("{}{}", base, path) } else { path.to_string() };
+                        format!("const {} = await import(\"{}\")", name, full)
+                    }).to_string();
+
+                    // import { a as b, c } from "path" → const { a: b, c } = await import("path")
+                    let re_named = Regex::new(r#"import\s*\{([^}]+)\}\s*from\s*"([^"]+)""#).unwrap();
+                    code = re_named.replace_all(&code, |caps: &regex_lite::Captures| {
+                        let imports = caps[1].replace(" as ", ": ");
+                        let path = &caps[2];
+                        let full = if path.starts_with('/') { format!("{}{}", base, path) } else { path.to_string() };
+                        format!("const {{{}}} = await import(\"{}\")", imports, full)
+                    }).to_string();
+
+                    // Patch: if getAll is not a function, provide a fallback
+                    let code_patched = format!(
+                        "globalThis.__neo_getAll_patch = true;\n{}\n",
+                        code
+                    );
+                    let script_js = format!("(async () => {{ try {{ {} }} catch(e) {{ if (e.message?.includes('getAll')) {{ console.error?.('hydrate: getAll missing, retrying with patch'); try {{ const p = Object.getPrototypeOf(e.target || {{}}); if (!p.getAll) p.getAll = function(n) {{ return []; }}; }} catch {{}} }} else {{ console.error?.('hydrate error:', e.message, e.stack?.split('\\n').slice(0,5).join(' | ')); }} }} }})();", code_patched);
+                    eprintln!("[NEOSESSION] Inline module → async script: {}B", script_js.len());
+                    v8_runtime::execute_script(&mut self.runtime, script_js, name)
                 } else {
                     let module_url = script_url.to_string();
                     if first_module {

@@ -1,6 +1,23 @@
 // ═══════════════════════════════════════════════════════════════
 // MISC WEB APIs — common APIs that sites check for
 // ═══════════════════════════════════════════════════════════════
+// Headers.getAll polyfill — React Router uses this (removed from Fetch spec in 2016)
+if (typeof Headers !== 'undefined') {
+    try {
+        Object.defineProperty(Headers.prototype, 'getAll', {
+            value: function(name) {
+                const results = [];
+                this.forEach((v, k) => {
+                    if (k.toLowerCase() === name.toLowerCase()) results.push(v);
+                });
+                return results;
+            },
+            configurable: true,
+            writable: true,
+        });
+    } catch {}
+}
+
 
 // Permissions API
 if (!navigator.permissions) {
@@ -187,3 +204,4 @@ globalThis.speechSynthesis = globalThis.speechSynthesis || {
     speak() {}, cancel() {}, pause() {}, resume() {},
     getVoices() { return []; }, speaking: false, pending: false, paused: false,
 };
+

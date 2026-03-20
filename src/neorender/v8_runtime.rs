@@ -45,7 +45,15 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, AnyError> {
-        Ok(resolve_import(specifier, referrer)?)
+        match resolve_import(specifier, referrer) {
+            Ok(s) => Ok(s),
+            Err(e) => {
+                eprintln!("[NEORENDER:RESOLVE] FAIL: spec={} ref={} err={}",
+                    &specifier[..specifier.len().min(60)],
+                    &referrer[..referrer.len().min(60)], e);
+                Err(e.into())
+            }
+        }
     }
 
     fn load(
@@ -501,16 +509,24 @@ pub async fn execute_module(runtime: &mut JsRuntime, url: &str, name: String) ->
         Ok(Ok(())) => {}
     }
 
-    match tokio::time::timeout(std::time::Duration::from_secs(5), eval_result).await {
-        Ok(Ok(())) => { eprintln!("[NEORENDER] Module eval OK: {name}"); None },
+    match tokio::time::timeout(std::time::Duration::from_secs(15), eval_result).await {
+        Ok(Ok(())) => {
+            eprintln!("[NEORENDER] Module eval OK: {name}");
+            // Run event loop again — TLA dependencies may still be resolving
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                runtime.run_event_loop(PollEventLoopOptions::default()),
+            ).await.ok();
+            None
+        },
         Ok(Err(e)) => {
             let msg = format!("[{}] {}", name, first_line(&e.to_string()));
             eprintln!("[NEORENDER] Module eval error: {msg}");
             Some(msg)
         }
         Err(_) => {
-            eprintln!("[NEORENDER] Module eval TIMEOUT (5s): {name} — top-level await unresolved");
-            None // Non-fatal — module loaded but TLA blocked
+            eprintln!("[NEORENDER] Module eval TIMEOUT (15s): {name} — top-level await unresolved");
+            None
         }
     }
 }

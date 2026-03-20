@@ -2,6 +2,18 @@
 // Connects linkedom (real DOM) + deno_core ops to create a headless browser.
 // Runs AFTER linkedom.js. Expects __linkedom_parseHTML on globalThis.
 
+// HEADERS.GETALL POLYFILL — React Router uses getAll() which was removed from Fetch spec.
+// Must be added via defineProperty since deno_core's Headers is a native object.
+try {
+    Object.defineProperty(Headers.prototype, 'getAll', {
+        value: function(name) {
+            const r = [];
+            this.forEach((v, k) => { if (k.toLowerCase() === name.toLowerCase()) r.push(v); });
+            return r;
+        }, configurable: true, writable: true
+    });
+} catch {}
+
 // READABLESTREAM PIPETHROUGH PATCH — must run before ANY page scripts.
 // React Router SSR does stream.pipeThrough(new TextEncoderStream())
 // which creates V8 internal pipe promises that block module evaluation.
