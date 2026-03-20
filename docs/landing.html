@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeoRender — The Browser Without a Rendering Engine</title>
+<meta name="description" content="V8 + DOM + Chrome TLS. Loads pages, executes JavaScript, hydrates React — at Chrome speed, without Chrome. Built in Rust for AI agents.">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0a0a0f;
+  --surface: #12121a;
+  --border: #1e1e2e;
+  --text: #e4e4ef;
+  --muted: #8888a0;
+  --accent: #6c5ce7;
+  --accent2: #00cec9;
+  --green: #00b894;
+  --code-bg: #1a1a2e;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', monospace;
+}
+body { background: var(--bg); color: var(--text); font-family: var(--font); line-height: 1.6; }
+a { color: var(--accent2); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: var(--mono); background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 20px; overflow-x: auto; font-family: var(--mono); font-size: 0.85em; line-height: 1.5; }
+.container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+/* Hero */
+.hero { padding: 100px 0 80px; text-align: center; }
+.hero h1 { font-size: 3.5em; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; }
+.hero h1 span { background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.hero .tagline { font-size: 1.4em; color: var(--muted); max-width: 600px; margin: 0 auto 40px; }
+.hero .stats { display: flex; gap: 40px; justify-content: center; flex-wrap: wrap; margin-bottom: 40px; }
+.stat { text-align: center; }
+.stat .num { font-size: 2em; font-weight: 700; color: var(--accent2); font-family: var(--mono); }
+.stat .label { font-size: 0.85em; color: var(--muted); }
+.cta { display: inline-flex; gap: 12px; }
+.cta a { padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 1em; transition: transform 0.15s; }
+.cta a:hover { transform: translateY(-2px); text-decoration: none; }
+.cta .primary { background: var(--accent); color: white; }
+.cta .secondary { border: 1px solid var(--border); color: var(--text); }
+
+/* Sections */
+section { padding: 80px 0; }
+section h2 { font-size: 2em; font-weight: 700; margin-bottom: 12px; }
+section .subtitle { color: var(--muted); font-size: 1.1em; margin-bottom: 40px; }
+.alt-bg { background: var(--surface); }
+
+/* Grid */
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; }
+.alt-bg .card { background: var(--bg); }
+.card h3 { font-size: 1.2em; margin-bottom: 8px; }
+.card p { color: var(--muted); font-size: 0.95em; }
+.card .icon { font-size: 1.8em; margin-bottom: 12px; }
+
+/* Table */
+table { width: 100%; border-collapse: collapse; font-size: 0.95em; }
+th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.05em; }
+td:first-child { font-weight: 600; }
+.pass { color: var(--green); }
+.fail { color: #e74c3c; }
+
+/* Terminal */
+.terminal { background: #0d0d14; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin: 24px 0; }
+.terminal-header { background: var(--surface); padding: 8px 16px; display: flex; gap: 6px; }
+.terminal-dot { width: 10px; height: 10px; border-radius: 50%; }
+.terminal-dot.red { background: #ff5f56; }
+.terminal-dot.yellow { background: #ffbd2e; }
+.terminal-dot.green { background: #27c93f; }
+.terminal pre { border: none; margin: 0; padding: 20px; font-size: 0.85em; }
+.terminal .prompt { color: var(--accent2); }
+.terminal .output { color: var(--muted); }
+.terminal .highlight { color: var(--green); }
+
+/* Footer */
+footer { padding: 40px 0; text-align: center; color: var(--muted); border-top: 1px solid var(--border); }
+
+@media (max-width: 768px) {
+  .hero h1 { font-size: 2.2em; }
+  .hero .stats { gap: 20px; }
+  .stat .num { font-size: 1.5em; }
+}
+</style>
+</head>
+<body>
+
+<section class="hero">
+<div class="container">
+  <h1><span>NeoRender</span></h1>
+  <p class="tagline">The browser without a rendering engine. V8 + DOM + Chrome TLS. Built in Rust for AI agents.</p>
+  <div class="stats">
+    <div class="stat"><div class="num">3.1s</div><div class="label">ChatGPT load (cached)</div></div>
+    <div class="stat"><div class="num">19/20</div><div class="label">Cloudflare bypass</div></div>
+    <div class="stat"><div class="num">38K</div><div class="label">lines of Rust + JS</div></div>
+    <div class="stat"><div class="num">15MB</div><div class="label">binary size</div></div>
+  </div>
+  <div class="cta">
+    <a href="https://github.com/pitiflautico/neobrowser" class="primary">GitHub</a>
+    <a href="#install" class="secondary">Get Started</a>
+  </div>
+</div>
+</section>
+
+<section class="alt-bg">
+<div class="container">
+  <h2>Why does this exist?</h2>
+  <p class="subtitle">AI agents need the web. But Chrome is 300MB, detectable, and slow. NeoRender is 15MB, invisible, and faster.</p>
+  <div class="grid-3">
+    <div class="card">
+      <div class="icon">V8</div>
+      <h3>Real JavaScript Engine</h3>
+      <p>Same V8 that powers Chrome and Node.js. Executes React, Vue, Angular — any SPA. First to hydrate React Router 7 in headless V8.</p>
+    </div>
+    <div class="card">
+      <div class="icon">TLS</div>
+      <h3>Chrome 136 Fingerprint</h3>
+      <p>HTTP requests are indistinguishable from real Chrome. JA3/JA4 hash, HTTP/2 settings, header order — all match. 19/20 top sites pass Cloudflare.</p>
+    </div>
+    <div class="card">
+      <div class="icon">0px</div>
+      <h3>No Pixels</h3>
+      <p>No rendering pipeline. No layout. No paint. No GPU. The DOM exists in memory, JavaScript executes, but nothing is ever drawn. Pure computation.</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<section>
+<div class="container">
+  <h2>Speed</h2>
+  <p class="subtitle">Faster than Chrome on cached loads. 12x faster than our first version.</p>
+  <div class="terminal">
+    <div class="terminal-header">
+      <div class="terminal-dot red"></div>
+      <div class="terminal-dot yellow"></div>
+      <div class="terminal-dot green"></div>
+    </div>
+    <pre><span class="prompt">$</span> time neobrowser see https://chatgpt.com
+<span class="output">[NeoRender] 362 modules, 19 scripts, React Router 7 hydrated</span>
+<span class="output">[NeoRender] routeModules=true, 27 nodes</span>
+<span class="highlight">Rendered in 3.1s</span>
+
+<span class="prompt">$</span> time neobrowser see https://news.ycombinator.com
+<span class="output">[NeoRender] 33KB, 226 links, data_table</span>
+<span class="highlight">Rendered in 0.1s</span>
+
+<span class="prompt">$</span> python3 -c "from aibrowser.chat_server import gpt; import asyncio; print(asyncio.run(gpt('Di Pong')))"
+<span class="highlight">Pong</span>
+<span class="output">---</span>
+<span class="output">_ChatGPT | 4529ms via rquest_</span></pre>
+  </div>
+</div>
+</section>
+
+<section class="alt-bg">
+<div class="container">
+  <h2>How it's built</h2>
+  <p class="subtitle">Three layers. No shortcuts.</p>
+  <div class="grid-3">
+    <div class="card">
+      <h3>HTTP Layer</h3>
+      <p><strong>rquest</strong> with Chrome 136 TLS emulation. BoringSSL. Full Sec-Ch-Ua, Sec-Fetch-* headers. Cookie jar in SQLite. HTTP cache on disk.</p>
+    </div>
+    <div class="card">
+      <h3>DOM Layer</h3>
+      <p><strong>linkedom</strong> provides the DOM API. Elements, attributes, events, selectors. Polyfills for ViewTransition, getAll, MutationObserver.</p>
+    </div>
+    <div class="card">
+      <h3>JS Layer</h3>
+      <p><strong>deno_core</strong> (V8) executes ES modules. On-demand fetching, code cache, module stubbing. 30 JS polyfill modules for browser APIs.</p>
+    </div>
+  </div>
+  <div style="margin-top: 40px;">
+    <div class="grid-3">
+      <div class="card">
+        <h3>V8 Bytecode Cache</h3>
+        <p>Compiled JavaScript cached to disk. Second load skips compilation. Same technique Chrome uses internally.</p>
+      </div>
+      <div class="card">
+        <h3>Module Stubbing</h3>
+        <p>63 heavy modules (82MB) replaced with 200-byte Proxy stubs. Only essential modules fully parsed. Exports preserved via regex extraction.</p>
+      </div>
+      <div class="card">
+        <h3>Parallel Pre-fetch</h3>
+        <p>362 modules fetched in parallel (depth 2). Disk-cached. Second load: 0.6s for all modules vs 6.5s from network.</p>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<section>
+<div class="container">
+  <h2>Site Compatibility</h2>
+  <p class="subtitle">Tested against the top 20 websites. No Chrome needed.</p>
+  <table>
+    <tr><th>Site</th><th>Status</th><th>Engine</th><th>Notes</th></tr>
+    <tr><td>Google</td><td class="pass">Pass</td><td>NeoRender</td><td>Search results extracted</td></tr>
+    <tr><td>YouTube</td><td class="pass">Pass</td><td>NeoRender</td><td>Homepage content</td></tr>
+    <tr><td>Reddit</td><td class="pass">Pass</td><td>NeoRender</td><td>Was blocked with Chrome 131 TLS</td></tr>
+    <tr><td>ChatGPT</td><td class="pass">Pass</td><td>NeoRender</td><td>Full React hydration, 3.1s</td></tr>
+    <tr><td>Amazon</td><td class="pass">Pass</td><td>NeoRender</td><td>Product pages with auth</td></tr>
+    <tr><td>LinkedIn</td><td class="pass">Pass</td><td>NeoRender</td><td>Feed content with cookies</td></tr>
+    <tr><td>Wikipedia</td><td class="pass">Pass</td><td>NeoRender</td><td>3249 links extracted</td></tr>
+    <tr><td>Stack Overflow</td><td class="pass">Pass</td><td>NeoRender</td><td>Was Cloudflare blocked</td></tr>
+    <tr><td>Instagram</td><td class="pass">Pass</td><td>NeoRender</td><td>Login page</td></tr>
+    <tr><td>Facebook</td><td class="pass">Pass</td><td>NeoRender</td><td>Homepage</td></tr>
+    <tr><td>Netflix</td><td class="pass">Pass</td><td>NeoRender</td><td>Landing page</td></tr>
+    <tr><td>NYT</td><td class="pass">Pass</td><td>NeoRender</td><td>Full articles</td></tr>
+    <tr><td>Notion</td><td class="pass">Pass</td><td>NeoRender</td><td>Marketing page</td></tr>
+    <tr><td>Apple</td><td class="pass">Pass</td><td>NeoRender</td><td>Product pages</td></tr>
+    <tr><td>BBC</td><td class="fail">Timeout</td><td>—</td><td>Heavy JS bundle</td></tr>
+  </table>
+</div>
+</section>
+
+<section class="alt-bg" id="install">
+<div class="container">
+  <h2>Get Started</h2>
+  <p class="subtitle">One binary. No dependencies except Rust toolchain to build.</p>
+  <div class="terminal">
+    <div class="terminal-header">
+      <div class="terminal-dot red"></div>
+      <div class="terminal-dot yellow"></div>
+      <div class="terminal-dot green"></div>
+    </div>
+    <pre><span class="prompt">$</span> git clone https://github.com/pitiflautico/neobrowser.git
+<span class="prompt">$</span> cd neobrowser && cargo build --release
+<span class="output">Compiling neobrowser_rs v0.9.0</span>
+<span class="highlight">Finished release [optimized] target(s) in 2m 30s</span>
+
+<span class="prompt"># As MCP server (Claude Code, Cursor, etc.)</span>
+<span class="prompt">$</span> echo '{"mcpServers":{"neobrowser":{"type":"stdio","command":"./target/release/neobrowser_rs","args":["mcp"]}}}' > ~/.claude.json
+
+<span class="prompt"># Browse a page</span>
+<span class="prompt">$</span> ./target/release/neobrowser_rs see https://example.com
+
+<span class="prompt"># Login to a site (saves cookies for future use)</span>
+<span class="prompt">$</span> ./target/release/neobrowser_rs login https://chatgpt.com</pre>
+  </div>
+</div>
+</section>
+
+<section>
+<div class="container">
+  <h2>Built by</h2>
+  <p class="subtitle">Dani Perez + Claude Opus. A human and an AI building a browser for AI agents.</p>
+  <p style="color: var(--muted); max-width: 600px;">
+    NeoRender started as "can we browse the web without Chrome?" and became a 38K-line browser engine
+    that hydrates React, bypasses Cloudflare, and loads ChatGPT in 3 seconds. Built in Rust with V8,
+    linkedom, and rquest. No rendering engine. No pixels. Just the web, distilled for machines.
+  </p>
+</div>
+</section>
+
+<footer>
+<div class="container">
+  <p>MIT License. <a href="https://github.com/pitiflautico/neobrowser">GitHub</a></p>
+</div>
+</footer>
+
+</body>
+</html>
