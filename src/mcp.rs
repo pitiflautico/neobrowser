@@ -151,6 +151,22 @@ struct ToolContent {
 
 // ─── Server state ───
 
+// ─── Traffic recorder types ───
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RecordedRequest {
+    sequence: usize,
+    timestamp_ms: u64,
+    url: String,
+    method: String,
+    request_headers: std::collections::HashMap<String, String>,
+    request_body: Option<String>,
+    response_status: u16,
+    response_headers: std::collections::HashMap<String, String>,
+    response_body_preview: String,
+    is_api: bool,
+}
+
 struct McpState {
     session: Option<engine::Session>,
     ghost: Option<ghost::GhostBrowser>,
@@ -161,6 +177,9 @@ struct McpState {
     pending_challenge: Option<auth::AuthChallenge>,
     trace: crate::trace::TraceLog,
     pool: crate::pool::BrowserPool,
+    recording: Vec<RecordedRequest>,
+    recording_active: bool,
+    recording_filter: Option<String>,
 }
 
 impl McpState {
@@ -176,6 +195,9 @@ impl McpState {
             pending_challenge: None,
             trace: crate::trace::TraceLog::new(),
             pool: crate::pool::BrowserPool::new(8),
+            recording: Vec::new(),
+            recording_active: false,
+            recording_filter: None,
         }
     }
 
@@ -730,6 +752,29 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "required": ["op"]
             }),
         },
+        ToolDef {
+            name: "browser_record".into(),
+            description: "Record HTTP traffic from Chrome for replay analysis. Start recording, interact with the page, stop and export as replayable JSON template.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "op": {
+                        "type": "string",
+                        "enum": ["start", "stop", "export"],
+                        "description": "start: begin recording traffic | stop: stop and collect recorded traffic | export: save to JSON file"
+                    },
+                    "file": {
+                        "type": "string",
+                        "description": "Export file path (for export op)"
+                    },
+                    "filter": {
+                        "type": "string",
+                        "description": "URL filter (e.g. 'backend-api' to only record matching calls)"
+                    }
+                },
+                "required": ["op"]
+            }),
+        },
     ]
 }
 
@@ -791,6 +836,7 @@ async fn handle_tool(state: &mut McpState, name: &str, args: &Value) -> Result<V
         "browser_pipeline" => handle_pipeline(state, args).await,
         "browser_pool" => handle_pool(state, args).await,
         "browser_learn" => handle_learn(state, args).await,
+        "browser_record" => handle_record(state, args).await,
         _ => Err(format!("Unknown tool: {name}")),
     }
 }
@@ -3624,4 +3670,220 @@ fn count_elements(dom: &markup5ever_rcdom::RcDom, tag_name: &str) -> usize {
         n
     }
     count(&dom.document, tag_name)
+}
+
+// ─── browser_record handler (traffic recorder) ───
+
+async fn handle_record(state: &mut McpState, args: &Value) -> Result<Value, String> {
+    let op = args["op"].as_str().ok_or("Missing 'op'")?;
+
+    match op {
+        "start" => {
+            let session = state.ensure_session().await?;
+            let session = state.session.as_mut().unwrap();
+            let filter = args["filter"].as_str().map(|s| s.to_string());
+
+            // Inject JS monkeypatch for fetch + XHR recording
+            let filter_js = match &filter {
+                Some(f) => format!("const __neo_rec_filter = '{}';", f.replace('\'', "\\'")),
+                None => "const __neo_rec_filter = null;".to_string(),
+            };
+
+            let js = format!(r#"
+                (() => {{
+                    {filter_js}
+                    window.__neo_recording = [];
+                    window.__neo_rec_t0 = Date.now();
+
+                    // Patch fetch
+                    const _origFetch = window.__neo_origFetch || window.fetch;
+                    window.__neo_origFetch = _origFetch;
+                    window.fetch = async function(url, opts) {{
+                        opts = opts || {{}};
+                        const reqUrl = typeof url === 'string' ? url : (url && url.url ? url.url : String(url));
+                        if (__neo_rec_filter && reqUrl.indexOf(__neo_rec_filter) === -1) {{
+                            return _origFetch.apply(this, arguments);
+                        }}
+                        const entry = {{
+                            seq: window.__neo_recording.length,
+                            ts: Date.now() - window.__neo_rec_t0,
+                            url: reqUrl,
+                            method: (opts.method || 'GET').toUpperCase(),
+                            reqHeaders: {{}},
+                            reqBody: null,
+                            status: 0,
+                            resHeaders: {{}},
+                            resPreview: '',
+                            isApi: /\/api\/|\/backend-api\/|\/graphql/i.test(reqUrl),
+                        }};
+                        try {{
+                            const h = new Headers(opts.headers || {{}});
+                            h.forEach((v, k) => {{ entry.reqHeaders[k] = v; }});
+                        }} catch(e) {{}}
+                        if (opts.body) {{
+                            try {{ entry.reqBody = typeof opts.body === 'string' ? opts.body.slice(0, 5000) : JSON.stringify(opts.body).slice(0, 5000); }} catch(e) {{}}
+                        }}
+                        try {{
+                            const resp = await _origFetch.apply(this, arguments);
+                            entry.status = resp.status;
+                            try {{ resp.headers.forEach((v, k) => {{ entry.resHeaders[k] = v; }}); }} catch(e) {{}}
+                            const clone = resp.clone();
+                            try {{ entry.resPreview = (await clone.text()).slice(0, 2000); }} catch(e) {{}}
+                            window.__neo_recording.push(entry);
+                            return resp;
+                        }} catch(e) {{
+                            entry.error = e.message;
+                            window.__neo_recording.push(entry);
+                            throw e;
+                        }}
+                    }};
+
+                    // Patch XHR
+                    const _origOpen = XMLHttpRequest.prototype.open;
+                    const _origSend = XMLHttpRequest.prototype.send;
+                    const _origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+                    XMLHttpRequest.prototype.open = function(method, url) {{
+                        this.__neo_rec = {{ method: method.toUpperCase(), url: String(url), reqHeaders: {{}}, ts: Date.now() - window.__neo_rec_t0 }};
+                        return _origOpen.apply(this, arguments);
+                    }};
+                    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {{
+                        if (this.__neo_rec) {{ this.__neo_rec.reqHeaders[name] = value; }}
+                        return _origSetHeader.apply(this, arguments);
+                    }};
+                    XMLHttpRequest.prototype.send = function(body) {{
+                        if (this.__neo_rec) {{
+                            const rec = this.__neo_rec;
+                            if (__neo_rec_filter && rec.url.indexOf(__neo_rec_filter) === -1) {{
+                                return _origSend.apply(this, arguments);
+                            }}
+                            rec.reqBody = typeof body === 'string' ? body.slice(0, 5000) : null;
+                            rec.isApi = /\/api\/|\/backend-api\/|\/graphql/i.test(rec.url);
+                            this.addEventListener('load', () => {{
+                                rec.seq = window.__neo_recording.length;
+                                rec.status = this.status;
+                                try {{
+                                    const hdrs = this.getAllResponseHeaders().trim().split(/\r?\n/);
+                                    rec.resHeaders = {{}};
+                                    hdrs.forEach(h => {{ const p = h.indexOf(':'); if (p > 0) rec.resHeaders[h.slice(0,p).trim()] = h.slice(p+1).trim(); }});
+                                }} catch(e) {{}}
+                                rec.resPreview = (this.responseText || '').slice(0, 2000);
+                                window.__neo_recording.push(rec);
+                            }});
+                        }}
+                        return _origSend.apply(this, arguments);
+                    }};
+
+                    return 'ok';
+                }})()
+            "#);
+
+            session.eval_string(&js).await.map_err(|e| format!("{e}"))?;
+
+            state.recording.clear();
+            state.recording_active = true;
+            state.recording_filter = filter.clone();
+
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": "Traffic recording started",
+                "filter": filter,
+            }))
+        }
+        "stop" => {
+            if !state.recording_active {
+                return Err("Recording not active".into());
+            }
+
+            let session = state.session.as_mut().ok_or("No session")?;
+
+            // Read recorded traffic from JS global
+            let result = session.eval_string(r#"
+                (() => {
+                    const d = window.__neo_recording || [];
+                    // Restore originals
+                    if (window.__neo_origFetch) { window.fetch = window.__neo_origFetch; }
+                    window.__neo_recording = [];
+                    return JSON.stringify(d);
+                })()
+            "#).await.map_err(|e| format!("{e}"))?;
+
+            let raw: Vec<Value> = serde_json::from_str(&result).unwrap_or_default();
+
+            state.recording.clear();
+            for entry in &raw {
+                let req_headers: std::collections::HashMap<String, String> =
+                    if let Some(obj) = entry["reqHeaders"].as_object() {
+                        obj.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                let res_headers: std::collections::HashMap<String, String> =
+                    if let Some(obj) = entry["resHeaders"].as_object() {
+                        obj.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect()
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+
+                state.recording.push(RecordedRequest {
+                    sequence: entry["seq"].as_u64().unwrap_or(0) as usize,
+                    timestamp_ms: entry["ts"].as_u64().unwrap_or(0),
+                    url: entry["url"].as_str().unwrap_or("").to_string(),
+                    method: entry["method"].as_str().unwrap_or("GET").to_string(),
+                    request_headers: req_headers,
+                    request_body: entry["reqBody"].as_str().map(|s| s.to_string()),
+                    response_status: entry["status"].as_u64().unwrap_or(0) as u16,
+                    response_headers: res_headers,
+                    response_body_preview: entry["resPreview"].as_str().unwrap_or("").to_string(),
+                    is_api: entry["isApi"].as_bool().unwrap_or(false),
+                });
+            }
+
+            state.recording_active = false;
+            let total = state.recording.len();
+            let api_count = state.recording.iter().filter(|r| r.is_api).count();
+
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": "Traffic recording stopped",
+                "total_requests": total,
+                "api_requests": api_count,
+                "summary": state.recording.iter().map(|r| {
+                    serde_json::json!({
+                        "seq": r.sequence,
+                        "method": r.method,
+                        "url": if r.url.len() > 120 { format!("{}...", &r.url[..120]) } else { r.url.clone() },
+                        "status": r.response_status,
+                        "is_api": r.is_api,
+                    })
+                }).collect::<Vec<_>>(),
+            }))
+        }
+        "export" => {
+            if state.recording.is_empty() {
+                return Err("No recorded traffic to export. Run start → interact → stop first.".into());
+            }
+
+            let file = args["file"].as_str().ok_or("Missing 'file' path for export")?;
+
+            let template = serde_json::json!({
+                "version": "1.0",
+                "recorded_at": chrono::Utc::now().to_rfc3339(),
+                "total_requests": state.recording.len(),
+                "api_requests": state.recording.iter().filter(|r| r.is_api).count(),
+                "filter": state.recording_filter,
+                "requests": state.recording,
+            });
+
+            let json = serde_json::to_string_pretty(&template).map_err(|e| format!("{e}"))?;
+            std::fs::write(file, &json).map_err(|e| format!("{e}"))?;
+
+            Ok(serde_json::json!({
+                "ok": true,
+                "effect": format!("Exported {} requests to {}", state.recording.len(), file),
+                "file": file,
+                "size_bytes": json.len(),
+            }))
+        }
+        _ => Err(format!("Unknown record op: {op}")),
+    }
 }
