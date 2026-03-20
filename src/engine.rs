@@ -456,9 +456,9 @@ impl Session {
             "--window-size=1440,900".to_string(),
         ];
         if headless {
-            // Chrome 131+ "new headless" is indistinguishable from headed.
-            // navigator.webdriver is NOT set, fingerprint is identical.
-            args.push("--headless=new".to_string());
+            // Offscreen real Chrome (not --headless=new which Cloudflare detects).
+            // Full-size window positioned off-screen — invisible but fully functional.
+            args.push("--window-position=-32000,-32000".to_string());
         }
 
         // Chrome --remote-debugging-pipe reads from fd 3 and writes to fd 4.
@@ -647,10 +647,9 @@ impl Session {
         cdp.send_to(&session_id, "Page.enable", None).await?;
         cdp.send_to(&session_id, "Runtime.enable", None).await?;
 
-        // STEALTH STRATEGY: Do NOT inject anything during launch.
-        // Cloudflare Turnstile detects early CDP modifications.
-        // Stealth is applied AFTER the first navigation via apply_stealth().
-        eprintln!("[ENGINE] Ready (clean, no stealth yet) — target={}, session={}", &target_id[..8], &session_id[..8]);
+        // NO pre-injection. Cloudflare detects addScriptToEvaluateOnNewDocument.
+        // Launch Chrome 100% clean. Stealth applied AFTER first navigation.
+        eprintln!("[ENGINE] Ready (clean, no CDP modifications) — target={}, session={}", &target_id[..8], &session_id[..8]);
 
         Ok(Self {
             cdp,
