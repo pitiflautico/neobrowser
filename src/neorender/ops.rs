@@ -155,12 +155,12 @@ pub fn op_neorender_fetch(
     result.map_err(|e| deno_core::error::generic_error(e))
 }
 
-/// Async timer — returns a Promise that resolves after ms milliseconds.
-/// Capped at 100ms. < 5ms resolves immediately.
-#[op2(async)]
-pub async fn op_neorender_timer(#[smi] ms: u32) {
+/// Sleep — SYNC. Returns void. JS wrapper creates the Promise.
+/// Capped at 100ms. < 5ms is no-op.
+#[op2(fast)]
+pub fn op_neorender_timer(#[smi] ms: u32) {
     if ms > 5 {
-        tokio::time::sleep(std::time::Duration::from_millis(ms.min(100) as u64)).await;
+        std::thread::sleep(std::time::Duration::from_millis(ms.min(100) as u64));
     }
 }
 

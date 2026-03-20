@@ -222,11 +222,19 @@ globalThis.fetch = function(input, init) {
 let __timerNextId = 1;
 const __timerCallbacks = new Map();
 
+// Timer helper: sync op wrapped in Promise for .then() chaining
+function __timerPromise(ms) {
+    return new Promise(resolve => {
+        ops.op_neorender_timer(ms || 0);
+        queueMicrotask(resolve);
+    });
+}
+
 globalThis.setTimeout = function(fn, ms, ...args) {
     if (typeof fn !== 'function') return 0;
     const id = __timerNextId++;
     __timerCallbacks.set(id, true);
-    ops.op_neorender_timer(ms || 0).then(() => {
+    __timerPromise(ms).then(() => {
         if (__timerCallbacks.delete(id)) try { fn(...args); } catch(e) {}
     });
     return id;
@@ -237,12 +245,13 @@ globalThis.setInterval = function(fn, ms, ...args) {
     if (typeof fn !== 'function') return 0;
     const id = __timerNextId++;
     __timerCallbacks.set(id, true);
+    let ticks = 0;
     function tick() {
-        if (!__timerCallbacks.has(id)) return;
+        if (!__timerCallbacks.has(id) || ticks++ > 50) return;
         try { fn(...args); } catch(e) {}
-        ops.op_neorender_timer(ms || 0).then(tick);
+        __timerPromise(ms).then(tick);
     }
-    ops.op_neorender_timer(ms || 0).then(tick);
+    __timerPromise(ms).then(tick);
     return id;
 };
 globalThis.clearInterval = (id) => __timerCallbacks.delete(id);
