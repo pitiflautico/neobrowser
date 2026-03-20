@@ -522,6 +522,54 @@ impl NeoSession {
                 // Run event loop for one poll interval
                 v8_runtime::run_event_loop(&mut self.runtime, poll_interval.as_millis() as u64).await?;
 
+                // Poll dynamic scripts — fetch and execute any scripts added to DOM by JS
+                if let Ok(pending_json) = self.eval_internal("__neo_pending_scripts()") {
+                    if let Ok(pending) = serde_json::from_str::<Vec<serde_json::Value>>(&pending_json) {
+                        for entry in &pending {
+                            let id = entry["id"].as_i64().unwrap_or(0);
+                            let src = entry["src"].as_str().unwrap_or("");
+                            let is_module = entry["module"].as_bool().unwrap_or(false);
+                            if src.is_empty() { continue; }
+
+                            // Resolve relative URLs
+                            let abs_url = url::Url::parse(&final_url).ok()
+                                .and_then(|base| base.join(src).ok())
+                                .map(|u| u.to_string())
+                                .unwrap_or_else(|| src.to_string());
+
+                            // Fetch the script
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(10),
+                                self.network.client().get(&abs_url).send(),
+                            ).await {
+                                Ok(Ok(resp)) => {
+                                    if let Ok(text) = resp.text().await {
+                                        // Store in module store for ES imports
+                                        self.store.borrow_mut().scripts.insert(abs_url.clone(), text.clone());
+                                        // Execute
+                                        let name = format!("dynamic:{id}");
+                                        if is_module {
+                                            v8_runtime::execute_side_module(&mut self.runtime, &abs_url, name).await;
+                                        } else {
+                                            v8_runtime::execute_script(&mut self.runtime, text, name);
+                                        }
+                                        // Notify JS
+                                        let notify = format!("__neo_script_loaded({id},{});", serde_json::to_string(src).unwrap_or_default());
+                                        self.runtime.execute_script("<neosession:script_loaded>", notify).ok();
+                                    }
+                                }
+                                _ => {
+                                    let notify = format!("__neo_script_error({id},{},'fetch timeout');", serde_json::to_string(src).unwrap_or_default());
+                                    self.runtime.execute_script("<neosession:script_error>", notify).ok();
+                                }
+                            }
+                        }
+                        if !pending.is_empty() {
+                            stable_count = 0; // Reset stability — new scripts may change DOM
+                        }
+                    }
+                }
+
                 // Check DOM node count
                 let count_str = self.eval_internal(
                     "document.querySelectorAll('*').length"

@@ -285,6 +285,11 @@ pub fn create_runtime_with_html(
     runtime.execute_script("<neorender:history>", history_js)
         .map_err(|e| format!("History API load error: {e}"))?;
 
+    // 3f1b. Dynamic scripts — intercepts appendChild/insertBefore for <script> tags
+    let dynscript_js: String = include_str!("../../js/dynamic_scripts.js").to_string();
+    runtime.execute_script("<neorender:dynamic_scripts>", dynscript_js)
+        .map_err(|e| format!("Dynamic scripts load error: {e}"))?;
+
     // 3f2. Iframes — intercepts iframe creation, fetches + parses nested documents
     let iframe_js: String = include_str!("../../js/iframe.js").to_string();
     runtime.execute_script("<neorender:iframe>", iframe_js)

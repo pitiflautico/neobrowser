@@ -310,6 +310,38 @@ pub(crate) fn extract_all_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo>
         for child in node.children.borrow().iter() { collect(child, base, scripts); }
     }
     collect(&dom.document, base_url, &mut scripts);
+
+    // Also extract <link rel="modulepreload"> — these are ES modules the browser
+    // pre-fetches and makes available for dynamic import(). Without them, React
+    // can't hydrate on Next.js sites like ChatGPT.
+    fn collect_preloads(node: &Handle, base: &str, scripts: &mut Vec<ScriptInfo>) {
+        if let NodeData::Element { name, attrs, .. } = &node.data {
+            if name.local.as_ref() == "link" {
+                let attrs_ref = attrs.borrow();
+                let rel = attrs_ref.iter()
+                    .find(|a| a.name.local.as_ref() == "rel")
+                    .map(|a| a.value.to_string())
+                    .unwrap_or_default();
+                if rel == "modulepreload" {
+                    if let Some(href) = attrs_ref.iter()
+                        .find(|a| a.name.local.as_ref() == "href")
+                        .map(|a| a.value.to_string())
+                    {
+                        let full = if href.starts_with("http") { href }
+                        else if href.starts_with("//") { format!("https:{href}") }
+                        else if let Ok(base_url) = url::Url::parse(base) {
+                            base_url.join(&href).map(|u| u.to_string()).unwrap_or(href)
+                        } else { href };
+                        // Add as a module script (content will be fetched in step 5)
+                        scripts.push(ScriptInfo { url: Some(full), content: None, is_module: true });
+                    }
+                }
+            }
+        }
+        for child in node.children.borrow().iter() { collect_preloads(child, base, scripts); }
+    }
+    collect_preloads(&dom.document, base_url, &mut scripts);
+
     scripts
 }
 
