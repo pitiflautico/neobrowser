@@ -202,8 +202,9 @@ impl McpState {
             Some(false) => true,  // force headless
             None => std::env::var("NEOBROWSER_HEADLESS").unwrap_or_default() == "1",
         };
-        // Always use stealth in headless (ChatGPT, Cloudflare detect non-stealth headless)
-        let stealth = headless || std::env::var("NEOBROWSER_STEALTH").unwrap_or_default() == "1";
+        // NO stealth in headless — Cloudflare detects CDP modifications.
+        // Headless = same Chrome as headed, just offscreen. Zero patches.
+        let stealth = std::env::var("NEOBROWSER_STEALTH").unwrap_or_default() == "1";
 
         // Pre-persist cookies if configured
         if let Ok(cookie_paths) = std::env::var("NEOBROWSER_COOKIES") {
@@ -1247,7 +1248,7 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
     }
 
     session.goto(url).await.map_err(|e| format!("{e}"))?;
-    session.apply_stealth().await.ok();
+    // NO apply_stealth — Cloudflare detects CDP modifications.
     session.dismiss_cookie_banners().await.ok();
 
     // Get WOM
