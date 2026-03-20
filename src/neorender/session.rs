@@ -542,20 +542,9 @@ impl NeoSession {
                 // method on Object.prototype that returns empty array.
                 // The object has 'availableHints' but no 'getAll' (not Headers — it's
                 // React Router's SSR response context). In headless mode, no 103 hints.
-                // Promise.allSettled polyfill — vendor module uses it but V8 may not expose it
-                // in module scope. Force it on the global Promise.
-                self.runtime.execute_script("<neosession:promise_allsettled>", r#"
-                    if (typeof Promise.allSettled !== 'function') {
-                        Promise.allSettled = function(promises) {
-                            return Promise.all(Array.from(promises).map(p =>
-                                Promise.resolve(p).then(
-                                    value => ({ status: 'fulfilled', value }),
-                                    reason => ({ status: 'rejected', reason })
-                                )
-                            ));
-                        };
-                    }
-                "#.to_string()).ok();
+                // NOTE: Promise.allSettled is handled via source-level transform in
+                // v8_runtime.rs NeoModuleLoader — polyfill injection doesn't work in
+                // deno_core 0.311 module evaluation contexts.
 
                 // Approach: define getAll on Object.prototype as a non-enumerable fallback.
                 // This catches ANY object that doesn't have its own getAll.
@@ -635,12 +624,24 @@ impl NeoSession {
                         format!("const {{{}}} = await import(\"{}\")", imports, full)
                     }).to_string();
 
-                    // Patch: if getAll is not a function, provide a fallback
-                    let code_patched = format!(
-                        "if(!Promise.allSettled)Promise.allSettled=function(p){{return Promise.all(Array.from(p).map(x=>Promise.resolve(x).then(v=>({{status:'fulfilled',value:v}}),r=>({{status:'rejected',reason:r}}))))}};\n{}\n",
+                    // Dynamic import() — add base URL, fire-and-forget (no await — TLA blocks)
+                    let re_dynamic = Regex::new(r#"import\("(/[^"]+)"\)"#).unwrap();
+                    code = re_dynamic.replace_all(&code, |caps: &regex_lite::Captures| {
+                        let path = &caps[1];
+                        format!("import(\"{}{}\").catch(()=>{{}})", base, path)
+                    }).to_string();
+
+                    // Source-level transform for Promise.allSettled (polyfill doesn't
+                    // work in deno_core 0.311 module contexts)
+                    let code_patched = if code.contains("Promise.allSettled(") {
+                        code.replace(
+                            "Promise.allSettled(",
+                            "((ps)=>Promise.all([...ps].map(p=>Promise.resolve(p).then(v=>({status:'fulfilled',value:v}),r=>({status:'rejected',reason:r})))))("
+                        )
+                    } else {
                         code
-                    );
-                    let script_js = format!("(async () => {{ try {{ {} }} catch(e) {{ if (e.message?.includes('getAll')) {{ console.error?.('hydrate: getAll missing, retrying with patch'); try {{ const p = Object.getPrototypeOf(e.target || {{}}); if (!p.getAll) p.getAll = function(n) {{ return []; }}; }} catch {{}} }} else {{ console.error?.('hydrate error:', e.message, e.stack?.split('\\n').slice(0,5).join(' | ')); }} }} }})();", code_patched);
+                    };
+                    let script_js = format!("(async () => {{ try {{ {}; window.__neo_iife_ok = true; }} catch(e) {{ window.__neo_iife_error = e.message + ' | ' + (e.stack?.split('\\n').slice(0,3).join(' | ') || ''); console.error?.('IIFE error:', e.message); }} }})();", code_patched);
                     eprintln!("[NEOSESSION] Inline module → async script: {}B", script_js.len());
                     v8_runtime::execute_script(&mut self.runtime, script_js, name)
                 } else {
@@ -662,7 +663,7 @@ impl NeoSession {
 
         // 11b. Run event loop to resolve dynamic imports from async IIFE scripts
         // The inline module converted to async script fires import() that needs event loop.
-        v8_runtime::run_event_loop(&mut self.runtime, 5000).await.ok();
+        v8_runtime::run_event_loop(&mut self.runtime, 15000).await.ok();
 
         // 12. Fire lifecycle events
         let lifecycle_js = r#"

@@ -919,14 +919,6 @@ globalThis.__neorender_export = function() {
     return document.documentElement.outerHTML;
 };
 
-// Promise.allSettled polyfill (ES2020) — needed by React Router
-if (typeof Promise.allSettled !== 'function') {
-    Promise.allSettled = function(promises) {
-        return Promise.all(Array.from(promises).map(p =>
-            Promise.resolve(p).then(
-                value => ({ status: 'fulfilled', value }),
-                reason => ({ status: 'rejected', reason })
-            )
-        ));
-    };
-}
+// NOTE: Promise.allSettled is handled via source-level transform in the Rust
+// module loader (v8_runtime.rs). Polyfill injection doesn't work in deno_core
+// 0.311 module evaluation contexts.

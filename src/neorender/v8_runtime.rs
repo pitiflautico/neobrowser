@@ -70,11 +70,14 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             if let Some(code) = store.scripts.get(&url) {
                 let short = url.rsplit('/').next().unwrap_or(&url);
                 eprintln!("[NEORENDER:LOADER] store: {} ({}B)", short, code.len());
-                // Prepend polyfills that modules need but deno_core may not expose.
-                // Promise.allSettled exists in V8 but some module evaluation contexts
-                // don't see it. Injecting it at the top of each module ensures it's available.
-                let patched = if code.contains(".allSettled(") {
-                    format!("if(!Promise.allSettled)Promise.allSettled=function(p){{return Promise.all([...p].map(x=>Promise.resolve(x).then(v=>({{status:'fulfilled',value:v}}),r=>({{status:'rejected',reason:r}}))))}};{}", code)
+                // Source-level transform: replace Promise.allSettled calls with inline
+                // equivalents. Polyfill injection doesn't work in deno_core 0.311 module
+                // evaluation contexts, so we rewrite the call sites directly.
+                let patched = if code.contains("Promise.allSettled(") {
+                    code.replace(
+                        "Promise.allSettled(",
+                        "((ps)=>Promise.all([...ps].map(p=>Promise.resolve(p).then(v=>({status:'fulfilled',value:v}),r=>({status:'rejected',reason:r})))))("
+                    )
                 } else {
                     code.clone()
                 };
@@ -116,9 +119,18 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                     let code = resp.text().await.map_err(|e| deno_core::anyhow::anyhow!("Body error: {e}"))?;
                     eprintln!("[NEORENDER:LOADER] fetched: {} ({}B)", short, code.len());
                     store.borrow_mut().scripts.insert(fetch_url, code.clone());
+                    // Apply same Promise.allSettled source transform as pre-fetched modules
+                    let patched = if code.contains("Promise.allSettled(") {
+                        code.replace(
+                            "Promise.allSettled(",
+                            "((ps)=>Promise.all([...ps].map(p=>Promise.resolve(p).then(v=>({status:'fulfilled',value:v}),r=>({status:'rejected',reason:r})))))("
+                        )
+                    } else {
+                        code
+                    };
                     Ok(ModuleSource::new(
                         ModuleType::JavaScript,
-                        ModuleSourceCode::String(code.into()),
+                        ModuleSourceCode::String(patched.into()),
                         &spec,
                         None,
                     ))
