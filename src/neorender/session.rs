@@ -96,7 +96,7 @@ impl NeoSession {
     pub fn new(cookies_file: Option<&str>) -> Result<Self, String> {
         // 1. Build rquest client with Chrome TLS + cookie store
         let client = rquest::Client::builder()
-            .impersonate(rquest::Impersonate::Chrome131)
+            .emulation(rquest_util::Emulation::Chrome136)
             .cookie_store(true)
             .redirect(rquest::redirect::Policy::limited(10))
             .timeout(std::time::Duration::from_secs(30))
@@ -197,8 +197,33 @@ impl NeoSession {
     async fn navigate(&mut self, url: &str, method: &str, body: Option<&str>, content_type: Option<&str>) -> Result<PageResult, String> {
         let start = std::time::Instant::now();
 
-        // 1. Build headers with cookies from unified jar
+        // 1. Build headers with cookies from unified jar + Chrome navigation headers
         let mut headers = rquest::header::HeaderMap::new();
+        // Navigation headers — match a real Chrome 136 browser
+        headers.insert(rquest::header::ACCEPT,
+            rquest::header::HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"));
+        headers.insert(rquest::header::ACCEPT_LANGUAGE,
+            rquest::header::HeaderValue::from_static("es-ES,es;q=0.9,en;q=0.8"));
+        headers.insert(rquest::header::ACCEPT_ENCODING,
+            rquest::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
+        headers.insert(rquest::header::UPGRADE_INSECURE_REQUESTS,
+            rquest::header::HeaderValue::from_static("1"));
+        headers.insert(rquest::header::CACHE_CONTROL,
+            rquest::header::HeaderValue::from_static("max-age=0"));
+        headers.insert("Sec-Ch-Ua",
+            rquest::header::HeaderValue::from_static("\"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"136\""));
+        headers.insert("Sec-Ch-Ua-Mobile",
+            rquest::header::HeaderValue::from_static("?0"));
+        headers.insert("Sec-Ch-Ua-Platform",
+            rquest::header::HeaderValue::from_static("\"macOS\""));
+        headers.insert("Sec-Fetch-Dest",
+            rquest::header::HeaderValue::from_static("document"));
+        headers.insert("Sec-Fetch-Mode",
+            rquest::header::HeaderValue::from_static("navigate"));
+        headers.insert("Sec-Fetch-Site",
+            rquest::header::HeaderValue::from_static("none"));
+        headers.insert("Sec-Fetch-User",
+            rquest::header::HeaderValue::from_static("?1"));
         if let Some(cookie_header) = self.cookie_jar.cookie_header_for(url) {
             if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
                 headers.insert(rquest::header::COOKIE, v);
@@ -698,8 +723,8 @@ impl NeoSession {
     /// the essential goto logic (fetch + render + WOM). Reuses the same start time
     /// so render_time_ms reflects the total including consent.
     async fn goto_consent_retry(&mut self, url: &str, start: std::time::Instant) -> Result<PageResult, String> {
-        // 1. Fetch with updated consent cookies from unified jar
-        let mut headers = rquest::header::HeaderMap::new();
+        // 1. Fetch with updated consent cookies from unified jar + navigation headers
+        let mut headers = super::net::navigation_headers();
         if let Some(cookie_header) = self.cookie_jar.cookie_header_for(url) {
             if let Ok(v) = rquest::header::HeaderValue::from_str(&cookie_header) {
                 headers.insert(rquest::header::COOKIE, v);

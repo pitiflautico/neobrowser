@@ -37,7 +37,7 @@ pub async fn render_page(
     //    Cookie store handles redirects + Set-Cookie automatically.
     //    Cookies from Ghost's CookieJar are injected via header on the initial request.
     let client = rquest::Client::builder()
-        .impersonate(rquest::Impersonate::Chrome131)
+        .emulation(rquest_util::Emulation::Chrome136)
         .cookie_store(true)
         .redirect(rquest::redirect::Policy::limited(10))
         .timeout(std::time::Duration::from_secs(30))

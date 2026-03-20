@@ -206,14 +206,13 @@ pub struct GhostBrowser {
 
 impl GhostBrowser {
     pub fn new() -> Self {
-        let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+        let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 
         let client = rquest::Client::builder()
-            .impersonate(rquest::Impersonate::Chrome131)
+            .emulation(rquest_util::Emulation::Chrome136)
             .cookie_store(true)
             .redirect(rquest::redirect::Policy::limited(10))
             .timeout(std::time::Duration::from_secs(30))
-            .danger_accept_invalid_certs(false)
             .build()
             .expect("Failed to build HTTP client");
 
@@ -230,16 +229,16 @@ impl GhostBrowser {
     /// Get a reference to the HTTP client (for neorender)
     pub fn client_ref(&self) -> &rquest::Client { &self.client }
 
-    /// Chrome-like headers
+    /// Chrome-like headers — match a real Chrome 136 browser on macOS.
     pub fn chrome_headers(&self, url: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(USER_AGENT, HeaderValue::from_str(&self.user_agent).unwrap());
-        h.insert(ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"));
-        h.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9,es;q=0.8"));
-        h.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br"));
+        h.insert(ACCEPT, HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"));
+        h.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("es-ES,es;q=0.9,en;q=0.8"));
+        h.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, deflate, br, zstd"));
         h.insert(CACHE_CONTROL, HeaderValue::from_static("max-age=0"));
         h.insert(UPGRADE_INSECURE_REQUESTS, HeaderValue::from_static("1"));
-        h.insert("Sec-Ch-Ua", HeaderValue::from_static("\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\""));
+        h.insert("Sec-Ch-Ua", HeaderValue::from_static("\"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"136\""));
         h.insert("Sec-Ch-Ua-Mobile", HeaderValue::from_static("?0"));
         h.insert("Sec-Ch-Ua-Platform", HeaderValue::from_static("\"macOS\""));
         h.insert("Sec-Fetch-Dest", HeaderValue::from_static("document"));

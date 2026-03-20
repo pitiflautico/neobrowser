@@ -121,7 +121,7 @@ async fn fetch_and_see(url: &str, max_lines: usize) -> Result<(), Box<dyn std::e
         .user_agent(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
              AppleWebKit/537.36 (KHTML, like Gecko) \
-             Chrome/134.0.0.0 Safari/537.36",
+             Chrome/136.0.0.0 Safari/537.36",
         )
         .gzip(true)
         .brotli(true)
@@ -176,7 +176,7 @@ async fn wom_see(url: &str, compact_mode: bool) -> Result<(), Box<dyn std::error
         .user_agent(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
              AppleWebKit/537.36 (KHTML, like Gecko) \
-             Chrome/134.0.0.0 Safari/537.36",
+             Chrome/136.0.0.0 Safari/537.36",
         )
         .gzip(true)
         .brotli(true)
@@ -218,7 +218,7 @@ async fn auto_see(url: &str, max_lines: usize) -> Result<(), Box<dyn std::error:
         .user_agent(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
              AppleWebKit/537.36 (KHTML, like Gecko) \
-             Chrome/134.0.0.0 Safari/537.36",
+             Chrome/136.0.0.0 Safari/537.36",
         )
         .gzip(true)
         .brotli(true)

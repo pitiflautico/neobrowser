@@ -99,7 +99,7 @@ pub fn op_neorender_fetch(
                 None => {
                     std::sync::Arc::new(
                         rquest::Client::builder()
-                            .impersonate(rquest::Impersonate::Chrome131)
+                            .emulation(rquest_util::Emulation::Chrome136)
                             .cookie_store(true)
                             .redirect(rquest::redirect::Policy::limited(10))
                             .timeout(std::time::Duration::from_secs(15))

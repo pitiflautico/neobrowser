@@ -16,7 +16,6 @@ pub async fn run(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[PROXY] Usage: fetch('http://127.0.0.1:{port}/https://target.com/path')");
 
     let client = rquest::Client::builder()
-        .danger_accept_invalid_certs(true)
         .redirect(rquest::redirect::Policy::limited(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()?;

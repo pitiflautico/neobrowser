@@ -49,7 +49,57 @@ pub struct FetchResponse {
     pub headers: std::collections::HashMap<String, String>,
 }
 
-const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
+
+/// Build a full set of Chrome 136 navigation headers (for goto/navigate).
+/// These match what a real Chrome sends on document navigations.
+pub fn navigation_headers() -> rquest::header::HeaderMap {
+    let mut h = rquest::header::HeaderMap::new();
+    h.insert(rquest::header::ACCEPT,
+        rquest::header::HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"));
+    h.insert(rquest::header::ACCEPT_LANGUAGE,
+        rquest::header::HeaderValue::from_static("es-ES,es;q=0.9,en;q=0.8"));
+    h.insert(rquest::header::ACCEPT_ENCODING,
+        rquest::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
+    h.insert(rquest::header::UPGRADE_INSECURE_REQUESTS,
+        rquest::header::HeaderValue::from_static("1"));
+    h.insert(rquest::header::CACHE_CONTROL,
+        rquest::header::HeaderValue::from_static("max-age=0"));
+    h.insert("Sec-Ch-Ua",
+        rquest::header::HeaderValue::from_static("\"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"136\""));
+    h.insert("Sec-Ch-Ua-Mobile",
+        rquest::header::HeaderValue::from_static("?0"));
+    h.insert("Sec-Ch-Ua-Platform",
+        rquest::header::HeaderValue::from_static("\"macOS\""));
+    h.insert("Sec-Fetch-Dest",
+        rquest::header::HeaderValue::from_static("document"));
+    h.insert("Sec-Fetch-Mode",
+        rquest::header::HeaderValue::from_static("navigate"));
+    h.insert("Sec-Fetch-Site",
+        rquest::header::HeaderValue::from_static("none"));
+    h.insert("Sec-Fetch-User",
+        rquest::header::HeaderValue::from_static("?1"));
+    h
+}
+
+/// Build headers for XHR/fetch requests (from JS).
+/// Lighter than navigation — no Upgrade-Insecure-Requests, Accept is JSON-friendly.
+pub fn fetch_headers() -> rquest::header::HeaderMap {
+    let mut h = rquest::header::HeaderMap::new();
+    h.insert(rquest::header::ACCEPT,
+        rquest::header::HeaderValue::from_static("application/json, text/plain, */*"));
+    h.insert(rquest::header::ACCEPT_LANGUAGE,
+        rquest::header::HeaderValue::from_static("es-ES,es;q=0.9,en;q=0.8"));
+    h.insert(rquest::header::ACCEPT_ENCODING,
+        rquest::header::HeaderValue::from_static("gzip, deflate, br, zstd"));
+    h.insert("Sec-Ch-Ua",
+        rquest::header::HeaderValue::from_static("\"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\", \"Google Chrome\";v=\"136\""));
+    h.insert("Sec-Ch-Ua-Mobile",
+        rquest::header::HeaderValue::from_static("?0"));
+    h.insert("Sec-Ch-Ua-Platform",
+        rquest::header::HeaderValue::from_static("\"macOS\""));
+    h
+}
 
 /// Send+Sync snapshot of BrowserNetwork state for V8's OpState.
 /// OpState requires Send+Sync; BrowserNetwork itself lives in NeoSession (not Send).
@@ -139,10 +189,9 @@ impl BrowserNetwork {
             _ => self.client.get(url),
         };
 
-        let mut req = req
-            .header("User-Agent", UA)
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Accept-Language", "en-US,en;q=0.9,es;q=0.8");
+        // Apply base fetch headers (Sec-Ch-Ua, Accept-Language, Accept-Encoding, Accept)
+        let base_headers = fetch_headers();
+        let mut req = req.headers(base_headers);
 
         // Sec-Fetch-* headers (only if we have a page context)
         if !self.origin.is_empty() {

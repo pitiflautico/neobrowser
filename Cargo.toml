@@ -10,7 +10,8 @@ edition = "2021"
 
 [dependencies]
 # HTTP client — Chrome TLS fingerprint (BoringSSL), cookies, compression
-rquest = { version = "1.5", features = ["cookies", "gzip", "brotli", "json"] }
+rquest = { version = "5.1", features = ["cookies", "gzip", "brotli", "json", "webpki-roots"] }
+rquest-util = "2.2"
 
 # HTML parser — Servo's (spec-compliant, fast)
 html5ever = "0.38"
