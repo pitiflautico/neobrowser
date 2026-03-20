@@ -456,9 +456,9 @@ impl Session {
             "--window-size=1440,900".to_string(),
         ];
         if headless {
-            // Ghost mode: real Chrome, window offscreen — undetectable by Cloudflare.
-            // Never use --headless (changes JS fingerprint, detectable).
-            args.push("--window-position=-32000,-32000".to_string());
+            // Chrome 131+ "new headless" is indistinguishable from headed.
+            // navigator.webdriver is NOT set, fingerprint is identical.
+            args.push("--headless=new".to_string());
         }
 
         // Chrome --remote-debugging-pipe reads from fd 3 and writes to fd 4.
@@ -587,8 +587,7 @@ impl Session {
             "--window-size=1440,900".to_string(),
         ];
         if headless {
-            // Ghost mode: real Chrome, window offscreen — undetectable by Cloudflare.
-            args.push("--window-position=-32000,-32000".to_string());
+            args.push("--headless=new".to_string());
         }
 
         let child = tokio::process::Command::new(chrome)
