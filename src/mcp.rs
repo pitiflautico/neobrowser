@@ -1247,7 +1247,7 @@ async fn handle_open(state: &mut McpState, args: &Value) -> Result<Value, String
     }
 
     session.goto(url).await.map_err(|e| format!("{e}"))?;
-    // NO stealth injection — navigate like a real browser, zero CDP modifications
+    session.apply_stealth().await.ok();
     session.dismiss_cookie_banners().await.ok();
 
     // Get WOM
