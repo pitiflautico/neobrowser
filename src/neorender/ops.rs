@@ -160,13 +160,13 @@ pub fn op_neorender_fetch(
     result.map_err(|e| deno_core::error::generic_error(e))
 }
 
-/// Sleep — SYNC. Returns void. JS wrapper creates the Promise.
-/// Capped at 100ms. < 5ms is no-op.
+/// Timer — SYNC no-op. Returns void. JS wrapper creates the Promise.
+/// Real delays are unnecessary for headless operation.
+/// Module init code (setInterval, setTimeout) runs at full speed.
 #[op2(fast)]
-pub fn op_neorender_timer(#[smi] ms: u32) {
-    if ms > 5 {
-        std::thread::sleep(std::time::Duration::from_millis(ms.min(100) as u64));
-    }
+pub fn op_neorender_timer(#[smi] _ms: u32) {
+    // No sleep — headless browser doesn't need real-time delays.
+    // All timing is handled by Promise microtask ordering.
 }
 
 /// SHA-256 proof-of-work solver — native speed (~10M hash/s vs ~100K in JS).
