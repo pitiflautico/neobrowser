@@ -511,9 +511,9 @@ impl NeoSession {
         //     Poll DOM node count every 100ms. Stable = no change for 500ms (5 consecutive checks).
         //     Timeout at 15s to avoid hanging on pages with infinite timers.
         {
-            let stability_timeout = std::time::Duration::from_secs(15);
-            let poll_interval = std::time::Duration::from_millis(100);
-            let stable_threshold = 5u32; // 5 polls * 100ms = 500ms of no change
+            let stability_timeout = std::time::Duration::from_secs(30);
+            let poll_interval = std::time::Duration::from_millis(200);
+            let stable_threshold = 15u32; // 15 polls * 200ms = 3s of no change (SPAs need time)
             let stability_start = std::time::Instant::now();
             let mut last_node_count: i64 = -1;
             let mut stable_count: u32 = 0;

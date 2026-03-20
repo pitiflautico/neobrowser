@@ -70,14 +70,62 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             }
         }
 
-        // Not in store — return empty module (should have been pre-fetched)
-        eprintln!("[NEORENDER:LOADER] miss: {} (not pre-fetched)", url.rsplit('/').next().unwrap_or(&url));
-        ModuleLoadResponse::Sync(Ok(ModuleSource::new(
-            ModuleType::JavaScript,
-            ModuleSourceCode::String(format!("/* not pre-fetched: {} */", url).into()),
-            module_specifier,
-            None,
-        )))
+        // Not in store — fetch on-demand (like a real browser would)
+        let short = url.rsplit('/').next().unwrap_or(&url).to_string();
+        // Skip empty URLs or non-JS URLs (HTML pages return '<' which causes parse errors)
+        if short.is_empty() || url.ends_with('/') || (!url.contains(".js") && !url.contains(".mjs")) {
+            eprintln!("[NEORENDER:LOADER] skip: {} (not a JS module)", short);
+            return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
+                ModuleType::JavaScript,
+                ModuleSourceCode::String("/* skipped: not a JS module */".to_string().into()),
+                module_specifier,
+                None,
+            )));
+        }
+        eprintln!("[NEORENDER:LOADER] miss: {} — fetching on-demand", short);
+        let store = self.store.clone();
+        let spec = module_specifier.clone();
+        let fetch_url = url.clone();
+        ModuleLoadResponse::Async(Box::pin(async move {
+            let client = rquest::Client::builder()
+                .emulation(rquest_util::Emulation::Chrome136)
+                .build()
+                .map_err(|e| deno_core::anyhow::anyhow!("Client error: {e}"))?;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                client.get(&fetch_url).send(),
+            ).await {
+                Ok(Ok(resp)) => {
+                    let code = resp.text().await.map_err(|e| deno_core::anyhow::anyhow!("Body error: {e}"))?;
+                    eprintln!("[NEORENDER:LOADER] fetched: {} ({}B)", short, code.len());
+                    store.borrow_mut().scripts.insert(fetch_url, code.clone());
+                    Ok(ModuleSource::new(
+                        ModuleType::JavaScript,
+                        ModuleSourceCode::String(code.into()),
+                        &spec,
+                        None,
+                    ))
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[NEORENDER:LOADER] fetch error: {} — {}", short, e);
+                    Ok(ModuleSource::new(
+                        ModuleType::JavaScript,
+                        ModuleSourceCode::String(format!("/* fetch error: {} */", e).to_string().into()),
+                        &spec,
+                        None,
+                    ))
+                }
+                Err(_) => {
+                    eprintln!("[NEORENDER:LOADER] fetch timeout: {}", short);
+                    Ok(ModuleSource::new(
+                        ModuleType::JavaScript,
+                        ModuleSourceCode::String("/* fetch timeout */".to_string().into()),
+                        &spec,
+                        None,
+                    ))
+                }
+            }
+        }))
     }
 }
 
