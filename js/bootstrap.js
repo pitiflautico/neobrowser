@@ -274,9 +274,15 @@ globalThis.setInterval = function(fn, ms, ...args) {
     function tick() {
         if (!__timerCallbacks.has(id) || ticks++ > 50) return;
         try { fn(...args); } catch(e) {}
-        __timerPromise(ms).then(tick);
+        if (ticks <= 5) {
+            // Fast mode: immediate via microtask (no timer delay)
+            queueMicrotask(tick);
+        } else {
+            __timerPromise(ms).then(tick);
+        }
     }
-    __timerPromise(ms).then(tick);
+    // First tick: immediate via microtask
+    queueMicrotask(tick);
     return id;
 };
 globalThis.clearInterval = (id) => __timerCallbacks.delete(id);

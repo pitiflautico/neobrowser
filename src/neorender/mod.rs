@@ -384,10 +384,19 @@ pub(crate) fn extract_es_imports(js: &str, script_url: &str) -> Vec<String> {
     let mut imports = Vec::new();
     let base = if let Some(pos) = script_url.rfind('/') { &script_url[..=pos] } else { script_url };
 
-    // import"./path.js" or import "./path.js"
+    // Match all forms of ES module specifiers in minified JS:
+    //   import"./path.js"  import "./path.js"  import './path.js'
+    //   import{x}from"./path.js"  import x from"./path.js"
+    //   export{x}from"./path.js"  export*from"./path.js"
+    //   import("./path.js")
+    //   from"./path.js"  (catches all minified from-clauses)
     let patterns = &[
-        r#"import\s*"(\./[^"]+)""#,
-        r#"import\s*'(\./[^']+)'"#,
+        r#"from\s*"(\./[^"]+)""#,           // from"./..."  or  from "./..."
+        r#"from\s*'(\./[^']+)'"#,           // from'./...'
+        r#"import\s*"(\./[^"]+)""#,         // import"./..."  (bare side-effect)
+        r#"import\s*'(\./[^']+)'"#,         // import'./...'
+        // Note: dynamic import() patterns intentionally excluded — pre-fetching
+        // lazy modules causes V8 to evaluate them synchronously (blocking).
     ];
     for pattern in patterns {
         if let Ok(re) = regex_lite::Regex::new(pattern) {

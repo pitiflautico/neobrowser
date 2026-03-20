@@ -112,7 +112,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                 .build()
                 .map_err(|e| deno_core::anyhow::anyhow!("Client error: {e}"))?;
             match tokio::time::timeout(
-                std::time::Duration::from_secs(15),
+                std::time::Duration::from_secs(5),
                 client.get(&fetch_url).send(),
             ).await {
                 Ok(Ok(resp)) => {

@@ -28,7 +28,10 @@ pub fn op_neorender_fetch(
         || url.contains("googletagmanager") || url.contains("doubleclick")
         || url.contains("apfc")
         || url.contains("/rgstr") || url.contains("/ces/") || url.contains("ab.chatgpt")
-        || url.contains("/v1/m") || url.contains("statsig") || url.contains("featuregates") {
+        || url.contains("/v1/m") || url.contains("statsig") || url.contains("featuregates")
+        || url.contains("datadoghq") || url.contains("browser-intake") || url.contains("oai/log")
+        || url.contains("cdn.mxpnl.com") || url.contains("sentry.io") || url.contains("fullstory")
+        || url.contains("launchdarkly") {
         return Ok(r#"{"status":200,"body":"","headers":{}}"#.to_string());
     }
 

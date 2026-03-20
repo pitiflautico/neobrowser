@@ -357,12 +357,13 @@ impl NeoSession {
                 }
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
-                    self.network.client().get(script_url).send(),
+                    async {
+                        let resp = self.network.client().get(script_url).send().await?;
+                        resp.text().await
+                    },
                 ).await {
-                    Ok(Ok(resp)) => {
-                        if let Ok(text) = resp.text().await {
-                            script.content = Some(text);
-                        }
+                    Ok(Ok(text)) => {
+                        script.content = Some(text);
                     }
                     _ => eprintln!("[NEOSESSION] Skip slow script: {}", script_url),
                 }
@@ -383,38 +384,76 @@ impl NeoSession {
         }
 
         // 7. Pre-fetch ES module imports (depth 3)
+        //    Include modulepreload scripts (preload_only: true) so their imports
+        //    get pre-fetched transitively — avoids on-demand fetches during eval.
         {
             let mut to_scan: Vec<(String, String)> = Vec::new();
             for script in &all_scripts {
-                if script.is_module {
+                if script.is_module || script.preload_only {
                     if let (Some(url), Some(content)) = (&script.url, &script.content) {
                         to_scan.push((url.clone(), content.clone()));
                     }
                 }
             }
-            for _depth in 0..3 {
-                let mut next_round = Vec::new();
+            let prefetch_start = std::time::Instant::now();
+            let prefetch_budget = std::time::Duration::from_secs(8);
+            for depth in 0..1 {  // depth 0 only — deeper scans trigger too many fetches
+                // Collect all unique imports not yet in store
+                let mut urls_to_fetch: Vec<String> = Vec::new();
                 for (script_url, content) in &to_scan {
                     let imports = super::extract_es_imports(content, script_url);
                     for import_url in imports {
                         if self.store.borrow().scripts.contains_key(&import_url) { continue; }
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(15),
-                            self.network.client().get(&import_url).send(),
-                        ).await {
-                            Ok(Ok(resp)) => {
-                                if let Ok(text) = resp.text().await {
-                                    self.store.borrow_mut().scripts.insert(import_url.clone(), text.clone());
-                                    next_round.push((import_url, text));
-                                }
-                            }
-                            _ => eprintln!("[NEOSESSION] Skip slow import: {}", import_url),
+                        if !urls_to_fetch.contains(&import_url) {
+                            urls_to_fetch.push(import_url);
                         }
                     }
                 }
+                if urls_to_fetch.is_empty() { break; }
+                // Cap pre-fetch per depth to avoid flooding the store with modules
+                // that cause V8 to do massive synchronous evaluation
+                if urls_to_fetch.len() > 50 {
+                    eprintln!("[NEOSESSION] Pre-fetch depth {depth}: capping from {} to 50", urls_to_fetch.len());
+                    urls_to_fetch.truncate(50);
+                }
+                eprintln!("[NEOSESSION] Pre-fetch depth {depth}: {} imports to fetch", urls_to_fetch.len());
+
+                // Fetch all imports in parallel
+                let client = self.network.client().clone();
+                let futures: Vec<_> = urls_to_fetch.iter().map(|url| {
+                    let c = client.clone();
+                    let u = url.clone();
+                    async move {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            async {
+                                let resp = c.get(&u).send().await?;
+                                resp.text().await
+                            },
+                        ).await {
+                            Ok(Ok(text)) => Some((u, text)),
+                            _ => None,
+                        }
+                    }
+                }).collect();
+                let results = futures::future::join_all(futures).await;
+
+                let mut next_round = Vec::new();
+                for result in results.into_iter().flatten() {
+                    let (url, text) = result;
+                    self.store.borrow_mut().scripts.insert(url.clone(), text.clone());
+                    next_round.push((url, text));
+                }
                 to_scan = next_round;
-                if to_scan.is_empty() { break; }
+                if to_scan.is_empty() || prefetch_start.elapsed() >= prefetch_budget {
+                    if prefetch_start.elapsed() >= prefetch_budget {
+                        eprintln!("[NEOSESSION] Pre-fetch budget exhausted at depth {depth}");
+                    }
+                    break;
+                }
             }
+            eprintln!("[NEOSESSION] Pre-fetch total: {}ms, {} modules in store",
+                prefetch_start.elapsed().as_millis(), self.store.borrow().scripts.len());
         }
 
         // 8. Replace DOM content in the existing runtime
@@ -520,6 +559,11 @@ impl NeoSession {
         "#.to_string()).ok();
 
         // 11. Execute scripts in document order
+        // Save inline module content for step 11b (entry module extraction)
+        let all_scripts_backup: Vec<_> = all_scripts.iter()
+            .filter(|s| s.is_module && s.url.is_none())
+            .map(|s| super::ScriptInfo { url: None, content: s.content.clone(), is_module: true, preload_only: false })
+            .collect();
         let scripts_count = all_scripts.len();
         let mut errors = Vec::new();
         let mut first_module = true;
@@ -661,9 +705,44 @@ impl NeoSession {
             }
         }
 
-        // 11b. Run event loop to resolve dynamic imports from async IIFE scripts
-        // The inline module converted to async script fires import() that needs event loop.
-        v8_runtime::run_event_loop(&mut self.runtime, 15000).await.ok();
+        // 11b. Explicitly load the entry module that the inline IIFE fired via import().
+        // The IIFE does import("/cdn/assets/85c26ade-...js").catch(()=>{}) — fire-and-forget.
+        // But V8 can't resolve dynamic import() without event loop, and event loop blocks
+        // for 20s+ during module eval. Instead: find the entry module URL and load it directly.
+        {
+            // Extract entry module URL from the inline IIFE code (the last import() call).
+            // Can't use __reactRouterManifest because the IIFE's imports haven't resolved yet.
+            let entry_path = {
+                let re = regex_lite::Regex::new(r#"import\("([^"]+)"\)"#).unwrap();
+                // Search inline module scripts for the entry import
+                let mut found = String::new();
+                for script in &all_scripts_backup {
+                    if script.is_module && script.url.is_none() {
+                        if let Some(content) = &script.content {
+                            if let Some(caps) = re.captures(content) {
+                                found = caps[1].to_string();
+                            }
+                        }
+                    }
+                }
+                found
+            };
+            eprintln!("[NEOSESSION] Entry module path from HTML: '{}'", entry_path);
+            let entry_url = if entry_path.starts_with('/') {
+                let origin = url::Url::parse(&final_url).ok()
+                    .map(|u| u.origin().ascii_serialization())
+                    .unwrap_or_default();
+                format!("{}{}", origin, entry_path)
+            } else {
+                entry_path.clone()
+            };
+            if !entry_url.is_empty() {
+                eprintln!("[NEOSESSION] Loading entry module directly: {}", &entry_url[..entry_url.len().min(80)]);
+                v8_runtime::execute_side_module(&mut self.runtime, &entry_url, "entry-direct".to_string()).await;
+            }
+            // Brief event loop to let hydrateRoot fire
+            v8_runtime::run_event_loop(&mut self.runtime, 500).await.ok();
+        }
 
         // 12. Fire lifecycle events
         let lifecycle_js = r#"
@@ -680,16 +759,37 @@ impl NeoSession {
         //     Poll DOM node count every 100ms. Stable = no change for 500ms (5 consecutive checks).
         //     Timeout at 15s to avoid hanging on pages with infinite timers.
         {
-            let stability_timeout = std::time::Duration::from_secs(30);
+            let stability_timeout = if scripts_count > 10 {
+                std::time::Duration::from_secs(5)  // SPA with many modules — faster cutoff
+            } else {
+                std::time::Duration::from_secs(15) // Simple page — original timeout
+            };
             let poll_interval = std::time::Duration::from_millis(200);
-            let stable_threshold = 15u32; // 15 polls * 200ms = 3s of no change (SPAs need time)
+            let stable_threshold = 5u32; // 5 polls * 200ms = 1s of no change
             let stability_start = std::time::Instant::now();
             let mut last_node_count: i64 = -1;
             let mut stable_count: u32 = 0;
 
+            // For SPA pages (many modules), skip the event loop in stability check.
+            // V8 module evaluation blocks for 10s+ per large module, making the stability
+            // check useless as a timeout mechanism. The critical hydration happened in 11b.
+            let run_event_loop_in_stability = scripts_count <= 10;
+
             loop {
+                // Check timeout BEFORE running event loop (V8 module eval can block for 10s+)
+                if stability_start.elapsed() >= stability_timeout {
+                    eprintln!("[NEOSESSION] Stability timeout ({}ms) at {} nodes",
+                        stability_timeout.as_millis(), last_node_count);
+                    break;
+                }
+
                 // Run event loop for one poll interval
-                v8_runtime::run_event_loop(&mut self.runtime, poll_interval.as_millis() as u64).await?;
+                if run_event_loop_in_stability {
+                    v8_runtime::run_event_loop(&mut self.runtime, poll_interval.as_millis() as u64).await?;
+                } else {
+                    // For SPA: just sleep to allow timeout check without V8 module eval
+                    tokio::time::sleep(poll_interval).await;
+                }
 
                 // Poll dynamic scripts — fetch and execute any scripts added to DOM by JS
                 if let Ok(pending_json) = self.eval_internal("__neo_pending_scripts()") {
@@ -757,11 +857,6 @@ impl NeoSession {
                     last_node_count = node_count;
                 }
 
-                if stability_start.elapsed() >= stability_timeout {
-                    eprintln!("[NEOSESSION] Stability timeout ({}ms) at {} nodes",
-                        stability_timeout.as_millis(), node_count);
-                    break;
-                }
             }
         }
 
