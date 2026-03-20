@@ -397,7 +397,7 @@ impl NeoSession {
             }
             let prefetch_start = std::time::Instant::now();
             let prefetch_budget = std::time::Duration::from_secs(8);
-            for depth in 0..1 {  // depth 0 only — deeper scans trigger too many fetches
+            for depth in 0..2 {  // depth 0 + 1 — catches transitive imports in vendor bundles
                 // Collect all unique imports not yet in store
                 let mut urls_to_fetch: Vec<String> = Vec::new();
                 for (script_url, content) in &to_scan {
@@ -410,11 +410,14 @@ impl NeoSession {
                     }
                 }
                 if urls_to_fetch.is_empty() { break; }
-                // Cap pre-fetch per depth to avoid flooding the store with modules
-                // that cause V8 to do massive synchronous evaluation
-                if urls_to_fetch.len() > 50 {
-                    eprintln!("[NEOSESSION] Pre-fetch depth {depth}: capping from {} to 50", urls_to_fetch.len());
-                    urls_to_fetch.truncate(50);
+                // Cap pre-fetch per depth to bound total network usage.
+                // Depth 0 is small (42 for ChatGPT). Depth 1 can be large (300+)
+                // because vendor bundles import many chunks — but they're small files
+                // and parallel fetch within the 8s budget handles them fine.
+                let cap = if depth == 0 { 100 } else { 500 };
+                if urls_to_fetch.len() > cap {
+                    eprintln!("[NEOSESSION] Pre-fetch depth {depth}: capping from {} to {cap}", urls_to_fetch.len());
+                    urls_to_fetch.truncate(cap);
                 }
                 eprintln!("[NEOSESSION] Pre-fetch depth {depth}: {} imports to fetch", urls_to_fetch.len());
 
@@ -454,6 +457,48 @@ impl NeoSession {
             }
             eprintln!("[NEOSESSION] Pre-fetch total: {}ms, {} modules in store",
                 prefetch_start.elapsed().as_millis(), self.store.borrow().scripts.len());
+        }
+
+        // 7b. Selective module stubbing — mark heavy non-essential modules
+        //     Essential = referenced in HTML <script> or <link rel="modulepreload">.
+        //     Heavy = source > threshold bytes. Heavy + non-essential = stubbed.
+        //     NEOBROWSER_STUB_THRESHOLD env var controls the threshold (default 1MB, 0=disabled).
+        {
+            let threshold: usize = std::env::var("NEOBROWSER_STUB_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1_000_000); // 1MB default
+
+            if threshold > 0 {
+                // Build set of essential URLs from HTML-declared scripts/modulepreloads
+                let essential_urls: std::collections::HashSet<String> = all_scripts.iter()
+                    .filter_map(|s| s.url.as_ref())
+                    .cloned()
+                    .collect();
+
+                let store = self.store.borrow();
+                let mut to_stub: Vec<(String, usize)> = Vec::new();
+                for (url, content) in &store.scripts {
+                    if content.len() >= threshold && !essential_urls.contains(url) {
+                        to_stub.push((url.clone(), content.len()));
+                    }
+                }
+                drop(store);
+
+                if !to_stub.is_empty() {
+                    let total_saved: usize = to_stub.iter().map(|(_, sz)| *sz).sum();
+                    eprintln!("[NEOSESSION] Stubbing {} heavy modules ({:.1}MB saved):",
+                        to_stub.len(), total_saved as f64 / 1_048_576.0);
+                    for (url, sz) in &to_stub {
+                        let short = url.rsplit('/').next().unwrap_or(url);
+                        eprintln!("[NEOSESSION]   stub: {} ({:.1}MB)", short, *sz as f64 / 1_048_576.0);
+                    }
+                    let mut store = self.store.borrow_mut();
+                    for (url, _) in to_stub {
+                        store.stub_modules.insert(url);
+                    }
+                }
+            }
         }
 
         // 8. Replace DOM content in the existing runtime

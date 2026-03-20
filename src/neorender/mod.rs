@@ -395,8 +395,8 @@ pub(crate) fn extract_es_imports(js: &str, script_url: &str) -> Vec<String> {
         r#"from\s*'(\./[^']+)'"#,           // from'./...'
         r#"import\s*"(\./[^"]+)""#,         // import"./..."  (bare side-effect)
         r#"import\s*'(\./[^']+)'"#,         // import'./...'
-        // Note: dynamic import() patterns intentionally excluded — pre-fetching
-        // lazy modules causes V8 to evaluate them synchronously (blocking).
+        r#"import\(\s*"(\./[^"]+)""#,       // import("./...")  (dynamic import)
+        r#"import\(\s*'(\./[^']+)'"#,       // import('./...')  (dynamic import)
     ];
     for pattern in patterns {
         if let Ok(re) = regex_lite::Regex::new(pattern) {

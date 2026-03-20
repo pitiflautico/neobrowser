@@ -1,12 +1,85 @@
 //! NeoRender V8 Runtime — embeds V8 via deno_core for SPA JS execution.
 //! Uses deno_core's native ES module support for proper import/export handling.
 
-use deno_core::{JsRuntime, RuntimeOptions, PollEventLoopOptions, ModuleSpecifier, ModuleLoadResponse, ModuleSource, ModuleSourceCode, ModuleType, RequestedModuleType, ResolutionKind, resolve_import};
+use deno_core::{JsRuntime, RuntimeOptions, PollEventLoopOptions, ModuleSpecifier, ModuleLoadResponse, ModuleSource, ModuleSourceCode, ModuleType, RequestedModuleType, ResolutionKind, resolve_import, SourceCodeCacheInfo};
 use deno_core::error::AnyError;
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::pin::Pin;
+use std::future::Future;
+use futures::FutureExt;
 use super::ops;
+
+// ─── V8 Bytecode Cache ───
+
+/// Disk-backed V8 compiled bytecode cache.
+/// Directory: `~/.neobrowser/cache/v8/`
+/// File format: [8 bytes source_hash LE] [V8 bytecode...]
+struct V8CodeCache {
+    cache_dir: PathBuf,
+}
+
+impl V8CodeCache {
+    fn new() -> Option<Self> {
+        let home = dirs::home_dir()?;
+        let cache_dir = home.join(".neobrowser").join("cache").join("v8");
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            eprintln!("[V8CACHE] Failed to create cache dir: {e}");
+            return None;
+        }
+        eprintln!("[V8CACHE] Dir: {}", cache_dir.display());
+        Some(Self { cache_dir })
+    }
+
+    /// Deterministic filename from URL
+    fn cache_path(&self, url: &str) -> PathBuf {
+        let mut hasher = DefaultHasher::new();
+        url.hash(&mut hasher);
+        let url_hash = hasher.finish();
+        self.cache_dir.join(format!("{:016x}.v8cache", url_hash))
+    }
+
+    /// Hash source code for invalidation
+    fn hash_source(code: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        code.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Try to read cached bytecode. Returns None if missing or source hash mismatch.
+    fn read(&self, url: &str, source_hash: u64) -> Option<Vec<u8>> {
+        let path = self.cache_path(url);
+        let data = std::fs::read(&path).ok()?;
+        if data.len() < 8 {
+            return None;
+        }
+        let stored_hash = u64::from_le_bytes(data[..8].try_into().ok()?);
+        if stored_hash != source_hash {
+            eprintln!("[V8CACHE] Stale: {} (hash mismatch)", url.rsplit('/').next().unwrap_or(url));
+            return None;
+        }
+        let bytecode = data[8..].to_vec();
+        eprintln!("[V8CACHE] Hit: {} ({}B bytecode)", url.rsplit('/').next().unwrap_or(url), bytecode.len());
+        Some(bytecode)
+    }
+
+    /// Write bytecode to disk with source hash prefix.
+    fn write(&self, url: &str, source_hash: u64, bytecode: &[u8]) {
+        let path = self.cache_path(url);
+        let mut data = Vec::with_capacity(8 + bytecode.len());
+        data.extend_from_slice(&source_hash.to_le_bytes());
+        data.extend_from_slice(bytecode);
+        match std::fs::write(&path, &data) {
+            Ok(_) => eprintln!("[V8CACHE] Wrote: {} ({}B)", url.rsplit('/').next().unwrap_or(url), bytecode.len()),
+            Err(e) => eprintln!("[V8CACHE] Write error: {e}"),
+        }
+    }
+}
 
 deno_core::extension!(
     neorender_ext,
@@ -32,10 +105,103 @@ deno_core::extension!(
 #[derive(Default)]
 pub struct ScriptStore {
     pub scripts: HashMap<String, String>,
+    /// URLs that returned non-JS content (HTML) — skip on repeat requests
+    pub failed_urls: HashSet<String>,
+    /// URLs of heavy modules to stub — V8 gets a minimal re-export skeleton
+    /// instead of parsing multi-MB bundles not needed for hydration.
+    pub stub_modules: HashSet<String>,
+}
+
+/// Extract named export identifiers from minified JS module source.
+/// Handles: `export{a as b,c}`, `export function x`, `export const x`,
+/// `export default`, and re-exports `export{x}from"..."`.
+fn extract_export_names(js: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+
+    // Match export{...} blocks (local exports and re-exports)
+    if let Ok(re) = regex_lite::Regex::new(r"export\s*\{([^}]+)\}") {
+        for cap in re.captures_iter(js) {
+            let block = &cap[1];
+            for item in block.split(',') {
+                let item = item.trim();
+                let exported = if let Some(pos) = item.rfind(" as ") {
+                    item[pos + 4..].trim()
+                } else {
+                    item.trim()
+                };
+                let clean = exported.trim().trim_matches('"').trim_matches('\'');
+                if !clean.is_empty() && clean != "default" && seen.insert(clean.to_string()) {
+                    names.push(clean.to_string());
+                }
+            }
+        }
+    }
+
+    // Match: export function|const|let|var|class NAME
+    if let Ok(re) = regex_lite::Regex::new(
+        r"export\s+(?:function|const|let|var|class)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)"
+    ) {
+        for cap in re.captures_iter(js) {
+            let name = cap[1].to_string();
+            if seen.insert(name.clone()) {
+                names.push(name);
+            }
+        }
+    }
+
+    // Check for default export
+    let has_default = js.contains("export default")
+        || (js.contains("export{") && js.contains("as default"));
+    if has_default && seen.insert("default".to_string()) {
+        names.push("default".to_string());
+    }
+
+    names
+}
+
+/// Generate a stub ES module that re-exports no-op values for each name.
+/// Property access on any export returns a no-op function (handles chained calls
+/// like `telemetry.instance.addFirstTiming(...)`).
+fn generate_stub_module(export_names: &[String]) -> String {
+    let mut parts = Vec::new();
+
+    // _n: no-op function returning itself (chained calls: x.y.z())
+    // _o: Proxy returning _n for any prop (x.instance.method())
+    // .then=undefined prevents Promise detection by await/Promise.resolve
+    parts.push("const _n=()=>_n;_n.then=undefined;const _o=new Proxy({},{get:(t,p)=>p==='then'?undefined:_n});".to_string());
+
+    let mut export_items = Vec::new();
+    for name in export_names {
+        if name == "default" { continue; }
+        parts.push(format!("const {}=_o;", name));
+        export_items.push(name.clone());
+    }
+
+    if !export_items.is_empty() {
+        parts.push(format!("export{{{}}};", export_items.join(",")));
+    }
+
+    parts.push("export default _o;".to_string());
+    parts.join("")
 }
 
 struct NeoModuleLoader {
     store: Rc<RefCell<ScriptStore>>,
+    code_cache: Option<Rc<V8CodeCache>>,
+}
+
+impl NeoModuleLoader {
+    /// Build SourceCodeCacheInfo for a module: hash the source, look up cached bytecode.
+    fn make_cache_info(&self, url: &str, source: &str) -> Option<SourceCodeCacheInfo> {
+        let cache = self.code_cache.as_ref()?;
+        let source_hash = V8CodeCache::hash_source(source);
+        let cached_bytecode = cache.read(url, source_hash);
+        Some(SourceCodeCacheInfo {
+            hash: source_hash,
+            data: cached_bytecode.map(|b| Cow::Owned(b)),
+        })
+    }
 }
 
 impl deno_core::ModuleLoader for NeoModuleLoader {
@@ -69,6 +235,24 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             let store = self.store.borrow();
             if let Some(code) = store.scripts.get(&url) {
                 let short = url.rsplit('/').next().unwrap_or(&url);
+
+                // ── Selective module stubbing ──
+                // For heavy modules marked as non-essential for hydration,
+                // extract their export names and return a lightweight stub.
+                // This avoids V8 parsing multi-MB bundles (e.g. telemetry, app bundles).
+                if store.stub_modules.contains(&url) {
+                    let exports = extract_export_names(code);
+                    let stub = generate_stub_module(&exports);
+                    eprintln!("[NEORENDER:LOADER] STUB: {} ({}B → {}B, {} exports)",
+                        short, code.len(), stub.len(), exports.len());
+                    return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
+                        ModuleType::JavaScript,
+                        ModuleSourceCode::String(stub.into()),
+                        module_specifier,
+                        None,
+                    )));
+                }
+
                 eprintln!("[NEORENDER:LOADER] store: {} ({}B)", short, code.len());
                 // Source-level transform: replace Promise.allSettled calls with inline
                 // equivalents. Polyfill injection doesn't work in deno_core 0.311 module
@@ -81,17 +265,32 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                 } else {
                     code.clone()
                 };
+                // V8 bytecode cache: provide cached bytecode if available
+                let cache_info = self.make_cache_info(&url, &patched);
                 return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
                     ModuleType::JavaScript,
                     ModuleSourceCode::String(patched.into()),
                     module_specifier,
-                    None,
+                    cache_info,
                 )));
             }
         }
 
         // Not in store — fetch on-demand (like a real browser would)
         let short = url.rsplit('/').next().unwrap_or(&url).to_string();
+        // Skip URLs that previously returned non-JS content (HTML error pages, etc.)
+        {
+            let store = self.store.borrow();
+            if store.failed_urls.contains(&url) {
+                eprintln!("[NEORENDER:LOADER] skip: {} (cached failure)", short);
+                return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
+                    ModuleType::JavaScript,
+                    ModuleSourceCode::String("/* skipped: cached failure */".to_string().into()),
+                    module_specifier,
+                    None,
+                )));
+            }
+        }
         // Skip empty URLs or non-JS URLs (HTML pages return '<' which causes parse errors)
         if short.is_empty() || url.ends_with('/') || (!url.contains(".js") && !url.contains(".mjs")) {
             eprintln!("[NEORENDER:LOADER] skip: {} (not a JS module)", short);
@@ -104,6 +303,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         }
         eprintln!("[NEORENDER:LOADER] miss: {} — fetching on-demand", short);
         let store = self.store.clone();
+        let code_cache = self.code_cache.clone();
         let spec = module_specifier.clone();
         let fetch_url = url.clone();
         ModuleLoadResponse::Async(Box::pin(async move {
@@ -112,13 +312,43 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                 .build()
                 .map_err(|e| deno_core::anyhow::anyhow!("Client error: {e}"))?;
             match tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(2),
                 client.get(&fetch_url).send(),
             ).await {
                 Ok(Ok(resp)) => {
                     let code = resp.text().await.map_err(|e| deno_core::anyhow::anyhow!("Body error: {e}"))?;
                     eprintln!("[NEORENDER:LOADER] fetched: {} ({}B)", short, code.len());
-                    store.borrow_mut().scripts.insert(fetch_url, code.clone());
+                    // If response is HTML (not JS), cache as failed to skip future requests
+                    if code.trim_start().starts_with('<') {
+                        eprintln!("[NEORENDER:LOADER] skip: {} (HTML response, caching failure)", short);
+                        store.borrow_mut().failed_urls.insert(fetch_url);
+                        return Ok(ModuleSource::new(
+                            ModuleType::JavaScript,
+                            ModuleSourceCode::String("/* skipped: HTML response */".to_string().into()),
+                            &spec,
+                            None,
+                        ));
+                    }
+                    store.borrow_mut().scripts.insert(fetch_url.clone(), code.clone());
+
+                    // On-demand stub: if fetched module is very large and stub_modules
+                    // threshold is active, stub it to avoid massive V8 parse.
+                    // Uses 1MB default; NEOBROWSER_STUB_THRESHOLD=0 disables.
+                    let stub_threshold: usize = std::env::var("NEOBROWSER_STUB_THRESHOLD")
+                        .ok().and_then(|v| v.parse().ok()).unwrap_or(1_000_000);
+                    if stub_threshold > 0 && code.len() >= stub_threshold {
+                        let exports = extract_export_names(&code);
+                        let stub = generate_stub_module(&exports);
+                        eprintln!("[NEORENDER:LOADER] STUB (on-demand): {} ({}B → {}B, {} exports)",
+                            short, code.len(), stub.len(), exports.len());
+                        return Ok(ModuleSource::new(
+                            ModuleType::JavaScript,
+                            ModuleSourceCode::String(stub.into()),
+                            &spec,
+                            None,
+                        ));
+                    }
+
                     // Apply same Promise.allSettled source transform as pre-fetched modules
                     let patched = if code.contains("Promise.allSettled(") {
                         code.replace(
@@ -128,15 +358,25 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                     } else {
                         code
                     };
+                    // V8 bytecode cache: check for cached bytecode from previous sessions
+                    let cache_info = code_cache.as_ref().map(|cache| {
+                        let source_hash = V8CodeCache::hash_source(&patched);
+                        let cached_bytecode = cache.read(&fetch_url, source_hash);
+                        SourceCodeCacheInfo {
+                            hash: source_hash,
+                            data: cached_bytecode.map(|b| Cow::Owned(b)),
+                        }
+                    });
                     Ok(ModuleSource::new(
                         ModuleType::JavaScript,
                         ModuleSourceCode::String(patched.into()),
                         &spec,
-                        None,
+                        cache_info,
                     ))
                 }
                 Ok(Err(e)) => {
                     eprintln!("[NEORENDER:LOADER] fetch error: {} — {}", short, e);
+                    store.borrow_mut().failed_urls.insert(fetch_url);
                     Ok(ModuleSource::new(
                         ModuleType::JavaScript,
                         ModuleSourceCode::String(format!("/* fetch error: {} */", e).to_string().into()),
@@ -146,6 +386,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                 }
                 Err(_) => {
                     eprintln!("[NEORENDER:LOADER] fetch timeout: {}", short);
+                    store.borrow_mut().failed_urls.insert(fetch_url);
                     Ok(ModuleSource::new(
                         ModuleType::JavaScript,
                         ModuleSourceCode::String("/* fetch timeout */".to_string().into()),
@@ -155,6 +396,20 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                 }
             }
         }))
+    }
+
+    fn code_cache_ready(
+        &self,
+        specifier: ModuleSpecifier,
+        hash: u64,
+        code_cache: &[u8],
+    ) -> Pin<Box<dyn Future<Output = ()>>> {
+        // Write compiled bytecode to disk for future sessions
+        if let Some(cache) = &self.code_cache {
+            let url = specifier.to_string();
+            cache.write(&url, hash, code_cache);
+        }
+        async {}.boxed_local()
     }
 }
 
@@ -172,7 +427,10 @@ pub fn create_runtime_with_html(
     local_storage: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<(JsRuntime, ScriptStoreHandle), String> {
     let store = Rc::new(RefCell::new(ScriptStore::default()));
-    let loader = NeoModuleLoader { store: store.clone() };
+    let loader = NeoModuleLoader {
+        store: store.clone(),
+        code_cache: V8CodeCache::new().map(Rc::new),
+    };
 
     let mut runtime = JsRuntime::new(RuntimeOptions {
         extensions: vec![neorender_ext::init_ops()],
@@ -512,9 +770,13 @@ pub async fn execute_module(runtime: &mut JsRuntime, url: &str, name: String) ->
         Err(e) => return Some(format!("[{}] Bad URL: {}", name, e)),
     };
 
-    let mod_id = match runtime.load_main_es_module(&specifier).await {
-        Ok(id) => id,
-        Err(e) => return Some(format!("[{}] Module load: {}", name, first_line(&e.to_string()))),
+    let mod_id = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        runtime.load_main_es_module(&specifier),
+    ).await {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => return Some(format!("[{}] Module load: {}", name, first_line(&e.to_string()))),
+        Err(_) => return Some(format!("[{}] Module load TIMEOUT (10s)", name)),
     };
 
     let eval_result = runtime.mod_evaluate(mod_id);
@@ -522,20 +784,20 @@ pub async fn execute_module(runtime: &mut JsRuntime, url: &str, name: String) ->
     // Run event loop to resolve imports and execute.
     // Errors from React/SSR hydration (e.g. stream .then() on null) are non-fatal.
     match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(5),
         runtime.run_event_loop(PollEventLoopOptions::default()),
     ).await {
         Ok(Err(e)) => eprintln!("[NEORENDER] Module event loop error (non-fatal): {e}"),
-        Err(_) => eprintln!("[NEORENDER] Module event loop timeout (10s)"),
+        Err(_) => eprintln!("[NEORENDER] Module event loop timeout (5s)"),
         Ok(Ok(())) => {}
     }
 
-    match tokio::time::timeout(std::time::Duration::from_secs(15), eval_result).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), eval_result).await {
         Ok(Ok(())) => {
             eprintln!("[NEORENDER] Module eval OK: {name}");
             // Run event loop again — TLA dependencies may still be resolving
             tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(2),
                 runtime.run_event_loop(PollEventLoopOptions::default()),
             ).await.ok();
             None
@@ -560,9 +822,13 @@ pub async fn execute_side_module(runtime: &mut JsRuntime, url: &str, name: Strin
         Err(e) => return Some(format!("[{}] Bad URL: {}", name, e)),
     };
 
-    let mod_id = match runtime.load_side_es_module(&specifier).await {
-        Ok(id) => id,
-        Err(e) => return Some(format!("[{}] Side module load: {}", name, first_line(&e.to_string()))),
+    let mod_id = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.load_side_es_module(&specifier),
+    ).await {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => return Some(format!("[{}] Side module load: {}", name, first_line(&e.to_string()))),
+        Err(_) => return Some(format!("[{}] Side module load TIMEOUT (5s)", name)),
     };
 
     let eval_result = runtime.mod_evaluate(mod_id);
@@ -571,15 +837,15 @@ pub async fn execute_side_module(runtime: &mut JsRuntime, url: &str, name: Strin
     // Errors here are often from React internals (Suspense, lazy) that recover gracefully.
     // We log but don't fail — the module is still usable for imports.
     match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(2),
         runtime.run_event_loop(PollEventLoopOptions::default()),
     ).await {
         Ok(Err(e)) => eprintln!("[NEORENDER] Side module event loop error (non-fatal): {e}"),
-        Err(_) => eprintln!("[NEORENDER] Side module event loop timeout (5s)"),
+        Err(_) => eprintln!("[NEORENDER] Side module event loop timeout (2s)"),
         Ok(Ok(())) => {}
     }
 
-    match tokio::time::timeout(std::time::Duration::from_secs(5), eval_result).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(2), eval_result).await {
         Ok(Ok(())) => { eprintln!("[NEORENDER] Side module eval OK: {name}"); None },
         Ok(Err(e)) => {
             let msg = format!("[{}] {}", name, first_line(&e.to_string()));
@@ -587,11 +853,14 @@ pub async fn execute_side_module(runtime: &mut JsRuntime, url: &str, name: Strin
             Some(msg)
         }
         Err(_) => {
-            eprintln!("[NEORENDER] Side module eval TIMEOUT (5s): {name} — TLA unresolved");
+            eprintln!("[NEORENDER] Side module eval TIMEOUT (2s): {name} — TLA unresolved");
             None
         }
     }
 }
+
+// extract_export_names and generate_stub_module are defined above (near ScriptStore)
+// with regex support for minified JS + Proxy-based stubs for deep property access.
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or(s)
