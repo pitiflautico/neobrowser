@@ -983,6 +983,25 @@ if (!Promise.withResolvers) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 8c. ALERT/CONFIRM/PROMPT — noop stubs for headless rendering
+// ═══════════════════════════════════════════════════════════════
+
+// Pages that call alert/confirm/prompt would block in a real browser.
+// In headless mode we auto-dismiss: alert is noop, confirm always accepts,
+// prompt returns the default value.
+globalThis.alert = function(msg) {
+    try { ops.op_console_log('[alert] ' + msg); } catch {}
+};
+globalThis.confirm = function(msg) {
+    try { ops.op_console_log('[confirm] ' + msg); } catch {}
+    return true; // always accept
+};
+globalThis.prompt = function(msg, def) {
+    try { ops.op_console_log('[prompt] ' + msg); } catch {}
+    return def || '';
+};
+
+// ═══════════════════════════════════════════════════════════════
 // 9. EXPORT — render DOM as HTML for Rust to extract
 // ═══════════════════════════════════════════════════════════════
 

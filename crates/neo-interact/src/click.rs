@@ -2,6 +2,7 @@
 //!
 //! Links produce `Navigation`, submit buttons trigger form submission,
 //! and other interactive elements produce `DomChanged`.
+//! Stale elements are re-resolved once before failing.
 
 use neo_dom::DomEngine;
 
@@ -10,16 +11,22 @@ use crate::{ClickResult, InteractError};
 
 /// Click an element identified by `target`.
 ///
-/// Resolution cascade finds the element. Then determines the effect:
+/// Resolution cascade finds the element. If the element is not visible
+/// or not interactive (stale), re-resolves once. Then determines the effect:
 /// - `<a href="...">` -> `Navigation(url)`
 /// - `<button type="submit">` or `<input type="submit">` -> `Navigation(form action)`
 /// - other interactive -> `DomChanged(1)`
-/// - non-interactive -> `NotInteractive` error
+/// - non-interactive after retry -> `NotInteractive` error
 pub fn click(dom: &mut dyn DomEngine, target: &str) -> Result<ClickResult, InteractError> {
-    let el = resolve(dom, target)?;
+    let mut el = resolve(dom, target)?;
 
-    if !dom.is_interactive(el) {
-        return Err(InteractError::NotInteractive(target.to_string()));
+    // Stale recovery: if element is gone or non-interactive, re-resolve once
+    if !dom.is_visible(el) || !dom.is_interactive(el) {
+        let el2 = resolve(dom, target)?;
+        if !dom.is_interactive(el2) {
+            return Err(InteractError::NotInteractive(target.to_string()));
+        }
+        el = el2;
     }
 
     let tag = dom.tag_name(el).unwrap_or_default();

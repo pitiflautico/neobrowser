@@ -25,6 +25,11 @@ pub enum RecordedAction {
         checked: bool,
     },
     Submit(Option<String>),
+    TypeSlowly {
+        target: String,
+        text: String,
+        delay_ms: u64,
+    },
     Scroll {
         direction: ScrollDirection,
         amount: u32,
@@ -41,6 +46,13 @@ pub struct MockInteractor {
     pub submit_result: SubmitResult,
     /// Default scroll count.
     pub scroll_count: usize,
+    /// Sequence of scroll counts for `scroll_until_stable` simulation.
+    /// Each call to `scroll()` pops the next value. Falls back to `scroll_count`.
+    pub scroll_sequence: Vec<usize>,
+    /// Whether a modal is detected.
+    pub has_modal: bool,
+    /// Whether consent was dismissed.
+    pub consent_dismissed: bool,
 }
 
 impl MockInteractor {
@@ -51,6 +63,9 @@ impl MockInteractor {
             click_result: ClickResult::NoEffect,
             submit_result: SubmitResult::NoAction,
             scroll_count: 0,
+            scroll_sequence: Vec::new(),
+            has_modal: false,
+            consent_dismissed: false,
         }
     }
 }
@@ -103,9 +118,42 @@ impl Interactor for MockInteractor {
         Ok(self.submit_result.clone())
     }
 
+    fn type_slowly(&mut self, target: &str, text: &str, delay_ms: u64) -> Result<usize, InteractError> {
+        self.actions.push(RecordedAction::TypeSlowly {
+            target: target.to_string(),
+            text: text.to_string(),
+            delay_ms,
+        });
+        Ok(text.chars().count())
+    }
+
     fn scroll(&mut self, direction: ScrollDirection, amount: u32) -> Result<usize, InteractError> {
         self.actions
             .push(RecordedAction::Scroll { direction, amount });
-        Ok(self.scroll_count)
+        if !self.scroll_sequence.is_empty() {
+            Ok(self.scroll_sequence.remove(0))
+        } else {
+            Ok(self.scroll_count)
+        }
+    }
+
+    fn scroll_until_stable(&mut self, max_scrolls: u32) -> Result<usize, InteractError> {
+        let mut last_count = 0;
+        for _ in 0..max_scrolls {
+            let count = self.scroll(ScrollDirection::Down, 1)?;
+            if count == last_count {
+                break;
+            }
+            last_count = count;
+        }
+        Ok(last_count)
+    }
+
+    fn detect_modal(&self) -> Option<neo_dom::ElementId> {
+        if self.has_modal { Some(0) } else { None }
+    }
+
+    fn dismiss_consent(&mut self) -> bool {
+        self.consent_dismissed
     }
 }

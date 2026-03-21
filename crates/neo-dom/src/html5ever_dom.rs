@@ -312,6 +312,7 @@ fn collect_fields_recursive(
                 required: attrs.iter().any(|a| a.name.local.as_ref() == "required"),
                 placeholder: get("placeholder"),
                 label,
+                disabled: attrs.iter().any(|a| a.name.local.as_ref() == "disabled"),
             });
         }
     }

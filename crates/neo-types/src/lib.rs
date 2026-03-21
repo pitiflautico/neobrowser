@@ -110,6 +110,9 @@ pub struct FormField {
     pub required: bool,
     pub placeholder: Option<String>,
     pub label: Option<String>,
+    /// Whether the field is disabled (not submitted with form data).
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 /// DOM mutation detected by observer.
