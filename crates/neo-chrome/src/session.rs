@@ -184,6 +184,7 @@ impl ChromeSession {
             scripts: parsed["scripts"].as_u64().unwrap_or(0) as usize,
             errors: vec![],
             redirect_chain: vec![],
+            page_id: 0,
         })
     }
 }

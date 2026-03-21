@@ -56,6 +56,9 @@ pub struct PageResult {
     /// URLs visited during redirect chain (empty if no redirects).
     #[serde(default)]
     pub redirect_chain: Vec<String>,
+    /// Monotonically increasing page ID for freshness tracking.
+    #[serde(default)]
+    pub page_id: u64,
 }
 
 /// Entry in the network log.

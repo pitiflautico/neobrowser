@@ -11,6 +11,7 @@ mod script_exec;
 mod scripts;
 mod stub;
 
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use neo_dom::DomEngine;
@@ -60,6 +61,8 @@ pub struct NeoSession {
     pub(crate) http_cache: Option<Box<dyn HttpCache>>,
     /// Pipeline context for the current navigation (created per navigate()).
     pub(crate) pipeline_ctx: Option<PipelineContext>,
+    /// Monotonically increasing page ID, incremented on every navigate().
+    pub(crate) page_id: Arc<AtomicU64>,
 }
 
 impl NeoSession {
@@ -94,6 +97,7 @@ impl NeoSession {
             cookie_store: None,
             http_cache: None,
             pipeline_ctx: None,
+            page_id: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -128,6 +132,7 @@ impl NeoSession {
             cookie_store: None,
             http_cache: None,
             pipeline_ctx: None,
+            page_id: Arc::new(AtomicU64::new(0)),
         }
     }
 

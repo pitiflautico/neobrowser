@@ -122,6 +122,11 @@ pub trait BrowserEngine {
 
     /// Get execution summary.
     fn summary(&self) -> ExecutionSummary;
+
+    /// Current page ID (monotonically increasing, incremented on each navigate).
+    fn page_id(&self) -> u64 {
+        0
+    }
 }
 
 /// Result of a page navigation (engine-level, wraps neo-types::PageResult).
@@ -142,4 +147,7 @@ pub struct PageResult {
     /// URLs visited during redirect chain (empty if no redirects).
     #[serde(default)]
     pub redirect_chain: Vec<String>,
+    /// Monotonically increasing page ID for freshness tracking.
+    #[serde(default)]
+    pub page_id: u64,
 }

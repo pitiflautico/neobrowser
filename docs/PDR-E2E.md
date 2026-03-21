@@ -1,78 +1,142 @@
 # PDR: End-to-End Browser Functionality
 
-## Status Quo
-- Browser shim working: form.submit() triggers real HTTP navigation (tested on DDG)
-- LiveDom with typed bridge, real events, robust targeting
-- 8 MCP tools, interactive REPL, session loop
-- ~300 tests, clippy clean
-- BUG: extract after re-navigation returns stale content (uses old DOM/runtime)
+## Bug T1: RESOLVED
 
-## Critical Bug: Extract After Navigation
+### Root cause
+`bootstrap.js` uses `const` declarations. V8 doesn't allow re-declaring `const` in the same context. When `set_document_html()` re-executed bootstrap.js on re-navigation, all `const` statements silently failed → the old linkedom document stayed in place → all subsequent eval/extract returned stale content.
 
-When form.submit() triggers navigation via `process_pending_navigations()`:
-1. JS shim calls op_navigation_request with URL
-2. Rust drains queue, calls self.navigate(url)
-3. navigate() creates NEW V8 runtime, executes JS, extracts WOM
-4. BUT: the REPL's `extract text` then calls `extract_text()` which uses LiveDom on the NEW runtime
+### Fix applied
+Detect if runtime already initialized (`__neo_initialized` flag). On re-navigation, replace `document.documentElement.innerHTML` from a fresh `__linkedom_parseHTML()` call instead of re-running bootstrap.js. This preserves the linkedom environment (timers, fetch, shims) while swapping the page content.
 
-The problem: after `process_pending_navigations()` calls `self.navigate()`, the runtime is replaced. The extract should work on the NEW runtime. Need to verify the runtime reference is properly updated.
+### Layers verified
+- `self.runtime` — same V8 isolate, reused across navigations ✅
+- linkedom document — innerHTML replaced with new page content ✅
+- html5ever DOM (`self.dom`) — re-parsed on each navigate() ✅
+- WOM — re-extracted after DOM update ✅
+- History stack — new entry pushed ✅
+- Cookies — persisted in SQLite across navigations ✅
 
-Actual issue may be simpler: the REPL `extract text` calls `engine.extract_text()` which in `browser_impl.rs` reads from the runtime — if navigate() replaced self.runtime with a new one, extract_text should work. Let me trace the actual bug.
+### What's still missing: PageContext invalidation model
 
-## Tier Tasks
+## T1b: PageContext Model
 
-### T1: Fix extract-after-navigation
-- Debug why extract returns stale content after re-navigation
-- Ensure runtime, DOM, and WOM are all from the new page
-- Test: DDG type → submit → extract text → contains search results
+Every navigation produces a new PageContext. All operations must execute against the current context. Stale references are invalid.
 
-### T2: Form Benchmark (5 real sites)
-Test the full cycle: navigate → fill form → submit → verify outcome.
+```rust
+struct PageContext {
+    page_id: u64,           // monotonic, incremented on each navigate()
+    url: String,            // current page URL
+    title: String,          // current page title
+}
+// dom_version removed: no mutation tracking yet, would be dead code
+// runtime_generation removed: single runtime, no recreation
+```
 
-| Site | Form | Fields | Expected outcome |
-|------|------|--------|------------------|
-| DuckDuckGo | Search | q=query | Results page with titles |
-| Google | Search | q=query | Results page (may need consent dismiss) |
-| HN | Login | acct+pw | "Bad login" or redirect |
-| GitHub | Login | login+password | Error message or redirect |
-| httpbin.org/forms/post | POST form | All fields | Echo of submitted data |
+### Known limitation: innerHTML swap semantics
+The re-navigation uses `document.documentElement.innerHTML = newHTML`. This is a CONSCIOUS trade-off:
+- Inline `<script>` tags in new HTML are NOT re-executed (by spec, innerHTML doesn't run scripts)
+- Old event listeners on replaced nodes are garbage collected (correct)
+- Global JS state persists (window.*, vars) — this is intentional for SPA-like behavior
+- To execute new page's scripts, `execute_page_scripts()` runs them explicitly after the swap
 
-Metrics per site:
-1. Fields filled correctly (verify via eval)
-2. Submit triggered (navigation request captured)
-3. New page loaded (URL changed)
-4. Expected content on result page (observable assertion)
+### Navigation failure modes
+If re-navigation fails (timeout, DNS, HTTP 500):
+- `process_pending_navigations()` prints error to stderr
+- page_id does NOT increment (page stays on previous content)
+- No retry — caller must re-trigger navigation
+- Retry strategy is caller's responsibility (MCP tool / REPL / agent)
 
-### T3: ChatGPT Pong (external benchmark)
-- Navigate chatgpt.com (cookies auto-imported)
-- Find textarea (may be contenteditable div, not input)
-- Type message
-- Click send button
-- Wait for response (poll for new assistant message)
-- Extract reply
+### Invalidation contract
+After `navigate()`, `process_pending_navigations()`, or any action that triggers full-document navigation:
+- `page_id` increments
+- All prior selector results are invalid (re-resolve required)
+- WOM cache invalidated
+- Active frame reset to top
+- LiveDom dispatcher re-injected (if needed)
 
-This is EXTERNAL benchmark — depends on ChatGPT UI which changes frequently. Not a gate blocker but validates the full stack.
+### Freshness assertions
+Every `extract()`, `eval()`, `click()`, `type_text()` should:
+1. Record `page_id` at start of operation
+2. If `page_id` changed during operation → return `StalePageContext` error
+3. Return `page_id` in result so caller can detect staleness
 
-### T4: Multi-page session test
-Navigate → interact → navigate to different site → interact → verify cookies persisted.
-- Start at site A → extract
-- Navigate to site B → fill form → submit
-- Navigate back to site A → verify session
+Implementation: add `page_id: AtomicU64` to NeoSession, increment in `navigate()`.
 
-### T5: MCP integration test
-Test all 8 MCP tools work in sequence via the MCP server:
-1. browse(url) → WOM
-2. interact(click, selector) → result
-3. interact(type, selector, text) → ok
-4. interact(submit, selector) → navigation
-5. extract(text) → page content
-6. wait(selector, timeout) → found
-7. eval(js) → result
-8. search(query) → results
+## T2: Form Benchmark
+
+Stable sites only. No Google (consent), no ChatGPT (anti-bot). 4 metrics per site.
+
+| Site | Form | Action | M1: Fields filled | M2: Submit fired | M3: Page changed | M4: Expected content |
+|------|------|--------|-------------------|------------------|-------------------|----------------------|
+| httpbin.org/forms/post | POST form | Fill custname+custtel+comments | eval: input.value == expected | navigation request captured | page_id incremented + URL = /post | Response body contains submitted values |
+| httpbin.org/get | GET via URL | Navigate with query params | N/A | N/A | page loaded | JSON response with args |
+| HN login | Login form | Fill acct+pw, submit | eval: input.value set | navigation triggered | URL changed | Response contains "Bad login" text |
+| DuckDuckGo HTML | Search form | Fill q, submit | eval: input.value set | navigation triggered | URL contains q= param | Results page has >0 result links |
+| example.com | No form (baseline) | Navigate only | N/A | N/A | page loaded | "Example Domain" in title |
+
+### Metrics definition
+- **M1 (Fields filled)**: `eval("document.querySelector(sel).value")` returns expected text
+- **M2 (Submit fired)**: `drain_navigation_requests()` returns non-empty after submit
+- **M3 (Page changed)**: `page_id` after > `page_id` before, AND `document.title` or URL differs
+- **M4 (Expected content)**: `eval` or `extract_text` contains expected string/pattern
+
+### Pass criteria
+- 4/5 sites pass all applicable metrics
+- page_id correctly tracks navigations
+- No stale content in any extract after navigation
+
+## T3: Multi-Page Session
+
+Test cookie + session persistence across navigations.
+
+```
+1. Navigate to httpbin.org/cookies/set/testcookie/neorender_v2
+   → Assert: response confirms cookie set
+2. Navigate to httpbin.org/cookies
+   → Assert: response shows testcookie=neorender_v2
+3. Navigate to httpbin.org/get
+   → Assert: Cookie header contains testcookie=neorender_v2
+```
+
+Observable assertions:
+- Cookie visible in `document.cookie` after step 1
+- Cookie sent in request headers in step 2 (visible in httpbin response)
+- Cookie persists across 3 navigations to different paths
+
+## T4: MCP Integration Test
+
+Test all 8 tools in sequence WITH navigation between calls. Verify no stale context.
+
+```
+1. browse("https://httpbin.org/forms/post") → WOM with inputs
+2. interact(type, "input[name=custname]", "Claude") → ok
+3. eval("document.querySelector('input[name=custname]').value") → "Claude"
+4. interact(submit, "form") → navigation triggered
+5. extract(text) → contains submitted data (page_id must be new)
+6. browse("https://news.ycombinator.com") → WOM with HN content (not httpbin)
+7. extract(text) → contains "Hacker News" (not httpbin)
+8. wait("table", 5000) → found
+```
+
+Key assertions:
+- Step 5: extract returns NEW page content, not httpbin form
+- Step 6-7: after browse to different site, no residual httpbin content
+- page_id different at steps 1, 5, and 6
+
+## T5: ChatGPT Pong (EXTERNAL — not gate)
+
+Stress test only. Not blocking. Documents what works and what doesn't.
 
 ## Gate
-- DDG search works end-to-end (type → submit → results extracted)
-- 3/5 form sites pass all 4 metrics
-- Multi-page session maintains cookies
-- All existing tests pass
-- ChatGPT pong: external, not blocking
+
+### Core (blocking)
+- PageContext model implemented with page_id
+- 4/5 form benchmark sites pass all metrics
+- Multi-page cookie test passes (3 navigations, cookie persists)
+- MCP sequence test passes (8 steps, no stale content)
+- All ~338 existing tests pass
+- page_id increments correctly on every navigation
+
+### External (non-blocking)
+- ChatGPT pong
+- Mercadona.es SPA loading

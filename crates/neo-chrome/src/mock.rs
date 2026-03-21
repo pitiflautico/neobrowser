@@ -77,6 +77,7 @@ impl MockChromeSession {
             scripts: 0,
             errors: vec![],
             redirect_chain: vec![],
+            page_id: 0,
         }
     }
 
@@ -94,6 +95,7 @@ impl MockChromeSession {
             scripts: 0,
             errors: vec![],
             redirect_chain: vec![],
+            page_id: 0,
         }
     }
 }

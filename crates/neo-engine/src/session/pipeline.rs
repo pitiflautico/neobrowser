@@ -111,6 +111,7 @@ impl NeoSession {
             wom,
             errors: js_errors,
             redirect_chain,
+            page_id: self.page_id.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 

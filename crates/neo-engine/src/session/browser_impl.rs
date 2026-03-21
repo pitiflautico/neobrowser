@@ -1,6 +1,7 @@
 //! BrowserEngine trait implementation for NeoSession.
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use neo_extract::WomDocument;
@@ -17,6 +18,9 @@ use crate::{BrowserEngine, EngineError, PageResult};
 impl BrowserEngine for NeoSession {
     fn navigate(&mut self, url: &str) -> Result<PageResult, EngineError> {
         let start = Instant::now();
+
+        // Increment page_id at the start of every navigation.
+        self.page_id.fetch_add(1, Ordering::Relaxed);
 
         // Validate URL.
         url::Url::parse(url).map_err(|e| EngineError::InvalidUrl(e.to_string()))?;
@@ -456,5 +460,9 @@ impl BrowserEngine for NeoSession {
 
     fn summary(&self) -> ExecutionSummary {
         self.tracer.summary()
+    }
+
+    fn page_id(&self) -> u64 {
+        self.page_id.load(Ordering::Relaxed)
     }
 }

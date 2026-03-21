@@ -78,6 +78,7 @@ impl BrowserEngine for MockBrowserEngine {
             wom: self.wom.clone(),
             errors: Vec::new(),
             redirect_chain: Vec::new(),
+            page_id: 0,
         }))
     }
 
@@ -98,6 +99,7 @@ impl BrowserEngine for MockBrowserEngine {
             wom: self.wom.clone(),
             errors: Vec::new(),
             redirect_chain: Vec::new(),
+            page_id: 0,
         })
     }
 
@@ -119,6 +121,7 @@ impl BrowserEngine for MockBrowserEngine {
             wom: self.wom.clone(),
             errors: Vec::new(),
             redirect_chain: Vec::new(),
+            page_id: 0,
         })
     }
 
