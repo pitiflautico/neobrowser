@@ -92,6 +92,16 @@ pub trait JsRuntime: Send {
     /// Run the event loop until settled or timeout.
     fn run_until_settled(&mut self, timeout_ms: u64) -> Result<(), RuntimeError>;
 
+    /// Pump the event loop once without waiting for new events.
+    ///
+    /// Returns `true` if there was work to do (microtasks, macrotasks),
+    /// `false` if the loop was idle. Used for aggressive SPA hydration
+    /// drainage after script execution — React schedules mount via
+    /// `queueMicrotask` / `Promise.then` which need explicit pumping.
+    fn pump_event_loop(&mut self) -> Result<bool, RuntimeError> {
+        Ok(false)
+    }
+
     /// Number of pending async tasks (promises, timers, fetches).
     fn pending_tasks(&self) -> usize;
 

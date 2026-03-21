@@ -394,7 +394,100 @@ if (typeof document !== 'undefined') {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 7. SCROLL STUBS — no-op, fake layout geometry
+// 7. SPA HYDRATION STUBS — APIs needed by React/Next.js
+// ═══════════════════════════════════════════════════════════════
+
+// Service Worker
+if (typeof navigator !== 'undefined' && !navigator.serviceWorker) {
+    navigator.serviceWorker = {
+        ready: Promise.resolve({ active: null }),
+        register: function() { return Promise.resolve({}); },
+        getRegistrations: function() { return Promise.resolve([]); },
+        addEventListener: function() {},
+        removeEventListener: function() {},
+        controller: null,
+    };
+}
+
+// Crypto.subtle (needed by some apps for integrity checks)
+if (typeof crypto !== 'undefined' && !crypto.subtle) {
+    crypto.subtle = {
+        digest: function() { return Promise.resolve(new ArrayBuffer(32)); },
+        encrypt: function() { return Promise.resolve(new ArrayBuffer(0)); },
+        decrypt: function() { return Promise.resolve(new ArrayBuffer(0)); },
+        sign: function() { return Promise.resolve(new ArrayBuffer(0)); },
+        verify: function() { return Promise.resolve(false); },
+        importKey: function() { return Promise.resolve({}); },
+        exportKey: function() { return Promise.resolve({}); },
+        generateKey: function() { return Promise.resolve({}); },
+        deriveBits: function() { return Promise.resolve(new ArrayBuffer(0)); },
+        deriveKey: function() { return Promise.resolve({}); },
+    };
+}
+
+// document.createRange (React uses this for text insertion)
+if (typeof document !== 'undefined' && !document.createRange) {
+    document.createRange = function() {
+        return {
+            setStart: function() {},
+            setEnd: function() {},
+            commonAncestorContainer: document.body,
+            selectNodeContents: function() {},
+            collapse: function() {},
+            getBoundingClientRect: function() {
+                return { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
+            },
+            getClientRects: function() { return []; },
+            createContextualFragment: function(html) {
+                var tmpl = document.createElement('template');
+                tmpl.innerHTML = html;
+                return tmpl.content || document.createDocumentFragment();
+            },
+        };
+    };
+}
+
+// window.getSelection (React uses this)
+if (!globalThis.getSelection) {
+    globalThis.getSelection = function() {
+        return {
+            rangeCount: 0,
+            getRangeAt: function() { return document.createRange ? document.createRange() : {}; },
+            addRange: function() {},
+            removeAllRanges: function() {},
+            toString: function() { return ''; },
+        };
+    };
+}
+
+// queueMicrotask if missing
+if (!globalThis.queueMicrotask) {
+    globalThis.queueMicrotask = function(cb) { Promise.resolve().then(cb); };
+}
+
+// requestIdleCallback / cancelIdleCallback
+if (!globalThis.requestIdleCallback) {
+    globalThis.requestIdleCallback = function(cb) {
+        return setTimeout(function() {
+            cb({ didTimeout: false, timeRemaining: function() { return 50; } });
+        }, 0);
+    };
+    globalThis.cancelIdleCallback = function(id) { clearTimeout(id); };
+}
+
+// requestAnimationFrame / cancelAnimationFrame (may already exist but ensure)
+if (!globalThis.requestAnimationFrame) {
+    globalThis.requestAnimationFrame = function(cb) { return setTimeout(function() { cb(Date.now()); }, 0); };
+    globalThis.cancelAnimationFrame = function(id) { clearTimeout(id); };
+}
+
+// Performance API stubs
+if (!globalThis.performance) {
+    globalThis.performance = { now: function() { return Date.now(); }, mark: function() {}, measure: function() {}, getEntriesByName: function() { return []; }, getEntriesByType: function() { return []; } };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 8. SCROLL STUBS — no-op, fake layout geometry
 // ═══════════════════════════════════════════════════════════════
 
 globalThis.scrollTo = function() {};

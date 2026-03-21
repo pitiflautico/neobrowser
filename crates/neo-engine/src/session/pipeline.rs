@@ -241,6 +241,45 @@ impl NeoSession {
         }
         eprintln!("[profile] settle: {}ms", t5.elapsed().as_millis());
 
+        // Phase A: Pump microtasks aggressively — React/Next.js schedule mount
+        // via queueMicrotask/Promise.then which aren't tracked by TaskTracker.
+        let t5a = Instant::now();
+        let mut micro_rounds = 0u32;
+        for _ in 0..50 {
+            match rt.pump_event_loop() {
+                Ok(true) => micro_rounds += 1,
+                Ok(false) => break,
+                Err(e) => {
+                    neo_trace!("[SETTLE] microtask pump error at round {micro_rounds}: {e}");
+                    break;
+                }
+            }
+        }
+
+        // Phase B: Pump macrotasks — setTimeout(0), requestIdleCallback, etc.
+        let mut macro_rounds = 0u32;
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            match rt.pump_event_loop() {
+                Ok(true) => macro_rounds += 1,
+                Ok(false) => break,
+                Err(e) => {
+                    neo_trace!("[SETTLE] macrotask pump error at round {macro_rounds}: {e}");
+                    break;
+                }
+            }
+        }
+
+        // Diagnostics: node count after settle.
+        let node_count = rt
+            .eval("document.querySelectorAll('*').length")
+            .unwrap_or_else(|_| "?".to_string());
+        neo_trace!(
+            "[SETTLE] pumped {micro_rounds} microtask rounds, {macro_rounds} macrotask rounds ({}ms)",
+            t5a.elapsed().as_millis()
+        );
+        neo_trace!("[SETTLE] DOM nodes after settle: {node_count}");
+
         // Export the JS-mutated DOM and re-parse into html5ever.
         let t6 = Instant::now();
         match rt.export_html() {

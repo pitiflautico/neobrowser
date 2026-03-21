@@ -66,6 +66,25 @@ impl JsRuntimeTrait for DenoRuntime {
         })
     }
 
+    fn pump_event_loop(&mut self) -> Result<bool, RuntimeError> {
+        self.tokio_rt.block_on(async {
+            match tokio::time::timeout(
+                Duration::from_millis(5),
+                self.runtime
+                    .run_event_loop(PollEventLoopOptions {
+                        wait_for_inspector: false,
+                        pump_v8_message_loop: true,
+                    }),
+            )
+            .await
+            {
+                Ok(Ok(())) => Ok(true),
+                Ok(Err(_)) => Ok(false), // event loop error — treat as idle
+                Err(_) => Ok(true),      // timeout — there was work in progress
+            }
+        })
+    }
+
     fn run_until_settled(&mut self, timeout_ms: u64) -> Result<(), RuntimeError> {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
