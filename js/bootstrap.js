@@ -3,6 +3,26 @@
 // Runs AFTER linkedom.js. Expects __linkedom_parseHTML on globalThis.
 // V2: uses op_fetch/op_timer/op_console_log (not op_neorender_*).
 
+// ═══════════════════════════════════════════════════════════════
+// REACT INTERCEPTION PRIMITIVES — must run BEFORE any page scripts.
+// ═══════════════════════════════════════════════════════════════
+
+// READABLESTREAM PIPETHROUGH PATCH — React Router SSR does
+// stream.pipeThrough(new TextEncoderStream()) which creates V8 internal
+// pipe promises that block module evaluation. Return self (skip encoding).
+if (typeof ReadableStream !== 'undefined') {
+    ReadableStream.prototype.pipeThrough = function() { return this; };
+}
+
+// Object.prototype.getAll — React Router Early Hints calls getAll() on
+// SSR response context (not Headers). Return empty array (no hints in headless).
+if (!Object.prototype.getAll) {
+    Object.defineProperty(Object.prototype, 'getAll', {
+        value: function() { return []; },
+        configurable: true, writable: true, enumerable: false,
+    });
+}
+
 // HEADERS.GETALL POLYFILL — React Router uses getAll() which was removed from Fetch spec.
 // Must be added via defineProperty since deno_core's Headers is a native object.
 try {
@@ -14,21 +34,6 @@ try {
         }, configurable: true, writable: true
     });
 } catch {}
-
-// READABLESTREAM PIPETHROUGH PATCH — must run before ANY page scripts.
-// React Router SSR does stream.pipeThrough(new TextEncoderStream())
-// which creates V8 internal pipe promises that block module evaluation.
-// Fix: return the SAME stream (skip encoding). React Router's turbo-stream
-// decoder handles both string and Uint8Array input.
-if (typeof ReadableStream !== 'undefined') {
-    ReadableStream.prototype.pipeThrough = function(transform, options) {
-        // Return self — skip the transform entirely.
-        // The SSR stream has string chunks. turbo-stream's decode() can handle strings.
-        return this;
-    };
-}
-
-// View Transitions API polyfill is in layout.js (needs document to exist first)
 
 // ═══════════════════════════════════════════════════════════════
 // 0. ERROR ISOLATION — catch uncaught errors without crashing
@@ -96,6 +101,16 @@ if (__win && __win !== globalThis) {
     }
 }
 try { document.defaultView = globalThis; } catch {}
+
+// ViewTransition API — React 19 uses document.startViewTransition for route changes.
+if (typeof document !== 'undefined' && !document.startViewTransition) {
+    document.startViewTransition = function(cbOrOpts) {
+        const cb = typeof cbOrOpts === 'function' ? cbOrOpts : cbOrOpts?.update;
+        const result = cb ? cb() : undefined;
+        const done = result instanceof Promise ? result : Promise.resolve();
+        return { finished: done, ready: Promise.resolve(), updateCallbackDone: done, skipTransition: function() {} };
+    };
+}
 
 // Export DOM class constructors from linkedom to globalThis (Twitch, Web Components, etc.)
 for (const cls of ['EventTarget','Node','Element','HTMLElement','HTMLDivElement','HTMLSpanElement',

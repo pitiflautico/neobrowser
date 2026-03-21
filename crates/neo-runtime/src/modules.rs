@@ -1,8 +1,4 @@
-//! ES module loader — serves scripts from in-memory store.
-//!
-//! NeoModuleLoader resolves imports from pre-fetched scripts,
-//! fetches missing modules on-demand, applies source transforms,
-//! and integrates with V8 bytecode cache for fast repeat loads.
+//! ES module loader — serves scripts from in-memory store with page origin fallback.
 
 use deno_core::{
     ModuleLoadResponse, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
@@ -23,26 +19,32 @@ pub use crate::imports::extract_es_imports;
 /// Pre-fetched script contents keyed by URL.
 #[derive(Default)]
 pub struct ScriptStore {
-    /// URL -> JavaScript source code.
     pub scripts: HashMap<String, String>,
-    /// URLs that returned non-JS content (HTML) — skip on repeat.
     pub failed_urls: HashSet<String>,
-    /// URLs of heavy modules to stub instead of parsing.
     pub stub_modules: HashSet<String>,
 }
 
-/// Shared handle to the script store.
 pub type ScriptStoreHandle = Rc<RefCell<ScriptStore>>;
+pub type PageOriginHandle = Rc<RefCell<String>>;
 
 /// Module loader that serves pre-fetched scripts as ES modules.
 pub struct NeoModuleLoader {
-    /// Shared script store.
     pub store: ScriptStoreHandle,
-    /// Optional V8 bytecode cache for compiled code.
     pub code_cache: Option<Rc<V8CodeCache>>,
+    /// Page origin for resolving `/path` specifiers. Shared with DenoRuntime.
+    pub page_origin: PageOriginHandle,
 }
 
 impl NeoModuleLoader {
+    /// Resolve an absolute path against the page origin.
+    fn resolve_with_origin(&self, specifier: &str) -> Option<ModuleSpecifier> {
+        let origin = self.page_origin.borrow();
+        if origin.is_empty() {
+            return None;
+        }
+        ModuleSpecifier::parse(&format!("{}{}", origin, specifier)).ok()
+    }
+
     /// Build cache info for a module: hash source, look up cached bytecode.
     fn make_cache_info(&self, url: &str, source: &str) -> Option<SourceCodeCacheInfo> {
         let cache = self.code_cache.as_ref()?;
@@ -56,14 +58,32 @@ impl NeoModuleLoader {
 }
 
 impl deno_core::ModuleLoader for NeoModuleLoader {
+    /// R7d: Resolve with page origin fallback for absolute paths.
     fn resolve(
         &self,
         specifier: &str,
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, deno_core::error::AnyError> {
-        deno_core::resolve_import(specifier, referrer)
-            .map_err(|e| deno_core::error::generic_error(e.to_string()))
+        // Absolute paths from non-http referrer (e.g. `<eval>`) → page origin.
+        if specifier.starts_with('/') && !referrer.starts_with("http") {
+            if let Some(spec) = self.resolve_with_origin(specifier) {
+                return Ok(spec);
+            }
+        }
+        // Standard resolution (relative against referrer, full URLs as-is).
+        if let Ok(spec) = deno_core::resolve_import(specifier, referrer) {
+            return Ok(spec);
+        }
+        // Absolute paths fallback when standard resolve fails.
+        if specifier.starts_with('/') {
+            if let Some(spec) = self.resolve_with_origin(specifier) {
+                return Ok(spec);
+            }
+        }
+        Err(deno_core::error::generic_error(format!(
+            "cannot resolve '{specifier}' from '{referrer}'"
+        )))
     }
 
     fn load(
@@ -156,9 +176,6 @@ pub fn rewrite_promise_all_settled(code: &str) -> String {
 }
 
 /// Extract named export identifiers from JS module source.
-///
-/// Handles: `export{a as b,c}`, `export function x`,
-/// `export const x`, `export default`, and re-exports.
 pub fn extract_export_names(js: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
@@ -202,10 +219,7 @@ pub fn extract_export_names(js: &str) -> Vec<String> {
     names
 }
 
-/// Generate a stub ES module with no-op exports.
-///
-/// Property access on any export returns a no-op function
-/// (handles chained calls like `telemetry.instance.addFirstTiming()`).
+/// Generate a stub ES module with no-op exports (Proxy-based).
 pub fn generate_stub_module(export_names: &[String]) -> String {
     let mut parts = Vec::new();
     parts.push(
@@ -257,5 +271,30 @@ mod tests {
         let stub = generate_stub_module(&names);
         assert!(stub.contains("const foo=_o;"));
         assert!(stub.contains("export default _o;"));
+    }
+
+    fn make_loader(origin: &str) -> NeoModuleLoader {
+        NeoModuleLoader {
+            store: Rc::new(RefCell::new(ScriptStore::default())),
+            code_cache: None,
+            page_origin: Rc::new(RefCell::new(origin.to_string())),
+        }
+    }
+
+    #[test]
+    fn test_resolve_absolute_path_with_origin() {
+        use deno_core::ModuleLoader;
+        let loader = make_loader("https://example.com");
+        let r = loader.resolve("/cdn/bundle.js", "file:///<eval>", ResolutionKind::Import);
+        assert_eq!(r.unwrap().to_string(), "https://example.com/cdn/bundle.js");
+    }
+
+    #[test]
+    fn test_resolve_bare_specifier_fails() {
+        use deno_core::ModuleLoader;
+        let loader = make_loader("");
+        assert!(loader
+            .resolve("react", "file:///<eval>", ResolutionKind::Import)
+            .is_err());
     }
 }

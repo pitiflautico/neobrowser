@@ -1,0 +1,14 @@
+<html><head><title>SSR Title</title></head>
+<body>
+<div id="root">Server Rendered</div>
+<script>
+  window.__reactRouterContext = { basename: "/", ssr: true };
+  window.__reactRouterManifest = { entry: { module: "/entry.js" } };
+</script>
+<script type="module">
+  import "/manifest.js";
+  import * as route0 from "/route0.js";
+  window.__reactRouterRouteModules = { "root": route0 };
+  import("/entry.js");
+</script>
+</body></html>

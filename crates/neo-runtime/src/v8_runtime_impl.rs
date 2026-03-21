@@ -119,6 +119,11 @@ impl JsRuntimeTrait for DenoRuntime {
         self.timer_budget.reset();
         self.tracker.reset();
 
+        // R7d: Set page origin for module resolution.
+        if let Ok(parsed) = url::Url::parse(url) {
+            *self.page_origin.borrow_mut() = parsed.origin().ascii_serialization();
+        }
+
         let escaped = html
             .replace('\\', "\\\\")
             .replace('`', "\\`")

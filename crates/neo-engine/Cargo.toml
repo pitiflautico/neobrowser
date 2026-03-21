@@ -18,3 +18,4 @@ url.workspace = true
 html5ever = "0.38"
 markup5ever_rcdom = "0.38"
 dirs = "5"
+regex-lite = "0.1"

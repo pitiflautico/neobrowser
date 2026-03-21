@@ -4,6 +4,7 @@
 //! into the navigation lifecycle.
 
 mod browser_impl;
+mod hydration;
 mod pipeline;
 mod prefetch;
 mod script_exec;

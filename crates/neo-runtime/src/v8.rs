@@ -40,6 +40,8 @@ pub struct DenoRuntime {
     pub(crate) runtime: deno_core::JsRuntime,
     /// Shared script store for module loading.
     pub(crate) store: ScriptStoreHandle,
+    /// Shared page origin for module resolution (R7d).
+    pub(crate) page_origin: crate::modules::PageOriginHandle,
     /// Task tracker for pending async work.
     pub(crate) tracker: TaskTracker,
     /// Timer budget for per-page tick limits.
@@ -85,6 +87,7 @@ impl DenoRuntime {
         scheduler_config: SchedulerConfig,
     ) -> Result<Self, RuntimeError> {
         let store = Rc::new(RefCell::new(crate::modules::ScriptStore::default()));
+        let page_origin = Rc::new(RefCell::new(String::new()));
 
         let code_cache = config
             .cache_dir
@@ -95,6 +98,7 @@ impl DenoRuntime {
         let loader = NeoModuleLoader {
             store: store.clone(),
             code_cache,
+            page_origin: page_origin.clone(),
         };
 
         let mut runtime = deno_core::JsRuntime::new(RuntimeOptions {
@@ -147,6 +151,7 @@ impl DenoRuntime {
         Ok(Self {
             runtime,
             store,
+            page_origin,
             tracker,
             timer_budget,
             tokio_rt,
