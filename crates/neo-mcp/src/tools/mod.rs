@@ -2,6 +2,7 @@
 
 pub mod browse;
 pub mod extract;
+pub mod import_cookies;
 pub mod interact;
 pub mod search;
 pub mod trace;
@@ -26,6 +27,7 @@ pub fn list_tools() -> Value {
         extract::definition(),
         search::definition(),
         trace::definition(),
+        import_cookies::definition(),
     ];
 
     let entries: Vec<Value> = tools
@@ -50,6 +52,7 @@ pub fn call_tool(name: &str, args: Value, state: &mut McpState) -> Result<Value,
         "extract" => extract::call(args, state),
         "search" => search::call(args, state),
         "trace" => trace::call(args, state),
+        "import_cookies" => import_cookies::call(args),
         other => Err(McpError::UnknownTool(other.to_string())),
     }
 }

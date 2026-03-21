@@ -34,11 +34,37 @@ impl BrowserEngine for NeoSession {
         // 3. Build request, inject cookies and cache headers.
         let mut req = self.build_nav_request(url);
 
-        // 3a. Inject cookies from store.
+        // 3a. Inject cookies from store (auto-import from Chrome if empty).
         if let Some(ref store) = self.cookie_store {
             let is_top = req.context.kind == RequestKind::Navigation;
             let tlu = req.context.top_level_url.clone();
-            let cookie_header = store.get_for_request(&req.url, tlu.as_deref(), is_top);
+            let mut cookie_header = store.get_for_request(&req.url, tlu.as_deref(), is_top);
+
+            // Auto-import from Chrome if no cookies found for this domain.
+            if cookie_header.is_empty() {
+                if let Some(domain) = url::Url::parse(url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(|h| h.to_string()))
+                {
+                    let profile = std::env::var("NEORENDER_CHROME_PROFILE")
+                        .unwrap_or_else(|_| "Profile 24".to_string());
+                    let importer =
+                        neo_http::ChromeCookieImporter::new(&profile, Some(&domain));
+                    if let Ok(cookies) = importer.import() {
+                        if !cookies.is_empty() {
+                            eprintln!(
+                                "[NeoRender] Auto-imported {} cookies for {domain} from Chrome \"{profile}\"",
+                                cookies.len()
+                            );
+                            store.import(&cookies);
+                            cookie_header =
+                                store.get_for_request(&req.url, tlu.as_deref(), is_top);
+                        }
+                    }
+                    // Silently ignore import failures.
+                }
+            }
+
             if !cookie_header.is_empty() {
                 req.headers.insert("cookie".to_string(), cookie_header);
             }

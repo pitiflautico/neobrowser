@@ -3,8 +3,10 @@
 //! Provides [`SqliteCookieStore`] backed by SQLite for persistent
 //! cookie storage with SameSite context awareness.
 
+pub mod chrome;
 mod sqlite;
 
+pub use chrome::ChromeCookieImporter;
 pub use sqlite::SqliteCookieStore;
 
 /// Check if a cookie domain matches a request URL's host.

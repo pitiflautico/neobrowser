@@ -7,7 +7,7 @@ use neo_dom::Html5everDom;
 use neo_engine::config::EngineConfig;
 use neo_engine::{BrowserEngine, NeoSession};
 use neo_extract::DefaultExtractor;
-use neo_http::{DiskCache, RquestClient, SqliteCookieStore};
+use neo_http::{CookieStore, DiskCache, RquestClient, SqliteCookieStore};
 use neo_interact::DomInteractor;
 use neo_trace::file_tracer::FileTracer;
 use neo_trace::noop::NoopTracer;
@@ -19,6 +19,7 @@ fn main() {
         Some("mcp") => run_mcp(),
         Some("see") => run_see(&args),
         Some("search") => run_search(&args),
+        Some("import-cookies") => run_import_cookies(&args),
         Some("--help") | Some("-h") | None => print_help(),
         Some(cmd) => {
             eprintln!("Unknown command: {cmd}");
@@ -217,6 +218,86 @@ fn run_search(args: &[String]) {
     }
 }
 
+fn run_import_cookies(args: &[String]) {
+    // Parse: neorender import-cookies --chrome-profile <name> [--domain <domain>]
+    let mut profile: Option<&str> = None;
+    let mut domain: Option<&str> = None;
+    let mut i = 2;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--chrome-profile" => {
+                i += 1;
+                profile = args.get(i).map(|s| s.as_str());
+            }
+            "--domain" => {
+                i += 1;
+                domain = args.get(i).map(|s| s.as_str());
+            }
+            _ => {
+                eprintln!("Unknown flag: {}", args[i]);
+                eprintln!(
+                    "Usage: neorender import-cookies --chrome-profile <name> [--domain <domain>]"
+                );
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    let profile = match profile {
+        Some(p) => p,
+        None => {
+            eprintln!(
+                "Usage: neorender import-cookies --chrome-profile <name> [--domain <domain>]"
+            );
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!(
+        "[NeoRender] Importing cookies from Chrome profile \"{}\"{}",
+        profile,
+        domain
+            .map(|d| format!(" (domain: {d})"))
+            .unwrap_or_default()
+    );
+
+    let importer = neo_http::ChromeCookieImporter::new(profile, domain);
+    let cookies = match importer.import() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[NeoRender] Chrome import failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if cookies.is_empty() {
+        eprintln!("[NeoRender] No cookies found.");
+        return;
+    }
+
+    // Print summary per domain (name only, never values).
+    let mut by_domain: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for c in &cookies {
+        by_domain.entry(&c.domain).or_default().push(&c.name);
+    }
+    for (dom, names) in &by_domain {
+        eprintln!("  {dom}: {} cookies", names.len());
+    }
+
+    // Convert to neo_types::Cookie (already the right type) and import.
+    let store = SqliteCookieStore::default_store()
+        .expect("failed to open cookie store at ~/.neorender/cookies.db");
+    store.import(&cookies);
+
+    eprintln!(
+        "[NeoRender] Imported {} cookies into ~/.neorender/cookies.db",
+        cookies.len()
+    );
+}
+
 fn print_help() {
     println!("NeoRender V2 — AI Browser Engine");
     println!();
@@ -226,5 +307,9 @@ fn print_help() {
     println!("  neorender see --cookies <file> <url>     Import cookies from JSON, then navigate");
     println!("  neorender search <query> [--num N] [--deep] [--deep-num N]");
     println!("                                           Search the web via DuckDuckGo");
+    println!(
+        "  neorender import-cookies --chrome-profile <name> [--domain <domain>]"
+    );
+    println!("                                           Import cookies from Chrome profile");
     println!("  neorender --help                         Show this help");
 }
