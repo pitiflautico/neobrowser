@@ -78,3 +78,14 @@ Para cada Tier:
 - actions: type, select, check, submit
 - Todos los hidratadores de V1 portados
 - 10/10 top sites funcionando
+
+### Fase C Results
+**Paso 5**: Pipeline 9/9 neo-runtime + neo-engine ✅
+**Paso 6**: 206 workspace tests pass ✅
+**Paso 7**: GPT review — said "not closed" → added 4 gate tests
+**Paso 8**: Updated docs
+**Paso 9**: tier-gate.sh 8/8 PASS ✅
+
+Checklist: 9/9 steps completed correctly.
+
+### Next: Fase D (R7a-R7d React hydration) — following recipe
