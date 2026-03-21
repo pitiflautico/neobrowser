@@ -465,34 +465,101 @@ impl NeoSession {
         };
 
         // For GET form submits, append form_data as query string.
-        let url = if nav_type == "form_submit" {
-            let method = nav["method"].as_str().unwrap_or("GET");
-            if method == "GET" {
-                if let Some(form_data) = nav["form_data"].as_object() {
-                    let params: Vec<String> = form_data.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|val| format!("{}={}", k, url::form_urlencoded::byte_serialize(val.as_bytes()).collect::<String>())))
-                        .collect();
-                    if !params.is_empty() {
-                        let sep = if url.contains('?') { "&" } else { "?" };
-                        format!("{url}{sep}{}", params.join("&"))
-                    } else {
-                        url
-                    }
+        let form_method = if nav_type == "form_submit" {
+            nav["method"].as_str().unwrap_or("GET").to_uppercase()
+        } else {
+            "GET".to_string()
+        };
+        let url = if nav_type == "form_submit" && form_method == "GET" {
+            if let Some(form_data) = nav["form_data"].as_object() {
+                let params: Vec<String> = form_data.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|val| format!("{}={}", k, url::form_urlencoded::byte_serialize(val.as_bytes()).collect::<String>())))
+                    .collect();
+                if !params.is_empty() {
+                    let sep = if url.contains('?') { "&" } else { "?" };
+                    format!("{url}{sep}{}", params.join("&"))
                 } else {
                     url
                 }
             } else {
-                url // TODO: POST form data in body
+                url
             }
         } else {
-            url
+            url // POST: URL stays clean, body sent separately
         };
 
         eprintln!("[NeoRender] Navigation triggered by JS ({nav_type}): {url}");
 
-        // For form_submit with POST, we'd need to send form data.
-        // For now, do a GET navigation to the URL.
-        // TODO: support POST with form_data from the nav request.
+        // For POST form submits, build a custom request with body.
+        if nav_type == "form_submit" && form_method == "POST" {
+            let mut req = self.build_nav_request(&url);
+            req.method = "POST".to_string();
+            // Encode body as application/x-www-form-urlencoded
+            if let Some(form_data) = nav["form_data"].as_object() {
+                let mut pairs: Vec<String> = Vec::new();
+                for (k, v) in form_data.iter() {
+                    let enc_k: String = url::form_urlencoded::byte_serialize(k.as_bytes()).collect();
+                    match v {
+                        serde_json::Value::Array(arr) => {
+                            for item in arr {
+                                if let Some(val) = item.as_str() {
+                                    let enc_v: String = url::form_urlencoded::byte_serialize(val.as_bytes()).collect();
+                                    pairs.push(format!("{enc_k}={enc_v}"));
+                                }
+                            }
+                        }
+                        _ => {
+                            let val = v.as_str().unwrap_or("");
+                            let enc_v: String = url::form_urlencoded::byte_serialize(val.as_bytes()).collect();
+                            pairs.push(format!("{enc_k}={enc_v}"));
+                        }
+                    }
+                }
+                req.body = Some(pairs.join("&"));
+                req.headers.insert("content-type".to_string(),
+                    "application/x-www-form-urlencoded".to_string());
+            }
+            // Inject cookies
+            if let Some(ref store) = self.cookie_store {
+                let is_top = req.context.kind == RequestKind::Navigation;
+                let tlu = req.context.top_level_url.clone();
+                let cookie_header = store.get_for_request(&req.url, tlu.as_deref(), is_top);
+                if !cookie_header.is_empty() {
+                    req.headers.insert("cookie".to_string(), cookie_header);
+                }
+            }
+            let start = Instant::now();
+            match self.http.request(&req) {
+                Ok(response) => {
+                    self.network_log.push(NetworkLogEntry {
+                        url: req.url.clone(),
+                        method: req.method.clone(),
+                        status: response.status,
+                        duration_ms: response.duration_ms,
+                        kind: format!("{:?}", req.context.kind),
+                        initiator: "form_submit_post".to_string(),
+                    });
+                    self.lifecycle
+                        .transition(PageState::Loading, "POST response received");
+                    match self.finish_navigate(&url, response, start, Vec::new()) {
+                        Ok(result) => {
+                            eprintln!(
+                                "[NeoRender] POST navigated: {} ({}, {}ms)",
+                                result.title, result.url, result.render_ms
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("[NeoRender] POST navigation failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[NeoRender] POST request failed: {e}");
+                }
+            }
+            return;
+        }
+
         match self.navigate(&url) {
             Ok(result) => {
                 eprintln!(

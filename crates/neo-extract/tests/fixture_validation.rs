@@ -389,3 +389,141 @@ fn interactive_page_has_select() {
     let select = dom.query_selector("select");
     assert!(select.is_some(), "interactive_page should have a select element");
 }
+
+// ── form_complete.html — WOM enrichment fields ─────────────────────────
+
+fn form_complete_wom() -> neo_extract::WomDocument {
+    let dom = load_fixture("form_complete.html");
+    let ext = DefaultExtractor::new();
+    ext.extract_wom(&dom)
+}
+
+fn find_node_by_name<'a>(wom: &'a neo_extract::WomDocument, name: &str) -> &'a neo_extract::WomNode {
+    wom.nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some(name))
+        .unwrap_or_else(|| panic!("WOM node with name='{}' not found", name))
+}
+
+#[test]
+fn form_complete_email_field() {
+    let wom = form_complete_wom();
+    let email = find_node_by_name(&wom, "email");
+    assert_eq!(email.input_type.as_deref(), Some("email"));
+    assert!(email.required, "email should be required");
+    assert_eq!(email.placeholder.as_deref(), Some("you@example.com"));
+    assert_eq!(email.autocomplete.as_deref(), Some("email"));
+    assert!(!email.disabled);
+    assert!(!email.readonly);
+}
+
+#[test]
+fn form_complete_password_field() {
+    let wom = form_complete_wom();
+    let pw = find_node_by_name(&wom, "password");
+    assert_eq!(pw.input_type.as_deref(), Some("password"));
+    assert!(pw.required);
+    assert_eq!(pw.minlength, Some(8));
+    assert_eq!(pw.maxlength, Some(100));
+    assert_eq!(pw.placeholder.as_deref(), Some("Password"));
+}
+
+#[test]
+fn form_complete_phone_field() {
+    let wom = form_complete_wom();
+    let phone = find_node_by_name(&wom, "phone");
+    assert_eq!(phone.pattern.as_deref(), Some("[0-9]{10}"));
+    assert_eq!(phone.placeholder.as_deref(), Some("Phone"));
+    assert!(!phone.required);
+}
+
+#[test]
+fn form_complete_age_field() {
+    let wom = form_complete_wom();
+    let age = find_node_by_name(&wom, "age");
+    assert_eq!(age.input_type.as_deref(), Some("number"));
+    assert_eq!(age.min.as_deref(), Some("18"));
+    assert_eq!(age.max.as_deref(), Some("120"));
+}
+
+#[test]
+fn form_complete_checkbox_terms() {
+    let wom = form_complete_wom();
+    let terms = find_node_by_name(&wom, "terms");
+    assert_eq!(terms.input_type.as_deref(), Some("checkbox"));
+    assert_eq!(terms.checked, Some(false), "terms checkbox has no checked attr");
+    assert!(terms.required);
+}
+
+#[test]
+fn form_complete_radio_basic() {
+    let wom = form_complete_wom();
+    // Find the radio with value="basic"
+    let basic = wom
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("plan") && n.value.as_deref() == Some("basic"))
+        .expect("radio plan=basic not found");
+    assert_eq!(basic.input_type.as_deref(), Some("radio"));
+    assert_eq!(basic.checked, Some(true), "basic radio should be checked");
+}
+
+#[test]
+fn form_complete_radio_pro() {
+    let wom = form_complete_wom();
+    let pro = wom
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("plan") && n.value.as_deref() == Some("pro"))
+        .expect("radio plan=pro not found");
+    assert_eq!(pro.checked, Some(false), "pro radio should not be checked");
+}
+
+#[test]
+fn form_complete_select_country() {
+    let wom = form_complete_wom();
+    let country = find_node_by_name(&wom, "country");
+    assert_eq!(country.tag, "select");
+    assert_eq!(country.options.len(), 3, "country select should have 3 options");
+    assert_eq!(country.options[0].value, "ES");
+    assert_eq!(country.options[0].text, "Spain");
+    assert!(country.options[0].selected, "ES should be selected");
+    assert!(!country.options[1].selected, "US should not be selected");
+    assert!(!country.options[2].selected, "UK should not be selected");
+}
+
+#[test]
+fn form_complete_textarea_bio() {
+    let wom = form_complete_wom();
+    let bio = find_node_by_name(&wom, "bio");
+    assert_eq!(bio.tag, "textarea");
+    assert_eq!(bio.placeholder.as_deref(), Some("Tell us about yourself"));
+    assert_eq!(bio.maxlength, Some(500));
+}
+
+#[test]
+fn form_complete_readonly_field() {
+    let wom = form_complete_wom();
+    let ro = find_node_by_name(&wom, "readonly_field");
+    assert!(ro.readonly, "readonly_field should have readonly=true");
+    assert!(!ro.disabled);
+}
+
+#[test]
+fn form_complete_disabled_field() {
+    let wom = form_complete_wom();
+    let dis = find_node_by_name(&wom, "disabled_field");
+    assert!(dis.disabled, "disabled_field should have disabled=true");
+    assert!(!dis.readonly);
+}
+
+#[test]
+fn form_complete_submit_button() {
+    let wom = form_complete_wom();
+    let btn = wom
+        .nodes
+        .iter()
+        .find(|n| n.tag == "button" && n.input_type.as_deref() == Some("submit"))
+        .expect("submit button not found");
+    assert_eq!(btn.label, "Sign Up");
+}

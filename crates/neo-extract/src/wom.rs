@@ -8,6 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::wom_builder::{build_node, generate_summary, stable_id, LANDMARK_TAGS};
 
+/// A single `<option>` inside a `<select>`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SelectOption {
+    pub value: String,
+    pub text: String,
+    pub selected: bool,
+}
+
 /// One interactive or informational element in the WOM.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WomNode {
@@ -31,6 +39,39 @@ pub struct WomNode {
     pub visible: bool,
     /// Whether the element is interactive.
     pub interactive: bool,
+    // -- Form enrichment fields --
+    /// Input type attribute: "text", "email", "password", "checkbox", etc.
+    pub input_type: Option<String>,
+    /// Input name attribute.
+    pub name: Option<String>,
+    /// Checkbox/radio checked state.
+    pub checked: Option<bool>,
+    /// Option selected state.
+    pub selected: Option<bool>,
+    /// Whether the field is required.
+    pub required: bool,
+    /// Whether the field is disabled.
+    pub disabled: bool,
+    /// Whether the field is readonly.
+    pub readonly: bool,
+    /// Placeholder text.
+    pub placeholder: Option<String>,
+    /// Validation pattern.
+    pub pattern: Option<String>,
+    /// Minimum value (for number/date inputs).
+    pub min: Option<String>,
+    /// Maximum value (for number/date inputs).
+    pub max: Option<String>,
+    /// Minimum length.
+    pub minlength: Option<i32>,
+    /// Maximum length.
+    pub maxlength: Option<i32>,
+    /// Autocomplete hint.
+    pub autocomplete: Option<String>,
+    /// Associated form id.
+    pub form_id: Option<String>,
+    /// Options for `<select>` elements.
+    pub options: Vec<SelectOption>,
 }
 
 /// The full WOM document -- what the AI sees for a page.
@@ -86,6 +127,22 @@ pub fn build_wom(dom: &dyn DomEngine, url: &str) -> WomDocument {
             actions: vec!["click".to_string(), "navigate".to_string()],
             visible: true,
             interactive: true,
+            input_type: None,
+            name: None,
+            checked: None,
+            selected: None,
+            required: false,
+            disabled: false,
+            readonly: false,
+            placeholder: None,
+            pattern: None,
+            min: None,
+            max: None,
+            minlength: None,
+            maxlength: None,
+            autocomplete: None,
+            form_id: None,
+            options: Vec::new(),
         });
         idx += 1;
     }
@@ -104,6 +161,22 @@ pub fn build_wom(dom: &dyn DomEngine, url: &str) -> WomDocument {
             actions: vec!["submit".to_string(), "fill".to_string()],
             visible: true,
             interactive: true,
+            input_type: None,
+            name: None,
+            checked: None,
+            selected: None,
+            required: false,
+            disabled: false,
+            readonly: false,
+            placeholder: None,
+            pattern: None,
+            min: None,
+            max: None,
+            minlength: None,
+            maxlength: None,
+            autocomplete: None,
+            form_id: None,
+            options: Vec::new(),
         });
         idx += 1;
     }
@@ -123,6 +196,22 @@ pub fn build_wom(dom: &dyn DomEngine, url: &str) -> WomDocument {
                 actions: vec![],
                 visible: dom.is_visible(el),
                 interactive: false,
+                input_type: None,
+                name: None,
+                checked: None,
+                selected: None,
+                required: false,
+                disabled: false,
+                readonly: false,
+                placeholder: None,
+                pattern: None,
+                min: None,
+                max: None,
+                minlength: None,
+                maxlength: None,
+                autocomplete: None,
+                form_id: None,
+                options: Vec::new(),
             });
             idx += 1;
         }

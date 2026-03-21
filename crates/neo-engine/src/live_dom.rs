@@ -315,14 +315,20 @@ const DISPATCHER_JS: &str = r#"
       if (el.type === 'checkbox' || el.type === 'radio') {
         if (el.checked) data[el.name] = el.value || 'on';
       } else {
-        data[el.name] = el.value || '';
+        // Support multiple values with same name (e.g. multi-select)
+        if (data[el.name] !== undefined) {
+          if (!Array.isArray(data[el.name])) data[el.name] = [data[el.name]];
+          data[el.name].push(el.value || '');
+        } else {
+          data[el.name] = el.value || '';
+        }
       }
     }
     // Include submitter value
     if (submitter && submitter.name) data[submitter.name] = submitter.value || '';
 
-    var action = (submitter && submitter.formAction) || form.action || location.href;
-    var method = ((submitter && submitter.formMethod) || form.method || 'GET').toUpperCase();
+    var action = (submitter && submitter.formAction) || form.getAttribute('action') || form.action || location.href;
+    var method = ((submitter && submitter.formMethod) || form.getAttribute('method') || form.method || 'GET').toUpperCase();
 
     globalThis.__neo_ops.op_navigation_request(JSON.stringify({
       url: action, method: method, form_data: data, type: 'form_submit'

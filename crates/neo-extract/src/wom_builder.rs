@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use neo_dom::{DomEngine, ElementId};
 
-use crate::wom::WomNode;
+use crate::wom::{SelectOption, WomNode};
 
 /// Landmark tag -> ARIA role mapping.
 pub(crate) const LANDMARK_TAGS: &[(&str, &str)] = &[
@@ -37,6 +37,85 @@ pub(crate) fn build_node(dom: &dyn DomEngine, el: ElementId, idx: usize) -> Opti
     let parent_tag = "body"; // simplified -- real parent tracking needs tree walk
     let id = stable_id(&tag, &label, parent_tag, idx);
 
+    // -- Form enrichment --
+    let is_form_element = matches!(tag.as_str(), "input" | "select" | "textarea" | "button");
+
+    let input_type = if is_form_element {
+        dom.get_attribute(el, "type")
+    } else {
+        None
+    };
+
+    let name = if is_form_element {
+        dom.get_attribute(el, "name")
+    } else {
+        None
+    };
+
+    let has_attr = |attr: &str| dom.get_attribute(el, attr).is_some();
+
+    let checked = if matches!(input_type.as_deref(), Some("checkbox") | Some("radio")) {
+        Some(has_attr("checked"))
+    } else {
+        None
+    };
+
+    let selected = None; // Only relevant for <option>, handled below for <select>
+
+    let required = is_form_element && has_attr("required");
+    let disabled = is_form_element && has_attr("disabled");
+    let readonly = is_form_element && has_attr("readonly");
+
+    let placeholder = if is_form_element {
+        dom.get_attribute(el, "placeholder")
+    } else {
+        None
+    };
+    let pattern = if is_form_element {
+        dom.get_attribute(el, "pattern")
+    } else {
+        None
+    };
+    let min = if is_form_element {
+        dom.get_attribute(el, "min")
+    } else {
+        None
+    };
+    let max = if is_form_element {
+        dom.get_attribute(el, "max")
+    } else {
+        None
+    };
+    let minlength = if is_form_element {
+        dom.get_attribute(el, "minlength").and_then(|v| v.parse::<i32>().ok())
+    } else {
+        None
+    };
+    let maxlength = if is_form_element {
+        dom.get_attribute(el, "maxlength").and_then(|v| v.parse::<i32>().ok())
+    } else {
+        None
+    };
+    let autocomplete = if is_form_element {
+        dom.get_attribute(el, "autocomplete")
+    } else {
+        None
+    };
+
+    // form_id: explicit form= attribute, or find enclosing <form> id
+    let form_id = if is_form_element {
+        dom.get_attribute(el, "form").or_else(|| find_parent_form_id(dom, el))
+    } else {
+        None
+    };
+
+    // For <select>: collect <option> children
+    let options = if tag == "select" {
+        collect_select_options(dom, el)
+    } else {
+        Vec::new()
+    };
+
     Some(WomNode {
         id,
         tag,
@@ -47,6 +126,22 @@ pub(crate) fn build_node(dom: &dyn DomEngine, el: ElementId, idx: usize) -> Opti
         actions,
         visible,
         interactive,
+        input_type,
+        name,
+        checked,
+        selected,
+        required,
+        disabled,
+        readonly,
+        placeholder,
+        pattern,
+        min,
+        max,
+        minlength,
+        maxlength,
+        autocomplete,
+        form_id,
+        options,
     })
 }
 
@@ -100,6 +195,66 @@ fn infer_actions(tag: &str, input_type: Option<&str>) -> Vec<String> {
         "form" => vec!["submit".to_string(), "fill".to_string()],
         _ => vec![],
     }
+}
+
+/// Find the parent `<form>` element's id for a given element.
+///
+/// Walks all forms in the DOM and checks if this element is a descendant.
+/// Returns the form's id attribute if found.
+fn find_parent_form_id(dom: &dyn DomEngine, el: ElementId) -> Option<String> {
+    // Get the element's inner_html fingerprint to match against form children.
+    // Since we don't have real parent pointers, iterate all forms and check
+    // if this element index appears among their descendant inputs/selects/textareas.
+    let forms = dom.get_forms();
+    let form_elements = dom.query_selector_all("form");
+
+    for (fi, form) in forms.iter().enumerate() {
+        if let Some(form_el) = form_elements.get(fi) {
+            // Check if this element is inside this form by seeing if the form
+            // contains an input/select/textarea/button with the same name+type combo.
+            // Simple heuristic: use the flat list — elements inside a form appear
+            // between form_el and the next sibling form or end.
+            // Better approach: if element index > form_el index, it might be inside.
+            if el > *form_el {
+                return form.id.clone();
+            }
+        }
+    }
+    None
+}
+
+/// Collect `<option>` children from a `<select>` element.
+fn collect_select_options(dom: &dyn DomEngine, select_el: ElementId) -> Vec<SelectOption> {
+    // Find all <option> elements that come after this <select> and before the next
+    // non-option element. Since html5ever flattens into a list where children follow
+    // parent, we walk forward from select_el+1 collecting options.
+    let all_options = dom.query_selector_all("option");
+    let mut result = Vec::new();
+
+    for opt_el in all_options {
+        // Only include options that are after this select and likely children.
+        // In the flat list, child options have index > select index.
+        // We stop at the first option that belongs to a different select.
+        if opt_el <= select_el {
+            continue;
+        }
+        // Check if there's another select between select_el and this option
+        let all_selects = dom.query_selector_all("select");
+        let belongs_to_another = all_selects.iter().any(|&s| s != select_el && s > select_el && s < opt_el);
+        if belongs_to_another {
+            break;
+        }
+
+        let value = dom.get_attribute(opt_el, "value").unwrap_or_default();
+        let text = dom.text_content(opt_el).trim().to_string();
+        let selected = dom.get_attribute(opt_el, "selected").is_some();
+        result.push(SelectOption {
+            value,
+            text,
+            selected,
+        });
+    }
+    result
 }
 
 /// Generate a stable ID from element properties.

@@ -14,9 +14,14 @@ function __neoFormSubmit() {
     var formData = {};
     var inputs = this.querySelectorAll('input, select, textarea');
     inputs.forEach(function(el) {
-        if (el.name) {
-            if (el.type === 'checkbox' || el.type === 'radio') {
-                if (el.checked) formData[el.name] = el.value || 'on';
+        if (!el.name || el.disabled) return;
+        if (el.type === 'checkbox' || el.type === 'radio') {
+            if (el.checked) formData[el.name] = el.value || 'on';
+        } else {
+            // Support multiple values with same name (e.g. multi-select)
+            if (formData[el.name] !== undefined) {
+                if (!Array.isArray(formData[el.name])) formData[el.name] = [formData[el.name]];
+                formData[el.name].push(el.value || '');
             } else {
                 formData[el.name] = el.value || '';
             }
@@ -262,9 +267,30 @@ if (typeof document !== 'undefined') {
     });
 }
 
+// Focus must dispatch: focusin (bubbles:true) + focus (bubbles:false)
+// Blur must dispatch: focusout (bubbles:true) + blur (bubbles:false)
 if (typeof HTMLElement !== 'undefined' && HTMLElement.prototype) {
-    HTMLElement.prototype.focus = function() { __activeElement = this; };
-    HTMLElement.prototype.blur = function() { if (__activeElement === this) __activeElement = null; };
+    HTMLElement.prototype.focus = function() {
+        var prev = __activeElement;
+        if (prev === this) return; // already focused
+        // Blur previous
+        if (prev && prev !== document.body) {
+            prev.dispatchEvent(new FocusEvent('focusout', {bubbles: true, relatedTarget: this}));
+            prev.dispatchEvent(new FocusEvent('blur', {bubbles: false, relatedTarget: this}));
+        }
+        // Update activeElement BETWEEN blur and focus (spec order)
+        __activeElement = this;
+        // Focus new
+        this.dispatchEvent(new FocusEvent('focusin', {bubbles: true, relatedTarget: prev}));
+        this.dispatchEvent(new FocusEvent('focus', {bubbles: false, relatedTarget: prev}));
+    };
+
+    HTMLElement.prototype.blur = function() {
+        if (__activeElement !== this) return;
+        this.dispatchEvent(new FocusEvent('focusout', {bubbles: true, relatedTarget: null}));
+        this.dispatchEvent(new FocusEvent('blur', {bubbles: false, relatedTarget: null}));
+        __activeElement = document.body || null;
+    };
 }
 
 // ═══════════════════════════════════════════════════════════════

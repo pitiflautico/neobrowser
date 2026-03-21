@@ -20,7 +20,7 @@ pub use classify::{PageClassification, PageType};
 pub use delta::WomDelta;
 pub use mock::MockExtractor;
 pub use structured::StructuredData;
-pub use wom::{WomDocument, WomNode};
+pub use wom::{SelectOption, WomDocument, WomNode};
 
 use neo_dom::DomEngine;
 

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Sign Up</title></head>
+<body>
+<form id="signup" action="/api/signup" method="POST">
+  <label for="email">Email</label>
+  <input id="email" type="email" name="email" required placeholder="you@example.com" autocomplete="email">
+  <input type="password" name="password" required minlength="8" maxlength="100" placeholder="Password">
+  <input type="text" name="phone" pattern="[0-9]{10}" placeholder="Phone">
+  <input type="number" name="age" min="18" max="120">
+  <input type="checkbox" name="terms" required>
+  <input type="radio" name="plan" value="basic" checked>
+  <input type="radio" name="plan" value="pro">
+  <select name="country">
+    <option value="ES" selected>Spain</option>
+    <option value="US">United States</option>
+    <option value="UK">United Kingdom</option>
+  </select>
+  <textarea name="bio" placeholder="Tell us about yourself" maxlength="500"></textarea>
+  <input type="text" name="readonly_field" readonly value="cannot change">
+  <input type="text" name="disabled_field" disabled value="greyed out">
+  <button type="submit">Sign Up</button>
+</form>
+</body>
+</html>
