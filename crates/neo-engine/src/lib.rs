@@ -9,12 +9,14 @@ pub mod lifecycle;
 pub mod mock;
 pub mod pipeline;
 pub mod session;
+pub mod watchdog;
 
 pub use config::{EngineConfig, ResourceLimits, SecurityConfig};
 pub use lifecycle::Lifecycle;
 pub use mock::MockBrowserEngine;
 pub use pipeline::{PhaseBudgets, PhaseError, PipelineContext, PipelineDecision, PipelinePhase};
 pub use session::NeoSession;
+pub use watchdog::{Watchdog, WatchdogAbortReason, WatchdogEvent, WatchdogGuard};
 
 use neo_extract::WomDocument;
 use neo_interact::{ClickResult, SubmitResult};

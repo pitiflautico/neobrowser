@@ -106,7 +106,7 @@ fn infer_actions(tag: &str, input_type: Option<&str>) -> Vec<String> {
 ///
 /// Uses hash of tag + text prefix + parent_tag + sibling index.
 pub(crate) fn stable_id(tag: &str, text: &str, parent_tag: &str, sibling_index: usize) -> String {
-    let prefix = if text.len() > 20 { &text[..20] } else { text };
+    let prefix = text.char_indices().nth(20).map_or(text, |(i, _)| &text[..i]);
     let mut hasher = DefaultHasher::new();
     tag.hash(&mut hasher);
     prefix.hash(&mut hasher);

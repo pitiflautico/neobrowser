@@ -122,7 +122,7 @@ pub trait HttpCache: Send + Sync {
 
 // Re-exports for convenience.
 pub use cache::DiskCache;
-pub use classify::{classify_url, should_skip};
+pub use classify::{classify_url, is_heavy_script, should_skip};
 pub use classify_request::{classify_request, ClassificationOverrides, RequestCategory};
 pub use client::RquestClient;
 pub use cookies::SqliteCookieStore;

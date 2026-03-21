@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Settings - User Preferences</title>
+</head>
+<body>
+    <h1>User Preferences</h1>
+    <form action="/settings" method="post">
+        <fieldset>
+            <legend>Profile</legend>
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" value="dani">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" value="dani@example.com">
+            <label for="bio">Bio</label>
+            <textarea id="bio" name="bio" rows="4">Software developer</textarea>
+        </fieldset>
+
+        <fieldset>
+            <legend>Notifications</legend>
+            <label><input type="checkbox" name="notify_email" checked> Email notifications</label>
+            <label><input type="checkbox" name="notify_sms"> SMS notifications</label>
+            <label><input type="checkbox" name="notify_push" checked> Push notifications</label>
+        </fieldset>
+
+        <fieldset>
+            <legend>Theme</legend>
+            <label><input type="radio" name="theme" value="light" checked> Light</label>
+            <label><input type="radio" name="theme" value="dark"> Dark</label>
+            <label><input type="radio" name="theme" value="auto"> Auto</label>
+        </fieldset>
+
+        <fieldset>
+            <legend>Language</legend>
+            <select name="language" id="language">
+                <option value="en" selected>English</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+            </select>
+        </fieldset>
+
+        <fieldset>
+            <legend>Avatar</legend>
+            <input type="file" name="avatar" accept="image/*">
+        </fieldset>
+
+        <a href="/profile">View profile</a>
+        <a href="/account/delete">Delete account</a>
+        <button type="submit">Save changes</button>
+        <button type="reset">Reset</button>
+    </form>
+</body>
+</html>

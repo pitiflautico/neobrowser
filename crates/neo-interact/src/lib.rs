@@ -6,23 +6,33 @@
 
 mod checkbox;
 mod click;
+mod doubleclick;
 mod forms;
+mod hover;
+mod keyboard;
 mod mock;
 mod popups;
 mod resolve;
+mod right_click;
 mod scroll;
 mod select;
 mod type_text;
+mod upload;
 
 pub use checkbox::check;
 pub use click::click;
+pub use doubleclick::doubleclick;
 pub use forms::{collect_form_data, detect_csrf, fill_form, submit, submit_full};
+pub use hover::{hover, HoverResult};
+pub use right_click::{right_click, ContextMenuItem, RightClickEvent, RightClickResult, RIGHT_CLICK_EVENTS};
 pub use mock::MockInteractor;
 pub use popups::{detect_modal, dismiss_consent};
 pub use resolve::{resolve, ResolveStrategy};
 pub use scroll::{scroll, scroll_until_stable};
 pub use select::select;
 pub use type_text::{type_slowly, type_text};
+pub use keyboard::{press_key, type_with_events, KeyboardEvent, KeyResult, SpecialKey};
+pub use upload::{build_multipart, detect_content_type, set_file, FileUpload, MultipartField, MultipartValue};
 
 use neo_dom::DomEngine;
 use std::sync::{Arc, Mutex};

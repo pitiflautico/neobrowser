@@ -48,6 +48,33 @@ pub enum RuntimeError {
     Io(#[from] std::io::Error),
 }
 
+/// Opaque handle for terminating a V8 isolate from another thread.
+///
+/// This is a thread-safe handle that can be sent to a watchdog thread.
+/// Calling [`terminate`](RuntimeHandle::terminate) will cause the V8
+/// isolate to throw an uncatchable exception on the next JS operation.
+pub struct RuntimeHandle {
+    pub(crate) inner: deno_core::v8::IsolateHandle,
+}
+
+// SAFETY: v8::IsolateHandle is designed for cross-thread termination.
+unsafe impl Send for RuntimeHandle {}
+unsafe impl Sync for RuntimeHandle {}
+
+impl RuntimeHandle {
+    /// Terminate the V8 isolate. Causes the currently executing script
+    /// to throw an uncatchable exception.
+    pub fn terminate(&self) -> bool {
+        self.inner.terminate_execution()
+    }
+
+    /// Cancel a previous termination request. Must be called from the
+    /// isolate's owning thread after handling the termination.
+    pub fn cancel_terminate(&self) {
+        self.inner.cancel_terminate_execution();
+    }
+}
+
 /// JavaScript runtime for executing web page scripts.
 pub trait JsRuntime: Send {
     /// Evaluate an expression and return result as string.
@@ -93,6 +120,14 @@ pub trait JsRuntime: Send {
 
     /// List all module URLs currently in the store.
     fn module_urls(&self) -> Vec<String>;
+
+    /// Get a thread-safe handle for V8 isolate termination.
+    ///
+    /// Returns `None` for mock runtimes that don't have a real V8 isolate.
+    /// The watchdog uses this to kill runaway scripts from another thread.
+    fn isolate_handle(&mut self) -> Option<RuntimeHandle> {
+        None
+    }
 }
 
 /// Configuration for creating a runtime instance.

@@ -3,7 +3,7 @@
 //! All ops are sync to avoid deno_core async RefCell panics.
 //! HTTP fetches run on dedicated threads. Timers use thread::sleep.
 
-use crate::scheduler::{TaskTracker, TimerBudget};
+use crate::scheduler::{FetchBudget, TaskTracker, TimerBudget, TimerState};
 use deno_core::op2;
 use deno_core::OpState;
 use neo_http::{HttpClient, HttpRequest, RequestContext, RequestKind, WebStorage};
@@ -61,6 +61,7 @@ impl Default for OpsSchedulerConfig {
 ///
 /// Delegates to the `HttpClient` trait object in OpState.
 /// Skips telemetry/analytics URLs with a fake 200 response.
+/// Respects `FetchBudget` concurrency limits and abort flag.
 #[op2]
 #[string]
 pub fn op_fetch(
@@ -74,12 +75,33 @@ pub fn op_fetch(
         return Ok(r#"{"status":200,"body":"","headers":{}}"#.to_string());
     }
 
-    let client: Arc<dyn HttpClient> = {
+    // Check fetch budget before proceeding.
+    let (client, timeout_ms, budget) = {
         let s = state.borrow();
+
+        // Check abort flag and concurrency budget.
+        let fetch_budget = s.try_borrow::<FetchBudget>().cloned();
+        if let Some(ref fb) = fetch_budget {
+            if fb.is_aborted() {
+                return Err(deno_core::error::generic_error("fetch aborted by watchdog"));
+            }
+            if !fb.start_fetch() {
+                return Err(deno_core::error::generic_error(
+                    "fetch budget exceeded: too many concurrent requests",
+                ));
+            }
+        }
+
+        let timeout = fetch_budget
+            .as_ref()
+            .map(|fb| fb.per_request_timeout_ms())
+            .unwrap_or(5000);
+
         let handle = s
             .try_borrow::<SharedHttpClient>()
             .ok_or_else(|| deno_core::error::generic_error("No HttpClient in OpState"))?;
-        handle.0.clone()
+
+        (handle.0.clone(), timeout, fetch_budget)
     };
 
     let headers = parse_headers(&headers_json);
@@ -97,15 +119,20 @@ pub fn op_fetch(
             frame_id: None,
             top_level_url: None,
         },
-        timeout_ms: 2000,
+        timeout_ms: timeout_ms as u64,
     };
 
     // Run on dedicated thread to avoid async conflicts.
     let result = std::thread::spawn(move || client.request(&req))
         .join()
-        .map_err(|_| deno_core::error::generic_error("fetch thread panicked"))?;
+        .map_err(|_| deno_core::error::generic_error("fetch thread panicked"));
 
-    match result {
+    // Always release the budget slot when done.
+    if let Some(ref fb) = budget {
+        fb.finish_fetch();
+    }
+
+    match result? {
         Ok(resp) => {
             let json = serde_json::json!({
                 "status": resp.status,
@@ -118,16 +145,36 @@ pub fn op_fetch(
     }
 }
 
-/// Timer — sync with minimal delay to prevent infinite loops.
+/// Timer — sync with nested clamping per the HTML spec and abort support.
 ///
-/// 1ms floor prevents CPU-bound infinite loops from setTimeout(fn, 0) chains.
-/// 10ms cap keeps things fast while allowing V8 to yield.
+/// Applies nested clamping (depth >= 5 → min 4 ms), then caps at 10 ms.
+/// Checks the abort flag before sleeping; returns `false` if aborted.
 #[op2(fast)]
-pub fn op_timer(#[smi] ms: u32) {
-    let delay = if ms == 0 { 0 } else { ms.clamp(1, 10) };
-    if delay > 0 {
-        std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+pub fn op_timer(state: Rc<RefCell<OpState>>, #[smi] ms: u32) -> bool {
+    let s = state.borrow();
+
+    // Check abort flag first — bail if watchdog cancelled timers.
+    if let Some(ts) = s.try_borrow::<TimerState>() {
+        if ts.is_aborted() {
+            return false;
+        }
+        let depth = ts.nesting_depth();
+        let effective = ts.effective_delay(ms, depth);
+        let delay = if effective == 0 { 0 } else { effective.clamp(1, 10) };
+        // Release borrow before sleeping.
+        drop(s);
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+        }
+    } else {
+        // Fallback when no TimerState is installed (backward compat).
+        let delay = if ms == 0 { 0 } else { ms.clamp(1, 10) };
+        drop(s);
+        if delay > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+        }
     }
+    true
 }
 
 /// Register a new timer in the task tracker.

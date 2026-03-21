@@ -12,3 +12,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 neo-dom = { path = "../neo-dom" }
+neo-interact = { path = "../neo-interact" }

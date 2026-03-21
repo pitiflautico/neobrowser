@@ -4,7 +4,7 @@ use deno_core::PollEventLoopOptions;
 use std::time::{Duration, Instant};
 
 use crate::v8::DenoRuntime;
-use crate::{JsRuntime as JsRuntimeTrait, RuntimeError};
+use crate::{JsRuntime as JsRuntimeTrait, RuntimeError, RuntimeHandle};
 
 /// Extract the first line of an error message.
 pub(crate) fn first_line(s: &str) -> String {
@@ -190,5 +190,10 @@ impl JsRuntimeTrait for DenoRuntime {
 
     fn module_urls(&self) -> Vec<String> {
         self.store.borrow().scripts.keys().cloned().collect()
+    }
+
+    fn isolate_handle(&mut self) -> Option<RuntimeHandle> {
+        let handle = self.runtime.v8_isolate().thread_safe_handle();
+        Some(RuntimeHandle { inner: handle })
     }
 }

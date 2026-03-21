@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Understanding Rust Ownership</title>
+</head>
+<body>
+    <article>
+        <h1>Understanding Rust Ownership</h1>
+        <p>Ownership is Rust's most unique feature and has deep implications for the rest of the language. It enables Rust to make memory safety guarantees without needing a garbage collector.</p>
+        <p>Each value in Rust has a variable that is called its owner. There can only be one owner at a time. When the owner goes out of scope, the value will be dropped.</p>
+        <p>The concept of ownership is central to understanding how Rust manages memory. Unlike languages with garbage collectors, Rust uses a system of ownership with a set of rules that the compiler checks at compile time.</p>
+        <p>Let's look at some examples of how ownership works in practice and how it interacts with functions, references, and slices.</p>
+        <img src="/images/ownership-diagram.png" alt="Ownership diagram showing move semantics">
+        <a href="/docs/borrowing">Learn about borrowing</a>
+        <a href="/docs/lifetimes">Lifetimes explained</a>
+        <a href="/docs/references">References and slices</a>
+        <a href="https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html">Official Rust Book</a>
+    </article>
+</body>
+</html>

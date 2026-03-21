@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Sign In - MyApp</title>
+</head>
+<body>
+    <main>
+        <h1>Sign In</h1>
+        <form action="/auth/login" method="post">
+            <input type="hidden" name="_csrf" value="abc123token456">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" placeholder="you@example.com" required>
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" placeholder="Password" required>
+            <label>
+                <input type="checkbox" name="remember" value="1"> Remember me
+            </label>
+            <button type="submit">Sign In</button>
+        </form>
+        <a href="/auth/forgot-password">Forgot password?</a>
+        <a href="/auth/register">Create an account</a>
+    </main>
+</body>
+</html>

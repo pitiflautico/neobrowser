@@ -6,7 +6,7 @@
 use crate::code_cache::V8CodeCache;
 use crate::modules::{NeoModuleLoader, ScriptStoreHandle};
 use crate::ops;
-use crate::scheduler::{SchedulerConfig, TaskTracker, TimerBudget};
+use crate::scheduler::{FetchBudget, SchedulerConfig, TaskTracker, TimerBudget, TimerState};
 use crate::v8_runtime_impl::first_line;
 use crate::{RuntimeConfig, RuntimeError};
 use deno_core::RuntimeOptions;
@@ -46,6 +46,8 @@ pub struct DenoRuntime {
     pub(crate) tracker: TaskTracker,
     /// Timer budget for per-page tick limits.
     pub(crate) timer_budget: TimerBudget,
+    /// Fetch budget for per-page concurrency and timeout limits.
+    pub(crate) fetch_budget: FetchBudget,
     /// Tokio runtime for blocking on async ops.
     pub(crate) tokio_rt: tokio::runtime::Runtime,
 }
@@ -109,6 +111,7 @@ impl DenoRuntime {
 
         let tracker = TaskTracker::new();
         let timer_budget = TimerBudget::new(scheduler_config.timer_budget);
+        let fetch_budget = FetchBudget::default();
 
         // Put HttpClient and other state in OpState for ops.
         {
@@ -122,9 +125,11 @@ impl DenoRuntime {
             // Scheduler state — shared with ops via Arc atomics.
             state.put(tracker.clone());
             state.put(timer_budget.clone());
+            state.put(fetch_budget.clone());
             state.put(ops::OpsSchedulerConfig {
                 interval_max_ticks: scheduler_config.interval_max_ticks as u32,
             });
+            state.put(TimerState::new());
         }
 
         // Node.js polyfills required by linkedom (Buffer, process, atob/btoa).
@@ -154,6 +159,7 @@ impl DenoRuntime {
             page_origin,
             tracker,
             timer_budget,
+            fetch_budget,
             tokio_rt,
         })
     }
@@ -171,6 +177,11 @@ impl DenoRuntime {
     /// Access the timer budget.
     pub fn timer_budget(&self) -> &TimerBudget {
         &self.timer_budget
+    }
+
+    /// Access the fetch budget.
+    pub fn fetch_budget(&self) -> &FetchBudget {
+        &self.fetch_budget
     }
 }
 

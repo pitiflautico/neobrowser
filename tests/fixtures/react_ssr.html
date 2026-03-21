@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Dashboard - React App</title>
+    <script>window.__reactRouterManifest={"version":"1","routes":{"root":{"id":"root","path":"/"}}}</script>
+</head>
+<body>
+    <div id="root" data-reactroot="">
+        <nav>
+            <a href="/">Home</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/settings">Settings</a>
+        </nav>
+        <main>
+            <h1>Welcome back, User</h1>
+            <p>Your dashboard shows an overview of your recent activity and key metrics for the current period.</p>
+            <!-- react-hydration-marker -->
+            <div data-react-hydrate="true">
+                <section>
+                    <h2>Recent Activity</h2>
+                    <ul>
+                        <li>Deployed v2.3.1 to production</li>
+                        <li>Merged PR #421: Fix login timeout</li>
+                        <li>Created issue #422: Add dark mode</li>
+                    </ul>
+                </section>
+            </div>
+        </main>
+    </div>
+    <script>window.__NEXT_DATA__={"buildId":"abc123"}</script>
+</body>
+</html>
