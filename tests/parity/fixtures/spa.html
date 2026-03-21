@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>SPA Fixture</title></head>
+<body>
+  <div id="app">
+    <p>Loading...</p>
+  </div>
+  <script>
+    // Simulates SPA: JS replaces content after load
+    document.addEventListener('DOMContentLoaded', function() {
+      var app = document.getElementById('app');
+      app.innerHTML = '<h1>SPA Loaded</h1>'
+        + '<nav>'
+        + '<a href="/home">Home</a>'
+        + '<a href="/dashboard">Dashboard</a>'
+        + '<a href="/settings">Settings</a>'
+        + '<a href="/logout">Logout</a>'
+        + '</nav>'
+        + '<button id="action-btn">Click Me</button>'
+        + '<div id="status">Ready</div>';
+
+      document.getElementById('action-btn').addEventListener('click', function() {
+        document.getElementById('status').textContent = 'Clicked!';
+      });
+    });
+  </script>
+</body>
+</html>

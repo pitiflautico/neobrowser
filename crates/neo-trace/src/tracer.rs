@@ -246,3 +246,8 @@ pub fn resource_blocked_entry(ts: u64, url: &str, reason: &str) -> TraceEntry {
         metadata: serde_json::json!({ "reason": reason }),
     }
 }
+
+// Phase observability entry builders are in crate::phase.
+pub use crate::phase::{
+    failure_snapshot_entry, module_event_entry, phase_end_entry, phase_start_entry,
+};

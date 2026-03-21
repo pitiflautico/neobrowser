@@ -6,6 +6,7 @@
 pub mod file_tracer;
 pub mod mock;
 pub mod noop;
+pub mod phase;
 pub mod redaction;
 pub mod summary;
 pub mod tracer;
@@ -20,6 +21,17 @@ pub enum NavEvent {
     Committed,
     Finished,
     Failed,
+}
+
+/// Severity level for pipeline phase events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Severity {
+    /// Informational — phase completed normally.
+    Info,
+    /// Warning — phase completed with non-fatal issues.
+    Warn,
+    /// Error — phase failed or produced critical issues.
+    Error,
 }
 
 /// Compact execution summary for AI decision-making.
@@ -91,6 +103,25 @@ pub trait Tracer: Send + Sync {
 
     /// Resource blocked (telemetry, ads, etc.).
     fn resource_blocked(&self, url: &str, reason: &str);
+
+    /// Pipeline phase started.
+    fn phase_start(&self, phase: &str, trace_id: &str);
+
+    /// Pipeline phase ended with decisions.
+    fn phase_end(
+        &self,
+        phase: &str,
+        trace_id: &str,
+        duration_ms: u64,
+        decisions: &[String],
+        severity: Severity,
+    );
+
+    /// Module-level event (correlates module URL through pipeline).
+    fn module_event(&self, module_url: &str, event: &str, trace_id: &str);
+
+    /// Snapshot of state on failure (partial DOM/WOM for debugging).
+    fn failure_snapshot(&self, phase: &str, trace_id: &str, partial_state: &str);
 
     /// Export full trace as entries.
     fn export(&self) -> Vec<TraceEntry>;

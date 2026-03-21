@@ -10,6 +10,7 @@ use neo_trace::ExecutionSummary;
 use neo_types::{NetworkLogEntry, PageState, TraceEntry};
 
 use super::NeoSession;
+use crate::pipeline::{PipelineContext, PipelineDecision, PipelinePhase};
 use crate::{BrowserEngine, EngineError, PageResult};
 
 impl BrowserEngine for NeoSession {
@@ -18,6 +19,10 @@ impl BrowserEngine for NeoSession {
 
         // Validate URL.
         url::Url::parse(url).map_err(|e| EngineError::InvalidUrl(e.to_string()))?;
+
+        // Pipeline context — tracks decisions across all phases.
+        let mut ctx = PipelineContext::new(url);
+        ctx.enter_phase(PipelinePhase::Fetch);
 
         // 1. Trace intent.
         self.tracer.intent("navigate", "navigate", url, 1.0);
@@ -43,10 +48,20 @@ impl BrowserEngine for NeoSession {
         let cached_decision = self.http_cache.as_ref().map(|c| c.lookup(&req));
         if let Some(CacheDecision::Fresh(ref resp)) = cached_decision {
             // Cache hit — skip network entirely.
+            ctx.record(PipelineDecision::CacheHit {
+                url: url.to_string(),
+                cache_type: "disk".into(),
+            });
             let response = resp.clone();
             self.lifecycle
                 .transition(PageState::Loading, "cache hit (fresh)");
+            self.pipeline_ctx = Some(ctx);
             return self.finish_navigate(url, response, start, Vec::new());
+        }
+        if cached_decision.is_some() {
+            ctx.record(PipelineDecision::CacheMiss {
+                url: url.to_string(),
+            });
         }
         // Stale — add conditional headers for revalidation.
         if let Some(CacheDecision::Stale {
@@ -115,6 +130,7 @@ impl BrowserEngine for NeoSession {
         // 4. Loading -> parse -> extract.
         self.lifecycle
             .transition(PageState::Loading, "response received");
+        self.pipeline_ctx = Some(ctx);
         self.finish_navigate(url, response, start, redirect_chain)
     }
 

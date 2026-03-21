@@ -1,7 +1,7 @@
 //! MockTracer — records all calls for assertion in tests.
 
 use crate::summary::build_summary;
-use crate::{ExecutionSummary, NavEvent, NetworkEvent, Tracer};
+use crate::{ExecutionSummary, NavEvent, NetworkEvent, Severity, Tracer};
 use neo_types::{PageState, TraceEntry};
 use std::sync::Mutex;
 
@@ -35,12 +35,42 @@ pub struct NetworkCall {
     pub kind: String,
 }
 
+/// A recorded phase start/end call.
+#[derive(Debug, Clone)]
+pub struct PhaseRecord {
+    pub phase: String,
+    pub trace_id: String,
+    pub duration_ms: Option<u64>,
+    pub decisions: Vec<String>,
+    pub severity: Option<Severity>,
+    pub is_end: bool,
+}
+
+/// A recorded module event.
+#[derive(Debug, Clone)]
+pub struct ModuleRecord {
+    pub module_url: String,
+    pub event: String,
+    pub trace_id: String,
+}
+
+/// A recorded failure snapshot.
+#[derive(Debug, Clone)]
+pub struct SnapshotRecord {
+    pub phase: String,
+    pub trace_id: String,
+    pub partial_state: String,
+}
+
 /// Mock tracer that records all calls for test assertions.
 #[derive(Debug, Default)]
 pub struct MockTracer {
     intents: Mutex<Vec<Intent>>,
     actions: Mutex<Vec<ActionResult>>,
     networks: Mutex<Vec<NetworkCall>>,
+    phases: Mutex<Vec<PhaseRecord>>,
+    modules: Mutex<Vec<ModuleRecord>>,
+    snapshots: Mutex<Vec<SnapshotRecord>>,
     entries: Mutex<Vec<TraceEntry>>,
 }
 
@@ -63,6 +93,21 @@ impl MockTracer {
     /// Get all recorded network calls.
     pub fn networks(&self) -> Vec<NetworkCall> {
         self.networks.lock().map(|n| n.clone()).unwrap_or_default()
+    }
+
+    /// Get all recorded phase events (start and end).
+    pub fn phases(&self) -> Vec<PhaseRecord> {
+        self.phases.lock().map(|p| p.clone()).unwrap_or_default()
+    }
+
+    /// Get all recorded module events.
+    pub fn modules(&self) -> Vec<ModuleRecord> {
+        self.modules.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// Get all recorded failure snapshots.
+    pub fn snapshots(&self) -> Vec<SnapshotRecord> {
+        self.snapshots.lock().map(|s| s.clone()).unwrap_or_default()
     }
 }
 
@@ -147,6 +192,90 @@ impl Tracer for MockTracer {
     fn resource_blocked(&self, url: &str, reason: &str) {
         if let Ok(mut v) = self.entries.lock() {
             v.push(crate::tracer::resource_blocked_entry(0, url, reason));
+        }
+    }
+
+    fn phase_start(&self, phase: &str, trace_id: &str) {
+        if let Ok(mut v) = self.phases.lock() {
+            v.push(PhaseRecord {
+                phase: phase.to_string(),
+                trace_id: trace_id.to_string(),
+                duration_ms: None,
+                decisions: Vec::new(),
+                severity: None,
+                is_end: false,
+            });
+        }
+        if let Ok(mut v) = self.entries.lock() {
+            v.push(crate::tracer::phase_start_entry(0, phase, trace_id));
+        }
+    }
+
+    fn phase_end(
+        &self,
+        phase: &str,
+        trace_id: &str,
+        duration_ms: u64,
+        decisions: &[String],
+        severity: Severity,
+    ) {
+        if let Ok(mut v) = self.phases.lock() {
+            v.push(PhaseRecord {
+                phase: phase.to_string(),
+                trace_id: trace_id.to_string(),
+                duration_ms: Some(duration_ms),
+                decisions: decisions.to_vec(),
+                severity: Some(severity),
+                is_end: true,
+            });
+        }
+        if let Ok(mut v) = self.entries.lock() {
+            let sev = match severity {
+                Severity::Info => "info",
+                Severity::Warn => "warn",
+                Severity::Error => "error",
+            };
+            v.push(crate::tracer::phase_end_entry(
+                0,
+                phase,
+                trace_id,
+                duration_ms,
+                decisions,
+                sev,
+            ));
+        }
+    }
+
+    fn module_event(&self, module_url: &str, event: &str, trace_id: &str) {
+        if let Ok(mut v) = self.modules.lock() {
+            v.push(ModuleRecord {
+                module_url: module_url.to_string(),
+                event: event.to_string(),
+                trace_id: trace_id.to_string(),
+            });
+        }
+        if let Ok(mut v) = self.entries.lock() {
+            v.push(crate::tracer::module_event_entry(
+                0, module_url, event, trace_id,
+            ));
+        }
+    }
+
+    fn failure_snapshot(&self, phase: &str, trace_id: &str, partial_state: &str) {
+        if let Ok(mut v) = self.snapshots.lock() {
+            v.push(SnapshotRecord {
+                phase: phase.to_string(),
+                trace_id: trace_id.to_string(),
+                partial_state: partial_state.to_string(),
+            });
+        }
+        if let Ok(mut v) = self.entries.lock() {
+            v.push(crate::tracer::failure_snapshot_entry(
+                0,
+                phase,
+                trace_id,
+                partial_state,
+            ));
         }
     }
 

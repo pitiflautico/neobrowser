@@ -8,6 +8,7 @@ use neo_types::{NetworkLogEntry, PageState};
 
 use super::scripts::{detect_meta_refresh, extract_scripts, ScriptInfo};
 use super::{HistoryEntry, NeoSession};
+use crate::pipeline::PipelinePhase;
 use crate::{EngineError, PageResult};
 
 impl NeoSession {
@@ -22,6 +23,9 @@ impl NeoSession {
         redirect_chain: Vec<String>,
     ) -> Result<PageResult, EngineError> {
         // DOM parse.
+        if let Some(ref mut ctx) = self.pipeline_ctx {
+            ctx.enter_phase(PipelinePhase::Parse);
+        }
         {
             let mut dom = self.dom.lock().expect("dom lock poisoned");
             dom.parse_html(&response.body, &response.url)?;
@@ -32,6 +36,9 @@ impl NeoSession {
             .transition(PageState::Interactive, "dom parsed");
 
         // JS execution (if enabled and runtime available).
+        if let Some(ref mut ctx) = self.pipeline_ctx {
+            ctx.enter_phase(PipelinePhase::Execute);
+        }
         let js_errors = self.execute_page_scripts(&response);
 
         // Settled.
@@ -39,6 +46,9 @@ impl NeoSession {
             .transition(PageState::Settled, "scripts executed");
 
         // Extract WOM.
+        if let Some(ref mut ctx) = self.pipeline_ctx {
+            ctx.enter_phase(PipelinePhase::Extract);
+        }
         let mut wom = {
             let dom = self.dom.lock().expect("dom lock poisoned");
             self.extractor.extract_wom(dom.as_ref())

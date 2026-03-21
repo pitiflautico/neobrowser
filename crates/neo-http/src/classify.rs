@@ -112,8 +112,13 @@ pub fn should_skip(url: &str) -> bool {
     is_telemetry(&url.to_lowercase())
 }
 
-fn is_telemetry(lower: &str) -> bool {
+/// Check if a lowercased URL matches known telemetry patterns.
+pub(crate) fn is_telemetry_url(lower: &str) -> bool {
     TELEMETRY_PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+fn is_telemetry(lower: &str) -> bool {
+    is_telemetry_url(lower)
 }
 
 fn is_media(lower: &str) -> bool {

@@ -2,7 +2,7 @@
 //!
 //! Used when tracing is disabled or in tests that don't need trace data.
 
-use crate::{ExecutionSummary, NavEvent, NetworkEvent, Tracer};
+use crate::{ExecutionSummary, NavEvent, NetworkEvent, Severity, Tracer};
 use neo_types::{PageState, TraceEntry};
 
 /// A tracer that does nothing. Zero allocations, zero cost.
@@ -35,6 +35,22 @@ impl Tracer for NoopTracer {
     fn js_exception(&self, _error: &str, _stack: Option<&str>) {}
 
     fn resource_blocked(&self, _url: &str, _reason: &str) {}
+
+    fn phase_start(&self, _phase: &str, _trace_id: &str) {}
+
+    fn phase_end(
+        &self,
+        _phase: &str,
+        _trace_id: &str,
+        _duration_ms: u64,
+        _decisions: &[String],
+        _severity: Severity,
+    ) {
+    }
+
+    fn module_event(&self, _module_url: &str, _event: &str, _trace_id: &str) {}
+
+    fn failure_snapshot(&self, _phase: &str, _trace_id: &str, _partial_state: &str) {}
 
     fn export(&self) -> Vec<TraceEntry> {
         Vec::new()

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>React-Like Fixture</title></head>
+<body>
+  <!-- Server-rendered HTML (hydration target) -->
+  <div id="root">
+    <header>
+      <h1>Dashboard</h1>
+      <nav>
+        <a href="/overview">Overview</a>
+        <a href="/analytics">Analytics</a>
+        <a href="/reports">Reports</a>
+      </nav>
+    </header>
+    <main>
+      <div class="card" data-reactid="1">
+        <h2>Revenue</h2>
+        <p class="metric">$12,340</p>
+      </div>
+      <div class="card" data-reactid="2">
+        <h2>Users</h2>
+        <p class="metric">1,205</p>
+      </div>
+      <button id="refresh-btn" disabled>Refresh</button>
+    </main>
+  </div>
+  <script>
+    // Simulate React hydration: enable interactivity after "hydration"
+    setTimeout(function() {
+      var btn = document.getElementById('refresh-btn');
+      btn.disabled = false;
+      btn.addEventListener('click', function() {
+        btn.textContent = 'Refreshing...';
+        setTimeout(function() { btn.textContent = 'Refresh'; }, 500);
+      });
+      // Add dynamically rendered element (like React would)
+      var footer = document.createElement('footer');
+      footer.innerHTML = '<a href="/privacy">Privacy</a> | <a href="/terms">Terms</a>';
+      document.getElementById('root').appendChild(footer);
+    }, 100);
+  </script>
+</body>
+</html>

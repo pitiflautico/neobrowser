@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Heavy JS Fixture</title></head>
+<body>
+  <div id="app">
+    <h1>Dynamic Content</h1>
+    <div id="counter">Count: 0</div>
+    <div id="feed"></div>
+    <button id="stop-btn">Stop</button>
+  </div>
+  <script>
+    var count = 0;
+    var running = true;
+
+    // Chain of setTimeouts building DOM incrementally
+    function addItem() {
+      if (!running || count >= 5) return;
+      count++;
+      var div = document.createElement('div');
+      div.className = 'feed-item';
+      div.innerHTML = '<a href="/item/' + count + '">Item ' + count + '</a>'
+        + ' <button class="like-btn">Like</button>';
+      document.getElementById('feed').appendChild(div);
+      document.getElementById('counter').textContent = 'Count: ' + count;
+      setTimeout(addItem, 50);
+    }
+
+    // setInterval updating a clock
+    var clockEl = document.createElement('div');
+    clockEl.id = 'clock';
+    document.getElementById('app').appendChild(clockEl);
+    var clockInterval = setInterval(function() {
+      clockEl.textContent = 'Time: ' + new Date().toLocaleTimeString();
+    }, 200);
+
+    // Stop button
+    document.getElementById('stop-btn').addEventListener('click', function() {
+      running = false;
+      clearInterval(clockInterval);
+      this.textContent = 'Stopped';
+    });
+
+    // Kick off the chain
+    setTimeout(addItem, 50);
+
+    // Late DOM mutation: add nav after 300ms
+    setTimeout(function() {
+      var nav = document.createElement('nav');
+      nav.innerHTML = '<a href="/home">Home</a> <a href="/about">About</a>';
+      document.body.insertBefore(nav, document.getElementById('app'));
+    }, 300);
+  </script>
+</body>
+</html>

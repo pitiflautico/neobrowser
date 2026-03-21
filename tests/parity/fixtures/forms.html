@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Complex Forms Fixture</title></head>
+<body>
+  <h1>Registration Form</h1>
+  <form action="/register" method="post" id="reg-form">
+    <input type="hidden" name="csrf_token" value="abc123xyz">
+
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" required>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required>
+
+    <label for="country">Country</label>
+    <select id="country" name="country">
+      <option value="">-- Select --</option>
+      <option value="us">United States</option>
+      <option value="es">Spain</option>
+      <option value="de">Germany</option>
+    </select>
+
+    <label for="bio">Bio</label>
+    <textarea id="bio" name="bio" rows="4"></textarea>
+
+    <fieldset>
+      <legend>Preferences</legend>
+      <label><input type="checkbox" name="newsletter" value="1"> Newsletter</label>
+      <label><input type="checkbox" name="updates" value="1" checked> Product updates</label>
+      <label><input type="radio" name="plan" value="free" checked> Free</label>
+      <label><input type="radio" name="plan" value="pro"> Pro</label>
+    </fieldset>
+
+    <button type="submit">Register</button>
+    <button type="reset">Clear</button>
+  </form>
+
+  <form action="/search" method="get" id="search-form">
+    <input type="search" name="q" placeholder="Search...">
+    <button type="submit">Go</button>
+  </form>
+</body>
+</html>

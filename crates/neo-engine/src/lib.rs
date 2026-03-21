@@ -7,11 +7,13 @@
 pub mod config;
 pub mod lifecycle;
 pub mod mock;
+pub mod pipeline;
 pub mod session;
 
 pub use config::{EngineConfig, ResourceLimits, SecurityConfig};
 pub use lifecycle::Lifecycle;
 pub use mock::MockBrowserEngine;
+pub use pipeline::{PhaseBudgets, PhaseError, PipelineContext, PipelineDecision, PipelinePhase};
 pub use session::NeoSession;
 
 use neo_extract::WomDocument;

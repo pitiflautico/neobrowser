@@ -48,6 +48,15 @@ Para cada Tier:
 **Resultado**: PDR-RECOVERY-FINAL.md con 26 tareas, 7 fases (A-G), gates por cada feature.
 
 **Paso 4**: Lanzado agente R1+R2 (quality gates, 10 crates, pipeline 9/9).
+**Paso 4 resultado**: ✅ DONE. 90/90 gates, 169 tests, 8 files split, 0 unwraps.
+  - Pipeline enforced DE VERDAD esta vez
+  - Agent split files >300 lines, fixed fmt, added docs, removed unwraps
+  - All 10 crates: pipeline/validate.sh 9/9
+
+**Paso 5**: Fase B specs definidos, consultado GPT 2 veces:
+  - Round 1: GPT dice falta PhaseError, PipelineContext, severity, normalización, overrides
+  - Round 2: filtrado esencial vs P2. GPT confirma "Sí".
+  - Lanzando agentes para R2.5-R2.9.
 
 **Requisitos funcionales obligatorios para V2** (definidos por Dani):
 - React hydration (ChatGPT, SPAs modernos)

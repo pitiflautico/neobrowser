@@ -62,6 +62,15 @@ impl FileTracer {
     }
 }
 
+/// Convert a [`Severity`] to its string representation.
+fn severity_str(s: crate::Severity) -> &'static str {
+    match s {
+        crate::Severity::Info => "info",
+        crate::Severity::Warn => "warn",
+        crate::Severity::Error => "error",
+    }
+}
+
 /// Convert a [`NavEvent`] to its string representation.
 fn nav_event_str(event: NavEvent) -> &'static str {
     match event {
@@ -129,6 +138,48 @@ impl Tracer for FileTracer {
         let ts = self.store.elapsed_ms();
         self.store
             .push(tracer::resource_blocked_entry(ts, url, reason));
+    }
+
+    fn phase_start(&self, phase: &str, trace_id: &str) {
+        let ts = self.store.elapsed_ms();
+        self.store
+            .push(tracer::phase_start_entry(ts, phase, trace_id));
+    }
+
+    fn phase_end(
+        &self,
+        phase: &str,
+        trace_id: &str,
+        duration_ms: u64,
+        decisions: &[String],
+        severity: crate::Severity,
+    ) {
+        let ts = self.store.elapsed_ms();
+        let sev = severity_str(severity);
+        self.store.push(tracer::phase_end_entry(
+            ts,
+            phase,
+            trace_id,
+            duration_ms,
+            decisions,
+            sev,
+        ));
+    }
+
+    fn module_event(&self, module_url: &str, event: &str, trace_id: &str) {
+        let ts = self.store.elapsed_ms();
+        self.store
+            .push(tracer::module_event_entry(ts, module_url, event, trace_id));
+    }
+
+    fn failure_snapshot(&self, phase: &str, trace_id: &str, partial_state: &str) {
+        let ts = self.store.elapsed_ms();
+        self.store.push(tracer::failure_snapshot_entry(
+            ts,
+            phase,
+            trace_id,
+            partial_state,
+        ));
     }
 
     fn export(&self) -> Vec<TraceEntry> {

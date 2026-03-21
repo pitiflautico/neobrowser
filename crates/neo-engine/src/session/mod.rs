@@ -19,6 +19,7 @@ use neo_types::NetworkLogEntry;
 
 use crate::config::EngineConfig;
 use crate::lifecycle::Lifecycle;
+use crate::pipeline::PipelineContext;
 
 /// An entry in the navigation history.
 #[derive(Debug, Clone)]
@@ -53,6 +54,8 @@ pub struct NeoSession {
     pub(crate) cookie_store: Option<Box<dyn CookieStore>>,
     /// HTTP response cache (disk-backed).
     pub(crate) http_cache: Option<Box<dyn HttpCache>>,
+    /// Pipeline context for the current navigation (created per navigate()).
+    pub(crate) pipeline_ctx: Option<PipelineContext>,
 }
 
 impl NeoSession {
@@ -86,6 +89,7 @@ impl NeoSession {
             last_wom: None,
             cookie_store: None,
             http_cache: None,
+            pipeline_ctx: None,
         }
     }
 
@@ -119,7 +123,13 @@ impl NeoSession {
             last_wom: None,
             cookie_store: None,
             http_cache: None,
+            pipeline_ctx: None,
         }
+    }
+
+    /// Pipeline context from the most recent navigation (if any).
+    pub fn pipeline_context(&self) -> Option<&PipelineContext> {
+        self.pipeline_ctx.as_ref()
     }
 
     /// Attach a cookie store for cross-navigation cookie persistence.
