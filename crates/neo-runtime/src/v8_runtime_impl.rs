@@ -163,4 +163,27 @@ impl JsRuntimeTrait for DenoRuntime {
     fn export_html(&mut self) -> Result<String, RuntimeError> {
         self.eval("globalThis.__neorender_export ? __neorender_export() : ''")
     }
+
+    fn insert_module(&mut self, url: &str, source: &str) {
+        self.store
+            .borrow_mut()
+            .scripts
+            .insert(url.to_string(), source.to_string());
+    }
+
+    fn has_module(&self, url: &str) -> bool {
+        self.store.borrow().scripts.contains_key(url)
+    }
+
+    fn mark_stub(&mut self, url: &str) {
+        self.store.borrow_mut().stub_modules.insert(url.to_string());
+    }
+
+    fn get_module_source(&self, url: &str) -> Option<String> {
+        self.store.borrow().scripts.get(url).cloned()
+    }
+
+    fn module_urls(&self) -> Vec<String> {
+        self.store.borrow().scripts.keys().cloned().collect()
+    }
 }

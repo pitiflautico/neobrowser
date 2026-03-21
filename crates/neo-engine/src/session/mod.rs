@@ -5,7 +5,10 @@
 
 mod browser_impl;
 mod pipeline;
+mod prefetch;
+mod script_exec;
 mod scripts;
+mod stub;
 
 use std::sync::{Arc, Mutex};
 

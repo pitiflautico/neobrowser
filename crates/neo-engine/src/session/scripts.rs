@@ -1,24 +1,36 @@
 //! Script extraction and meta-refresh detection for HTML pages.
 
-/// Script extracted from HTML for execution.
+/// Script extracted from HTML for execution or pre-loading.
 pub(crate) enum ScriptInfo {
     /// Inline `<script>` tag with JS source.
-    Inline {
-        content: String,
-        #[allow(dead_code)]
-        is_module: bool,
-    },
+    Inline { content: String, is_module: bool },
     /// External `<script src="...">` tag.
-    External {
-        url: String,
-        #[allow(dead_code)]
-        is_module: bool,
-    },
+    External { url: String, is_module: bool },
+    /// `<link rel="modulepreload">` — fetch but don't execute as top-level.
+    Preload { url: String },
 }
 
-/// Extract `<script>` tags from HTML.
+impl ScriptInfo {
+    /// URL for external scripts and preloads; None for inline.
+    pub(crate) fn url(&self) -> Option<&str> {
+        match self {
+            Self::External { url, .. } | Self::Preload { url } => Some(url),
+            Self::Inline { .. } => None,
+        }
+    }
+
+    /// Whether this is an ES module (inline module or external module).
+    pub(crate) fn is_module(&self) -> bool {
+        match self {
+            Self::Inline { is_module, .. } | Self::External { is_module, .. } => *is_module,
+            Self::Preload { .. } => true,
+        }
+    }
+}
+
+/// Extract `<script>` tags and `<link rel="modulepreload">` from HTML.
 ///
-/// Returns inline content and external URLs in document order.
+/// Returns inline content, external URLs, and modulepreload URLs in document order.
 /// Skips non-JS types (JSON, importmap, template, etc.).
 pub(crate) fn extract_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo> {
     use html5ever::parse_document;
@@ -28,12 +40,12 @@ pub(crate) fn extract_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo> {
     let dom = parse_document(RcDom::default(), Default::default()).one(html);
 
     let mut scripts = Vec::new();
-    collect_scripts(&dom.document, base_url, &mut scripts);
+    collect_all(&dom.document, base_url, &mut scripts);
     scripts
 }
 
-/// Recursively walk the DOM tree collecting script elements.
-fn collect_scripts(node: &markup5ever_rcdom::Handle, base: &str, scripts: &mut Vec<ScriptInfo>) {
+/// Recursively walk the DOM collecting scripts and modulepreload links.
+fn collect_all(node: &markup5ever_rcdom::Handle, base: &str, scripts: &mut Vec<ScriptInfo>) {
     use markup5ever_rcdom::NodeData;
 
     if let NodeData::Element {
@@ -42,62 +54,102 @@ fn collect_scripts(node: &markup5ever_rcdom::Handle, base: &str, scripts: &mut V
         ..
     } = node.data
     {
-        if name.local.as_ref() == "script" {
-            let attrs_ref = attrs.borrow();
-            let script_type = attrs_ref
-                .iter()
-                .find(|a| a.name.local.as_ref() == "type")
-                .map(|a| a.value.to_string())
-                .unwrap_or_default();
+        let local = name.local.as_ref();
 
-            // Skip non-JS script types.
-            let st = script_type.to_lowercase();
-            if st.contains("json")
-                || st.contains("importmap")
-                || st.contains("template")
-                || st.contains("html")
-                || st.contains("x-")
-            {
-                for child in node.children.borrow().iter() {
-                    collect_scripts(child, base, scripts);
-                }
-                return;
-            }
-
-            let is_module = script_type == "module";
-            let src = attrs_ref
-                .iter()
-                .find(|a| a.name.local.as_ref() == "src")
-                .map(|a| a.value.to_string());
-
-            if let Some(src) = src {
-                let full = resolve_script_url(&src, base);
-                scripts.push(ScriptInfo::External {
-                    url: full,
-                    is_module,
-                });
-            } else {
-                drop(attrs_ref);
-                let text: String = node
-                    .children
-                    .borrow()
-                    .iter()
-                    .filter_map(|c| match &c.data {
-                        NodeData::Text { contents } => Some(contents.borrow().to_string()),
-                        _ => None,
-                    })
-                    .collect();
-                if !text.trim().is_empty() {
-                    scripts.push(ScriptInfo::Inline {
-                        content: text,
-                        is_module,
-                    });
-                }
-            }
+        if local == "script" {
+            collect_script(node, attrs, base, scripts);
+        } else if local == "link" {
+            collect_modulepreload(attrs, base, scripts);
         }
     }
     for child in node.children.borrow().iter() {
-        collect_scripts(child, base, scripts);
+        collect_all(child, base, scripts);
+    }
+}
+
+/// Extract a `<script>` element.
+fn collect_script(
+    node: &markup5ever_rcdom::Handle,
+    attrs: &std::cell::RefCell<Vec<html5ever::Attribute>>,
+    base: &str,
+    scripts: &mut Vec<ScriptInfo>,
+) {
+    use markup5ever_rcdom::NodeData;
+
+    let attrs_ref = attrs.borrow();
+    let script_type = attrs_ref
+        .iter()
+        .find(|a| a.name.local.as_ref() == "type")
+        .map(|a| a.value.to_string())
+        .unwrap_or_default();
+
+    // Skip non-JS script types.
+    let st = script_type.to_lowercase();
+    if st.contains("json")
+        || st.contains("importmap")
+        || st.contains("template")
+        || st.contains("html")
+        || st.contains("x-")
+    {
+        return;
+    }
+
+    let is_module = script_type == "module";
+    let src = attrs_ref
+        .iter()
+        .find(|a| a.name.local.as_ref() == "src")
+        .map(|a| a.value.to_string());
+
+    if let Some(src) = src {
+        let full = resolve_script_url(&src, base);
+        scripts.push(ScriptInfo::External {
+            url: full,
+            is_module,
+        });
+    } else {
+        drop(attrs_ref);
+        let text: String = node
+            .children
+            .borrow()
+            .iter()
+            .filter_map(|c| match &c.data {
+                NodeData::Text { contents } => Some(contents.borrow().to_string()),
+                _ => None,
+            })
+            .collect();
+        if !text.trim().is_empty() {
+            scripts.push(ScriptInfo::Inline {
+                content: text,
+                is_module,
+            });
+        }
+    }
+}
+
+/// Extract `<link rel="modulepreload" href="...">`.
+fn collect_modulepreload(
+    attrs: &std::cell::RefCell<Vec<html5ever::Attribute>>,
+    base: &str,
+    scripts: &mut Vec<ScriptInfo>,
+) {
+    let attrs_ref = attrs.borrow();
+    let rel = attrs_ref
+        .iter()
+        .find(|a| a.name.local.as_ref() == "rel")
+        .map(|a| a.value.to_string())
+        .unwrap_or_default();
+
+    if rel != "modulepreload" {
+        return;
+    }
+
+    if let Some(href) = attrs_ref
+        .iter()
+        .find(|a| a.name.local.as_ref() == "href")
+        .map(|a| a.value.to_string())
+    {
+        let full = resolve_script_url(&href, base);
+        scripts.push(ScriptInfo::Preload { url: full });
     }
 }
 
@@ -146,7 +198,7 @@ pub(crate) fn detect_meta_refresh(html: &str, base_url: &str) -> Option<String> 
 }
 
 /// Resolve a script src URL against a base URL.
-fn resolve_script_url(src: &str, base: &str) -> String {
+pub(crate) fn resolve_script_url(src: &str, base: &str) -> String {
     if src.starts_with("http") {
         src.to_string()
     } else if src.starts_with("//") {

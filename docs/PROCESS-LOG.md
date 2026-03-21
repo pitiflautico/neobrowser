@@ -53,7 +53,17 @@ Para cada Tier:
   - Agent split files >300 lines, fixed fmt, added docs, removed unwraps
   - All 10 crates: pipeline/validate.sh 9/9
 
-**Paso 5**: Fase B specs definidos, consultado GPT 2 veces:
+**Paso 5**: Fase B — DONE. Gate 8/8 passed. 187 tests.
+
+### 2026-03-21 — Sesión 3 (Fase C)
+
+**Paso 1**: PDR Fase C: R3 pre-fetch, R4 stubs, R5 rewrite, R6 cache
+**Paso 2**: GPT review 1 — acepta + añade: integración cruzada, cache key, budgets, observability, fallback
+**Paso 3a**: GPT review 2 — NO. Falta: orden enforceado, visited set, timeout/módulo, error persistido
+**Paso 3b**: Filtrado esencial vs P2. GPT confirma "Sí".
+**Paso 4**: Lanzando agentes R3-R6.
+
+**Paso 5
   - Round 1: GPT dice falta PhaseError, PipelineContext, severity, normalización, overrides
   - Round 2: filtrado esencial vs P2. GPT confirma "Sí".
   - Lanzando agentes para R2.5-R2.9.

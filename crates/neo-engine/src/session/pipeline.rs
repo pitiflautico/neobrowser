@@ -6,7 +6,10 @@ use std::time::Instant;
 use neo_http::{HttpRequest, RequestContext, RequestKind};
 use neo_types::{NetworkLogEntry, PageState};
 
-use super::scripts::{detect_meta_refresh, extract_scripts, ScriptInfo};
+use super::prefetch::prefetch_modules;
+use super::script_exec::{execute_scripts, fetch_external_scripts};
+use super::scripts::{detect_meta_refresh, extract_scripts};
+use super::stub::stub_heavy_modules;
 use super::{HistoryEntry, NeoSession};
 use crate::pipeline::PipelinePhase;
 use crate::{EngineError, PageResult};
@@ -104,68 +107,90 @@ impl NeoSession {
     }
 
     /// Execute inline and external scripts from the page HTML.
+    ///
+    /// Pipeline order: fetch externals -> prefetch imports -> stub heavy -> execute.
     fn execute_page_scripts(&mut self, response: &neo_types::HttpResponse) -> Vec<String> {
         let mut js_errors: Vec<String> = Vec::new();
         if !self.config.execute_js {
             return js_errors;
         }
-        let Some(rt) = self.runtime.as_mut() else {
-            return js_errors;
+
+        // Take the runtime out temporarily to avoid self-borrow conflicts.
+        let mut rt = match self.runtime.take() {
+            Some(r) => r,
+            None => return js_errors,
         };
 
-        // 1. Initialize the V8 DOM with the page HTML + bootstrap globals.
-        if let Err(e) = rt.set_document_html(&response.body, &response.url) {
-            js_errors.push(format!("set_document_html: {e}"));
-            return js_errors;
-        }
+        let result = self.run_script_pipeline(&mut rt, response, &mut js_errors);
+        self.runtime = Some(rt);
 
-        // 2. Extract and execute inline/external scripts.
+        if let Err(e) = result {
+            js_errors.push(format!("pipeline: {e}"));
+        }
+        js_errors
+    }
+
+    /// Inner pipeline: fetch, prefetch, stub, execute, settle, export.
+    fn run_script_pipeline(
+        &mut self,
+        rt: &mut Box<dyn neo_runtime::JsRuntime>,
+        response: &neo_types::HttpResponse,
+        js_errors: &mut Vec<String>,
+    ) -> Result<(), String> {
+        rt.set_document_html(&response.body, &response.url)
+            .map_err(|e| format!("set_document_html: {e}"))?;
+
         let scripts = extract_scripts(&response.body, &response.url);
-        for script in &scripts {
-            match script {
-                ScriptInfo::Inline { content, .. } => {
-                    if let Err(e) = rt.execute(content) {
-                        js_errors.push(format!("inline script: {e}"));
-                    }
-                }
-                ScriptInfo::External { url: src, .. } => {
-                    let fetch_req = HttpRequest {
-                        method: "GET".to_string(),
-                        url: src.clone(),
-                        headers: HashMap::new(),
-                        body: None,
-                        context: RequestContext {
-                            kind: RequestKind::Subresource,
-                            initiator: "parser".to_string(),
-                            referrer: Some(response.url.clone()),
-                            frame_id: None,
-                            top_level_url: Some(response.url.clone()),
-                        },
-                        timeout_ms: 5000,
-                    };
-                    match self.http.request(&fetch_req) {
-                        Ok(script_resp) => {
-                            if let Err(e) = rt.execute(&script_resp.body) {
-                                js_errors.push(format!(
-                                    "script {}: {e}",
-                                    src.rsplit('/').next().unwrap_or(src)
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            js_errors.push(format!("fetch {src}: {e}"));
-                        }
-                    }
-                }
-            }
+        let trace_id = "nav";
+
+        // Fetch external scripts into the module store.
+        fetch_external_scripts(
+            &scripts,
+            &response.url,
+            rt.as_mut(),
+            self.http.as_ref(),
+            js_errors,
+        );
+
+        // R3: Pre-fetch ES module imports (depth 2).
+        let _prefetch = prefetch_modules(
+            &scripts,
+            &response.url,
+            rt.as_mut(),
+            self.http.as_ref(),
+            self.tracer.as_ref(),
+            trace_id,
+        );
+
+        // R4: Stub heavy non-essential modules.
+        if self.config.stub_heavy_modules {
+            let _stub = stub_heavy_modules(
+                &scripts,
+                &response.url,
+                self.config.stub_threshold_bytes,
+                rt.as_mut(),
+                self.tracer.as_ref(),
+                trace_id,
+            );
         }
 
-        // 3. Run event loop to settle promises, timers, etc.
+        // Execute scripts in document order.
+        execute_scripts(
+            &scripts,
+            &response.url,
+            rt.as_mut(),
+            self.http.as_ref(),
+            self.tracer.as_ref(),
+            trace_id,
+            js_errors,
+        );
+
+        // Settle: run event loop for promises, timers, etc.
         if let Err(e) = rt.run_until_settled(self.config.script_timeout_ms) {
             js_errors.push(format!("settle: {e}"));
         }
 
-        // 4. Export the JS-mutated DOM and re-parse into html5ever.
+        // Export the JS-mutated DOM and re-parse into html5ever.
         match rt.export_html() {
             Ok(html) if !html.is_empty() => {
                 let mut dom = self.dom.lock().expect("dom lock poisoned");
@@ -178,8 +203,7 @@ impl NeoSession {
                 js_errors.push(format!("export: {e}"));
             }
         }
-
-        js_errors
+        Ok(())
     }
 
     /// Navigate with an existing redirect chain (used for meta-refresh).

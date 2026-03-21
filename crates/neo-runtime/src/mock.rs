@@ -25,6 +25,10 @@ pub struct MockRuntime {
     pub pending: usize,
     /// If set, eval() returns this error.
     pub eval_error: Option<String>,
+    /// In-memory module store for pre-fetch testing.
+    module_store: HashMap<String, String>,
+    /// URLs marked for stubbing.
+    stub_urls: std::collections::HashSet<String>,
 }
 
 impl Default for MockRuntime {
@@ -44,6 +48,8 @@ impl MockRuntime {
             html_calls: Vec::new(),
             pending: 0,
             eval_error: None,
+            module_store: HashMap::new(),
+            stub_urls: std::collections::HashSet::new(),
         }
     }
 
@@ -98,5 +104,26 @@ impl JsRuntime for MockRuntime {
     fn set_document_html(&mut self, html: &str, url: &str) -> Result<(), RuntimeError> {
         self.html_calls.push((html.to_string(), url.to_string()));
         Ok(())
+    }
+
+    fn insert_module(&mut self, url: &str, source: &str) {
+        self.module_store
+            .insert(url.to_string(), source.to_string());
+    }
+
+    fn has_module(&self, url: &str) -> bool {
+        self.module_store.contains_key(url)
+    }
+
+    fn mark_stub(&mut self, url: &str) {
+        self.stub_urls.insert(url.to_string());
+    }
+
+    fn get_module_source(&self, url: &str) -> Option<String> {
+        self.module_store.get(url).cloned()
+    }
+
+    fn module_urls(&self) -> Vec<String> {
+        self.module_store.keys().cloned().collect()
     }
 }

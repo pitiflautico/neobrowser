@@ -17,6 +17,9 @@ use std::rc::Rc;
 
 use crate::code_cache::V8CodeCache;
 
+// Re-export import extraction from the dedicated module.
+pub use crate::imports::extract_es_imports;
+
 /// Pre-fetched script contents keyed by URL.
 #[derive(Default)]
 pub struct ScriptStore {
@@ -75,7 +78,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
 
         // Check pre-fetched store first.
         if let Some(code) = store.scripts.get(&url) {
-            // Stub heavy modules with no-op re-exports.
+            // R4: Stub heavy modules with no-op re-exports.
             if store.stub_modules.contains(&url) {
                 let exports = extract_export_names(code);
                 let stub = generate_stub_module(&exports);
@@ -87,6 +90,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                 )));
             }
 
+            // R5: Rewrite Promise.allSettled before serving.
             let patched = rewrite_promise_all_settled(code);
             let cache_info = self.make_cache_info(&url, &patched);
             return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -108,7 +112,6 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         }
 
         // Not in store — return empty placeholder.
-        // On-demand fetch would require HttpClient which isn't Rc-safe here.
         empty_module(module_specifier)
     }
 
@@ -160,10 +163,8 @@ pub fn extract_export_names(js: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
 
-    // Simple pattern matching without regex (no regex dep).
     for line in js.split("export") {
         let trimmed = line.trim_start();
-        // export { a as b, c }
         if trimmed.starts_with('{') {
             if let Some(end) = trimmed.find('}') {
                 let block = &trimmed[1..end];
@@ -181,7 +182,6 @@ pub fn extract_export_names(js: &str) -> Vec<String> {
                 }
             }
         }
-        // export function/const/let/var/class NAME
         for kw in &["function ", "const ", "let ", "var ", "class "] {
             if let Some(rest) = trimmed.strip_prefix(kw) {
                 let name: String = rest
@@ -193,14 +193,12 @@ pub fn extract_export_names(js: &str) -> Vec<String> {
                 }
             }
         }
-        // export default
         if (trimmed.starts_with("default") || trimmed.starts_with(" default"))
             && seen.insert("default".to_string())
         {
             names.push("default".to_string());
         }
     }
-
     names
 }
 

@@ -5,6 +5,7 @@
 //! Provides fetch/timer/storage ops, ES module loading, and V8 bytecode caching.
 
 pub mod code_cache;
+pub mod imports;
 pub mod mock;
 pub mod modules;
 pub mod ops;
@@ -75,6 +76,23 @@ pub trait JsRuntime: Send {
     fn export_html(&mut self) -> Result<String, RuntimeError> {
         self.eval("globalThis.__neorender_export ? __neorender_export() : ''")
     }
+
+    // ─── Module store access (for pre-fetch pipeline) ───
+
+    /// Insert a pre-fetched module into the script store.
+    fn insert_module(&mut self, url: &str, source: &str);
+
+    /// Check if a module URL is already in the store.
+    fn has_module(&self, url: &str) -> bool;
+
+    /// Mark a module URL for stubbing (heavy, non-essential).
+    fn mark_stub(&mut self, url: &str);
+
+    /// Get the source code for a module URL (if pre-fetched).
+    fn get_module_source(&self, url: &str) -> Option<String>;
+
+    /// List all module URLs currently in the store.
+    fn module_urls(&self) -> Vec<String>;
 }
 
 /// Configuration for creating a runtime instance.
