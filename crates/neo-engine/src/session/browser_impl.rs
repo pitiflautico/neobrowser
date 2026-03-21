@@ -247,14 +247,13 @@ impl BrowserEngine for NeoSession {
 
     fn click(&mut self, target: &str) -> Result<ClickResult, EngineError> {
         self.tracer.intent("click", "click", target, 1.0);
-        // Use LiveDom (V8) if runtime available, fallback to static DOM.
+        // Try LiveDom (V8) first, fallback to static DOM interactor.
         let result = if let Some(rt) = self.runtime.as_mut() {
             let mut live = LiveDom::new(rt.as_mut());
-            let r = live.click(target).map_err(|e| {
-                EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
-            })?;
-            // Check text/href from LiveDom result to build ClickResult.
-            ClickResult::DomChanged(r.mutations)
+            match live.click(target) {
+                Ok(r) => ClickResult::DomChanged(r.mutations),
+                Err(_) => self.interactor.click(target)?,
+            }
         } else {
             self.interactor.click(target)?
         };
@@ -298,9 +297,9 @@ impl BrowserEngine for NeoSession {
         self.tracer.intent("submit", "submit", t, 1.0);
         if let Some(rt) = self.runtime.as_mut() {
             let mut live = LiveDom::new(rt.as_mut());
-            live.submit(t).map_err(|e| {
-                EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
-            })?;
+            if live.submit(t).is_err() {
+                let _ = self.interactor.submit(target);
+            }
         } else {
             let _result = self.interactor.submit(target)?;
         }

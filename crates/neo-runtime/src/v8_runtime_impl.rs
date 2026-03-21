@@ -129,26 +129,64 @@ impl JsRuntimeTrait for DenoRuntime {
             .replace('`', "\\`")
             .replace("${", "\\${");
         let escaped_url = url.replace('\'', "\\'");
-        let js = format!(
-            "globalThis.__neorender_html = `{}`;\
-             globalThis.__neorender_url = '{}';",
-            escaped, escaped_url
-        );
-        self.runtime
-            .execute_script("<set_document_html>", js)
-            .map_err(|e| RuntimeError::Dom(first_line(&e.to_string())))?;
 
-        let bootstrap_js: &str = include_str!("../../../js/bootstrap.js");
-        self.runtime
-            .execute_script("<neorender:bootstrap>", bootstrap_js.to_string())
-            .map_err(|e| RuntimeError::Dom(format!("bootstrap: {}", first_line(&e.to_string()))))?;
+        // On first call, execute full bootstrap. On subsequent calls, just
+        // reinitialize the DOM via __linkedom_parseHTML (bootstrap.js uses
+        // const declarations which can't be re-executed in the same V8 context).
+        let is_first = self
+            .eval("typeof globalThis.__neo_initialized !== 'undefined' ? 'yes' : 'no'")
+            .map(|v| v.contains("yes"))
+            .unwrap_or(false);
 
-        let browser_shim_js: &str = include_str!("../../../js/browser_shim.js");
-        self.runtime
-            .execute_script("<neorender:browser_shim>", browser_shim_js.to_string())
-            .map_err(|e| {
-                RuntimeError::Dom(format!("browser_shim: {}", first_line(&e.to_string())))
-            })?;
+        if is_first {
+            // Re-init: parse new HTML and replace document CONTENT (not the
+            // document object itself — globalThis.document is non-replaceable
+            // once linkedom initializes it).
+            let reinit_js = format!(
+                "(function() {{\
+                     globalThis.__neorender_html = `{}`;\
+                     globalThis.__neorender_url = '{}';\
+                     var __tmp = __linkedom_parseHTML(globalThis.__neorender_html);\
+                     document.documentElement.innerHTML = __tmp.document.documentElement.innerHTML;\
+                     try {{ Object.defineProperty(document, 'currentScript', {{ value: null, writable: true, configurable: true }}); }} catch {{}}\
+                     try {{ document.defaultView = globalThis; }} catch {{}}\
+                 }})()",
+                escaped, escaped_url
+            );
+            self.runtime
+                .execute_script("<reinit_document>", reinit_js)
+                .map_err(|e| RuntimeError::Dom(first_line(&e.to_string())))?;
+        } else {
+            // First time: set HTML and run full bootstrap + shim.
+            let js = format!(
+                "globalThis.__neorender_html = `{}`;\
+                 globalThis.__neorender_url = '{}';",
+                escaped, escaped_url
+            );
+            self.runtime
+                .execute_script("<set_document_html>", js)
+                .map_err(|e| RuntimeError::Dom(first_line(&e.to_string())))?;
+
+            let bootstrap_js: &str = include_str!("../../../js/bootstrap.js");
+            self.runtime
+                .execute_script("<neorender:bootstrap>", bootstrap_js.to_string())
+                .map_err(|e| {
+                    RuntimeError::Dom(format!("bootstrap: {}", first_line(&e.to_string())))
+                })?;
+
+            let browser_shim_js: &str = include_str!("../../../js/browser_shim.js");
+            self.runtime
+                .execute_script("<neorender:browser_shim>", browser_shim_js.to_string())
+                .map_err(|e| {
+                    RuntimeError::Dom(format!("browser_shim: {}", first_line(&e.to_string())))
+                })?;
+
+            // Mark as initialized.
+            let _ = self.runtime.execute_script(
+                "<mark_init>",
+                "globalThis.__neo_initialized = true".to_string(),
+            );
+        }
 
         // Set location properties directly on __neo_location to avoid
         // triggering navigation interception from the browser shim.
