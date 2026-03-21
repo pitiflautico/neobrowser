@@ -123,3 +123,14 @@ pub struct DomMutation {
     pub added_nodes: usize,
     pub removed_nodes: usize,
 }
+
+/// Session state for multi-step interaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionState {
+    /// No page loaded yet.
+    Idle,
+    /// Page loaded, ready for interaction.
+    Ready,
+    /// Navigation in progress.
+    Navigating,
+}

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use neo_extract::wom::WomDocument;
 use neo_interact::{ClickResult, SubmitResult};
 use neo_trace::ExecutionSummary;
-use neo_types::{PageState, TraceEntry};
+use neo_types::{PageState, SessionState, TraceEntry};
 
 use crate::{BrowserEngine, EngineError, PageResult};
 
@@ -158,6 +158,57 @@ impl BrowserEngine for MockBrowserEngine {
 
     fn extract(&self) -> Result<WomDocument, EngineError> {
         Ok(self.wom.clone())
+    }
+
+    fn press_key(&mut self, target: &str, key: &str) -> Result<(), EngineError> {
+        self.actions.push(format!("press_key:{target}={key}"));
+        Ok(())
+    }
+
+    fn wait_for(&mut self, selector: &str, _timeout_ms: u32) -> Result<bool, EngineError> {
+        self.actions.push(format!("wait_for:{selector}"));
+        Ok(true)
+    }
+
+    fn extract_text(&mut self) -> Result<String, EngineError> {
+        self.actions.push("extract_text".to_string());
+        Ok("mock page text".to_string())
+    }
+
+    fn extract_links(&mut self) -> Result<Vec<(String, String)>, EngineError> {
+        self.actions.push("extract_links".to_string());
+        Ok(self
+            .wom
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                n.href
+                    .as_ref()
+                    .map(|href| (n.label.clone(), href.clone()))
+            })
+            .collect())
+    }
+
+    fn extract_semantic(&mut self) -> Result<String, EngineError> {
+        self.actions.push("extract_semantic".to_string());
+        Ok("## Mock Page\n[button:Click me]".to_string())
+    }
+
+    fn current_url(&mut self) -> Result<String, EngineError> {
+        self.actions.push("current_url".to_string());
+        Ok(self
+            .history
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "about:blank".to_string()))
+    }
+
+    fn session_state(&self) -> SessionState {
+        if self.history.is_empty() {
+            SessionState::Idle
+        } else {
+            SessionState::Ready
+        }
     }
 
     fn trace(&self) -> Vec<TraceEntry> {

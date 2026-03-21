@@ -18,6 +18,7 @@ fn main() {
     match args.get(1).map(|s| s.as_str()) {
         Some("mcp") => run_mcp(),
         Some("see") => run_see(&args),
+        Some("interact") => run_interact(&args),
         Some("search") => run_search(&args),
         Some("import-cookies") => run_import_cookies(&args),
         Some("--help") | Some("-h") | None => print_help(),
@@ -298,13 +299,237 @@ fn run_import_cookies(args: &[String]) {
     );
 }
 
+fn run_interact(args: &[String]) {
+    let url = match args.get(2) {
+        Some(u) => u.as_str(),
+        None => {
+            eprintln!("Usage: neorender interact <url>");
+            eprintln!("  Navigate to URL and enter an interactive REPL.");
+            std::process::exit(1);
+        }
+    };
+
+    let mut engine = create_engine();
+
+    eprintln!("[NeoRender] Navigating to {url}...");
+    match engine.navigate(url) {
+        Ok(result) => {
+            eprintln!(
+                "[NeoRender] Loaded: {} ({}, {}ms)",
+                result.title, result.url, result.render_ms
+            );
+            eprintln!(
+                "[NeoRender] WOM: {} nodes, type={}",
+                result.wom.nodes.len(),
+                result.wom.page_type
+            );
+        }
+        Err(e) => {
+            eprintln!("Navigation failed: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    eprintln!();
+    eprintln!("Interactive REPL — commands:");
+    eprintln!("  click <selector>           Click an element");
+    eprintln!("  type <selector> <text>     Type text into an input");
+    eprintln!("  press <selector> <key>     Press a key (Enter, Tab, Escape)");
+    eprintln!("  submit <selector>          Submit a form");
+    eprintln!("  extract text|links|semantic|wom  Extract page content");
+    eprintln!("  wait <selector> [ms]       Wait for element (default 5000ms)");
+    eprintln!("  eval <js>                  Execute JavaScript");
+    eprintln!("  url                        Show current URL");
+    eprintln!("  nav <url>                  Navigate to new URL");
+    eprintln!("  quit                       Exit");
+    eprintln!();
+
+    let stdin = std::io::stdin();
+    let mut line_buf = String::new();
+
+    loop {
+        eprint!("neo> ");
+        line_buf.clear();
+        match stdin.read_line(&mut line_buf) {
+            Ok(0) => break, // EOF
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Read error: {e}");
+                break;
+            }
+        }
+
+        let trimmed = line_buf.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
+        let cmd = parts[0];
+
+        match cmd {
+            "quit" | "exit" | "q" => break,
+
+            "click" => {
+                let selector = match parts.get(1) {
+                    Some(s) => *s,
+                    None => {
+                        eprintln!("Usage: click <selector>");
+                        continue;
+                    }
+                };
+                match engine.click(selector) {
+                    Ok(result) => println!("{result:?}"),
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "type" => {
+                if parts.len() < 3 {
+                    eprintln!("Usage: type <selector> <text>");
+                    continue;
+                }
+                let selector = parts[1];
+                let text = parts[2];
+                match engine.type_text(selector, text) {
+                    Ok(()) => println!("OK"),
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "press" => {
+                if parts.len() < 3 {
+                    eprintln!("Usage: press <selector> <key>");
+                    continue;
+                }
+                let selector = parts[1];
+                let key = parts[2];
+                match engine.press_key(selector, key) {
+                    Ok(()) => println!("OK"),
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "submit" => {
+                let selector = parts.get(1).copied();
+                match engine.submit(selector) {
+                    Ok(result) => println!("{result:?}"),
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "extract" => {
+                let kind = match parts.get(1) {
+                    Some(k) => *k,
+                    None => {
+                        eprintln!("Usage: extract text|links|semantic|wom");
+                        continue;
+                    }
+                };
+                match kind {
+                    "text" => match engine.extract_text() {
+                        Ok(text) => println!("{text}"),
+                        Err(e) => eprintln!("Error: {e}"),
+                    },
+                    "links" => match engine.extract_links() {
+                        Ok(links) => {
+                            for (text, href) in &links {
+                                println!("  [{text}] -> {href}");
+                            }
+                            println!("({} links)", links.len());
+                        }
+                        Err(e) => eprintln!("Error: {e}"),
+                    },
+                    "semantic" => match engine.extract_semantic() {
+                        Ok(text) => println!("{text}"),
+                        Err(e) => eprintln!("Error: {e}"),
+                    },
+                    "wom" => match engine.extract() {
+                        Ok(wom) => {
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&wom)
+                                    .unwrap_or_else(|e| format!("JSON error: {e}"))
+                            );
+                        }
+                        Err(e) => eprintln!("Error: {e}"),
+                    },
+                    other => eprintln!("Unknown extract kind: {other}"),
+                }
+            }
+
+            "wait" => {
+                let selector = match parts.get(1) {
+                    Some(s) => *s,
+                    None => {
+                        eprintln!("Usage: wait <selector> [timeout_ms]");
+                        continue;
+                    }
+                };
+                let timeout: u32 = parts
+                    .get(2)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(5000);
+                match engine.wait_for(selector, timeout) {
+                    Ok(found) => println!("{}", if found { "found" } else { "not found" }),
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "eval" => {
+                let js = match parts.get(1..) {
+                    Some(rest) if !rest.is_empty() => rest.join(" "),
+                    _ => {
+                        eprintln!("Usage: eval <javascript>");
+                        continue;
+                    }
+                };
+                match engine.eval(&js) {
+                    Ok(result) => println!("{result}"),
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "url" => match engine.current_url() {
+                Ok(url) => println!("{url}"),
+                Err(e) => eprintln!("Error: {e}"),
+            },
+
+            "nav" => {
+                let target = match parts.get(1) {
+                    Some(u) => *u,
+                    None => {
+                        eprintln!("Usage: nav <url>");
+                        continue;
+                    }
+                };
+                match engine.navigate(target) {
+                    Ok(result) => {
+                        println!(
+                            "Loaded: {} ({}, {}ms, {} nodes)",
+                            result.title,
+                            result.url,
+                            result.render_ms,
+                            result.wom.nodes.len()
+                        );
+                    }
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            other => eprintln!("Unknown command: {other}. Type 'quit' to exit."),
+        }
+    }
+}
+
 fn print_help() {
-    println!("NeoRender V2 — AI Browser Engine");
+    println!("NeoRender V2 -- AI Browser Engine");
     println!();
     println!("Usage:");
     println!("  neorender mcp                            Start MCP server (JSON-RPC over stdio)");
     println!("  neorender see <url>                      Navigate to URL and print WOM as JSON");
     println!("  neorender see --cookies <file> <url>     Import cookies from JSON, then navigate");
+    println!("  neorender interact <url>                 Navigate and enter interactive REPL");
     println!("  neorender search <query> [--num N] [--deep] [--deep-num N]");
     println!("                                           Search the web via DuckDuckGo");
     println!(

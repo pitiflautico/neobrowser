@@ -7,9 +7,10 @@ use neo_extract::WomDocument;
 use neo_http::{CacheDecision, RequestKind};
 use neo_interact::{ClickResult, SubmitResult};
 use neo_trace::ExecutionSummary;
-use neo_types::{NetworkLogEntry, PageState, TraceEntry};
+use neo_types::{NetworkLogEntry, PageState, SessionState, TraceEntry};
 
 use super::NeoSession;
+use crate::live_dom::LiveDom;
 use crate::pipeline::{PipelineContext, PipelineDecision, PipelinePhase};
 use crate::{BrowserEngine, EngineError, PageResult};
 
@@ -279,6 +280,141 @@ impl BrowserEngine for NeoSession {
         let dom = self.dom.lock().expect("dom lock poisoned");
         let wom = self.extractor.extract_wom(dom.as_ref());
         Ok(wom)
+    }
+
+    fn press_key(&mut self, target: &str, key: &str) -> Result<(), EngineError> {
+        self.tracer.intent("press_key", "press_key", target, 1.0);
+        match self.runtime.as_mut() {
+            Some(rt) => {
+                let mut live = LiveDom::new(rt.as_mut());
+                let _result = live.press_key(target, key).map_err(|e| {
+                    EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+                })?;
+                self.tracer
+                    .action_result("press_key", true, &format!("key={key}"), None);
+                Ok(())
+            }
+            None => Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
+                "no runtime available".into(),
+            ))),
+        }
+    }
+
+    fn wait_for(&mut self, selector: &str, timeout_ms: u32) -> Result<bool, EngineError> {
+        match self.runtime.as_mut() {
+            Some(rt) => {
+                let mut live = LiveDom::new(rt.as_mut());
+                match live.wait_for(selector, timeout_ms) {
+                    Ok(found) => Ok(found),
+                    Err(crate::LiveDomError::Timeout { .. }) => Ok(false),
+                    Err(e) => Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
+                        e.to_string(),
+                    ))),
+                }
+            }
+            None => {
+                // Without runtime, check DOM directly.
+                let dom = self.dom.lock().expect("dom lock poisoned");
+                Ok(dom.query_selector(selector).is_some())
+            }
+        }
+    }
+
+    fn extract_text(&mut self) -> Result<String, EngineError> {
+        match self.runtime.as_mut() {
+            Some(rt) => {
+                let mut live = LiveDom::new(rt.as_mut());
+                live.page_text().map_err(|e| {
+                    EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+                })
+            }
+            None => {
+                // Fallback: extract from WOM.
+                let dom = self.dom.lock().expect("dom lock poisoned");
+                let wom = self.extractor.extract_wom(dom.as_ref());
+                let mut buf = String::new();
+                for node in &wom.nodes {
+                    buf.push_str(&node.label);
+                    buf.push(' ');
+                }
+                Ok(buf.trim().to_string())
+            }
+        }
+    }
+
+    fn extract_links(&mut self) -> Result<Vec<(String, String)>, EngineError> {
+        match self.runtime.as_mut() {
+            Some(rt) => {
+                let mut live = LiveDom::new(rt.as_mut());
+                live.links().map_err(|e| {
+                    EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+                })
+            }
+            None => {
+                // Fallback: extract from WOM nodes with href.
+                let dom = self.dom.lock().expect("dom lock poisoned");
+                let wom = self.extractor.extract_wom(dom.as_ref());
+                Ok(wom
+                    .nodes
+                    .iter()
+                    .filter_map(|n| {
+                        n.href
+                            .as_ref()
+                            .map(|href| (n.label.clone(), href.clone()))
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    fn extract_semantic(&mut self) -> Result<String, EngineError> {
+        match self.runtime.as_mut() {
+            Some(rt) => {
+                let mut live = LiveDom::new(rt.as_mut());
+                live.semantic_text().map_err(|e| {
+                    EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+                })
+            }
+            None => {
+                // Fallback: WOM summary.
+                let dom = self.dom.lock().expect("dom lock poisoned");
+                let wom = self.extractor.extract_wom(dom.as_ref());
+                Ok(wom.summary)
+            }
+        }
+    }
+
+    fn current_url(&mut self) -> Result<String, EngineError> {
+        match self.runtime.as_mut() {
+            Some(rt) => {
+                let mut live = LiveDom::new(rt.as_mut());
+                live.current_url().map_err(|e| {
+                    EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+                })
+            }
+            None => {
+                // Fallback: last history entry.
+                Ok(self
+                    .history_stack
+                    .last()
+                    .map(|e| e.url.clone())
+                    .unwrap_or_default())
+            }
+        }
+    }
+
+    fn session_state(&self) -> SessionState {
+        match self.lifecycle.current() {
+            PageState::Idle => SessionState::Idle,
+            PageState::Navigating | PageState::Loading => SessionState::Navigating,
+            _ => {
+                if self.history_stack.is_empty() {
+                    SessionState::Idle
+                } else {
+                    SessionState::Ready
+                }
+            }
+        }
     }
 
     fn trace(&self) -> Vec<TraceEntry> {

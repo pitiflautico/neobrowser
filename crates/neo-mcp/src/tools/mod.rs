@@ -1,11 +1,13 @@
 //! Tool registry — definitions and dispatch for all MCP tools.
 
 pub mod browse;
+pub mod eval;
 pub mod extract;
 pub mod import_cookies;
 pub mod interact;
 pub mod search;
 pub mod trace;
+pub mod wait;
 
 use serde_json::Value;
 
@@ -25,6 +27,8 @@ pub fn list_tools() -> Value {
         browse::definition(),
         interact::definition(),
         extract::definition(),
+        eval::definition(),
+        wait::definition(),
         search::definition(),
         trace::definition(),
         import_cookies::definition(),
@@ -50,6 +54,8 @@ pub fn call_tool(name: &str, args: Value, state: &mut McpState) -> Result<Value,
         "browse" => browse::call(args, state),
         "interact" => interact::call(args, state),
         "extract" => extract::call(args, state),
+        "eval" => eval::call(args, state),
+        "wait" => wait::call(args, state),
         "search" => search::call(args, state),
         "trace" => trace::call(args, state),
         "import_cookies" => import_cookies::call(args),

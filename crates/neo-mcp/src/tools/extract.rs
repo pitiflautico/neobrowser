@@ -17,7 +17,7 @@ pub(crate) fn definition() -> ToolDef {
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["wom", "text", "tables"],
+                    "enum": ["wom", "text", "links", "semantic", "tables"],
                     "description": "What to extract"
                 },
                 "max_chars": {
@@ -52,6 +52,27 @@ pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
                 .unwrap_or(2000) as usize;
             let text = wom_to_text(&wom, max);
             Ok(serde_json::json!({ "text": text }))
+        }
+        "links" => {
+            let links = state.engine.extract_links()?;
+            let entries: Vec<serde_json::Value> = links
+                .into_iter()
+                .map(|(text, href)| serde_json::json!({ "text": text, "href": href }))
+                .collect();
+            Ok(serde_json::json!({ "links": entries, "count": entries.len() }))
+        }
+        "semantic" => {
+            let semantic = state.engine.extract_semantic()?;
+            let max = args
+                .get("max_chars")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50000) as usize;
+            let text = if semantic.len() > max {
+                semantic[..max].to_string()
+            } else {
+                semantic
+            };
+            Ok(serde_json::json!({ "semantic": text }))
         }
         "tables" => {
             // Table extraction delegates to WOM nodes with role hints.

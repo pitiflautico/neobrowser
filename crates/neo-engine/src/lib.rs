@@ -14,7 +14,7 @@ pub mod watchdog;
 
 pub use config::{EngineConfig, ResourceLimits, SecurityConfig};
 pub use lifecycle::Lifecycle;
-pub use live_dom::{LiveDom, LiveDomError};
+pub use live_dom::{ActionOutcome, FrameInfo, LiveDom, LiveDomError, LiveDomResult};
 pub use mock::MockBrowserEngine;
 pub use pipeline::{PhaseBudgets, PhaseError, PipelineContext, PipelineDecision, PipelinePhase};
 pub use session::NeoSession;
@@ -23,7 +23,7 @@ pub use watchdog::{Watchdog, WatchdogAbortReason, WatchdogEvent, WatchdogGuard};
 use neo_extract::WomDocument;
 use neo_interact::{ClickResult, SubmitResult};
 use neo_trace::ExecutionSummary;
-use neo_types::{PageState, TraceEntry};
+use neo_types::{PageState, SessionState, TraceEntry};
 use std::collections::HashMap;
 
 /// Errors from the engine layer.
@@ -95,6 +95,27 @@ pub trait BrowserEngine {
 
     /// Extract WOM (what the AI sees).
     fn extract(&self) -> Result<WomDocument, EngineError>;
+
+    /// Press a key on an element (Enter, Tab, Escape, etc.).
+    fn press_key(&mut self, target: &str, key: &str) -> Result<(), EngineError>;
+
+    /// Wait for an element to appear in the DOM.
+    fn wait_for(&mut self, selector: &str, timeout_ms: u32) -> Result<bool, EngineError>;
+
+    /// Extract page text content.
+    fn extract_text(&mut self) -> Result<String, EngineError>;
+
+    /// Extract all links as (text, href) pairs.
+    fn extract_links(&mut self) -> Result<Vec<(String, String)>, EngineError>;
+
+    /// Extract semantic (AI-friendly) page representation.
+    fn extract_semantic(&mut self) -> Result<String, EngineError>;
+
+    /// Get the current page URL (post-JS, may differ from navigated URL).
+    fn current_url(&mut self) -> Result<String, EngineError>;
+
+    /// Get the session state (idle, ready, navigating).
+    fn session_state(&self) -> SessionState;
 
     /// Get execution trace.
     fn trace(&self) -> Vec<TraceEntry>;

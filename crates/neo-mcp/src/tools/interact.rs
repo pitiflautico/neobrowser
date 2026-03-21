@@ -18,7 +18,7 @@ pub(crate) fn definition() -> ToolDef {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["click", "type", "fill_form", "submit"],
+                    "enum": ["click", "type", "fill_form", "submit", "press_key"],
                     "description": "Interaction type"
                 },
                 "target": {
@@ -33,6 +33,10 @@ pub(crate) fn definition() -> ToolDef {
                     "type": "object",
                     "description": "Field name→value map (for action=fill_form)",
                     "additionalProperties": { "type": "string" }
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Key to press (for action=press_key): Enter, Tab, Escape, etc."
                 }
             },
             "required": ["action"]
@@ -52,6 +56,7 @@ pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
         "type" => call_type(&args, state),
         "fill_form" => call_fill_form(&args, state),
         "submit" => call_submit(&args, state),
+        "press_key" => call_press_key(&args, state),
         other => Err(McpError::InvalidParams(format!("unknown action: {other}"))),
     }
 }
@@ -83,6 +88,13 @@ fn call_submit(args: &Value, state: &mut McpState) -> Result<Value, McpError> {
     let target = args.get("target").and_then(|v| v.as_str());
     let result = state.engine.submit(target)?;
     Ok(serde_json::to_value(result)?)
+}
+
+fn call_press_key(args: &Value, state: &mut McpState) -> Result<Value, McpError> {
+    let target = require_str(args, "target")?;
+    let key = require_str(args, "key")?;
+    state.engine.press_key(target, key)?;
+    Ok(serde_json::json!({ "ok": true, "key": key }))
 }
 
 /// Extract a required string field from args.
