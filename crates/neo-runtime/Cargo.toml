@@ -5,3 +5,14 @@ edition.workspace = true
 
 [dependencies]
 neo-types = { path = "../neo-types" }
+neo-http = { path = "../neo-http" }
+neo-dom = { path = "../neo-dom" }
+deno_core = "0.311"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
