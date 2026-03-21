@@ -522,3 +522,81 @@ if (typeof Element !== 'undefined' && Element.prototype) {
         });
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 9. ENHANCED EVENT CONSTRUCTORS — React 18+ needs full event APIs
+// ═══════════════════════════════════════════════════════════════
+
+// InputEvent — React controlled inputs need inputType, isComposing, dataTransfer
+(function() {
+    var BaseEvent = globalThis.Event;
+    globalThis.InputEvent = class InputEvent extends BaseEvent {
+        constructor(type, init) {
+            init = init || {};
+            super(type, init);
+            this.data = init.data || null;
+            this.inputType = init.inputType || '';
+            this.isComposing = init.isComposing || false;
+            this.dataTransfer = init.dataTransfer || null;
+        }
+    };
+})();
+
+// PointerEvent — modern click/touch handlers (React, lit-html, etc.)
+(function() {
+    var BaseMouseEvent = globalThis.MouseEvent;
+    globalThis.PointerEvent = class PointerEvent extends BaseMouseEvent {
+        constructor(type, init) {
+            init = init || {};
+            super(type, init);
+            this.pointerId = init.pointerId || 0;
+            this.width = init.width || 1;
+            this.height = init.height || 1;
+            this.pressure = init.pressure || 0;
+            this.tiltX = init.tiltX || 0;
+            this.tiltY = init.tiltY || 0;
+            this.pointerType = init.pointerType || 'mouse';
+            this.isPrimary = init.isPrimary !== undefined ? init.isPrimary : true;
+        }
+    };
+})();
+
+// FocusEvent — needs relatedTarget for focus/blur event pairs
+(function() {
+    var BaseEvent = globalThis.Event;
+    globalThis.FocusEvent = class FocusEvent extends BaseEvent {
+        constructor(type, init) {
+            init = init || {};
+            super(type, init);
+            this.relatedTarget = init.relatedTarget || null;
+        }
+    };
+})();
+
+// ═══════════════════════════════════════════════════════════════
+// 10. UNHANDLED REJECTION LOGGING — surface async errors
+// ═══════════════════════════════════════════════════════════════
+
+globalThis.addEventListener('unhandledrejection', function(event) {
+    if (typeof _shimOps !== 'undefined' && _shimOps.op_console_log) {
+        try {
+            var reason = event && event.reason;
+            var msg = (reason && reason.message) || (reason && String(reason)) || 'unknown';
+            _shimOps.op_console_log('[REJECTION] ' + msg);
+        } catch(e) {}
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 11. DOMPARSER — enhanced with content-type support
+// ═══════════════════════════════════════════════════════════════
+
+// Override bootstrap's basic DOMParser with content-type-aware version
+globalThis.DOMParser = class DOMParser {
+    parseFromString(str, type) {
+        if (type === 'text/html' || type === 'text/xml' || type === 'application/xml' || type === 'application/xhtml+xml') {
+            return __linkedom_parseHTML(str).document;
+        }
+        throw new Error('DOMParser: unsupported type: ' + type);
+    }
+};

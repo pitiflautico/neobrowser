@@ -14,7 +14,7 @@ pub(crate) fn first_line(s: &str) -> String {
 impl JsRuntimeTrait for DenoRuntime {
     fn eval(&mut self, code: &str) -> Result<String, RuntimeError> {
         let wrapped = format!(
-            "try {{ String({}) }} catch(__e) {{ 'Error: ' + __e.message }}",
+            "try {{ String(\n{}\n) }} catch(__e) {{ 'Error: ' + __e.message }}",
             code
         );
         let result = self
@@ -32,7 +32,7 @@ impl JsRuntimeTrait for DenoRuntime {
     }
 
     fn execute(&mut self, code: &str) -> Result<(), RuntimeError> {
-        let wrapped = format!("try {{ {} }} catch(__e) {{ /* non-fatal */ }}", code);
+        let wrapped = format!("try {{\n{}\n}} catch(__e) {{ /* non-fatal */ }}", code);
         self.runtime
             .execute_script("<script>", wrapped)
             .map_err(|e| RuntimeError::Eval(first_line(&e.to_string())))?;

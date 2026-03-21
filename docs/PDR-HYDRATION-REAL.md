@@ -1,114 +1,238 @@
-# PDR: Real Hydration — Making SPAs Mount in V8+linkedom
+# PDR: Real Hydration — Minimum Runtime for AI Browser SPA Execution
 
-## Diagnosis: ChatGPT
+## Status
+- ChatGPT: 323 DOM nodes, React mounted ✅
+- 8/10 top sites work ✅
+- Mercadona: script decompression bug (separate fix)
+- Goal: 95%+ of SPAs hydrate enough for AI to read and interact
 
-### What works
-- Cloudflare bypassed (Chrome136 coherent fingerprint) ✅
-- HTML fetched (authenticated page with SSR shell) ✅
-- 18 inline scripts execute without errors ✅
-- DOMContentLoaded + load events dispatched ✅
-- Dynamic import() chains work: manifest → chunk → chunk (1834KB loaded) ✅
-- **0 JS errors during execution** ✅
+## Grok Review Summary (combined)
 
-### What doesn't work
-- React/ReactDOM are NOT on globalThis (undefined) — they're inside ES module scope
-- The app doesn't mount — no interactive React elements in DOM
-- 27 WOM nodes = SSR shell only (sidebar, textarea from server HTML)
+### Already crossed the hardest line
+ChatGPT mount (27→323 nodes) proves the core works. What remains is targeted shims + bug fixes.
 
-### Root cause hypothesis
-Modules load and their top-level code executes. But the app initialization (React.createRoot().render() or equivalent) happens asynchronously — either:
-1. **Event loop doesn't drain far enough**: module loads → schedules microtask → we stop before it runs
-2. **Missing browser API**: React init calls something we don't have (IntersectionObserver, ResizeObserver, requestIdleCallback, etc.) and silently fails
-3. **async/await in module top-level**: top-level await in entry module blocks in deno_core's module evaluation
+### Minimum API surface: ~40 APIs (not 2000+)
+Same surface as happy-dom + Vitest for running Next.js apps in CI.
 
-## Investigation needed (BEFORE writing code)
+---
 
-### Test 1: Event loop drainage
-After all scripts + modules execute, how many pending tasks remain?
-```javascript
-// Add to pipeline after settle phase:
-console.log("pending timers:", __tracker.timers);
-console.log("pending promises:", __tracker.promises);
-console.log("pending fetches:", __tracker.fetches);
+## Tier A: MUST be real (hydration fails without these)
+
+| API | Why | Status |
+|-----|-----|--------|
+| Full DOM (Element, Node, Text, DocumentFragment) | Fiber reconciliation | ✅ linkedom |
+| innerHTML / outerHTML | SSR → client tree | ✅ linkedom |
+| createElement / createTextNode / createComment | React creates nodes | ✅ linkedom |
+| appendChild / insertBefore / removeChild / replaceChild | DOM mutations | ✅ linkedom |
+| setAttribute / getAttribute / removeAttribute | Props | ✅ linkedom |
+| querySelector / querySelectorAll / getElementById | Element lookup | ✅ linkedom |
+| parentNode / childNodes / nextSibling / previousSibling | Tree traversal | ✅ linkedom |
+| classList (add/remove/contains/toggle) | Class manipulation | ✅ linkedom |
+| textContent / value / checked / selected | Content access | ✅ linkedom |
+| addEventListener / removeEventListener / dispatchEvent | Event system | ✅ linkedom |
+| MutationObserver | React suspense/portal tracking | ✅ linkedom |
+| Event loop drainage (micro + macro) | Mount scheduling | ✅ 50+20 pump |
+| DOMContentLoaded / load events | Mount triggers | ✅ dispatched |
+| fetch / XMLHttpRequest | Data fetching | ✅ op_fetch |
+| document.cookie | Auth | ✅ shim → SQLite |
+| window.location + history.pushState/replaceState | SPA routing | ✅ browser_shim |
+
+## Tier B: Must be real OR smart stub (95% of SPAs need)
+
+| API | Why | Status | Action |
+|-----|-----|--------|--------|
+| IntersectionObserver | Lazy loading, infinite scroll | ✅ stub (fires instantly) | — |
+| ResizeObserver | Layout, modals, responsive | ✅ stub (1920x1080) | — |
+| requestIdleCallback | React scheduler | ✅ stub (setTimeout 0) | — |
+| requestAnimationFrame | Layout effects | ✅ stub (setTimeout 16) | — |
+| performance.now() | Timing | ✅ real V8 | — |
+| navigator.userAgent/platform/language | UA sniffing | ✅ Chrome 136 | — |
+| crypto.getRandomValues | UUID gen | ✅ real V8 | — |
+| crypto.subtle.digest | Integrity checks | ✅ stub | — |
+| URL / URLSearchParams | URL parsing | ✅ V8 built-in | — |
+| FormData | Form serialization | ✅ linkedom | — |
+| AbortController / AbortSignal | Fetch cancellation (React) | ⚠️ CHECK | Add if missing |
+| CustomEvent / InputEvent / KeyboardEvent / MouseEvent | Event dispatch | ⚠️ CHECK | Ensure constructors work |
+| MessageChannel | React scheduler internals | ❌ MISSING | **ADD** |
+| DOMParser | HTML string parsing | ⚠️ CHECK | Add if missing |
+| document.createRange | React text insertion | ✅ stub added | — |
+| window.getSelection | React selection | ✅ stub added | — |
+| focus() / blur() | Focus model | ✅ shim | — |
+
+## Tier C: Optional / site-dependent
+
+| API | When needed | Action |
+|-----|-------------|--------|
+| localStorage / sessionStorage | Auth, preferences | ✅ already have |
+| matchMedia | Responsive JS | ✅ stub (desktop) |
+| getComputedStyle | Visibility checks | ✅ stub (defaults) |
+| popstate event | SPA back/forward | ✅ history shim |
+| Blob / File / FileReader | Upload forms | ✅ basic impl |
+| XMLSerializer | Rare | Skip unless needed |
+| PointerEvent | Modern click handlers | Add if sites break |
+
+## Tier D: Safe to ignore
+
+- navigator.serviceWorker (stub exists, never real)
+- caches (Cache API)
+- Canvas / WebGL / WebAudio
+- document.fonts
+- WebSocket (stub or exclude)
+- screen orientation
+- Notification API
+- Geolocation
+- Media devices
+- Full navigation timing API
+- Service Workers
+- Web Workers (unless critical site needs)
+
+---
+
+## Runtime Semantics (ranked by hydration importance)
+
+### Rank 1: Critical for mount
+1. **Microtask drainage** — Promise.then, queueMicrotask run before macrotasks ✅
+2. **Module evaluation completion** — dynamic import() chains fully resolve ✅
+3. **Script ordering** — blocking → defer → async, DOMContentLoaded between ✅
+4. **DOM mutation timing** — mutations are synchronous, observer callbacks are microtasks ✅
+
+### Rank 2: Critical for interaction
+5. **Event propagation** — capture → target → bubble, stopPropagation works
+6. **Default actions** — click on `<a>` navigates, submit on form submits (unless prevented)
+7. **Focus model** — focus/blur/focusin/focusout fire correctly
+8. **Fetch completion** — response.text(), response.json() resolve properly ✅
+
+### Rank 3: Important for correctness
+9. **Timer semantics** — setTimeout(0) = macrotask, nested clamping ✅
+10. **Promise rejection surfacing** — unhandled rejections don't silently swallow errors
+11. **Top-level await** — modules with TLA complete evaluation
+12. **Client-side navigation** — pushState updates URL, popstate fires on back
+
+### Rank 4: Nice to have
+13. **Streaming fetch** — response.body as ReadableStream ✅
+14. **Text decoding** — TextDecoder/TextEncoder ✅
+15. **Idle detection** — when to stop pumping event loop
+
+---
+
+## Interaction Semantics for Real App Logic
+
+### Typing must update framework state
+```
+element.focus()                          // React attaches onFocus
+element.dispatchEvent(new Event('focus'))
+// Per character:
+element.dispatchEvent(new KeyboardEvent('keydown', {key, code, bubbles:true}))
+element.value += char                    // OR use InputEvent
+element.dispatchEvent(new InputEvent('input', {data:char, inputType:'insertText', bubbles:true}))
+element.dispatchEvent(new KeyboardEvent('keyup', {key, code, bubbles:true}))
+// After all chars:
+element.dispatchEvent(new Event('change', {bubbles:true}))
+```
+**CRITICAL**: `element.value = text` alone is INSUFFICIENT for React. React listens to `input` event, not value change. Must dispatch InputEvent.
+
+### Clicking must trigger handlers
+```
+element.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true}))
+element.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}))
+element.dispatchEvent(new PointerEvent('pointerup', {bubbles:true}))
+element.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}))
+element.dispatchEvent(new MouseEvent('click', {bubbles:true}))
+```
+React 17+ uses event delegation on root — events MUST bubble.
+
+### Enter submits
+```
+element.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true}))
+// If in form with submit button: form.requestSubmit() or form.submit()
+element.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter', code:'Enter', bubbles:true}))
 ```
 
-### Test 2: What the entry module does
-Examine `inline-module#9` (the one that triggers dynamic imports).
-```bash
-# Extract the inline module source
-curl -s -b "cookies..." "https://chatgpt.com" | grep -o '<script type="module">[^<]*</script>'
-```
-What does it do? Does it call import()? Does it await? Does it register a callback?
+### Checkbox/select/file
+- Checkbox: set `.checked = true` + dispatch `change` event
+- Select: set `.value` + dispatch `change` event
+- File: set `.files` (synthetic FileList) + dispatch `change` event
 
-### Test 3: Module evaluation completion
-Are the dynamically imported modules fully evaluated? Or do they fail mid-execution?
-```javascript
-// After module load in modules.rs, check if the module has exports
-```
+---
 
-### Test 4: Silent failures
-Many of our browser shims return fake data. Does React/Next.js check:
-- `window.location.pathname` (we have this ✅)
-- `document.cookie` (we have this ✅)
-- `navigator.serviceWorker` (NOT shimmed — may throw)
-- `performance.getEntriesByType('navigation')` (returns empty — may confuse)
-- `window.crypto.subtle` (NOT shimmed — may throw)
-- `caches` (Service Worker Cache API — NOT shimmed)
-- `document.createRange` (linkedom may not support)
-- `window.getSelection` (linkedom may not support)
+## Implementation Roadmap
 
-### Test 5: Check what ChatGPT's entry module ACTUALLY does
-Download and read the manifest + entry chunk:
-```bash
-curl -s "https://chatgpt.com/cdn/assets/manifest-1030f4b8.js" | head -20
-```
+### Phase 0: Instrument (DONE mostly)
+- NEORENDER_TRACE=1 traces ✅
+- Module resolution traces ✅
+- Script execution traces ✅
+- Event loop pump count ✅
+- **ADD**: unhandled rejection logging
+- **ADD**: missing API access logging (Proxy trap on window for undefined properties)
 
-## What to implement (based on investigation)
+### Phase 1: Highest-leverage runtime fixes
+- **MessageChannel** — React scheduler uses this for concurrent features
+- **AbortController verification** — confirm it works, fix if not
+- **Event constructor verification** — InputEvent, PointerEvent, CustomEvent constructors
+- **Unhandled promise rejection logging** — surface silent failures
+- Gate: ChatGPT WOM nodes stay ≥300, no new errors
 
-Only after the 5 tests above reveal the actual blocker. Possible fixes:
+### Phase 2: Highest-leverage DOM/API additions
+- **DOMParser** — `new DOMParser().parseFromString(html, 'text/html')`
+- **PointerEvent** — modern click handlers use this
+- **InputEvent with data** — React controlled inputs need this
+- **Event bubbling verification** — confirm events bubble to document root (React delegation)
+- Gate: Vercel.com errors drop from 15 to <5
 
-### If event loop doesn't drain enough:
-- Extend settle phase: run event loop for longer (currently stops too early)
-- Pump microtasks explicitly after module evaluation
-- Run V8 event loop with poll_event_loop() after all modules load
+### Phase 3: Interaction correctness
+- Update LiveDom click to use full pointer+mouse sequence
+- Update LiveDom type_text to dispatch InputEvent per character
+- Update LiveDom submit to use requestSubmit when available
+- Gate: form fill+submit works on httpbin, DuckDuckGo
 
-### If missing browser APIs:
-- Add targeted shims for what React actually calls
-- navigator.serviceWorker → stub with { ready: Promise.resolve({}) }
-- window.crypto.subtle → stub (or use V8's built-in if available)
-- document.createRange → implement if linkedom doesn't have it
-- window.getSelection → stub returning empty selection
+### Phase 4: Framework edge cases (ONLY if still needed)
+- Only after evidence from traces
+- No pre-emptive patches
+- Gate: one additional SPA site works (nuxt.com, svelte.dev, etc.)
 
-### If top-level await blocks:
-- deno_core's mod_evaluate returns a JoinFuture — we may not be awaiting it fully
-- Need to pump the event loop until module evaluation completes
+---
 
-### If module execution errors silently:
-- Wrap module evaluation with error capture
-- Check deno_core's module error reporting
+## Hard Exclusions (do NOT build)
 
-## Phases
+- Full layout engine
+- CSSOM completeness (getComputedStyle returns stubs, that's fine)
+- Visual rendering / screenshots
+- WebGL / Canvas parity
+- Accessibility tree parity
+- Service Workers (real)
+- Full Navigation Timing API
+- Anti-bot / stealth work (coherent fingerprint is enough)
+- Framework-specific hacks before runtime evidence
+- Web Workers (unless a critical site needs them)
 
-### Phase 0: Investigation (NO code changes)
-Run the 5 tests above. Document findings.
-Outcome: know exactly which gap blocks ChatGPT hydration.
+---
 
-### Phase 1: Fix the identified gap
-Based on Phase 0 findings. One targeted fix, not shotgun approach.
+## Mercadona Bug (separate)
 
-### Phase 2: Verify and generalize
-- ChatGPT mounts (interactive elements appear beyond SSR shell)
-- Test on Mercadona.es, Vercel.com, nuxt.com
-- No regressions
+Not a hydration issue. The 792KB script downloads OK but V8 gets `SyntaxError: Unexpected end of input`. Probable cause: response body decompression issue in rquest or encoding mismatch. Fix: verify Content-Encoding handling in op_fetch, ensure gzip/brotli/zstd fully decoded before passing to V8.
 
-## Anti-pattern: DO NOT
-- Write per-framework patches (already rejected by GPT review)
-- Guess and shotgun-fix multiple things at once
-- Add shims without evidence they're needed
-- Assume "0 errors = everything works" (silent failures are the problem)
+---
 
 ## Gate
-- Phase 0 complete: exact blocker identified and documented
-- Phase 1: ChatGPT React mounts (new elements appear beyond SSR shell, OR clear documented reason why it can't)
-- Mercadona.es: content loads (not just challenge page)
-- All existing tests pass
+
+### Phase 1 gate
+- MessageChannel exists and works
+- AbortController works
+- Event constructors work (InputEvent, PointerEvent, CustomEvent)
+- ChatGPT: ≥300 DOM nodes maintained
+- No new errors on existing 8/10 sites
+
+### Phase 2 gate
+- DOMParser works
+- Event bubbling reaches document root
+- Vercel.com: errors < 5 (currently 15)
+
+### Phase 3 gate
+- LiveDom type dispatches InputEvent (React state updates)
+- LiveDom click dispatches PointerEvent sequence
+- httpbin form fill+submit works end-to-end
+
+### Final validation
+- ChatGPT: interactive (textarea fillable, send button clickable via events)
+- 3+ Next.js/Vue/Svelte sites load with >50% of expected content
+- All 340+ existing tests pass
