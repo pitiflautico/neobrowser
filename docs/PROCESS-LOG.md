@@ -89,3 +89,13 @@ Para cada Tier:
 Checklist: 9/9 steps completed correctly.
 
 ### Next: Fase D (R7a-R7d React hydration) — following recipe
+
+### Fase D Results
+**Paso 5**: Pipeline 9/9 neo-engine + neo-runtime ✅
+**Paso 6**: 213 workspace tests pass ✅
+**Paso 7**: GPT: "falta probar sites React reales + post-hydration extraction"
+  → Deferred to Fase F (R9) — needs Fase E optimizations first
+**Paso 8**: Updated docs
+**Paso 9**: Committed. Proceeding to Fase E.
+
+### Fase E: Timer/fetch/watchdog optimizations
