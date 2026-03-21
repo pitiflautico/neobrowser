@@ -199,7 +199,7 @@ pub fn is_heavy_script(url: &str) -> bool {
 }
 
 /// Check if a lowercased URL matches known telemetry patterns.
-pub(crate) fn is_telemetry_url(lower: &str) -> bool {
+pub fn is_telemetry_url(lower: &str) -> bool {
     TELEMETRY_PATTERNS.iter().any(|p| lower.contains(p))
         || CHATGPT_PATTERNS.iter().any(|p| lower.contains(p))
         || GOOGLE_PATTERNS.iter().any(|p| lower.contains(p))

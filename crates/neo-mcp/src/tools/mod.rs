@@ -3,6 +3,7 @@
 pub mod browse;
 pub mod extract;
 pub mod interact;
+pub mod search;
 pub mod trace;
 
 use serde_json::Value;
@@ -23,6 +24,7 @@ pub fn list_tools() -> Value {
         browse::definition(),
         interact::definition(),
         extract::definition(),
+        search::definition(),
         trace::definition(),
     ];
 
@@ -46,6 +48,7 @@ pub fn call_tool(name: &str, args: Value, state: &mut McpState) -> Result<Value,
         "browse" => browse::call(args, state),
         "interact" => interact::call(args, state),
         "extract" => extract::call(args, state),
+        "search" => search::call(args, state),
         "trace" => trace::call(args, state),
         other => Err(McpError::UnknownTool(other.to_string())),
     }

@@ -80,8 +80,8 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             navigation_timeout_ms: 10_000,
-            script_timeout_ms: 5_000,
-            stability_timeout_ms: 3_000,
+            script_timeout_ms: 2_000,
+            stability_timeout_ms: 2_000,
             max_redirects: 10,
             execute_js: true,
             cache_modules: true,

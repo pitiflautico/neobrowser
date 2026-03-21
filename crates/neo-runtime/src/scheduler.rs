@@ -32,8 +32,8 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
-            interval_max_ticks: 20,
-            timer_budget: 200,
+            interval_max_ticks: 10,
+            timer_budget: 50,
         }
     }
 }
@@ -664,8 +664,8 @@ mod tests {
     #[test]
     fn test_scheduler_config_defaults() {
         let cfg = SchedulerConfig::default();
-        assert_eq!(cfg.interval_max_ticks, 20);
-        assert_eq!(cfg.timer_budget, 200);
+        assert_eq!(cfg.interval_max_ticks, 10);
+        assert_eq!(cfg.timer_budget, 50);
     }
 
     // ─── R8e: Long Task Detection ───

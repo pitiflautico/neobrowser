@@ -18,6 +18,7 @@ fn main() {
     match args.get(1).map(|s| s.as_str()) {
         Some("mcp") => run_mcp(),
         Some("see") => run_see(&args),
+        Some("search") => run_search(&args),
         Some("--help") | Some("-h") | None => print_help(),
         Some(cmd) => {
             eprintln!("Unknown command: {cmd}");
@@ -156,6 +157,66 @@ fn import_cookies_file(engine: &mut NeoSession, path: &str) {
     eprintln!("[NeoRender] Imported {} cookies from {path}", cookies.len());
 }
 
+fn run_search(args: &[String]) {
+    // Parse: neorender search <query> [--num N] [--deep] [--deep-num N]
+    let mut query_parts: Vec<&str> = Vec::new();
+    let mut num: u64 = 10;
+    let mut deep = false;
+    let mut deep_num: u64 = 3;
+    let mut i = 2;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--num" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    num = v;
+                }
+            }
+            "--deep" => deep = true,
+            "--deep-num" => {
+                i += 1;
+                if let Some(v) = args.get(i).and_then(|s| s.parse().ok()) {
+                    deep_num = v;
+                }
+            }
+            _ => query_parts.push(args[i].as_str()),
+        }
+        i += 1;
+    }
+
+    if query_parts.is_empty() {
+        eprintln!("Usage: neorender search <query> [--num 10] [--deep] [--deep-num 3]");
+        std::process::exit(1);
+    }
+
+    let query = query_parts.join(" ");
+    let search_args = serde_json::json!({
+        "query": query,
+        "num": num,
+        "deep": deep,
+        "deep_num": deep_num,
+    });
+
+    // search tool doesn't use the engine, but call_tool requires McpState
+    let engine = create_engine();
+    let mut state = neo_mcp::state::McpState::new(Box::new(engine));
+
+    match neo_mcp::tools::call_tool("search", search_args, &mut state) {
+        Ok(result) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|e| format!("JSON error: {e}"))
+            );
+        }
+        Err(e) => {
+            eprintln!("Search failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn print_help() {
     println!("NeoRender V2 — AI Browser Engine");
     println!();
@@ -163,5 +224,7 @@ fn print_help() {
     println!("  neorender mcp                            Start MCP server (JSON-RPC over stdio)");
     println!("  neorender see <url>                      Navigate to URL and print WOM as JSON");
     println!("  neorender see --cookies <file> <url>     Import cookies from JSON, then navigate");
+    println!("  neorender search <query> [--num N] [--deep] [--deep-num N]");
+    println!("                                           Search the web via DuckDuckGo");
     println!("  neorender --help                         Show this help");
 }

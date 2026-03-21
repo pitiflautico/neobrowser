@@ -80,12 +80,12 @@ pub struct Watchdog {
 }
 
 impl Watchdog {
-    /// Create a new watchdog with default timeouts (3s script, 6s page, 500ms microtask).
+    /// Create a new watchdog with default timeouts (1s script, 3s page, 300ms microtask).
     pub fn new() -> Self {
         Self {
-            script_timeout: Duration::from_secs(3),
-            page_budget: Duration::from_secs(6),
-            microtask_limit: Duration::from_millis(500),
+            script_timeout: Duration::from_millis(1000),
+            page_budget: Duration::from_secs(3),
+            microtask_limit: Duration::from_millis(300),
             page_start: Instant::now(),
             page_elapsed: Duration::ZERO,
             abort_timers: None,
@@ -341,7 +341,7 @@ mod tests {
     fn test_watchdog_has_budget_initially() {
         let wd = Watchdog::new();
         assert!(wd.has_budget());
-        assert_eq!(wd.remaining_budget(), Duration::from_secs(6));
+        assert_eq!(wd.remaining_budget(), Duration::from_secs(3));
         assert_eq!(wd.page_elapsed(), Duration::ZERO);
     }
 
@@ -401,7 +401,7 @@ mod tests {
         wd.connect_timer_abort(timer_flag.clone());
         wd.connect_fetch_abort(fetch_flag.clone());
 
-        wd.record_microtask_starvation(Duration::from_millis(600));
+        wd.record_microtask_starvation(Duration::from_millis(400));
 
         assert_eq!(wd.events().len(), 1);
         match &wd.events()[0].reason {
@@ -409,8 +409,8 @@ mod tests {
                 elapsed_ms,
                 limit_ms,
             } => {
-                assert_eq!(*elapsed_ms, 600);
-                assert_eq!(*limit_ms, 500);
+                assert_eq!(*elapsed_ms, 400);
+                assert_eq!(*limit_ms, 300);
             }
             other => panic!("expected MicrotaskStarvation, got {other:?}"),
         }

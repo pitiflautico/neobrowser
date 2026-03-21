@@ -29,10 +29,16 @@ impl NeoSession {
         if let Some(ref mut ctx) = self.pipeline_ctx {
             ctx.enter_phase(PipelinePhase::Parse);
         }
+        let tparse = Instant::now();
         {
             let mut dom = self.dom.lock().expect("dom lock poisoned");
             dom.parse_html(&response.body, &response.url)?;
         }
+        eprintln!(
+            "[profile] html_parse: {}ms ({}KB)",
+            tparse.elapsed().as_millis(),
+            response.body.len() / 1024
+        );
 
         // Interactive.
         self.lifecycle
@@ -52,10 +58,12 @@ impl NeoSession {
         if let Some(ref mut ctx) = self.pipeline_ctx {
             ctx.enter_phase(PipelinePhase::Extract);
         }
+        let twom = Instant::now();
         let mut wom = {
             let dom = self.dom.lock().expect("dom lock poisoned");
             self.extractor.extract_wom(dom.as_ref())
         };
+        eprintln!("[profile] wom_extract: {}ms", twom.elapsed().as_millis());
         if wom.url.is_empty() {
             wom.url = response.url.clone();
         }
@@ -137,13 +145,23 @@ impl NeoSession {
         response: &neo_types::HttpResponse,
         js_errors: &mut Vec<String>,
     ) -> Result<(), String> {
+        let t0 = Instant::now();
         rt.set_document_html(&response.body, &response.url)
             .map_err(|e| format!("set_document_html: {e}"))?;
+        eprintln!("[profile] linkedom_load: {}ms", t0.elapsed().as_millis());
 
+        let t1 = Instant::now();
         let scripts = extract_scripts(&response.body, &response.url);
+        eprintln!(
+            "[profile] script_discovery: {}ms ({} scripts)",
+            t1.elapsed().as_millis(),
+            scripts.len()
+        );
+
         let trace_id = "nav";
 
         // Fetch external scripts into the module store.
+        let t2 = Instant::now();
         fetch_external_scripts(
             &scripts,
             &response.url,
@@ -151,8 +169,13 @@ impl NeoSession {
             self.http.as_ref(),
             js_errors,
         );
+        eprintln!(
+            "[profile] script_fetch: {}ms",
+            t2.elapsed().as_millis()
+        );
 
         // R3: Pre-fetch ES module imports (depth 2).
+        let t3 = Instant::now();
         let _prefetch = prefetch_modules(
             &scripts,
             &response.url,
@@ -160,6 +183,10 @@ impl NeoSession {
             self.http.as_ref(),
             self.tracer.as_ref(),
             trace_id,
+        );
+        eprintln!(
+            "[profile] prefetch_modules: {}ms",
+            t3.elapsed().as_millis()
         );
 
         // R4: Stub heavy non-essential modules.
@@ -175,6 +202,7 @@ impl NeoSession {
         }
 
         // Execute scripts in document order.
+        let t4 = Instant::now();
         execute_scripts(
             &scripts,
             &response.url,
@@ -184,13 +212,20 @@ impl NeoSession {
             trace_id,
             js_errors,
         );
+        eprintln!(
+            "[profile] script_exec: {}ms",
+            t4.elapsed().as_millis()
+        );
 
         // Settle: run event loop for promises, timers, etc.
+        let t5 = Instant::now();
         if let Err(e) = rt.run_until_settled(self.config.script_timeout_ms) {
             js_errors.push(format!("settle: {e}"));
         }
+        eprintln!("[profile] settle: {}ms", t5.elapsed().as_millis());
 
         // Export the JS-mutated DOM and re-parse into html5ever.
+        let t6 = Instant::now();
         match rt.export_html() {
             Ok(html) if !html.is_empty() => {
                 let mut dom = self.dom.lock().expect("dom lock poisoned");
@@ -203,6 +238,7 @@ impl NeoSession {
                 js_errors.push(format!("export: {e}"));
             }
         }
+        eprintln!("[profile] dom_export: {}ms", t6.elapsed().as_millis());
         Ok(())
     }
 

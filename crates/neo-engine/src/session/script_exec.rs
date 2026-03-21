@@ -4,10 +4,15 @@ use std::collections::HashMap;
 
 use neo_http::{HttpClient, HttpError, HttpRequest, RequestContext, RequestKind};
 
+use std::time::Instant;
+
 use super::hydration;
 use super::scripts::ScriptInfo;
 
 /// Fetch external scripts and modulepreloads, inserting into the runtime store.
+///
+/// Enforces a cumulative 3s fetch budget — if total fetch time exceeds
+/// the budget, remaining scripts are skipped.
 pub(crate) fn fetch_external_scripts(
     scripts: &[ScriptInfo],
     page_url: &str,
@@ -15,6 +20,10 @@ pub(crate) fn fetch_external_scripts(
     http: &dyn HttpClient,
     errors: &mut Vec<String>,
 ) {
+    const FETCH_BUDGET_MS: u64 = 2_000;
+    let budget_start = Instant::now();
+    let mut fetched = 0usize;
+
     for script in scripts {
         let url = match script.url() {
             Some(u) => u,
@@ -23,9 +32,22 @@ pub(crate) fn fetch_external_scripts(
         if rt.has_module(url) {
             continue;
         }
+        if budget_start.elapsed().as_millis() as u64 > FETCH_BUDGET_MS {
+            eprintln!(
+                "[profile] fetch_budget: stopped after {fetched} fetches, {}ms",
+                budget_start.elapsed().as_millis()
+            );
+            break;
+        }
         match fetch_single_script(http, url, page_url) {
             Ok(source) => {
+                let name = url.rsplit('/').next().unwrap_or(url);
+                let size_kb = source.len() / 1024;
+                if size_kb > 50 {
+                    eprintln!("[profile]   fetched: {name} ({size_kb}KB)");
+                }
                 rt.insert_module(url, &source);
+                fetched += 1;
             }
             Err(e) => {
                 if matches!(script, ScriptInfo::External { .. }) {
@@ -53,7 +75,20 @@ pub(crate) fn execute_scripts(
     let base = extract_origin(page_url);
     let mut inline_module_sources: Vec<String> = Vec::new();
 
-    for script in scripts {
+    let mut cumulative_ms: u64 = 0;
+    const EXEC_BUDGET_MS: u64 = 2_000; // stop executing after 2s cumulative
+
+    for (idx, script) in scripts.iter().enumerate() {
+        if cumulative_ms > EXEC_BUDGET_MS {
+            eprintln!(
+                "[profile] script_exec_budget: stopped at script {}/{} after {}ms",
+                idx,
+                scripts.len(),
+                cumulative_ms
+            );
+            break;
+        }
+        let t = Instant::now();
         match script {
             ScriptInfo::Inline {
                 content, is_module, ..
@@ -68,20 +103,29 @@ pub(crate) fn execute_scripts(
                 } else if let Err(e) = rt.execute(content) {
                     errors.push(format!("inline script: {e}"));
                 }
+                let ms = t.elapsed().as_millis() as u64;
+                cumulative_ms += ms;
+                if ms > 50 {
+                    let preview = &content[..content.len().min(80)];
+                    eprintln!("[profile]   inline#{idx}: {ms}ms | {preview}...");
+                }
             }
             ScriptInfo::External {
                 url: src,
                 is_module,
             } => {
+                let name = src.rsplit('/').next().unwrap_or(src);
                 if *is_module {
                     if let Err(e) = rt.load_module(src) {
-                        errors.push(format!(
-                            "module {}: {e}",
-                            src.rsplit('/').next().unwrap_or(src)
-                        ));
+                        errors.push(format!("module {name}: {e}"));
                     }
                 } else {
                     execute_classic_external(src, page_url, rt, http, tracer, trace_id, errors);
+                }
+                let ms = t.elapsed().as_millis() as u64;
+                cumulative_ms += ms;
+                if ms > 50 {
+                    eprintln!("[profile]   ext#{idx}: {ms}ms | {name}");
                 }
             }
             ScriptInfo::Preload { .. } => {
@@ -156,7 +200,7 @@ pub(crate) fn fetch_single_script(
             frame_id: None,
             top_level_url: Some(page_url.to_string()),
         },
-        timeout_ms: 5000,
+        timeout_ms: 2000,
     };
     let resp = http.request(&req)?;
     Ok(resp.body)

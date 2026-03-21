@@ -14,9 +14,9 @@ use neo_trace::Tracer;
 use super::scripts::ScriptInfo;
 
 /// Pre-fetch budget and limits.
-const TOTAL_BUDGET: Duration = Duration::from_secs(8);
-const PER_MODULE_TIMEOUT_MS: u64 = 2_000;
-const MODULE_CAP: usize = 500;
+const TOTAL_BUDGET: Duration = Duration::from_secs(3);
+const PER_MODULE_TIMEOUT_MS: u64 = 1_500;
+const MODULE_CAP: usize = 100;
 
 /// Result of a pre-fetch pass.
 #[allow(dead_code)]

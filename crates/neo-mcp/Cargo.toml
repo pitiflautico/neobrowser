@@ -6,8 +6,11 @@ edition.workspace = true
 [dependencies]
 neo-types = { path = "../neo-types" }
 neo-engine = { path = "../neo-engine" }
+neo-http = { path = "../neo-http" }
 neo-trace = { path = "../neo-trace" }
 neo-extract = { path = "../neo-extract" }
+html5ever = "0.38"
+markup5ever_rcdom = "0.38"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

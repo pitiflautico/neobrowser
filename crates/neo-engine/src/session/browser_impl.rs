@@ -80,7 +80,13 @@ impl BrowserEngine for NeoSession {
         }
 
         // 3c. HTTP fetch.
+        let tfetch = Instant::now();
         let response = self.http.request(&req)?;
+        eprintln!(
+            "[profile] html_fetch: {}ms (status {})",
+            tfetch.elapsed().as_millis(),
+            response.status
+        );
 
         // 3d. Track redirect chain.
         let mut redirect_chain = Vec::new();

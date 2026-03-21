@@ -107,8 +107,8 @@ fn test_extract_returns_wom() {
 fn test_config_defaults() {
     let config = EngineConfig::default();
     assert_eq!(config.navigation_timeout_ms, 10_000);
-    assert_eq!(config.script_timeout_ms, 5_000);
-    assert_eq!(config.stability_timeout_ms, 3_000);
+    assert_eq!(config.script_timeout_ms, 2_000);
+    assert_eq!(config.stability_timeout_ms, 2_000);
     assert_eq!(config.max_redirects, 10);
     assert!(config.execute_js);
     assert!(config.cache_modules);
