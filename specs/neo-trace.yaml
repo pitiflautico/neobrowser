@@ -1,37 +1,42 @@
-# ═══════════════════════════════════════
-# Task Spec: neo-trace
-# Phase: 0.5 Tracer
-# Generated: 2026-03-21 09:19
-# ═══════════════════════════════════════
-
 crate: neo-trace
 phase: "0.5 Tracer"
-
-# Paste the trait interface this crate must implement
 trait_interface: |
-  // TODO: define trait
+  // Tracer — observability for AI execution
+  pub trait Tracer: Send + Sync {
+      // AI declares intent before acting
+      fn intent(&self, intent: &str, target: &str, confidence: f32);
+      // Action completed
+      fn action_result(&self, action_id: &str, success: bool, effect: &str, error: Option<&str>);
+      // Network event with causal link
+      fn network(&self, req: &HttpRequest, resp: &HttpResponse, duration_ms: u64, action_id: Option<&str>, frame_id: Option<&str>);
+      // Navigation lifecycle
+      fn navigation(&self, event: NavEvent, url: &str, status: Option<u16>);
+      // Page state change
+      fn state_change(&self, from: PageState, to: PageState, reason: &str);
+      // DOM change summary (not raw mutations)
+      fn dom_diff(&self, added: usize, removed: usize, changed: usize, actionable_delta: &str);
+      // JS console/error
+      fn console(&self, level: &str, message: &str);
+      fn js_exception(&self, error: &str, stack: Option<&str>);
+      // Resource blocked
+      fn resource_blocked(&self, url: &str, reason: &str);
+      // Export full trace
+      fn export(&self) -> Vec<TraceEntry>;
+      // Execution summary — what an AI reads to understand what happened
+      fn summary(&self) -> ExecutionSummary;
+  }
 
-# Crates this one depends on (from workspace)
-dependencies:
-  - neo-types
-
-# Files the agent MUST create
+  pub enum NavEvent { Started, Committed, Finished, Failed }
+  pub struct ExecutionSummary { total_actions, succeeded, failed, requests, dom_changes, errors, duration_ms, warnings }
+dependencies: [neo-types, serde, serde_json, thiserror]
 files_to_create:
-  - crates/neo-trace/Cargo.toml
-  - crates/neo-trace/src/lib.rs
-  - crates/neo-trace/src/mock.rs
-
-# Files the agent CANNOT touch
-files_forbidden:
-  - "crates/neo-engine/*"
-  - "crates/neo-mcp/*"
-  - "src/main.rs"
-  - "Cargo.toml"  # workspace root
-
-# What makes this crate DONE
+  - src/lib.rs src/tracer.rs src/file_tracer.rs src/noop.rs src/summary.rs src/mock.rs
+  - tests/tracer_test.rs tests/summary_test.rs
 acceptance_criteria:
-  - "trait defined and exported in lib.rs"
-  - "real implementation exists"
-  - "mock implementation exists"
-  - "3+ unit tests pass"
-  - "pipeline/validate.sh neo-trace exits 0"
+  - Tracer trait with intent/action_result/network/navigation
+  - FileTracer writes JSON trace file
+  - NoopTracer for tests (zero cost)
+  - ExecutionSummary readable by AI
+  - Correlation IDs: action_id, request_id, nav_id
+  - 6+ unit tests pass
+  - pipeline/validate.sh exits 0

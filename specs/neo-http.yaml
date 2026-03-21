@@ -1,37 +1,50 @@
-# ═══════════════════════════════════════
-# Task Spec: neo-http
-# Phase: 0.2 Unified HTTP Client
-# Generated: 2026-03-21 09:19
-# ═══════════════════════════════════════
-
 crate: neo-http
 phase: "0.2 Unified HTTP Client"
-
-# Paste the trait interface this crate must implement
 trait_interface: |
-  // TODO: define trait
+  // RequestKind — AI classifies every request
+  pub enum RequestKind { Navigation, Subresource, Fetch, FormSubmit, Telemetry, Media, Api }
 
-# Crates this one depends on (from workspace)
-dependencies:
-  - neo-types
+  // RequestContext — who initiated and why
+  pub struct RequestContext { kind, initiator, referrer, frame_id, top_level_url }
 
-# Files the agent MUST create
+  // HttpRequest — full request
+  pub struct HttpRequest { method, url, headers, body, context, timeout_ms }
+
+  // HttpClient — single primitive, classification, skip logic
+  pub trait HttpClient: Send + Sync {
+      fn request(&self, req: &HttpRequest) -> Result<HttpResponse, HttpError>;
+      fn classify_url(&self, url: &str) -> RequestKind;
+      fn should_skip(&self, url: &str) -> bool;
+  }
+
+  // CookieStore — context-aware (SameSite, expiry, domain)
+  pub trait CookieStore: Send + Sync {
+      fn get_for_request(&self, url, top_level_url, is_top_level) -> String;
+      fn store_set_cookie(&self, url, set_cookie);
+      fn delete(&self, name, domain, path);
+      fn evict_expired(&self);
+      fn clear_session(&self);
+      fn list_for_domain(&self, domain) -> Vec<Cookie>;
+      fn export(&self) -> Vec<Cookie>;
+      fn import(&self, cookies: &[Cookie]);
+      fn snapshot(&self) -> Vec<Cookie>;
+  }
+
+  // HttpCache — key is method+url+vary, supports revalidation
+  pub trait HttpCache: Send + Sync {
+      fn lookup(&self, req) -> CacheDecision;  // Fresh/Stale/Miss
+      fn store(&self, req, response);
+      fn invalidate(&self, pattern);
+      fn is_fresh(&self, url) -> bool;
+  }
+dependencies: [neo-types, rquest, rquest-util, rusqlite, url, thiserror]
 files_to_create:
-  - crates/neo-http/Cargo.toml
-  - crates/neo-http/src/lib.rs
-  - crates/neo-http/src/mock.rs
-
-# Files the agent CANNOT touch
-files_forbidden:
-  - "crates/neo-engine/*"
-  - "crates/neo-mcp/*"
-  - "src/main.rs"
-  - "Cargo.toml"  # workspace root
-
-# What makes this crate DONE
+  - src/lib.rs src/client.rs src/cookies.rs src/cache.rs
+  - src/classify.rs src/headers.rs src/mock.rs
+  - tests/client_test.rs tests/cookies_test.rs tests/cache_test.rs
 acceptance_criteria:
-  - "trait defined and exported in lib.rs"
-  - "real implementation exists"
-  - "mock implementation exists"
-  - "3+ unit tests pass"
-  - "pipeline/validate.sh neo-http exits 0"
+  - RquestClient with Chrome 136 TLS
+  - SqliteCookieStore with SameSite context
+  - 50+ telemetry URLs classified
+  - 8+ unit tests pass
+  - pipeline/validate.sh exits 0
