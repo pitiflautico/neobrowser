@@ -1,5 +1,5 @@
 {
-  "current_wave": 6,
+  "current_wave": "COMPLETE",
   "crates": {
     "neo-types": {"wave": 0, "status": "done", "tests": 0},
     "neo-http": {"wave": 1, "status": "done", "tests": 17},
@@ -10,6 +10,10 @@
     "neo-interact": {"wave": 4, "status": "done", "tests": 15},
     "neo-extract": {"wave": 4, "status": "done", "tests": 8},
     "neo-engine": {"wave": 5, "status": "done", "tests": 9},
-    "neo-mcp": {"wave": 6, "status": "pending"}
-  }
+    "neo-mcp": {"wave": 6, "status": "done", "tests": 8}
+  },
+  "total_tests": 102,
+  "total_lines": 9291,
+  "total_files": 70,
+  "clippy_warnings": 0
 }

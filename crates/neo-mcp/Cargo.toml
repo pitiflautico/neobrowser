@@ -5,3 +5,13 @@ edition.workspace = true
 
 [dependencies]
 neo-types = { path = "../neo-types" }
+neo-engine = { path = "../neo-engine" }
+neo-trace = { path = "../neo-trace" }
+neo-extract = { path = "../neo-extract" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+neo-engine = { path = "../neo-engine", features = [] }

@@ -1377,7 +1377,14 @@ dependencies = [
 name = "neo-mcp"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "neo-engine",
+ "neo-extract",
+ "neo-trace",
  "neo-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "tokio",
 ]
 
 [[package]]
