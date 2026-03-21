@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod lifecycle;
+pub mod live_dom;
 pub mod mock;
 pub mod pipeline;
 pub mod session;
@@ -13,6 +14,7 @@ pub mod watchdog;
 
 pub use config::{EngineConfig, ResourceLimits, SecurityConfig};
 pub use lifecycle::Lifecycle;
+pub use live_dom::{LiveDom, LiveDomError};
 pub use mock::MockBrowserEngine;
 pub use pipeline::{PhaseBudgets, PhaseError, PipelineContext, PipelineDecision, PipelinePhase};
 pub use session::NeoSession;
