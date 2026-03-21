@@ -5,3 +5,9 @@ edition.workspace = true
 
 [dependencies]
 neo-types = { path = "../neo-types" }
+neo-dom = { path = "../neo-dom" }
+thiserror.workspace = true
+serde = { workspace = true }
+
+[dev-dependencies]
+neo-dom = { path = "../neo-dom" }

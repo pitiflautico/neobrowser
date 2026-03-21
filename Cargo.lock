@@ -1330,7 +1330,11 @@ dependencies = [
 name = "neo-extract"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "neo-dom",
  "neo-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
@@ -1353,7 +1357,10 @@ dependencies = [
 name = "neo-interact"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "neo-dom",
  "neo-types",
+ "serde",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
