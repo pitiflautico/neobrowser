@@ -1021,6 +1021,8 @@ globalThis.prompt = function(msg, def) {
 // ═══════════════════════════════════════════════════════════════
 
 // Block access to runtime internals that page JS should never see.
+// Preserve ops reference for browser_shim.js (loaded after bootstrap).
+globalThis.__neo_ops = Deno.core.ops;
 delete globalThis.Deno;
 Object.defineProperty(globalThis, 'process', {
     value: undefined,

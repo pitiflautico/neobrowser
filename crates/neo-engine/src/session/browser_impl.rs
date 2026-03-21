@@ -247,22 +247,48 @@ impl BrowserEngine for NeoSession {
 
     fn click(&mut self, target: &str) -> Result<ClickResult, EngineError> {
         self.tracer.intent("click", "click", target, 1.0);
-        let result = self.interactor.click(target)?;
+        // Use LiveDom (V8) if runtime available, fallback to static DOM.
+        let result = if let Some(rt) = self.runtime.as_mut() {
+            let mut live = LiveDom::new(rt.as_mut());
+            let r = live.click(target).map_err(|e| {
+                EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+            })?;
+            // Check text/href from LiveDom result to build ClickResult.
+            ClickResult::DomChanged(r.mutations)
+        } else {
+            self.interactor.click(target)?
+        };
         self.tracer
             .action_result("click", true, &format!("{result:?}"), None);
+        self.process_pending_navigations();
         Ok(result)
     }
 
     fn type_text(&mut self, target: &str, text: &str) -> Result<(), EngineError> {
         self.tracer.intent("type", "type_text", target, 1.0);
-        self.interactor.type_text(target, text, true)?;
+        if let Some(rt) = self.runtime.as_mut() {
+            let mut live = LiveDom::new(rt.as_mut());
+            live.type_text(target, text).map_err(|e| {
+                EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+            })?;
+        } else {
+            self.interactor.type_text(target, text, true)?;
+        }
         self.tracer.action_result("type", true, "text typed", None);
         Ok(())
     }
 
     fn fill_form(&mut self, fields: &HashMap<String, String>) -> Result<(), EngineError> {
         self.tracer.intent("fill", "fill_form", "form", 1.0);
-        self.interactor.fill_form(fields)?;
+        if let Some(rt) = self.runtime.as_mut() {
+            let mut live = LiveDom::new(rt.as_mut());
+            let field_pairs: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            live.fill_form(&field_pairs).map_err(|e| {
+                EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+            })?;
+        } else {
+            self.interactor.fill_form(fields)?;
+        }
         self.tracer.action_result("fill", true, "form filled", None);
         Ok(())
     }
@@ -270,10 +296,18 @@ impl BrowserEngine for NeoSession {
     fn submit(&mut self, target: Option<&str>) -> Result<SubmitResult, EngineError> {
         let t = target.unwrap_or("form");
         self.tracer.intent("submit", "submit", t, 1.0);
-        let result = self.interactor.submit(target)?;
+        if let Some(rt) = self.runtime.as_mut() {
+            let mut live = LiveDom::new(rt.as_mut());
+            live.submit(t).map_err(|e| {
+                EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+            })?;
+        } else {
+            let _result = self.interactor.submit(target)?;
+        }
         self.tracer
-            .action_result("submit", true, &format!("{result:?}"), None);
-        Ok(result)
+            .action_result("submit", true, "submitted", None);
+        self.process_pending_navigations();
+        Ok(SubmitResult::Navigation(String::new()))
     }
 
     fn extract(&self) -> Result<WomDocument, EngineError> {

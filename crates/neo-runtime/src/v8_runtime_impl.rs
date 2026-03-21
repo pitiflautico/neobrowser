@@ -143,18 +143,28 @@ impl JsRuntimeTrait for DenoRuntime {
             .execute_script("<neorender:bootstrap>", bootstrap_js.to_string())
             .map_err(|e| RuntimeError::Dom(format!("bootstrap: {}", first_line(&e.to_string()))))?;
 
+        let browser_shim_js: &str = include_str!("../../../js/browser_shim.js");
+        self.runtime
+            .execute_script("<neorender:browser_shim>", browser_shim_js.to_string())
+            .map_err(|e| {
+                RuntimeError::Dom(format!("browser_shim: {}", first_line(&e.to_string())))
+            })?;
+
+        // Set location properties directly on __neo_location to avoid
+        // triggering navigation interception from the browser shim.
         let loc_js = format!(
             "try {{\
                 const __u = new URL('{}');\
-                location.href = __u.href;\
-                location.protocol = __u.protocol;\
-                location.host = __u.host;\
-                location.hostname = __u.hostname;\
-                location.port = __u.port;\
-                location.pathname = __u.pathname;\
-                location.search = __u.search;\
-                location.hash = __u.hash;\
-                location.origin = __u.origin;\
+                const __loc = globalThis.__neo_location || globalThis.location;\
+                __loc.href = __u.href;\
+                __loc.protocol = __u.protocol;\
+                __loc.host = __u.host;\
+                __loc.hostname = __u.hostname;\
+                __loc.port = __u.port;\
+                __loc.pathname = __u.pathname;\
+                __loc.search = __u.search;\
+                __loc.hash = __u.hash;\
+                __loc.origin = __u.origin;\
              }} catch(e) {{}}",
             escaped_url
         );
@@ -195,5 +205,33 @@ impl JsRuntimeTrait for DenoRuntime {
     fn isolate_handle(&mut self) -> Option<RuntimeHandle> {
         let handle = self.runtime.v8_isolate().thread_safe_handle();
         Some(RuntimeHandle { inner: handle })
+    }
+
+    fn drain_navigation_requests(&mut self) -> Vec<String> {
+        let op_state = self.runtime.op_state();
+        let state = op_state.borrow();
+        if let Some(queue) = state.try_borrow::<crate::ops::NavigationQueue>() {
+            queue.drain()
+        } else {
+            vec![]
+        }
+    }
+
+    fn get_cookies(&mut self) -> String {
+        let op_state = self.runtime.op_state();
+        let state = op_state.borrow();
+        if let Some(cookies) = state.try_borrow::<crate::ops::CookieState>() {
+            cookies.get_cookie_string()
+        } else {
+            String::new()
+        }
+    }
+
+    fn set_cookie(&mut self, cookie_str: &str) {
+        let op_state = self.runtime.op_state();
+        let state = op_state.borrow();
+        if let Some(cookies) = state.try_borrow::<crate::ops::CookieState>() {
+            cookies.set_from_string(cookie_str);
+        }
     }
 }

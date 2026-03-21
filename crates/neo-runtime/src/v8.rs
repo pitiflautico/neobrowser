@@ -29,6 +29,9 @@ deno_core::extension!(
         ops::op_storage_set,
         ops::op_storage_remove,
         ops::op_console_log,
+        ops::op_navigation_request,
+        ops::op_cookie_get,
+        ops::op_cookie_set,
     ],
 );
 
@@ -122,6 +125,8 @@ impl DenoRuntime {
             }
             state.put(ops::ConsoleBuffer::default());
             state.put(ops::StorageState::default());
+            state.put(ops::NavigationQueue::default());
+            state.put(ops::CookieState::default());
             // Scheduler state — shared with ops via Arc atomics.
             state.put(tracker.clone());
             state.put(timer_budget.clone());

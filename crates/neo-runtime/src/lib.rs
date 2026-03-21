@@ -128,6 +128,22 @@ pub trait JsRuntime: Send {
     fn isolate_handle(&mut self) -> Option<RuntimeHandle> {
         None
     }
+
+    /// Drain pending navigation requests from the browser shim.
+    ///
+    /// Returns JSON strings describing form submits, location changes, etc.
+    /// Default: no navigation interception (mock runtimes).
+    fn drain_navigation_requests(&mut self) -> Vec<String> {
+        vec![]
+    }
+
+    /// Get the cookie string for the current page (document.cookie equivalent).
+    fn get_cookies(&mut self) -> String {
+        String::new()
+    }
+
+    /// Set a cookie from a Set-Cookie string.
+    fn set_cookie(&mut self, _cookie_str: &str) {}
 }
 
 /// Configuration for creating a runtime instance.

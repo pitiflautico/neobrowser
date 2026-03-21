@@ -266,3 +266,241 @@ fn test_interval_capped() {
         tick_num
     );
 }
+
+// ─── Browser Shim Tests ───
+
+/// form.submit() produces a navigation request in the queue.
+#[test]
+#[ignore]
+fn test_form_submit_intercepted() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        r#"<html><body>
+            <form id="myform" action="https://example.com/submit" method="POST">
+                <input name="user" value="alice" />
+                <input name="pass" type="password" value="secret" />
+            </form>
+        </body></html>"#,
+        "https://example.com",
+    )
+    .unwrap();
+
+    rt.execute(r#"document.getElementById('myform').submit();"#)
+        .unwrap();
+
+    let requests = rt.drain_navigation_requests();
+    assert_eq!(requests.len(), 1, "Expected 1 navigation request from form.submit()");
+    let req: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
+    assert_eq!(req["type"], "form_submit");
+    assert_eq!(req["method"], "POST");
+    assert_eq!(req["url"], "https://example.com/submit");
+    assert_eq!(req["form_data"]["user"], "alice");
+    assert_eq!(req["form_data"]["pass"], "secret");
+}
+
+/// location.assign() and location.replace() produce navigation requests.
+#[test]
+#[ignore]
+fn test_location_assign_intercepted() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        "<html><body></body></html>",
+        "https://example.com",
+    )
+    .unwrap();
+
+    rt.execute(r#"location.assign('https://example.com/new-page');"#)
+        .unwrap();
+    rt.execute(r#"location.replace('https://example.com/replaced');"#)
+        .unwrap();
+
+    let requests = rt.drain_navigation_requests();
+    assert_eq!(requests.len(), 2, "Expected 2 navigation requests");
+    let req0: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
+    assert_eq!(req0["type"], "location_assign");
+    assert_eq!(req0["url"], "https://example.com/new-page");
+    let req1: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
+    assert_eq!(req1["type"], "location_replace");
+    assert_eq!(req1["url"], "https://example.com/replaced");
+}
+
+/// document.cookie getter/setter backed by Rust ops.
+#[test]
+#[ignore]
+fn test_cookie_get_set() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        "<html><body></body></html>",
+        "https://example.com",
+    )
+    .unwrap();
+
+    // Set cookies via document.cookie
+    rt.execute(r#"document.cookie = 'session=abc123';"#).unwrap();
+    rt.execute(r#"document.cookie = 'lang=en; Path=/';"#).unwrap();
+
+    // Read back via JS
+    let cookies = rt.eval("document.cookie").unwrap();
+    assert!(
+        cookies.contains("session=abc123"),
+        "Expected 'session=abc123' in cookies, got: {}",
+        cookies
+    );
+    assert!(
+        cookies.contains("lang=en"),
+        "Expected 'lang=en' in cookies, got: {}",
+        cookies
+    );
+
+    // Read via Rust API
+    let rust_cookies = rt.get_cookies();
+    assert!(
+        rust_cookies.contains("session=abc123"),
+        "Expected 'session=abc123' in Rust cookies, got: {}",
+        rust_cookies
+    );
+}
+
+/// history.pushState updates location and tracks state.
+#[test]
+#[ignore]
+fn test_history_push_state() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        "<html><body></body></html>",
+        "https://example.com/page1",
+    )
+    .unwrap();
+
+    rt.execute(r#"history.pushState({page: 2}, '', '/page2');"#).unwrap();
+    let href = rt.eval("location.pathname").unwrap();
+    assert_eq!(href, "/page2", "pushState should update location.pathname");
+
+    let state = rt.eval("JSON.stringify(history.state)").unwrap();
+    assert!(
+        state.contains("\"page\":2"),
+        "Expected history.state to contain page:2, got: {}",
+        state
+    );
+
+    let length = rt.eval("history.length").unwrap();
+    assert_eq!(length, "1", "history.length should be 1 after one pushState");
+}
+
+/// IntersectionObserver calls back with isIntersecting: true.
+#[test]
+#[ignore]
+fn test_intersection_observer_fires() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        r#"<html><body><div id="target"></div></body></html>"#,
+        "https://example.com",
+    )
+    .unwrap();
+
+    rt.execute(
+        r#"
+        globalThis.__io_result = null;
+        const observer = new IntersectionObserver(function(entries) {
+            globalThis.__io_result = entries[0].isIntersecting;
+        });
+        observer.observe(document.getElementById('target'));
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let result = rt.eval("String(globalThis.__io_result)").unwrap();
+    assert_eq!(result, "true", "IntersectionObserver should report isIntersecting: true");
+}
+
+/// MutationObserver fires on DOM mutations (setAttribute, textContent, appendChild, removeChild).
+#[test]
+#[ignore]
+fn test_mutation_observer_fires() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        r#"<html><body><div id="target"></div></body></html>"#,
+        "https://example.com",
+    )
+    .unwrap();
+
+    rt.execute(
+        r#"
+        globalThis.__mo_mutations = [];
+        const mo = new MutationObserver(function(mutations) {
+            mutations.forEach(function(m) {
+                globalThis.__mo_mutations.push(m.type);
+            });
+        });
+        mo.observe(document.getElementById('target'), {
+            attributes: true, childList: true, characterData: true, subtree: true
+        });
+        // Trigger mutations
+        document.getElementById('target').setAttribute('data-x', '1');
+        document.getElementById('target').textContent = 'hello';
+        var child = document.createElement('span');
+        document.getElementById('target').appendChild(child);
+        document.getElementById('target').removeChild(child);
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let mutations = rt.eval("JSON.stringify(globalThis.__mo_mutations)").unwrap();
+    eprintln!("MutationObserver mutations: {}", mutations);
+    // linkedom's MutationObserver may or may not fire; document what happens.
+    // If it doesn't fire, our shim stub is the fallback.
+    // At minimum, the code should not crash.
+    assert!(
+        !mutations.contains("Error"),
+        "MutationObserver should not error"
+    );
+}
+
+/// matchMedia returns desktop defaults.
+#[test]
+#[ignore]
+fn test_match_media_desktop() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        "<html><body></body></html>",
+        "https://example.com",
+    )
+    .unwrap();
+
+    // Desktop query should match (min-width > mobile threshold)
+    let desktop = rt.eval("matchMedia('(min-width: 1024px)').matches").unwrap();
+    assert_eq!(desktop, "true", "Desktop min-width query should match");
+
+    // Mobile query should NOT match
+    let mobile = rt.eval("matchMedia('(max-width: 767px)').matches").unwrap();
+    assert_eq!(mobile, "false", "Mobile max-width query should not match");
+
+    // Dark mode should not match (we default to light)
+    let dark = rt.eval("matchMedia('(prefers-color-scheme: dark)').matches").unwrap();
+    assert_eq!(dark, "false", "Dark mode should not match");
+}

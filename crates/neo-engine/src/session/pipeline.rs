@@ -12,7 +12,7 @@ use super::scripts::{detect_meta_refresh, extract_scripts};
 use super::stub::stub_heavy_modules;
 use super::{HistoryEntry, NeoSession};
 use crate::pipeline::PipelinePhase;
-use crate::{EngineError, PageResult};
+use crate::{BrowserEngine, EngineError, PageResult};
 
 impl NeoSession {
     /// Finish navigation after the HTTP response (or cache hit) is available.
@@ -290,6 +290,99 @@ impl NeoSession {
                 top_level_url: Some(url.to_string()),
             },
             timeout_ms: self.config.navigation_timeout_ms,
+        }
+    }
+
+    /// Drain pending navigation requests from the JS shim and execute the first one.
+    ///
+    /// Called after click/submit/eval — if JS triggered form.submit() or
+    /// location.href = ..., the shim queues a navigation request. This method
+    /// picks it up, makes the HTTP request, and reloads the page.
+    pub(crate) fn process_pending_navigations(&mut self) {
+        let requests = if let Some(ref mut rt) = self.runtime {
+            rt.drain_navigation_requests()
+        } else {
+            return;
+        };
+
+        if requests.is_empty() {
+            return;
+        }
+
+        // Process only the FIRST navigation (subsequent ones are superseded).
+        let req_json = &requests[0];
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(req_json);
+        let nav = match parsed {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[NeoRender] Failed to parse navigation request: {e}");
+                return;
+            }
+        };
+
+        let raw_url = nav["url"].as_str().unwrap_or("").to_string();
+        let nav_type = nav["type"].as_str().unwrap_or("unknown");
+
+        if raw_url.is_empty() {
+            return;
+        }
+
+        // Resolve relative URLs against the current page URL.
+        let url = if raw_url.starts_with("http://") || raw_url.starts_with("https://") {
+            raw_url
+        } else {
+            // Get current base URL from history stack.
+            let base = self.history_stack.last()
+                .map(|e| e.url.clone())
+                .unwrap_or_default();
+            if let Ok(base_url) = url::Url::parse(&base) {
+                base_url.join(&raw_url)
+                    .map(|u| u.to_string())
+                    .unwrap_or(raw_url)
+            } else {
+                raw_url
+            }
+        };
+
+        // For GET form submits, append form_data as query string.
+        let url = if nav_type == "form_submit" {
+            let method = nav["method"].as_str().unwrap_or("GET");
+            if method == "GET" {
+                if let Some(form_data) = nav["form_data"].as_object() {
+                    let params: Vec<String> = form_data.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|val| format!("{}={}", k, url::form_urlencoded::byte_serialize(val.as_bytes()).collect::<String>())))
+                        .collect();
+                    if !params.is_empty() {
+                        let sep = if url.contains('?') { "&" } else { "?" };
+                        format!("{url}{sep}{}", params.join("&"))
+                    } else {
+                        url
+                    }
+                } else {
+                    url
+                }
+            } else {
+                url // TODO: POST form data in body
+            }
+        } else {
+            url
+        };
+
+        eprintln!("[NeoRender] Navigation triggered by JS ({nav_type}): {url}");
+
+        // For form_submit with POST, we'd need to send form data.
+        // For now, do a GET navigation to the URL.
+        // TODO: support POST with form_data from the nav request.
+        match self.navigate(&url) {
+            Ok(result) => {
+                eprintln!(
+                    "[NeoRender] Re-navigated: {} ({}, {}ms)",
+                    result.title, result.url, result.render_ms
+                );
+            }
+            Err(e) => {
+                eprintln!("[NeoRender] Re-navigation failed: {e}");
+            }
         }
     }
 }

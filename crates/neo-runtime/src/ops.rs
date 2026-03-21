@@ -10,7 +10,7 @@ use neo_http::{HttpClient, HttpRequest, RequestContext, RequestKind, WebStorage}
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Shared HTTP client stored in OpState for fetch ops.
 pub struct SharedHttpClient(pub Arc<dyn HttpClient>);
@@ -307,4 +307,147 @@ fn parse_headers(json: &str) -> HashMap<String, String> {
         return HashMap::new();
     }
     serde_json::from_str(json).unwrap_or_default()
+}
+
+// ─── Browser Shim Ops ───
+
+/// Queue of navigation requests from JS (form.submit, location.href, window.open).
+///
+/// The engine drains this queue after every interaction to handle
+/// client-side navigation attempts.
+#[derive(Default, Clone)]
+pub struct NavigationQueue {
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl NavigationQueue {
+    /// Push a new navigation request (called from JS via op_navigation_request).
+    pub fn push(&self, req: String) {
+        if let Ok(mut q) = self.requests.lock() {
+            q.push(req);
+        }
+    }
+
+    /// Drain all pending navigation requests. Returns empty vec if none.
+    pub fn drain(&self) -> Vec<String> {
+        if let Ok(mut q) = self.requests.lock() {
+            q.drain(..).collect()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Check if there are pending navigation requests.
+    pub fn has_pending(&self) -> bool {
+        if let Ok(q) = self.requests.lock() {
+            !q.is_empty()
+        } else {
+            false
+        }
+    }
+}
+
+/// Cookie state for `document.cookie` access, backed by a simple in-process store.
+///
+/// Cookies are stored per-origin. The origin is set when the page navigates.
+#[derive(Clone)]
+pub struct CookieState {
+    cookies: Arc<Mutex<HashMap<String, String>>>,
+    origin: String,
+}
+
+impl CookieState {
+    /// Create a new cookie state for the given origin.
+    pub fn new(origin: &str) -> Self {
+        Self {
+            cookies: Arc::new(Mutex::new(HashMap::new())),
+            origin: origin.to_string(),
+        }
+    }
+
+    /// Get the cookie string for `document.cookie` getter.
+    pub fn get_cookie_string(&self) -> String {
+        if let Ok(cookies) = self.cookies.lock() {
+            cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        } else {
+            String::new()
+        }
+    }
+
+    /// Parse and store a `Set-Cookie`-style string from `document.cookie` setter.
+    ///
+    /// Only the name=value part is stored; attributes (Path, Domain, etc.)
+    /// are ignored since we operate in a single-origin context.
+    pub fn set_from_string(&self, cookie_str: &str) {
+        // cookie_str format: "name=value; Path=/; Domain=..."
+        // We only care about the name=value part (first segment before ';')
+        let name_value = cookie_str.split(';').next().unwrap_or("");
+        if let Some((name, value)) = name_value.split_once('=') {
+            let name = name.trim().to_string();
+            let value = value.trim().to_string();
+            if !name.is_empty() {
+                if let Ok(mut cookies) = self.cookies.lock() {
+                    cookies.insert(name, value);
+                }
+            }
+        }
+    }
+
+    /// Set the origin (called on navigation).
+    pub fn set_origin(&mut self, origin: &str) {
+        self.origin = origin.to_string();
+    }
+
+    /// Get the current origin.
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+}
+
+impl Default for CookieState {
+    fn default() -> Self {
+        Self {
+            cookies: Arc::new(Mutex::new(HashMap::new())),
+            origin: String::new(),
+        }
+    }
+}
+
+/// Capture a navigation request from JS (form.submit, location.href, etc.)
+///
+/// Stores the request JSON in the navigation queue for the engine to
+/// pick up after script execution or interaction completes.
+#[op2]
+#[string]
+pub fn op_navigation_request(state: Rc<RefCell<OpState>>, #[string] request_json: String) -> String {
+    let s = state.borrow();
+    if let Some(nav_queue) = s.try_borrow::<NavigationQueue>() {
+        nav_queue.push(request_json);
+    }
+    "ok".to_string()
+}
+
+/// Get cookies for current origin (called by document.cookie getter).
+#[op2]
+#[string]
+pub fn op_cookie_get(state: Rc<RefCell<OpState>>) -> String {
+    let s = state.borrow();
+    if let Some(cookies) = s.try_borrow::<CookieState>() {
+        cookies.get_cookie_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Set a cookie (called by document.cookie setter).
+#[op2(fast)]
+pub fn op_cookie_set(state: Rc<RefCell<OpState>>, #[string] cookie_str: String) {
+    let s = state.borrow();
+    if let Some(cookies) = s.try_borrow::<CookieState>() {
+        cookies.set_from_string(&cookie_str);
+    }
 }
