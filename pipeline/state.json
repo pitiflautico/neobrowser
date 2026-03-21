@@ -1,11 +1,11 @@
 {
-  "current_wave": 2,
+  "current_wave": 3,
   "crates": {
     "neo-types": {"wave": 0, "status": "done", "tests": 0},
     "neo-http": {"wave": 1, "status": "done", "tests": 17},
     "neo-trace": {"wave": 1, "status": "done", "tests": 10},
-    "neo-dom": {"wave": 2, "status": "pending"},
-    "neo-chrome": {"wave": 2, "status": "pending"},
+    "neo-dom": {"wave": 2, "status": "done", "tests": 20},
+    "neo-chrome": {"wave": 2, "status": "done", "tests": 4},
     "neo-runtime": {"wave": 3, "status": "pending"},
     "neo-interact": {"wave": 4, "status": "pending"},
     "neo-extract": {"wave": 4, "status": "pending"},

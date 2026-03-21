@@ -5,3 +5,9 @@ edition.workspace = true
 
 [dependencies]
 neo-types = { path = "../neo-types" }
+html5ever = "0.38"
+markup5ever_rcdom = "0.38"
+url = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

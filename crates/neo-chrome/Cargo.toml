@@ -5,3 +5,11 @@ edition.workspace = true
 
 [dependencies]
 neo-types = { path = "../neo-types" }
+neo-http = { path = "../neo-http" }
+tokio = { workspace = true }
+tokio-tungstenite = "=0.26.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+futures = "=0.3.31"
