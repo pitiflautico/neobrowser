@@ -4,6 +4,7 @@
 //! The AI sees elements, attributes, text, forms, links, and actions —
 //! not pixels.
 
+mod dom_forms;
 mod html5ever_dom;
 mod mock;
 mod query;

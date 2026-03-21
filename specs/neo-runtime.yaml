@@ -1,0 +1,3 @@
+crate: neo-runtime
+phase: "pipeline"
+description: "Spec for neo-runtime crate."

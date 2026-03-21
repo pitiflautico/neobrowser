@@ -1,0 +1,3 @@
+crate: neo-types
+phase: "pipeline"
+description: "Spec for neo-types crate."

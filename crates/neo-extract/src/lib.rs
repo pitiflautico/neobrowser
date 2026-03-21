@@ -12,6 +12,7 @@ pub mod delta;
 mod mock;
 pub mod semantic;
 pub mod structured;
+mod structured_helpers;
 pub mod wom;
 mod wom_builder;
 

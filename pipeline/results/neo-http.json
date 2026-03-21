@@ -1,8 +1,8 @@
 {
   "crate": "neo-http",
-  "timestamp": "2026-03-21T10:54:38Z",
+  "timestamp": "2026-03-21T11:14:52Z",
   "total": 9,
-  "passed": 4,
-  "failed": 5,
-  "result": "FAIL"
+  "passed": 9,
+  "failed": 0,
+  "result": "PASS"
 }

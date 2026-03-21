@@ -1,0 +1,3 @@
+crate: neo-mcp
+phase: "pipeline"
+description: "Spec for neo-mcp crate."

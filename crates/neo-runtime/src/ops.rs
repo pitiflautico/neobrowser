@@ -226,7 +226,7 @@ pub fn op_storage_remove(
 pub fn op_console_log(state: Rc<RefCell<OpState>>, #[string] msg: String) {
     let s = state.borrow();
     if let Some(buf) = s.try_borrow::<ConsoleBuffer>() {
-        let mut messages = buf.messages.lock().unwrap();
+        let mut messages = buf.messages.lock().expect("console buffer lock poisoned");
         messages.push(msg);
     }
 }

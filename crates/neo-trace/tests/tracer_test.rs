@@ -160,7 +160,7 @@ fn test_redact_cookie_and_api_key_in_trace() {
         }),
     };
 
-    neo_trace::file_tracer::redact_entry(&mut entry);
+    neo_trace::redaction::redact_entry(&mut entry);
 
     assert_eq!(entry.metadata["cookie"], serde_json::json!("[REDACTED]"));
     assert_eq!(entry.metadata["x-api-key"], serde_json::json!("[REDACTED]"));

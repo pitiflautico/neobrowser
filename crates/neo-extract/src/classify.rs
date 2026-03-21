@@ -112,10 +112,7 @@ fn check_login_form(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Ve
 }
 
 /// Search results: search input + repeated result items.
-fn check_search_results(
-    dom: &dyn DomEngine,
-    candidates: &mut Vec<(PageType, f32, Vec<String>)>,
-) {
+fn check_search_results(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Vec<String>)>) {
     let mut features = Vec::new();
     let mut score: f32 = 0.0;
 

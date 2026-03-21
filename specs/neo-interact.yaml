@@ -1,0 +1,3 @@
+crate: neo-interact
+phase: "pipeline"
+description: "Spec for neo-interact crate."

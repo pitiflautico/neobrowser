@@ -1,0 +1,3 @@
+crate: neo-extract
+phase: "pipeline"
+description: "Spec for neo-extract crate."

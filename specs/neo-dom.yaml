@@ -1,0 +1,3 @@
+crate: neo-dom
+phase: "pipeline"
+description: "Spec for neo-dom crate."

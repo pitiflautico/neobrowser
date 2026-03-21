@@ -202,9 +202,7 @@ mod tests {
             }),
         };
         redact_entry(&mut entry);
-        let auth = entry.metadata["headers"]["Authorization"]
-            .as_str()
-            .unwrap();
+        let auth = entry.metadata["headers"]["Authorization"].as_str().unwrap();
         assert!(
             auth.contains("[REDACTED]"),
             "Bearer token not redacted: {auth}"
