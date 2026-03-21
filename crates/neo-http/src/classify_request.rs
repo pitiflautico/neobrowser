@@ -264,17 +264,35 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_image_font_style_media_beacon() {
-        assert_eq!(classify_request("https://cdn.example.com/logo.png", None, None, None), RequestCategory::Image);
-        assert_eq!(classify_request("https://cdn.example.com/font.woff2", None, None, None), RequestCategory::Font);
-        assert_eq!(classify_request("https://cdn.example.com/main.css", None, None, None), RequestCategory::Style);
-        assert_eq!(classify_request("https://cdn.example.com/video.mp4", None, None, None), RequestCategory::Media);
-        assert_eq!(classify_request("https://example.com/log", Some("beacon"), None, None), RequestCategory::Beacon);
-    }
-
-    #[test]
-    fn test_classify_document_and_telemetry() {
-        assert_eq!(classify_request("https://example.com/embed", Some("iframe"), Some("text/html"), None), RequestCategory::Document);
-        assert_eq!(classify_request("https://www.google-analytics.com/collect", None, None, None), RequestCategory::Telemetry);
+    fn test_classify_by_extension_and_initiator() {
+        let cr = classify_request;
+        assert_eq!(
+            cr("https://cdn.x.com/logo.png", None, None, None),
+            RequestCategory::Image
+        );
+        assert_eq!(
+            cr("https://cdn.x.com/f.woff2", None, None, None),
+            RequestCategory::Font
+        );
+        assert_eq!(
+            cr("https://cdn.x.com/s.css", None, None, None),
+            RequestCategory::Style
+        );
+        assert_eq!(
+            cr("https://cdn.x.com/v.mp4", None, None, None),
+            RequestCategory::Media
+        );
+        assert_eq!(
+            cr("https://x.com/log", Some("beacon"), None, None),
+            RequestCategory::Beacon
+        );
+        assert_eq!(
+            cr("https://x.com/e", Some("iframe"), Some("text/html"), None),
+            RequestCategory::Document
+        );
+        assert_eq!(
+            cr("https://www.google-analytics.com/c", None, None, None),
+            RequestCategory::Telemetry
+        );
     }
 }
