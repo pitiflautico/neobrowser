@@ -13,9 +13,14 @@ use std::rc::Rc;
 
 use crate::code_cache::V8CodeCache;
 use crate::neo_trace;
+use neo_http::{HttpClient, HttpRequest, RequestContext, RequestKind};
+use std::sync::Arc;
 
 // Re-export import extraction from the dedicated module.
 pub use crate::imports::extract_es_imports;
+
+/// Maximum number of on-demand module fetches per page load.
+const ON_DEMAND_FETCH_BUDGET: usize = 50;
 
 /// Pre-fetched script contents keyed by URL.
 #[derive(Default)]
@@ -93,6 +98,10 @@ pub struct NeoModuleLoader {
     pub page_origin: PageOriginHandle,
     /// Import map from `<script type="importmap">`. Shared with engine.
     pub import_map: ImportMapHandle,
+    /// HTTP client for on-demand module fetching (dynamic imports not in store).
+    pub http_client: Option<Arc<dyn HttpClient>>,
+    /// Counter for on-demand fetches (budget: max ON_DEMAND_FETCH_BUDGET per page).
+    pub on_demand_count: RefCell<usize>,
 }
 
 impl NeoModuleLoader {
@@ -231,7 +240,94 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             return empty_module(module_specifier);
         }
 
-        // Not in store — return empty placeholder.
+        // Not in store — try on-demand fetch for HTTP(S) JS URLs.
+        if let Some(ref http_client) = self.http_client {
+            if is_dyn_import
+                && (url.starts_with("http://") || url.starts_with("https://"))
+            {
+                let count = *self.on_demand_count.borrow();
+                if count >= ON_DEMAND_FETCH_BUDGET {
+                    neo_trace!(
+                        "[MODULE] load {url} -> empty (on-demand budget exhausted: {count}, {import_kind})"
+                    );
+                    return empty_module(module_specifier);
+                }
+
+                let http = http_client.clone();
+                let url_clone = url.clone();
+
+                neo_trace!("[MODULE] load {url} -> fetching on-demand ({import_kind})");
+
+                let fetched = std::thread::spawn(move || {
+                    let req = HttpRequest {
+                        method: "GET".to_string(),
+                        url: url_clone,
+                        headers: std::collections::HashMap::new(),
+                        body: None,
+                        context: RequestContext {
+                            kind: RequestKind::Subresource,
+                            initiator: "dynamic-import".to_string(),
+                            referrer: None,
+                            frame_id: None,
+                            top_level_url: None,
+                        },
+                        timeout_ms: 5000,
+                    };
+                    http.request(&req)
+                })
+                .join();
+
+                *self.on_demand_count.borrow_mut() += 1;
+
+                match fetched {
+                    Ok(Ok(resp)) if resp.status < 400 => {
+                        let code = resp.body;
+                        let size_kb = code.len() / 1024;
+                        neo_trace!(
+                            "[MODULE] fetched on-demand {url} ({size_kb}KB, {import_kind})"
+                        );
+
+                        // Store for future use (other modules may import the same chunk).
+                        drop(store); // release immutable borrow
+                        self.store
+                            .borrow_mut()
+                            .scripts
+                            .insert(url.clone(), code.clone());
+
+                        let patched = rewrite_promise_all_settled(&code);
+                        let cache_info = self.make_cache_info(&url, &patched);
+                        return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
+                            ModuleType::JavaScript,
+                            ModuleSourceCode::String(patched.into()),
+                            module_specifier,
+                            cache_info,
+                        )));
+                    }
+                    Ok(Ok(resp)) => {
+                        neo_trace!(
+                            "[MODULE] fetch failed {url} (status {}, {import_kind})",
+                            resp.status
+                        );
+                        drop(store);
+                        self.store.borrow_mut().failed_urls.insert(url);
+                    }
+                    Ok(Err(e)) => {
+                        neo_trace!("[MODULE] fetch error {url}: {e} ({import_kind})");
+                        drop(store);
+                        self.store.borrow_mut().failed_urls.insert(url);
+                    }
+                    Err(_) => {
+                        neo_trace!("[MODULE] fetch thread panicked {url} ({import_kind})");
+                        drop(store);
+                        self.store.borrow_mut().failed_urls.insert(url);
+                    }
+                }
+
+                return empty_module(module_specifier);
+            }
+        }
+
+        // Not in store and not fetchable — return empty placeholder.
         neo_trace!("[MODULE] load {url} -> empty (not-in-store, {import_kind})");
         empty_module(module_specifier)
     }
@@ -380,6 +476,8 @@ mod tests {
             code_cache: None,
             page_origin: Rc::new(RefCell::new(origin.to_string())),
             import_map: Rc::new(RefCell::new(None)),
+            http_client: None,
+            on_demand_count: RefCell::new(0),
         }
     }
 
@@ -389,6 +487,8 @@ mod tests {
             code_cache: None,
             page_origin: Rc::new(RefCell::new(origin.to_string())),
             import_map: Rc::new(RefCell::new(Some(map))),
+            http_client: None,
+            on_demand_count: RefCell::new(0),
         }
     }
 

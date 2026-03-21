@@ -108,6 +108,8 @@ impl DenoRuntime {
             code_cache,
             page_origin: page_origin.clone(),
             import_map: import_map.clone(),
+            http_client: http_client.clone(),
+            on_demand_count: RefCell::new(0),
         };
 
         let mut runtime = deno_core::JsRuntime::new(RuntimeOptions {

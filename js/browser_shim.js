@@ -588,7 +588,192 @@ globalThis.addEventListener('unhandledrejection', function(event) {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// 11. DOMPARSER — enhanced with content-type support
+// 11. FORM CONSTRAINT VALIDATION
+// ═══════════════════════════════════════════════════════════════
+
+if (typeof HTMLInputElement !== 'undefined' && HTMLInputElement.prototype && !HTMLInputElement.prototype.checkValidity) {
+    var validatable = [HTMLInputElement, HTMLTextAreaElement, HTMLSelectElement];
+    validatable.forEach(function(Ctor) {
+        if (!Ctor || !Ctor.prototype) return;
+
+        Ctor.prototype.checkValidity = function() {
+            if (this._customValidity) return false;
+            if (this.required && !this.value) return false;
+            if (this.pattern) {
+                try { if (!new RegExp('^(?:' + this.pattern + ')$').test(this.value)) return false; }
+                catch(e) {}
+            }
+            if (this.minLength > 0 && this.value.length < this.minLength) return false;
+            if (this.maxLength > 0 && this.value.length > this.maxLength) return false;
+            if (this.type === 'email' && this.value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(this.value)) return false;
+            if (this.type === 'url' && this.value) {
+                try { new URL(this.value); } catch(e) { return false; }
+            }
+            if (this.type === 'number' && this.value) {
+                var n = Number(this.value);
+                if (isNaN(n)) return false;
+                if (this.min !== '' && n < Number(this.min)) return false;
+                if (this.max !== '' && n > Number(this.max)) return false;
+            }
+            return true;
+        };
+
+        Ctor.prototype.reportValidity = function() {
+            var valid = this.checkValidity();
+            if (!valid) {
+                this.dispatchEvent(new Event('invalid', {bubbles: false, cancelable: true}));
+            }
+            return valid;
+        };
+
+        Ctor.prototype.setCustomValidity = function(msg) {
+            this._customValidity = msg || '';
+        };
+
+        Object.defineProperty(Ctor.prototype, 'validationMessage', {
+            get: function() {
+                if (this._customValidity) return this._customValidity;
+                if (this.required && !this.value) return 'Please fill out this field.';
+                if (this.type === 'email' && this.value && !/^[^\s@]+@[^\s@]+/.test(this.value))
+                    return 'Please include an email address.';
+                return '';
+            },
+            configurable: true
+        });
+
+        Object.defineProperty(Ctor.prototype, 'validity', {
+            get: function() {
+                var val = this.value || '';
+                return {
+                    valueMissing: this.required && !val,
+                    typeMismatch: (this.type === 'email' && val && !/^[^\s@]+@[^\s@]+/.test(val)),
+                    patternMismatch: this.pattern ? !new RegExp('^(?:' + this.pattern + ')$').test(val) : false,
+                    tooShort: this.minLength > 0 && val.length < this.minLength,
+                    tooLong: this.maxLength > 0 && val.length > this.maxLength,
+                    rangeUnderflow: false,
+                    rangeOverflow: false,
+                    stepMismatch: false,
+                    badInput: false,
+                    customError: !!this._customValidity,
+                    valid: this.checkValidity(),
+                };
+            },
+            configurable: true
+        });
+
+        Object.defineProperty(Ctor.prototype, 'willValidate', {
+            get: function() { return !this.disabled && this.type !== 'hidden'; },
+            configurable: true
+        });
+    });
+}
+
+// Form-level validation
+if (typeof HTMLFormElement !== 'undefined' && HTMLFormElement.prototype && !HTMLFormElement.prototype.checkValidity) {
+    HTMLFormElement.prototype.checkValidity = function() {
+        var inputs = this.querySelectorAll('input,textarea,select');
+        var valid = true;
+        inputs.forEach(function(el) {
+            if (el.willValidate && !el.checkValidity()) valid = false;
+        });
+        return valid;
+    };
+
+    HTMLFormElement.prototype.reportValidity = function() {
+        var inputs = this.querySelectorAll('input,textarea,select');
+        var valid = true;
+        inputs.forEach(function(el) {
+            if (el.willValidate && !el.reportValidity()) valid = false;
+        });
+        return valid;
+    };
+
+    HTMLFormElement.prototype.requestSubmit = function(submitter) {
+        if (!this.checkValidity()) {
+            this.reportValidity();
+            return;
+        }
+        var evt = new Event('submit', {bubbles: false, cancelable: true});
+        evt.submitter = submitter || null;
+        if (this.dispatchEvent(evt)) {
+            this.submit();
+        }
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 12. SELECTION / CARET APIs
+// ═══════════════════════════════════════════════════════════════
+
+if (typeof HTMLInputElement !== 'undefined' && HTMLInputElement.prototype && !HTMLInputElement.prototype.setSelectionRange) {
+    [HTMLInputElement, HTMLTextAreaElement].forEach(function(Ctor) {
+        if (!Ctor || !Ctor.prototype) return;
+
+        // Selection properties (in-memory tracking)
+        if (!('selectionStart' in Ctor.prototype)) {
+            Object.defineProperty(Ctor.prototype, 'selectionStart', {
+                get: function() { return this._selStart || 0; },
+                set: function(v) { this._selStart = v; },
+                configurable: true
+            });
+            Object.defineProperty(Ctor.prototype, 'selectionEnd', {
+                get: function() { return this._selEnd || (this.value || '').length; },
+                set: function(v) { this._selEnd = v; },
+                configurable: true
+            });
+            Object.defineProperty(Ctor.prototype, 'selectionDirection', {
+                get: function() { return this._selDir || 'forward'; },
+                set: function(v) { this._selDir = v; },
+                configurable: true
+            });
+        }
+
+        Ctor.prototype.setSelectionRange = function(start, end, direction) {
+            this._selStart = start;
+            this._selEnd = end;
+            this._selDir = direction || 'none';
+        };
+
+        Ctor.prototype.select = function() {
+            this._selStart = 0;
+            this._selEnd = (this.value || '').length;
+            this.dispatchEvent(new Event('select'));
+        };
+    });
+}
+
+// document.execCommand (limited — insertText only)
+if (typeof document !== 'undefined' && !document.execCommand) {
+    document.execCommand = function(cmd, showUI, value) {
+        if (cmd === 'insertText' && document.activeElement) {
+            var el = document.activeElement;
+            if (el.value !== undefined) {
+                var start = el.selectionStart || 0;
+                var end = el.selectionEnd || start;
+                var before = el.value.substring(0, start);
+                var after = el.value.substring(end);
+                el.value = before + value + after;
+                el.selectionStart = el.selectionEnd = start + value.length;
+                el.dispatchEvent(new InputEvent('input', {data: value, inputType: 'insertText', bubbles: true}));
+                return true;
+            }
+            if (el.contentEditable === 'true' || el.isContentEditable) {
+                var sel = globalThis.getSelection();
+                if (sel && sel.rangeCount) {
+                    var range = sel.getRangeAt(0);
+                    range.deleteContents();
+                    range.insertNode(document.createTextNode(value));
+                }
+                el.dispatchEvent(new InputEvent('input', {data: value, inputType: 'insertText', bubbles: true}));
+                return true;
+            }
+        }
+        return false;
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 13. DOMPARSER — enhanced with content-type support
 // ═══════════════════════════════════════════════════════════════
 
 // Override bootstrap's basic DOMParser with content-type-aware version

@@ -257,46 +257,54 @@ impl NeoSession {
             .unwrap_or_else(|_| "0".to_string())
             .trim().parse::<usize>().unwrap_or(0);
 
+        // Key insight: dynamic import() inside modules creates promises that
+        // need run_event_loop to resolve — NOT pump_event_loop (5ms timeout
+        // is too short). Use run_until_settled with a real timeout, but since
+        // TaskTracker doesn't track module evaluations, we must loop with
+        // DOM change detection.
         let mut rounds = 0u32;
         let mut last_node_count = nodes_before;
         let mut stable_ticks = 0u32;
 
-        while t5a.elapsed() < settle_budget && stable_ticks < 3 {
-            // Pump with 100ms timeout per round
-            let pump_timeout = std::cmp::min(100, settle_budget.as_millis() as u64 - t5a.elapsed().as_millis() as u64);
-            if pump_timeout == 0 { break; }
+        while t5a.elapsed() < settle_budget && stable_ticks < 5 {
+            // Run event loop for a real 200ms chunk — enough for module eval + promises
+            let remaining = settle_budget.saturating_sub(t5a.elapsed());
+            let chunk = std::cmp::min(remaining, std::time::Duration::from_millis(200));
+            if chunk.is_zero() { break; }
 
-            // Use pump_event_loop which has 5ms internal timeout
-            // But call it repeatedly for 100ms
-            let round_start = Instant::now();
-            while round_start.elapsed().as_millis() < pump_timeout as u128 {
-                match rt.pump_event_loop() {
-                    Ok(true) => {} // had work
-                    Ok(false) => {
-                        // No work — sleep briefly and retry (macrotask may fire after delay)
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                    }
-                    Err(_) => break,
-                }
-            }
+            // Use run_until_settled which actually runs the full event loop
+            // (not pump_event_loop which has 5ms internal timeout)
+            let _ = rt.run_until_settled(chunk.as_millis() as u64);
 
             rounds += 1;
 
-            // Check DOM node count
+            // Check DOM node count for changes
             let current_nodes = rt.eval("document.querySelectorAll('*').length")
                 .unwrap_or_else(|_| "0".to_string())
                 .trim().parse::<usize>().unwrap_or(0);
 
-            if current_nodes == last_node_count {
+            // Check if DOM is still actively mutating via hydration tracer
+            let last_mutation_age = rt
+                .eval("Date.now() - (window.__neorender_trace && window.__neorender_trace.lastMutationTime || 0)")
+                .unwrap_or_else(|_| "9999".to_string())
+                .trim()
+                .parse::<u64>()
+                .unwrap_or(9999);
+
+            if current_nodes == last_node_count && last_mutation_age >= 100 {
                 stable_ticks += 1;
             } else {
                 stable_ticks = 0;
-                neo_trace!("[SETTLE] DOM changed: {} -> {} nodes (round {})", last_node_count, current_nodes, rounds);
+                if current_nodes != last_node_count {
+                    neo_trace!("[SETTLE] DOM changed: {} -> {} nodes (round {})", last_node_count, current_nodes, rounds);
+                } else {
+                    neo_trace!("[SETTLE] mutations still active ({}ms ago, round {})", last_mutation_age, rounds);
+                }
                 last_node_count = current_nodes;
             }
         }
 
-        let nodes_after = last_node_count;
+        let _nodes_after = last_node_count;
         let micro_rounds = rounds;
         let macro_rounds = 0u32;
 

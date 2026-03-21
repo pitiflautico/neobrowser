@@ -202,6 +202,31 @@ impl JsRuntimeTrait for DenoRuntime {
                     RuntimeError::Dom(format!("browser_shim: {}", first_line(&e.to_string())))
                 })?;
 
+            // Hydration trace — monitors DOM mutations after initial load.
+            let hydration_tracer = r#"
+                window.__neorender_trace = window.__neorender_trace || {};
+                window.__neorender_trace.modulesLoaded = 0;
+                window.__neorender_trace.lastMutationTime = Date.now();
+                window.__neorender_trace.mutationCount = 0;
+                window.__neorender_trace.hydrationStartNodes = document.querySelectorAll('*').length;
+                try {
+                    new MutationObserver(function(mutations) {
+                        window.__neorender_trace.lastMutationTime = Date.now();
+                        window.__neorender_trace.mutationCount += mutations.length;
+                    }).observe(document.body || document.documentElement, {
+                        childList: true, subtree: true, attributes: true
+                    });
+                } catch(e) {}
+            "#;
+            self.runtime
+                .execute_script("<neorender:hydration_trace>", hydration_tracer.to_string())
+                .map_err(|e| {
+                    RuntimeError::Dom(format!(
+                        "hydration_trace: {}",
+                        first_line(&e.to_string())
+                    ))
+                })?;
+
             // Mark as initialized.
             let _ = self.runtime.execute_script(
                 "<mark_init>",
