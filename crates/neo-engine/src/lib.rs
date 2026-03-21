@@ -9,7 +9,7 @@ pub mod lifecycle;
 pub mod mock;
 pub mod session;
 
-pub use config::EngineConfig;
+pub use config::{EngineConfig, ResourceLimits, SecurityConfig};
 pub use lifecycle::Lifecycle;
 pub use mock::MockBrowserEngine;
 pub use session::NeoSession;

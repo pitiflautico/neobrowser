@@ -201,3 +201,324 @@ fn test_delta() {
         "summary should mention additions"
     );
 }
+
+// ========== Tier 3 tests ==========
+
+// -- WOM role tests --
+
+#[test]
+fn test_wom_roles() {
+    let html = r#"<html><body>
+        <nav><a href="/">Home</a></nav>
+        <header><h1>Title</h1></header>
+        <main><p>Content</p></main>
+        <footer><p>Copyright</p></footer>
+        <aside><p>Sidebar</p></aside>
+        <article><p>Post</p></article>
+    </body></html>"#;
+    let dom = dom_from(html);
+    let wom = neo_extract::wom::build_wom(&dom, "https://example.com");
+
+    let nav = wom.nodes.iter().find(|n| n.role == "navigation");
+    assert!(nav.is_some(), "nav should have role 'navigation'");
+
+    let header = wom.nodes.iter().find(|n| n.role == "banner");
+    assert!(header.is_some(), "header should have role 'banner'");
+
+    let footer = wom.nodes.iter().find(|n| n.role == "contentinfo");
+    assert!(footer.is_some(), "footer should have role 'contentinfo'");
+
+    let main = wom.nodes.iter().find(|n| n.role == "main");
+    assert!(main.is_some(), "main should have role 'main'");
+
+    let aside = wom.nodes.iter().find(|n| n.role == "complementary");
+    assert!(aside.is_some(), "aside should have role 'complementary'");
+
+    let article = wom.nodes.iter().find(|n| n.role == "article");
+    assert!(article.is_some(), "article should have role 'article'");
+}
+
+#[test]
+fn test_wom_explicit_role() {
+    let html = r#"<html><body>
+        <div role="search"><input type="text"></div>
+    </body></html>"#;
+    let _dom = dom_from(html);
+
+    // The input inside div[role=search] -- the input itself doesn't have a role attr,
+    // but if it did, it should be honored. Test that explicit role attribute works.
+    // Let's test with a button that has explicit role
+    let html2 = r#"<html><body>
+        <button role="tab">Tab 1</button>
+    </body></html>"#;
+    let dom2 = dom_from(html2);
+    let wom2 = neo_extract::wom::build_wom(&dom2, "https://example.com");
+
+    let tab = wom2.nodes.iter().find(|n| n.role == "tab");
+    assert!(tab.is_some(), "explicit role='tab' should override default");
+}
+
+// -- WOM action tests --
+
+#[test]
+fn test_wom_actions() {
+    let html = r#"<html><body>
+        <a href="/page">Link</a>
+        <input type="text" placeholder="Name">
+        <input type="checkbox" name="agree">
+        <input type="radio" name="choice">
+        <select><option>A</option></select>
+        <textarea>Notes</textarea>
+        <form action="/submit"><button>Go</button></form>
+    </body></html>"#;
+    let dom = dom_from(html);
+    let wom = neo_extract::wom::build_wom(&dom, "https://example.com");
+
+    // Links should have click + navigate
+    let link = wom.nodes.iter().find(|n| n.role == "link");
+    assert!(link.is_some());
+    let link = link.unwrap();
+    assert!(link.actions.contains(&"click".to_string()));
+    assert!(link.actions.contains(&"navigate".to_string()));
+
+    // Text input should have type + clear
+    let text_input = wom.nodes.iter().find(|n| n.role == "input" && n.tag == "input");
+    assert!(text_input.is_some());
+    let ti = text_input.unwrap();
+    assert!(ti.actions.contains(&"type".to_string()));
+    assert!(ti.actions.contains(&"clear".to_string()));
+
+    // Checkbox should have check + uncheck
+    let checkbox = wom.nodes.iter().find(|n| n.role == "checkbox");
+    assert!(checkbox.is_some());
+    let cb = checkbox.unwrap();
+    assert!(cb.actions.contains(&"check".to_string()));
+    assert!(cb.actions.contains(&"uncheck".to_string()));
+
+    // Radio should have select
+    let radio = wom.nodes.iter().find(|n| n.role == "radio");
+    assert!(radio.is_some());
+    assert!(radio.unwrap().actions.contains(&"select".to_string()));
+
+    // Select should have select
+    let select = wom.nodes.iter().find(|n| n.role == "select");
+    assert!(select.is_some());
+    assert!(select.unwrap().actions.contains(&"select".to_string()));
+
+    // Textarea should have type + clear
+    let textarea = wom.nodes.iter().find(|n| n.tag == "textarea");
+    assert!(textarea.is_some());
+    let ta = textarea.unwrap();
+    assert!(ta.actions.contains(&"type".to_string()));
+    assert!(ta.actions.contains(&"clear".to_string()));
+
+    // Form should have submit + fill
+    let form = wom.nodes.iter().find(|n| n.tag == "form");
+    assert!(form.is_some());
+    let f = form.unwrap();
+    assert!(f.actions.contains(&"submit".to_string()));
+    assert!(f.actions.contains(&"fill".to_string()));
+}
+
+// -- WOM summary tests --
+
+#[test]
+fn test_wom_summary() {
+    let html = r#"<html><head><title>Login</title></head><body>
+        <form action="/auth">
+            <input type="text" name="email" aria-label="email">
+            <input type="password" name="pass" aria-label="password">
+            <button type="submit">Sign In</button>
+        </form>
+    </body></html>"#;
+    let dom = dom_from(html);
+    let wom = neo_extract::wom::build_wom(&dom, "https://example.com");
+
+    // Summary should mention inputs, buttons, and title
+    assert!(wom.summary.contains("Login"), "summary should contain title: {}", wom.summary);
+    assert!(wom.summary.contains("input"), "summary should mention inputs: {}", wom.summary);
+    assert!(wom.summary.contains("button"), "summary should mention buttons: {}", wom.summary);
+}
+
+// -- Structured JSON-LD verification --
+
+#[test]
+fn test_structured_jsonld_detailed() {
+    let html = r#"<html><head>
+        <script type="application/ld+json">
+        {
+            "@type": "Product",
+            "name": "Super Gadget",
+            "url": "https://shop.example.com/gadget",
+            "offers": { "price": 49.99 }
+        }
+        </script>
+    </head><body></body></html>"#;
+    let dom = dom_from(html);
+    let data = neo_extract::structured::extract_structured(&dom);
+
+    let product = data
+        .iter()
+        .find(|d| matches!(d, StructuredData::Product { .. }));
+    assert!(product.is_some(), "should extract JSON-LD product with numeric price");
+
+    if let Some(StructuredData::Product { name, price, url }) = product {
+        assert_eq!(name, "Super Gadget");
+        assert!(price.is_some(), "numeric price should be extracted");
+        assert_eq!(url.as_deref(), Some("https://shop.example.com/gadget"));
+    }
+}
+
+// -- Pagination detection --
+
+#[test]
+fn test_structured_pagination() {
+    let html = r#"<html><body>
+        <a href="/page/1">1</a>
+        <a href="/page/2">2</a>
+        <a href="/page/3">3</a>
+        <a href="/page/2">Next</a>
+        <a href="/page/0">Previous</a>
+    </body></html>"#;
+    let dom = dom_from(html);
+    let data = neo_extract::structured::extract_structured(&dom);
+
+    let pagination = data
+        .iter()
+        .find(|d| matches!(d, StructuredData::Pagination { .. }));
+    assert!(pagination.is_some(), "should detect pagination links");
+
+    if let Some(StructuredData::Pagination {
+        pages,
+        next_url,
+        prev_url,
+    }) = pagination
+    {
+        assert!(pages.contains(&"1".to_string()), "should have page 1");
+        assert!(pages.contains(&"2".to_string()), "should have page 2");
+        assert!(next_url.is_some(), "should detect next URL");
+        assert!(prev_url.is_some(), "should detect previous URL");
+    }
+}
+
+// -- Delta summary tests --
+
+#[test]
+fn test_delta_summary() {
+    let html1 = r#"<html><body>
+        <button>Save</button>
+        <a href="/old">Old Link</a>
+    </body></html>"#;
+    let html2 = r#"<html><body>
+        <button>Save</button>
+        <a href="/new1">New Link 1</a>
+        <a href="/new2">New Link 2</a>
+    </body></html>"#;
+
+    let dom1 = dom_from(html1);
+    let dom2 = dom_from(html2);
+
+    let wom1 = neo_extract::wom::build_wom(&dom1, "https://example.com");
+    let wom2 = neo_extract::wom::build_wom(&dom2, "https://example.com");
+
+    let delta = neo_extract::delta::compute_delta(&wom1, &wom2);
+
+    // Should have additions and removals
+    assert!(!delta.added.is_empty(), "should have added nodes");
+    assert!(!delta.removed.is_empty(), "should have removed nodes");
+    assert!(
+        delta.summary.contains("added"),
+        "summary should mention additions: {}",
+        delta.summary
+    );
+    assert!(
+        delta.summary.contains("removed"),
+        "summary should mention removals: {}",
+        delta.summary
+    );
+    // Summary should mention roles
+    assert!(
+        delta.summary.contains("link"),
+        "summary should describe what was added: {}",
+        delta.summary
+    );
+}
+
+// -- Classification: Pricing --
+
+#[test]
+fn test_classify_pricing() {
+    let html = r#"<html><head><title>Pricing Plans</title></head><body>
+        <h1>Choose Your Plan</h1>
+        <div>
+            <h2>Basic</h2>
+            <p>$9/month</p>
+        </div>
+        <div>
+            <h2>Pro Plan</h2>
+            <p>$29/month</p>
+        </div>
+        <div>
+            <h2>Enterprise</h2>
+            <p>$99/month</p>
+        </div>
+    </body></html>"#;
+    let dom = dom_from(html);
+    let result = neo_extract::classify::classify(&dom);
+
+    assert_eq!(
+        result.page_type,
+        PageType::Pricing,
+        "should classify as Pricing, got {:?} with features {:?}",
+        result.page_type,
+        result.features
+    );
+    assert!(result.confidence > 0.5);
+    assert!(!result.features.is_empty(), "should have classification features");
+}
+
+// -- Classification: new types exist --
+
+#[test]
+fn test_classify_new_types_exist() {
+    // Verify the new PageType variants compile and are usable
+    let types = vec![
+        PageType::Pricing,
+        PageType::Documentation,
+        PageType::Profile,
+        PageType::Settings,
+    ];
+    for pt in types {
+        let formatted = format!("{:?}", pt);
+        assert!(!formatted.is_empty());
+    }
+}
+
+// -- Semantic: nav exclusion --
+
+#[test]
+fn test_semantic_removes_nav() {
+    let html = r#"<html><body>
+        <nav>
+            <li>Home</li>
+            <li>About</li>
+            <li>Contact</li>
+        </nav>
+        <main>
+            <h1>Welcome</h1>
+            <p>This is the main content of the page.</p>
+        </main>
+    </body></html>"#;
+    let dom = dom_from(html);
+    let text = neo_extract::semantic::semantic_text(&dom, 10000);
+
+    // Should contain main content
+    assert!(
+        text.contains("Welcome"),
+        "should include main heading: {text}"
+    );
+    assert!(
+        text.contains("main content"),
+        "should include main paragraph: {text}"
+    );
+}

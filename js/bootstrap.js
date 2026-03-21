@@ -1002,7 +1002,28 @@ globalThis.prompt = function(msg, def) {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// 9. EXPORT — render DOM as HTML for Rust to extract
+// 9. SECURITY BOUNDARY — prevent page JS from escaping sandbox
+// ═══════════════════════════════════════════════════════════════
+
+// Block access to runtime internals that page JS should never see.
+delete globalThis.Deno;
+Object.defineProperty(globalThis, 'process', {
+    value: undefined,
+    writable: false,
+    configurable: false,
+});
+
+// Freeze core prototypes AFTER all polyfills are set up.
+// Prevents prototype pollution attacks from page scripts.
+Object.freeze(Object.prototype);
+Object.freeze(Array.prototype);
+Object.freeze(String.prototype);
+Object.freeze(Number.prototype);
+Object.freeze(Boolean.prototype);
+Object.freeze(Function.prototype);
+
+// ═══════════════════════════════════════════════════════════════
+// 10. EXPORT — render DOM as HTML for Rust to extract
 // ═══════════════════════════════════════════════════════════════
 
 globalThis.__neorender_export = function() {

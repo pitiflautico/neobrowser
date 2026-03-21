@@ -1,4 +1,4 @@
-//! Semantic text compression — noise-free text for AI consumption.
+//! Semantic text compression -- noise-free text for AI consumption.
 //!
 //! Strips navigation, footers, ads, and tracking elements.
 //! Keeps headings, paragraphs, list items, and form labels.
@@ -25,14 +25,23 @@ const KEEP_TAGS: &[&str] = &[
     "dd",
 ];
 
-/// Tags to skip entirely (noise). Reserved for future parent-aware filtering.
-const _SKIP_TAGS: &[&str] = &["nav", "footer", "script", "style", "noscript"];
+/// Tags to skip entirely (noise).
+const SKIP_TAGS: &[&str] = &["nav", "footer", "script", "style", "noscript"];
 
 /// Extract compressed semantic text from the DOM.
 ///
-/// Walks informational elements, compresses whitespace, and truncates
+/// Walks informational elements, skips elements inside noise containers
+/// (nav, footer, script, style), compresses whitespace, and truncates
 /// to `max_chars`.
 pub fn semantic_text(dom: &dyn DomEngine, max_chars: usize) -> String {
+    // Collect element IDs inside skip containers so we can exclude them
+    let mut skip_elements = std::collections::HashSet::new();
+    for &skip_tag in SKIP_TAGS {
+        for el in dom.query_selector_all(skip_tag) {
+            skip_elements.insert(el);
+        }
+    }
+
     let mut parts: Vec<String> = Vec::new();
     let mut total_len: usize = 0;
 
@@ -42,9 +51,19 @@ pub fn semantic_text(dom: &dyn DomEngine, max_chars: usize) -> String {
             if !dom.is_visible(el) {
                 continue;
             }
+            // Skip elements that are inside noise containers
+            // (simplified: if the element IS a skip container, skip it)
+            if skip_elements.contains(&el) {
+                continue;
+            }
             let text = dom.text_content(el);
             let compressed = compress_whitespace(&text);
             if compressed.is_empty() {
+                continue;
+            }
+
+            // Check if this text looks like navigation (heuristic)
+            if is_nav_like_text(&compressed) {
                 continue;
             }
 
@@ -75,6 +94,20 @@ pub fn semantic_text(dom: &dyn DomEngine, max_chars: usize) -> String {
     }
 
     parts.join("\n")
+}
+
+/// Heuristic: detect text that looks like a navigation item.
+/// Very short text that looks like a menu label.
+fn is_nav_like_text(text: &str) -> bool {
+    // Nav items tend to be very short and are just labels like "Home | About | Contact"
+    // This is a conservative heuristic -- we only filter obvious patterns
+    if text.contains(" | ") && text.len() < 100 {
+        let segments: Vec<&str> = text.split(" | ").collect();
+        if segments.len() >= 3 && segments.iter().all(|s| s.len() < 20) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Compress consecutive whitespace into single spaces, trim.

@@ -12,7 +12,7 @@ use neo_trace::mock::MockTracer;
 use neo_trace::Tracer;
 use neo_types::{HttpResponse, PageState};
 
-use neo_engine::config::EngineConfig;
+use neo_engine::config::{EngineConfig, ResourceLimits, SecurityConfig};
 use neo_engine::{BrowserEngine, NeoSession};
 
 /// Build a mock HTTP client that responds to example.com and subpages.
@@ -156,6 +156,45 @@ fn test_summary_after_navigate() {
     let summary = session.summary();
     assert_eq!(summary.state, PageState::Idle);
     assert_eq!(summary.failed, 0);
+}
+
+// --- Tier 4.3: Resource Governance tests ---
+
+#[test]
+fn test_resource_limits_defaults() {
+    let limits = ResourceLimits::default();
+    assert_eq!(limits.max_heap_mb, 256);
+    assert_eq!(limits.max_script_time_ms, 3_000);
+    assert_eq!(limits.max_total_time_ms, 30_000);
+    assert_eq!(limits.max_concurrent_requests, 10);
+    assert_eq!(limits.max_response_bytes, 10 * 1024 * 1024);
+    assert_eq!(limits.watchdog_timeout_ms, 60_000);
+}
+
+#[test]
+fn test_resource_limits_wired_to_config() {
+    let config = EngineConfig::default();
+    assert_eq!(config.resource_limits.max_heap_mb, 256);
+    assert_eq!(config.resource_limits.max_concurrent_requests, 10);
+    assert_eq!(config.resource_limits.watchdog_timeout_ms, 60_000);
+}
+
+// --- Tier 4.4: Security Boundary tests ---
+
+#[test]
+fn test_security_config_defaults() {
+    let sec = SecurityConfig::default();
+    assert!(sec.freeze_prototypes);
+    assert!(!sec.block_eval);
+    assert!(sec.redact_auth_in_traces);
+}
+
+#[test]
+fn test_security_config_wired_to_config() {
+    let config = EngineConfig::default();
+    assert!(config.security.freeze_prototypes);
+    assert!(!config.security.block_eval);
+    assert!(config.security.redact_auth_in_traces);
 }
 
 // --- Tier 1.4: Navigation State Machine tests ---

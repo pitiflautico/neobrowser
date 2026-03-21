@@ -1,7 +1,7 @@
 use neo_trace::file_tracer::FileTracer;
 use neo_trace::mock::MockTracer;
 use neo_trace::{NetworkEvent, Tracer};
-use neo_types::PageState;
+use neo_types::{PageState, TraceEntry};
 
 #[test]
 fn test_intent_recorded() {
@@ -100,4 +100,73 @@ fn test_mock_records_intents_and_actions() {
     assert!(actions[0].success);
     assert!(!actions[1].success);
     assert_eq!(actions[1].error.as_deref(), Some("element not found"));
+}
+
+// --- Tier 4.4: Auth redaction in trace exports ---
+
+#[test]
+fn test_redact_auth_in_trace() {
+    let tracer = FileTracer::with_redaction(None, true);
+
+    // Record a network event (metadata will have standard fields)
+    tracer.network(&NetworkEvent {
+        request_id: "r1",
+        url: "https://api.example.com/data",
+        method: "GET",
+        status: 200,
+        duration_ms: 50,
+        action_id: Some("a1"),
+        frame_id: None,
+        kind: "fetch",
+    });
+
+    // Also record a console message that contains a Bearer token
+    tracer.console("info", "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.secret");
+
+    let entries = tracer.export();
+    assert_eq!(entries.len(), 2);
+
+    // The console message should have Bearer token redacted
+    let console_meta = &entries[1].metadata;
+    let msg = console_meta["message"].as_str().unwrap();
+    assert!(
+        msg.contains("[REDACTED]"),
+        "Bearer token should be redacted in console message, got: {msg}"
+    );
+    assert!(
+        !msg.contains("eyJhbGciOiJIUzI1NiJ9"),
+        "Raw token should not appear, got: {msg}"
+    );
+}
+
+#[test]
+fn test_redact_cookie_and_api_key_in_trace() {
+    // Test redact_entry directly on a crafted TraceEntry
+    let mut entry = TraceEntry {
+        timestamp_ms: 0,
+        action: "network:r1".to_string(),
+        target: Some("https://api.example.com".to_string()),
+        state_before: None,
+        state_after: None,
+        duration_ms: 50,
+        network_requests: 1,
+        dom_mutations: 0,
+        error: None,
+        metadata: serde_json::json!({
+            "cookie": "session=abc123; token=secret",
+            "Authorization": "Bearer top-secret-token",
+            "x-api-key": "sk-12345",
+            "content-type": "application/json",
+        }),
+    };
+
+    neo_trace::file_tracer::redact_entry(&mut entry);
+
+    assert_eq!(entry.metadata["cookie"], serde_json::json!("[REDACTED]"));
+    assert_eq!(entry.metadata["x-api-key"], serde_json::json!("[REDACTED]"));
+    // content-type should be untouched
+    assert_eq!(entry.metadata["content-type"], "application/json");
+    // Authorization key matches case-insensitively — but the JSON key is "Authorization"
+    // which lowercased is "authorization", a known auth key
+    assert_eq!(entry.metadata["Authorization"], serde_json::json!("[REDACTED]"));
 }

@@ -6,11 +6,75 @@ use crate::{ExecutionSummary, NavEvent, NetworkEvent, Tracer};
 use neo_types::{PageState, TraceEntry};
 use std::path::PathBuf;
 
+/// Regex-free auth redaction patterns.
+const AUTH_HEADER_KEYS: &[&str] = &[
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "proxy-authorization",
+    "x-api-key",
+];
+
+/// Redact auth-sensitive values in a single trace entry's metadata.
+///
+/// Replaces values for known auth headers and Bearer tokens with `[REDACTED]`.
+pub fn redact_entry(entry: &mut TraceEntry) {
+    redact_value(&mut entry.metadata);
+}
+
+/// Recursively walk a JSON value and redact auth-related strings.
+fn redact_value(val: &mut serde_json::Value) {
+    match val {
+        serde_json::Value::String(s) => {
+            *s = redact_string(s);
+        }
+        serde_json::Value::Object(map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                let lower = key.to_lowercase();
+                if AUTH_HEADER_KEYS.iter().any(|&k| lower == k) {
+                    // Redact entire value of auth-related keys
+                    if let Some(v) = map.get_mut(&key) {
+                        *v = serde_json::Value::String("[REDACTED]".to_string());
+                    }
+                } else if let Some(v) = map.get_mut(&key) {
+                    redact_value(v);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                redact_value(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Redact Bearer tokens and inline cookie-like patterns in a string value.
+fn redact_string(s: &str) -> String {
+    let mut result = s.to_string();
+    // Redact "Bearer <token>"
+    if let Some(pos) = result.to_lowercase().find("bearer ") {
+        let start = pos + 7; // length of "Bearer "
+        if start < result.len() {
+            let end = result[start..]
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                .map(|p| start + p)
+                .unwrap_or(result.len());
+            result.replace_range(start..end, "[REDACTED]");
+        }
+    }
+    result
+}
+
 /// A tracer that stores events in memory and can export to a JSON file.
 #[derive(Debug)]
 pub struct FileTracer {
     store: TraceStore,
     path: Option<PathBuf>,
+    /// When true, auth tokens/cookies are replaced with [REDACTED] on export.
+    redact_auth: bool,
 }
 
 impl FileTracer {
@@ -19,6 +83,16 @@ impl FileTracer {
         Self {
             store: TraceStore::new(),
             path,
+            redact_auth: false,
+        }
+    }
+
+    /// Create a file tracer with auth redaction enabled.
+    pub fn with_redaction(path: Option<PathBuf>, redact: bool) -> Self {
+        Self {
+            store: TraceStore::new(),
+            path,
+            redact_auth: redact,
         }
     }
 
@@ -32,10 +106,20 @@ impl FileTracer {
                 "no trace path configured",
             ))
         })?;
-        let entries = self.store.snapshot();
+        let entries = self.export();
         let json = serde_json::to_string_pretty(&entries)?;
         std::fs::write(path, json)?;
         Ok(())
+    }
+
+    /// Apply redaction to a list of entries if configured.
+    fn maybe_redact(&self, mut entries: Vec<TraceEntry>) -> Vec<TraceEntry> {
+        if self.redact_auth {
+            for entry in entries.iter_mut() {
+                redact_entry(entry);
+            }
+        }
+        entries
     }
 }
 
@@ -108,11 +192,111 @@ impl Tracer for FileTracer {
     }
 
     fn export(&self) -> Vec<TraceEntry> {
-        self.store.snapshot()
+        let entries = self.store.snapshot();
+        self.maybe_redact(entries)
     }
 
     fn summary(&self) -> ExecutionSummary {
         let entries = self.store.snapshot();
         build_summary(&entries)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redact_bearer_token() {
+        let tracer = FileTracer::with_redaction(None, true);
+        // Build entries with auth metadata
+        {
+            let entries = vec![TraceEntry {
+                timestamp_ms: 0,
+                action: "network:r1".to_string(),
+                target: Some("https://api.example.com/data".to_string()),
+                state_before: None,
+                state_after: None,
+                duration_ms: 50,
+                network_requests: 1,
+                dom_mutations: 0,
+                error: None,
+                metadata: serde_json::json!({
+                    "method": "GET",
+                    "status": 200,
+                    "authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.secret",
+                    "cookie": "session=abc123; token=xyz",
+                }),
+            }];
+            let redacted = tracer.maybe_redact(entries);
+            assert_eq!(
+                redacted[0].metadata["authorization"],
+                serde_json::Value::String("[REDACTED]".to_string()),
+            );
+            assert_eq!(
+                redacted[0].metadata["cookie"],
+                serde_json::Value::String("[REDACTED]".to_string()),
+            );
+            // Non-auth fields should be untouched
+            assert_eq!(redacted[0].metadata["method"], "GET");
+            assert_eq!(redacted[0].metadata["status"], 200);
+        }
+    }
+
+    #[test]
+    fn test_redact_bearer_in_string_value() {
+        let _tracer = FileTracer::with_redaction(None, true);
+        let mut entry = TraceEntry {
+            timestamp_ms: 0,
+            action: "network:r1".to_string(),
+            target: None,
+            state_before: None,
+            state_after: None,
+            duration_ms: 0,
+            network_requests: 1,
+            dom_mutations: 0,
+            error: None,
+            metadata: serde_json::json!({
+                "headers": {
+                    "Authorization": "Bearer secret-token-123",
+                    "Content-Type": "application/json",
+                }
+            }),
+        };
+        redact_entry(&mut entry);
+        let auth = entry.metadata["headers"]["Authorization"]
+            .as_str()
+            .unwrap();
+        assert!(auth.contains("[REDACTED]"), "Bearer token not redacted: {auth}");
+        assert!(!auth.contains("secret-token-123"));
+        // Content-Type should be untouched
+        assert_eq!(
+            entry.metadata["headers"]["Content-Type"],
+            "application/json"
+        );
+    }
+
+    #[test]
+    fn test_no_redaction_when_disabled() {
+        let tracer = FileTracer::new(None);
+        let entries = vec![TraceEntry {
+            timestamp_ms: 0,
+            action: "network:r1".to_string(),
+            target: None,
+            state_before: None,
+            state_after: None,
+            duration_ms: 0,
+            network_requests: 1,
+            dom_mutations: 0,
+            error: None,
+            metadata: serde_json::json!({
+                "authorization": "Bearer keep-this-token",
+            }),
+        }];
+        let result = tracer.maybe_redact(entries);
+        assert_eq!(
+            result[0].metadata["authorization"],
+            "Bearer keep-this-token",
+        );
     }
 }
