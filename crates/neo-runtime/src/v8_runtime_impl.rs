@@ -158,10 +158,12 @@ impl JsRuntimeTrait for DenoRuntime {
                 .map_err(|e| RuntimeError::Dom(first_line(&e.to_string())))?;
         } else {
             // First time: set HTML and run full bootstrap + shim.
+            let trace_flag = if crate::trace::is_trace_enabled() { "true" } else { "false" };
             let js = format!(
                 "globalThis.__neorender_html = `{}`;\
-                 globalThis.__neorender_url = '{}';",
-                escaped, escaped_url
+                 globalThis.__neorender_url = '{}';\
+                 globalThis.__neorender_trace = {};",
+                escaped, escaped_url, trace_flag
             );
             self.runtime
                 .execute_script("<set_document_html>", js)

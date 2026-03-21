@@ -504,3 +504,220 @@ fn test_match_media_desktop() {
     let dark = rt.eval("matchMedia('(prefers-color-scheme: dark)').matches").unwrap();
     assert_eq!(dark, "false", "Dark mode should not match");
 }
+
+// ─── T3: Response model & Streams ───
+
+/// NeoResponse exposes bodyUsed, text(), json(), clone() with correct semantics.
+#[test]
+#[ignore]
+fn test_response_bodyused_semantics() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    // Create a NeoResponse manually and test bodyUsed semantics.
+    rt.execute(
+        r#"
+        globalThis.__test_result = [];
+        (async () => {
+            const body = new TextEncoder().encode('{"key":"value"}');
+            const r = new Response(body, { status: 200, statusText: 'OK', url: 'https://test.com', _text: '{"key":"value"}' });
+
+            // bodyUsed starts false
+            __test_result.push('used_before=' + r.bodyUsed);
+
+            // text() consumes body
+            const txt = await r.text();
+            __test_result.push('text=' + txt.substring(0, 15));
+            __test_result.push('used_after=' + r.bodyUsed);
+
+            // Double consumption throws
+            try {
+                await r.text();
+                __test_result.push('double=NO_THROW');
+            } catch (e) {
+                __test_result.push('double=THREW');
+            }
+        })();
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let result = rt.eval("__test_result.join('|')").unwrap();
+    assert!(
+        result.contains("used_before=false"),
+        "bodyUsed should start false, got: {}",
+        result
+    );
+    assert!(
+        result.contains("used_after=true"),
+        "bodyUsed should be true after text(), got: {}",
+        result
+    );
+    assert!(
+        result.contains("double=THREW"),
+        "Double consumption should throw, got: {}",
+        result
+    );
+}
+
+/// clone() creates independent copy; both can be consumed separately.
+#[test]
+#[ignore]
+fn test_response_clone() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    rt.execute(
+        r#"
+        globalThis.__test_result = [];
+        (async () => {
+            const body = new TextEncoder().encode('hello');
+            const r = new Response(body, { status: 200, url: 'https://test.com', _text: 'hello' });
+
+            const c = r.clone();
+            const t1 = await r.text();
+            const t2 = await c.text();
+            __test_result.push('t1=' + t1);
+            __test_result.push('t2=' + t2);
+            __test_result.push('match=' + (t1 === t2));
+
+            // Clone after consumption throws
+            try {
+                r.clone();
+                __test_result.push('clone_used=NO_THROW');
+            } catch (e) {
+                __test_result.push('clone_used=THREW');
+            }
+        })();
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let result = rt.eval("__test_result.join('|')").unwrap();
+    assert!(
+        result.contains("match=true"),
+        "Clone should produce same text, got: {}",
+        result
+    );
+    assert!(
+        result.contains("clone_used=THREW"),
+        "Clone after consumption should throw, got: {}",
+        result
+    );
+}
+
+/// response.body returns a ReadableStream with getReader/read support.
+#[test]
+#[ignore]
+fn test_response_body_stream() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    rt.execute(
+        r#"
+        globalThis.__test_result = [];
+        (async () => {
+            const body = new TextEncoder().encode('stream test');
+            const r = new Response(body, { status: 200, url: 'https://test.com', _text: 'stream test' });
+
+            // body getter should return a ReadableStream
+            const stream = r.body;
+            __test_result.push('type=' + (stream instanceof ReadableStream ? 'ReadableStream' : typeof stream));
+
+            // getReader should work
+            const reader = stream.getReader();
+            const chunk1 = await reader.read();
+            __test_result.push('chunk1_done=' + chunk1.done);
+            __test_result.push('chunk1_len=' + (chunk1.value ? chunk1.value.length : 0));
+
+            // Second read should be done
+            const chunk2 = await reader.read();
+            __test_result.push('chunk2_done=' + chunk2.done);
+
+            // instanceof Response should work
+            __test_result.push('instanceof=' + (r instanceof Response));
+        })();
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let result = rt.eval("__test_result.join('|')").unwrap();
+    assert!(
+        result.contains("type=ReadableStream"),
+        "body should be ReadableStream, got: {}",
+        result
+    );
+    assert!(
+        result.contains("chunk1_done=false"),
+        "First read should not be done, got: {}",
+        result
+    );
+    assert!(
+        result.contains("chunk2_done=true"),
+        "Second read should be done, got: {}",
+        result
+    );
+    assert!(
+        result.contains("instanceof=true"),
+        "response instanceof Response should be true, got: {}",
+        result
+    );
+}
+
+/// json() works correctly on NeoResponse.
+#[test]
+#[ignore]
+fn test_response_json() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    rt.execute(
+        r#"
+        globalThis.__test_result = [];
+        (async () => {
+            const body = new TextEncoder().encode('{"name":"neo","version":2}');
+            const r = new Response(body, { status: 200, url: 'https://test.com', _text: '{"name":"neo","version":2}' });
+            const data = await r.json();
+            __test_result.push('name=' + data.name);
+            __test_result.push('version=' + data.version);
+        })();
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let result = rt.eval("__test_result.join('|')").unwrap();
+    assert!(
+        result.contains("name=neo"),
+        "json() should parse name, got: {}",
+        result
+    );
+    assert!(
+        result.contains("version=2"),
+        "json() should parse version, got: {}",
+        result
+    );
+}

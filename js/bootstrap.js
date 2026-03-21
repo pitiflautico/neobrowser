@@ -7,12 +7,7 @@
 // REACT INTERCEPTION PRIMITIVES — must run BEFORE any page scripts.
 // ═══════════════════════════════════════════════════════════════
 
-// READABLESTREAM PIPETHROUGH PATCH — React Router SSR does
-// stream.pipeThrough(new TextEncoderStream()) which creates V8 internal
-// pipe promises that block module evaluation. Return self (skip encoding).
-if (typeof ReadableStream !== 'undefined') {
-    ReadableStream.prototype.pipeThrough = function() { return this; };
-}
+// Note: ReadableStream.pipeThrough patch moved to after section 7b (streams polyfill).
 
 // Object.prototype.getAll — React Router Early Hints calls getAll() on
 // SSR response context (not Headers). Return empty array (no hints in headless).
@@ -71,6 +66,13 @@ globalThis.console = {
     timeLog: () => {},
     clear: () => {},
 };
+
+// Trace helper — only emits when NEORENDER_TRACE=1 (Rust sets __neorender_trace).
+function neo_trace(msg) {
+    if (globalThis.__neorender_trace && ops.op_console_log) {
+        try { ops.op_console_log('[TRACE] ' + msg); } catch {}
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 1. LINKEDOM INIT — parse HTML into real DOM
@@ -204,42 +206,74 @@ function __getCookiesForUrl(url) {
 // ═══════════════════════════════════════════════════════════════
 
 class NeoResponse {
-    constructor(status, body, headers) {
-        this.status = status;
-        this.ok = status >= 200 && status < 300;
-        this.statusText = status === 200 ? 'OK' : String(status);
-        this._body = body;
-        this._headers = headers || {};
-        this.headers = new Headers(this._headers);
-        this.redirected = false;
+    constructor(bodyBytes, init) {
+        this._body = bodyBytes;           // Uint8Array
+        this._bodyText = init._text !== undefined ? init._text : null; // pre-decoded text (optimization)
+        this._bodyUsed = false;
+        this._url = init.url || '';
+        this.status = init.status || 200;
+        this.statusText = init.statusText || '';
+        this.ok = this.status >= 200 && this.status < 300;
+        this.headers = new Headers(init.headers || {});
+        this._rawHeaders = init.headers || {};
+        this.redirected = init.redirected || false;
         this.type = 'basic';
-        this.url = '';
-        this.bodyUsed = false;
-        // .body as a ReadableStream (lazy — created on first access)
-        const self = this;
-        Object.defineProperty(this, 'body', {
-            get() {
-                if (!self._bodyStream) {
-                    const text = self._body;
-                    self._bodyStream = new ReadableStream({
-                        start(controller) {
-                            if (text) controller.enqueue(new TextEncoder().encode(text));
-                            controller.close();
-                        }
-                    });
-                }
-                return self._bodyStream;
-            },
-            configurable: true
-        });
+        this._stream = null; // lazy
     }
-    _markUsed() { if (this.bodyUsed) throw new TypeError('Body already consumed'); this.bodyUsed = true; }
-    async text() { this._markUsed(); return this._body; }
-    async json() { this._markUsed(); return JSON.parse(this._body); }
-    async arrayBuffer() { this._markUsed(); return new TextEncoder().encode(this._body).buffer; }
-    async blob() { this._markUsed(); return new Blob([this._body]); }
-    clone() { return new NeoResponse(this.status, this._body, this._headers); }
+
+    get bodyUsed() { return this._bodyUsed; }
+    get url() { return this._url; }
+
+    get body() {
+        if (!this._stream) {
+            neo_trace('[FETCH] response.body accessed for ' + this._url);
+            const bytes = this._body;
+            this._stream = new ReadableStream({
+                start(controller) {
+                    if (bytes && bytes.length > 0) controller.enqueue(bytes);
+                    controller.close();
+                }
+            });
+        }
+        return this._stream;
+    }
+
+    _consumeCheck() {
+        if (this._bodyUsed) throw new TypeError('body already consumed');
+        this._bodyUsed = true;
+    }
+
+    async text() {
+        this._consumeCheck();
+        if (this._bodyText !== null) return this._bodyText;
+        return new TextDecoder().decode(this._body);
+    }
+
+    async json() {
+        const t = await this.text();
+        return JSON.parse(t);
+    }
+
+    async arrayBuffer() {
+        this._consumeCheck();
+        return this._body.buffer.slice(0);
+    }
+
+    async blob() {
+        this._consumeCheck();
+        return new Blob([this._body]);
+    }
+
+    clone() {
+        if (this._bodyUsed) throw new TypeError('cannot clone consumed response');
+        return new NeoResponse(
+            new Uint8Array(this._body),
+            { status: this.status, statusText: this.statusText, headers: this._rawHeaders, url: this._url, _text: this._bodyText, redirected: this.redirected }
+        );
+    }
 }
+// Make `response instanceof Response` work
+globalThis.Response = NeoResponse;
 
 // fetch() — sync op wrapped in Promise for API compat.
 // The underlying op_fetch is sync (runs HTTP on a dedicated thread).
@@ -252,6 +286,8 @@ globalThis.fetch = function(input, init) {
     if (!url.startsWith('http')) {
         fullUrl = location.origin + (url.startsWith('/') ? url : '/' + url);
     }
+
+    neo_trace('[FETCH] ' + method + ' ' + fullUrl);
 
     // Auto-inject cookies
     const hdrs = {};
@@ -272,7 +308,17 @@ globalThis.fetch = function(input, init) {
         // Sync call — blocks until HTTP completes, returns immediately
         const resultJson = ops.op_fetch(fullUrl, method.toUpperCase(), body || '', headersJson);
         const result = JSON.parse(resultJson);
-        return Promise.resolve(new NeoResponse(result.status, result.body, result.headers || {}));
+
+        const bodyText = result.body || '';
+        const bodyBytes = new TextEncoder().encode(bodyText);
+
+        return Promise.resolve(new NeoResponse(bodyBytes, {
+            status: result.status,
+            statusText: result.statusText || (result.status === 200 ? 'OK' : String(result.status)),
+            headers: result.headers || {},
+            url: fullUrl,
+            _text: bodyText,
+        }));
     } catch (e) {
         return Promise.reject(new TypeError(`fetch failed: ${e}`));
     }
@@ -640,6 +686,7 @@ if (typeof globalThis.ReadableStream === 'undefined') {
         getReader() {
             if (this._locked) throw new TypeError('ReadableStream is locked');
             this._locked = true;
+            neo_trace('[STREAM] getReader() called');
             const stream = this;
             const reader = {
                 get closed() {
@@ -649,6 +696,7 @@ if (typeof globalThis.ReadableStream === 'undefined') {
                 },
                 read() {
                     stream._disturbed = true;
+                    neo_trace('[STREAM] read() called, remaining: ' + stream._queue.length + ' chunks');
                     if (stream._queue.length > 0) {
                         return Promise.resolve({ value: stream._queue.shift(), done: false });
                     }
@@ -748,6 +796,7 @@ if (typeof globalThis.ReadableStream === 'undefined') {
             }
         }
         pipeThrough(transform) {
+            neo_trace('[STREAM] pipeThrough() called with ' + (transform && transform.constructor ? transform.constructor.name : 'unknown'));
             this.pipeTo(transform.writable).catch(() => {});
             return transform.readable;
         }
@@ -830,6 +879,61 @@ if (typeof globalThis.ReadableStream === 'undefined') {
             // Wire the readable to our queue
             this.readable._queue = queue;
             this.readable._waiters = waiters;
+        }
+    };
+    // Mark our polyfill so the pipeThrough patch below knows to skip it
+    ReadableStream.prototype._neo_polyfill = true;
+}
+
+// TextDecoderStream / TextEncoderStream — used by pipeThrough patterns in modern SPAs
+if (typeof globalThis.TextDecoderStream === 'undefined' && typeof TransformStream !== 'undefined') {
+    globalThis.TextDecoderStream = class TextDecoderStream extends TransformStream {
+        constructor(encoding) {
+            const _enc = encoding || 'utf-8';
+            neo_trace('[STREAM] TextDecoderStream created, encoding=' + _enc);
+            const decoder = new TextDecoder(_enc);
+            super({
+                transform(chunk, controller) {
+                    controller.enqueue(decoder.decode(chunk, { stream: true }));
+                },
+                flush(controller) {
+                    const final_ = decoder.decode();
+                    if (final_) controller.enqueue(final_);
+                }
+            });
+        }
+    };
+}
+if (typeof globalThis.TextEncoderStream === 'undefined' && typeof TransformStream !== 'undefined') {
+    globalThis.TextEncoderStream = class TextEncoderStream extends TransformStream {
+        constructor() {
+            const encoder = new TextEncoder();
+            super({
+                transform(chunk, controller) {
+                    controller.enqueue(encoder.encode(chunk));
+                }
+            });
+        }
+    };
+}
+
+// READABLESTREAM PIPETHROUGH PATCH — React Router SSR does
+// stream.pipeThrough(new TextEncoderStream()) which creates V8 internal
+// pipe promises that block module evaluation. For native ReadableStream,
+// override pipeThrough to return self (skip encoding that blocks).
+// Our polyfill's pipeThrough already works correctly.
+if (typeof ReadableStream !== 'undefined' && !ReadableStream.prototype._neo_polyfill) {
+    const _origPipeThrough = ReadableStream.prototype.pipeThrough;
+    ReadableStream.prototype.pipeThrough = function(transform, opts) {
+        neo_trace('[STREAM] pipeThrough() called (native) with ' + (transform && transform.constructor ? transform.constructor.name : 'unknown'));
+        // Use our polyfill behavior for safety — native pipeThrough can create
+        // blocking internal pipe promises.
+        try {
+            this.pipeTo(transform.writable).catch(() => {});
+            return transform.readable;
+        } catch (e) {
+            // Fallback: return self if piping fails
+            return this;
         }
     };
 }

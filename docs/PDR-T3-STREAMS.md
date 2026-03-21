@@ -1,207 +1,317 @@
-# PDR: T3 — ReadableStream Real Implementation
+# PDR: T3 — Streams + Response Model
 
-## Problem
-ChatGPT loads with 0 errors and 28 WOM nodes (SSR shell). But the React app doesn't hydrate — we see the server-rendered HTML but React never "activates" it. The page stays at 28 nodes instead of hundreds.
+## Hypothesis (NOT proven)
+ChatGPT loads modules but doesn't mount. ONE possible cause: Response.body isn't a ReadableStream. But could also be: missing Web Crypto, structuredClone issues, CSS checks, or other runtime gaps. This PDR addresses the streams gap regardless — it's needed for general web compat.
 
-Root cause hypothesis: ChatGPT uses React Server Components (RSC) which stream data via ReadableStream. Our current implementation has `pipeThrough()` returning `self` (no-op) and no real stream consumption. RSC flight data arrives as chunks through streams — if streams don't work, React never receives the component tree.
+## Classification (honest)
+- Response.body as ReadableStream: **COMPAT** (buffered, not real streaming)
+- ReadableStream getReader/read: **COMPAT** (single-chunk delivery)
+- pipeThrough/TransformStream: **COMPAT** (synchronous transform, no backpressure)
+- TextDecoderStream: **COMPAT**
+- Response consumption model: **SEMANTIC** (bodyUsed, one-shot, clone)
 
-## Current State
+NOT real streaming. API-compatible buffered delivery.
 
-### What we have
-- `ReadableStream` class exists (from linkedom or V8 built-in)
-- `pipeThrough()` returns self (V1 hack to prevent deadlock)
-- `fetch()` returns response body as string via `op_fetch`
-- `Response.body` is NOT a ReadableStream — it's the raw string
+## Phase 0: Diagnosis (BEFORE implementing)
 
-### What RSC needs
-1. `fetch()` returns Response where `.body` is a ReadableStream
-2. ReadableStream has `.getReader()` returning `{ read() → {value, done} }`
-3. `pipeThrough(TransformStream)` actually transforms chunks
-4. TextDecoderStream works (byte chunks → string chunks)
-5. React's flight client reads chunks incrementally to build component tree
-
-### Evidence from ChatGPT trace
-```
-[MODULE] load manifest-1030f4b8.js -> ok (381KB, dynamic)
-[MODULE] load 93527649-lw2de9vmoq9rz82h.js -> ok (dynamic)
-```
-Modules load but the app doesn't mount. The entry module likely calls `fetch('/api/...').then(r => r.body.getReader())` to start RSC streaming — this fails silently because Response.body isn't a stream.
-
-## What to Implement
-
-### S1: Response.body as ReadableStream
-
-When `op_fetch` returns a response, wrap it so `response.body` is a ReadableStream that yields the body content as a single chunk.
-
-In `js/bootstrap.js` or `js/browser_shim.js`, patch the global `fetch`:
+### Required instrumentation
+Add to fetch wrapper and stream polyfills (log only when NEORENDER_TRACE=1):
 
 ```javascript
-const _origFetch = globalThis.fetch;
-globalThis.fetch = async function(url, opts) {
-    const response = await _origFetch(url, opts);
-    // response is currently {status, body, headers} from op_fetch
-    // Wrap body as ReadableStream
-    const bodyText = response.body || '';
-    const encoder = new TextEncoder();
-    const bodyBytes = encoder.encode(bodyText);
+// In fetch wrapper:
+neo_trace('[FETCH] ' + method + ' ' + url);
 
-    const stream = new ReadableStream({
-        start(controller) {
-            // Yield entire body as one chunk (no real streaming, but API-compatible)
-            controller.enqueue(bodyBytes);
-            controller.close();
-        }
-    });
+// In Response.body getter:
+neo_trace('[FETCH] response.body accessed for ' + this._url);
 
-    return {
-        ok: response.status >= 200 && response.status < 300,
-        status: response.status,
-        statusText: response.statusText || '',
-        headers: new Headers(response.headers || {}),
-        url: response.url || url,
-        redirected: false,
-        body: stream,
-        bodyUsed: false,
-        // Standard Response methods
-        async text() { return bodyText; },
-        async json() { return JSON.parse(bodyText); },
-        async arrayBuffer() { return bodyBytes.buffer; },
-        async blob() { return new Blob([bodyBytes]); },
-        clone() { return this; },
-    };
-};
+// In ReadableStream.getReader():
+neo_trace('[STREAM] getReader() called');
+
+// In reader.read():
+neo_trace('[STREAM] read() called, remaining: ' + this._remaining + ' bytes');
+
+// In pipeThrough():
+neo_trace('[STREAM] pipeThrough() called with ' + transform.constructor.name);
+
+// In TextDecoderStream constructor:
+neo_trace('[STREAM] TextDecoderStream created, encoding=' + encoding);
 ```
 
-### S2: ReadableStream implementation
-
-Verify or implement ReadableStream with:
-- `new ReadableStream({ start(controller), pull(controller), cancel() })`
-- `controller.enqueue(chunk)` — push data
-- `controller.close()` — signal end
-- `controller.error(e)` — signal error
-- `stream.getReader()` → `{ read() → Promise<{value, done}>, releaseLock() }`
-- `stream.pipeThrough(transformStream)` — REAL pipe, not no-op
-- `stream.pipeTo(writableStream)` — pipe to sink
-- `stream.tee()` — split into two streams
-- `stream.locked` — whether a reader is active
-
-If V8/deno_core provides ReadableStream natively → use it.
-If linkedom provides it → verify correctness.
-If neither → implement minimal version in JS.
-
-Check what's available:
-```javascript
-typeof ReadableStream // 'function' or 'undefined'?
-typeof TransformStream // ?
-typeof WritableStream // ?
-```
-
-### S3: TransformStream
-
-RSC uses `pipeThrough(new TextDecoderStream())` and custom transform streams.
-
-```javascript
-new TransformStream({
-    transform(chunk, controller) {
-        // Process chunk and enqueue result
-        controller.enqueue(processedChunk);
-    }
-})
-```
-
-Needs:
-- `new TransformStream({ transform, flush })`
-- `.readable` — ReadableStream (output side)
-- `.writable` — WritableStream (input side)
-- `pipeThrough(ts)` reads from source, writes to ts.writable, returns ts.readable
-
-### S4: TextDecoderStream / TextEncoderStream
-
-```javascript
-// Decode bytes → string
-const decoderStream = new TextDecoderStream('utf-8');
-// Encode string → bytes
-const encoderStream = new TextEncoderStream();
-```
-
-These are TransformStreams with fixed transform functions. Implement as wrappers.
-
-## Constraint: No Real Streaming
-
-We can't do real incremental streaming because `op_fetch` is synchronous — it returns the complete response body at once. That's fine. The API contract is what matters:
-
-- `response.body` IS a ReadableStream ✅
-- `.getReader().read()` returns chunks (even if it's one big chunk) ✅
-- `.pipeThrough()` transforms through a TransformStream ✅
-- Backpressure: ignored (buffer everything) — acceptable for MVP
-
-## What This Unblocks
-
-If Response.body is a real ReadableStream:
-1. RSC flight client can call `response.body.getReader()` ✅
-2. Flight client reads chunks with `reader.read()` ✅
-3. React builds component tree from flight data ✅
-4. App hydrates → interactive elements appear ✅
-
-This is the theory. It may not be the ONLY thing blocking ChatGPT hydration. But it's the most likely blocker based on the trace evidence.
-
-## Diagnosis Plan
-
-Before implementing, verify the hypothesis:
-
+### Run diagnosis FIRST
 ```bash
-NEORENDER_TRACE=1 timeout 30 target/release/neorender see "https://chatgpt.com" 2>&1 | grep -i "stream\|ReadableStream\|getReader\|pipeThrough\|flight\|rsc"
+NEORENDER_TRACE=1 timeout 30 target/release/neorender see "https://chatgpt.com" 2>&1 | grep -E "\[FETCH\]|\[STREAM\]"
 ```
 
-Also run:
+This tells us:
+- Does any code call `response.body`? If no → streams aren't the blocker
+- Does any code call `getReader()`? If no → something else fails first
+- Does `pipeThrough()` get called? If no → TransformStream not needed yet
+
+Only implement what the diagnosis shows is actually called.
+
+## Response Consumption Model (SEMANTIC)
+
+### Internal structure
 ```javascript
-eval typeof ReadableStream
-eval typeof TransformStream
-eval typeof Response
-eval new ReadableStream({start(c){c.enqueue('test');c.close()}}).getReader ? 'has getReader' : 'no getReader'
+class NeoResponse {
+    constructor(body, init) {
+        this._body = body;          // Uint8Array (buffered, immutable)
+        this._bodyText = null;      // lazy decoded text cache
+        this._bodyUsed = false;     // one-shot flag
+        this._url = init.url || '';
+        this.status = init.status || 200;
+        this.statusText = init.statusText || '';
+        this.ok = this.status >= 200 && this.status < 300;
+        this.headers = new Headers(init.headers || {});
+        this.redirected = init.redirected || false;
+        this.type = 'basic';
+    }
+}
 ```
 
-If ReadableStream exists and has getReader → the issue may be elsewhere.
-If ReadableStream is missing or broken → S1-S4 is the fix.
+### Body consumption rules (Fetch spec)
+1. **One-shot**: calling any consumption method (text, json, arrayBuffer, blob, body.getReader) sets `bodyUsed = true`
+2. **Double consumption throws**: if `bodyUsed` is true, throw `TypeError: body already consumed`
+3. **body getter**: returns ReadableStream wrapping `_body`. Accessing body does NOT set bodyUsed (only reading from the stream does)
+4. **text()**: decodes `_body` as UTF-8, sets bodyUsed
+5. **json()**: calls text() then JSON.parse, sets bodyUsed
+6. **arrayBuffer()**: returns `_body.buffer` copy, sets bodyUsed
+7. **blob()**: returns `new Blob([_body])`, sets bodyUsed
+8. **clone()**: REAL clone — creates new NeoResponse with same `_body` buffer. Both can be independently consumed. Throws if bodyUsed.
+9. **body.getReader()**: locks stream, sets bodyUsed on first read
 
-## Implementation Location
+### instanceof compatibility
+```javascript
+// Option A: Patch global Response
+globalThis.Response = NeoResponse;
+// Then `new Response(body, init)` and `response instanceof Response` work
 
-- `js/bootstrap.js` — fetch wrapper (S1), stream polyfills if needed (S2-S4)
-- `crates/neo-runtime/src/ops.rs` — no changes unless op_fetch needs to return headers differently
-- Do NOT touch Rust module loader or script executor
+// Option B: If Response already exists (from V8/deno_core), extend it
+// Check first: typeof Response
+```
+
+Decision: check if deno_core provides Response. If yes, wrap it. If no, provide NeoResponse as global Response.
+
+## ReadableStream (COMPAT — buffered single-chunk)
+
+### What we implement
+```javascript
+class NeoReadableStream {
+    constructor(underlyingSource) {
+        this._chunks = [];
+        this._closed = false;
+        this._errored = false;
+        this._reader = null;
+
+        if (underlyingSource && underlyingSource.start) {
+            const controller = {
+                enqueue: (chunk) => this._chunks.push(chunk),
+                close: () => { this._closed = true; },
+                error: (e) => { this._errored = true; this._error = e; },
+            };
+            underlyingSource.start(controller);
+        }
+    }
+
+    get locked() { return this._reader !== null; }
+
+    getReader() {
+        if (this._reader) throw new TypeError('already locked');
+        this._reader = new NeoReader(this);
+        return this._reader;
+    }
+
+    pipeThrough(transform, options) {
+        // REAL pipe: read all chunks, write through transform, return readable
+        const reader = this.getReader();
+        const writer = transform.writable.getWriter();
+        // Synchronous: process all buffered chunks immediately
+        (async () => {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) { await writer.close(); break; }
+                await writer.write(value);
+            }
+        })();
+        return transform.readable;
+    }
+
+    pipeTo(dest, options) {
+        const reader = this.getReader();
+        const writer = dest.getWriter();
+        return (async () => {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) { await writer.close(); break; }
+                await writer.write(value);
+            }
+        })();
+    }
+
+    tee() {
+        const chunks = [...this._chunks];
+        const closed = this._closed;
+        return [
+            new NeoReadableStream({ start(c) { chunks.forEach(ch => c.enqueue(ch)); if (closed) c.close(); } }),
+            new NeoReadableStream({ start(c) { chunks.forEach(ch => c.enqueue(ch)); if (closed) c.close(); } }),
+        ];
+    }
+}
+
+class NeoReader {
+    constructor(stream) {
+        this._stream = stream;
+        this._index = 0;
+    }
+    async read() {
+        if (this._index < this._stream._chunks.length) {
+            return { value: this._stream._chunks[this._index++], done: false };
+        }
+        if (this._stream._closed) return { value: undefined, done: true };
+        if (this._stream._errored) throw this._stream._error;
+        return { value: undefined, done: true };
+    }
+    releaseLock() { this._stream._reader = null; }
+    get closed() { return Promise.resolve(this._stream._closed); }
+    cancel() { this._stream._reader = null; return Promise.resolve(); }
+}
+```
+
+### Scope constraint: fully-buffered at construction time ONLY
+All chunks must be enqueued during `start()`. No pull-based or async filling.
+If a stream has no chunks and isn't closed, `read()` returns `{done: true}` — this is technically wrong per spec but acceptable because we ONLY create fully-buffered streams.
+
+### What we DON'T implement
+- Pull-based reading (pull callback) — all data is buffered upfront
+- Backpressure signaling — ignored
+- BYOB readers — not needed
+- Async iteration protocol — nice to have, not MVP
+- `tee()` — EXCLUDED from MVP unless diagnosis traces show it's called. Current impl would only work on unconsumed buffered streams, too fragile for general use.
+
+## TransformStream (COMPAT)
+
+```javascript
+class NeoTransformStream {
+    constructor(transformer) {
+        this._transformer = transformer || {};
+        this._outputChunks = [];
+        this._outputClosed = false;
+
+        const self = this;
+        this.writable = {
+            getWriter() {
+                return {
+                    async write(chunk) {
+                        if (self._transformer.transform) {
+                            const ctrl = {
+                                enqueue(c) { self._outputChunks.push(c); },
+                                error(e) { throw e; },
+                                terminate() { self._outputClosed = true; },
+                            };
+                            await self._transformer.transform(chunk, ctrl);
+                        } else {
+                            self._outputChunks.push(chunk); // passthrough
+                        }
+                    },
+                    async close() {
+                        if (self._transformer.flush) {
+                            const ctrl = { enqueue(c) { self._outputChunks.push(c); } };
+                            await self._transformer.flush(ctrl);
+                        }
+                        self._outputClosed = true;
+                    },
+                    releaseLock() {},
+                    get closed() { return Promise.resolve(); },
+                };
+            }
+        };
+
+        this.readable = new NeoReadableStream({
+            start(controller) {
+                // Chunks populated via writable side
+                // Link: when outputClosed, close this stream
+                // Use polling or direct push
+            }
+        });
+        // HACK: directly wire output chunks to readable
+        this.readable._chunks = this._outputChunks;
+        this.readable._closedGetter = () => self._outputClosed;
+    }
+}
+```
+
+## TextDecoderStream / TextEncoderStream (COMPAT)
+
+```javascript
+class TextDecoderStream extends NeoTransformStream {
+    constructor(encoding = 'utf-8') {
+        const decoder = new TextDecoder(encoding);
+        super({
+            transform(chunk, controller) {
+                controller.enqueue(decoder.decode(chunk, { stream: true }));
+            },
+            flush(controller) {
+                const final = decoder.decode();
+                if (final) controller.enqueue(final);
+            }
+        });
+    }
+}
+
+class TextEncoderStream extends NeoTransformStream {
+    constructor() {
+        const encoder = new TextEncoder();
+        super({
+            transform(chunk, controller) {
+                controller.enqueue(encoder.encode(chunk));
+            }
+        });
+    }
+}
+```
 
 ## Phases
 
-### Phase 1: Diagnosis
-- Check what stream APIs exist in our V8 context
-- Identify exact point of failure in ChatGPT hydration
+### Phase 0: Diagnosis
+- Add stream instrumentation
+- Run against ChatGPT
+- Determine what's actually called
+- Only implement what's needed
 
-### Phase 2: Response.body as ReadableStream (S1)
-- Patch fetch to return proper Response with body stream
-- Verify: `fetch(url).then(r => r.body.getReader().read())` works
+### Phase 1: Response model (S1)
+- NeoResponse with correct bodyUsed, clone, one-shot semantics
+- Patch fetch to return NeoResponse
+- Gate: `response.bodyUsed` correctly tracks, `clone()` works, double-consume throws
 
-### Phase 3: Stream correctness (S2-S4)
-- ReadableStream (if native is broken or missing)
-- TransformStream + pipeThrough (REAL, not no-op)
-- TextDecoderStream / TextEncoderStream
+### Phase 2: ReadableStream (S2)
+- Buffered implementation with getReader/read
+- Gate: `fetch(url).then(r => r.body.getReader().read())` returns {value, done}
 
-### Phase 4: ChatGPT re-test
+### Phase 3: TransformStream + pipeThrough (S3-S4)
+- Only if diagnosis shows pipeThrough is actually called
+- Gate: `pipeThrough(new TextDecoderStream())` produces text chunks
+
+### Phase 4: Re-test ChatGPT
 - Run with traces
-- Check if React mounts
-- Count WOM nodes (target: >100, currently 28)
+- Compare WOM nodes before/after
+- Check for new interactive markers
 
 ## Gate
-- `fetch(url).then(r => r.body.getReader().read())` returns {value: Uint8Array, done: false}
-- `pipeThrough(new TransformStream({transform(c,ctrl){ctrl.enqueue(c)}}))` works (not no-op)
-- ChatGPT: WOM nodes > 50 (up from 28) OR React root mount detected
+### Phase 2 gate (detailed)
+- `getReader()` does NOT set bodyUsed (only reading does)
+- First `read()` returns `{value: Uint8Array, done: false}`
+- Second `read()` returns `{value: undefined, done: true}`
+- `text()` after `read()` throws TypeError (body already consumed)
+- `clone()` before consumption → both clones independently consumable
+- `clone()` after consumption → throws TypeError
+
+### Final gate
+- Response bodyUsed/clone semantics correct (assertions above)
+- `fetch().then(r => r.body.getReader().read())` works
+- `pipeThrough(TransformStream)` transforms chunks (if diagnosis shows it's needed)
+- ChatGPT: new interactive marker appears (intermediate: different error = progression, but NOT tier exit)
 - No regressions on top 8 sites
 - All existing tests pass
 
-## Risk
-This may NOT be the only blocker. ChatGPT could also fail due to:
-- Missing Web Crypto APIs (subtle.digest for integrity checks)
-- Missing `structuredClone` (used by React internals)
-- CSS-dependent initialization (checking computed styles)
-- Service Worker registration (not supported)
-
-If streams don't fix hydration, the trace system (T0) will show the next error to chase.
+### TransformStream caveat
+The readable↔writable wiring (`_chunks` shared reference, `_closedGetter`) is an AD-HOC BRIDGE, not clean design. Acceptable for MVP. Must be replaced if stream usage grows beyond basic pipeThrough.
