@@ -272,4 +272,8 @@ impl JsRuntimeTrait for DenoRuntime {
             cookies.set_from_string(cookie_str);
         }
     }
+
+    fn set_import_map(&mut self, map: crate::modules::ImportMap) {
+        *self.import_map.borrow_mut() = Some(map);
+    }
 }

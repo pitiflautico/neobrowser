@@ -6,9 +6,11 @@ use std::time::Instant;
 use neo_http::{HttpRequest, RequestContext, RequestKind};
 use neo_types::{NetworkLogEntry, PageState};
 
+use neo_runtime::neo_trace;
+
 use super::prefetch::prefetch_modules;
 use super::script_exec::{execute_scripts, fetch_external_scripts};
-use super::scripts::{detect_meta_refresh, extract_scripts};
+use super::scripts::{detect_framework, detect_meta_refresh, extract_import_map, extract_scripts};
 use super::stub::stub_heavy_modules;
 use super::{HistoryEntry, NeoSession};
 use crate::pipeline::PipelinePhase;
@@ -158,6 +160,20 @@ impl NeoSession {
             t1.elapsed().as_millis(),
             scripts.len()
         );
+
+        // Framework detection (telemetry only).
+        let script_urls: Vec<String> = scripts
+            .iter()
+            .filter_map(|s| s.url().map(String::from))
+            .collect();
+        let framework = detect_framework(&response.body, &script_urls);
+        neo_trace!("[FRAMEWORK] detected: {framework}");
+
+        // Import map: parse and inject into the module loader.
+        if let Some(map) = extract_import_map(&scripts) {
+            neo_trace!("[MODULE] import-map loaded ({} entries)", map.imports.len());
+            rt.set_import_map(map);
+        }
 
         let trace_id = "nav";
 

@@ -61,6 +61,7 @@ pub(crate) fn stub_heavy_modules(
         if let ScriptInfo::Inline {
             content,
             is_module: true,
+            ..
         } = script
         {
             for imp in extract_es_imports(content, page_url) {

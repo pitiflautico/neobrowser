@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use crate::code_cache::V8CodeCache;
+use crate::neo_trace;
 
 // Re-export import extraction from the dedicated module.
 pub use crate::imports::extract_es_imports;
@@ -27,12 +28,71 @@ pub struct ScriptStore {
 pub type ScriptStoreHandle = Rc<RefCell<ScriptStore>>;
 pub type PageOriginHandle = Rc<RefCell<String>>;
 
+/// Import map parsed from `<script type="importmap">`.
+///
+/// Supports the "imports" field (bare specifier → URL mapping).
+/// Scopes are not yet supported.
+#[derive(Default, Clone, Debug)]
+pub struct ImportMap {
+    /// Bare specifier → resolved URL.
+    pub imports: HashMap<String, String>,
+}
+
+impl ImportMap {
+    /// Parse an import map from JSON text.
+    ///
+    /// Returns `None` if the JSON is invalid or doesn't contain "imports".
+    pub fn parse(json: &str) -> Option<Self> {
+        let value: serde_json::Value = serde_json::from_str(json).ok()?;
+        let imports_obj = value.get("imports")?.as_object()?;
+        let mut imports = HashMap::new();
+        for (key, val) in imports_obj {
+            if let Some(url) = val.as_str() {
+                imports.insert(key.clone(), url.to_string());
+            }
+        }
+        Some(Self { imports })
+    }
+
+    /// Resolve a specifier against the import map.
+    ///
+    /// Returns `None` if the specifier is not in the map.
+    pub fn resolve(&self, specifier: &str) -> Option<&str> {
+        // Exact match first.
+        if let Some(url) = self.imports.get(specifier) {
+            return Some(url);
+        }
+        // Prefix match: "lodash/" → "https://cdn.../lodash-es/"
+        // The longest matching prefix wins.
+        let mut best: Option<(&str, &str)> = None;
+        for (prefix, target) in &self.imports {
+            if prefix.ends_with('/') && specifier.starts_with(prefix.as_str()) {
+                let is_longer = best.is_none_or(|(bp, _)| prefix.len() > bp.len());
+                if is_longer {
+                    best = Some((prefix.as_str(), target.as_str()));
+                }
+            }
+        }
+        if let Some((prefix, target)) = best {
+            // Can't return a constructed string from &self, so only exact prefix.
+            // For prefix matches, the caller must construct the full URL.
+            // We only support exact matches in this simple implementation.
+            let _ = (prefix, target);
+        }
+        None
+    }
+}
+
+pub type ImportMapHandle = Rc<RefCell<Option<ImportMap>>>;
+
 /// Module loader that serves pre-fetched scripts as ES modules.
 pub struct NeoModuleLoader {
     pub store: ScriptStoreHandle,
     pub code_cache: Option<Rc<V8CodeCache>>,
     /// Page origin for resolving `/path` specifiers. Shared with DenoRuntime.
     pub page_origin: PageOriginHandle,
+    /// Import map from `<script type="importmap">`. Shared with engine.
+    pub import_map: ImportMapHandle,
 }
 
 impl NeoModuleLoader {
@@ -55,32 +115,66 @@ impl NeoModuleLoader {
             data: cached.map(Cow::Owned),
         })
     }
+
+    /// Check if a specifier is a "bare" specifier (not a URL, not relative, not absolute path).
+    fn is_bare_specifier(specifier: &str) -> bool {
+        !specifier.starts_with('/')
+            && !specifier.starts_with("./")
+            && !specifier.starts_with("../")
+            && !specifier.starts_with("http://")
+            && !specifier.starts_with("https://")
+            && !specifier.starts_with("file://")
+    }
 }
 
 impl deno_core::ModuleLoader for NeoModuleLoader {
-    /// R7d: Resolve with page origin fallback for absolute paths.
+    /// R7d: Resolve with import map, page origin fallback for absolute paths.
     fn resolve(
         &self,
         specifier: &str,
         referrer: &str,
         _kind: ResolutionKind,
     ) -> Result<ModuleSpecifier, deno_core::error::AnyError> {
-        // Absolute paths from non-http referrer (e.g. `<eval>`) → page origin.
+        // 1. Check import map FIRST (bare specifiers like "react", "lodash/fp").
+        if let Some(ref map) = *self.import_map.borrow() {
+            if let Some(resolved) = map.resolve(specifier) {
+                if let Ok(spec) = ModuleSpecifier::parse(resolved) {
+                    neo_trace!("[MODULE] resolve {specifier} -> {resolved} (import-map)");
+                    return Ok(spec);
+                }
+            }
+        }
+
+        // 2. Absolute paths from non-http referrer (e.g. `<eval>`) -> page origin.
         if specifier.starts_with('/') && !referrer.starts_with("http") {
             if let Some(spec) = self.resolve_with_origin(specifier) {
+                neo_trace!("[MODULE] resolve {specifier} -> {spec} (origin-fallback)");
                 return Ok(spec);
             }
         }
-        // Standard resolution (relative against referrer, full URLs as-is).
+
+        // 3. Standard resolution (relative against referrer, full URLs as-is).
         if let Ok(spec) = deno_core::resolve_import(specifier, referrer) {
+            neo_trace!("[MODULE] resolve {specifier} -> {spec}");
             return Ok(spec);
         }
-        // Absolute paths fallback when standard resolve fails.
+
+        // 4. Absolute paths fallback when standard resolve fails.
         if specifier.starts_with('/') {
             if let Some(spec) = self.resolve_with_origin(specifier) {
+                neo_trace!("[MODULE] resolve {specifier} -> {spec} (origin-fallback)");
                 return Ok(spec);
             }
         }
+
+        // 5. Bare specifier without import map -> clear error.
+        if Self::is_bare_specifier(specifier) {
+            return Err(deno_core::error::generic_error(format!(
+                "bare specifier '{specifier}' not found in import map (referrer: '{referrer}'). \
+                 Add a <script type=\"importmap\"> to map '{specifier}' to a URL."
+            )));
+        }
+
         Err(deno_core::error::generic_error(format!(
             "cannot resolve '{specifier}' from '{referrer}'"
         )))
@@ -90,16 +184,19 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         &self,
         module_specifier: &ModuleSpecifier,
         _maybe_referrer: Option<&ModuleSpecifier>,
-        _is_dyn_import: bool,
+        is_dyn_import: bool,
         _requested_module_type: RequestedModuleType,
     ) -> ModuleLoadResponse {
         let url = module_specifier.to_string();
         let store = self.store.borrow();
+        let import_kind = if is_dyn_import { "dynamic" } else { "static" };
 
         // Check pre-fetched store first.
         if let Some(code) = store.scripts.get(&url) {
+            let size_kb = code.len() / 1024;
             // R4: Stub heavy modules with no-op re-exports.
             if store.stub_modules.contains(&url) {
+                neo_trace!("[MODULE] load {url} -> stubbed ({size_kb}KB, {import_kind})");
                 let exports = extract_export_names(code);
                 let stub = generate_stub_module(&exports);
                 return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -110,6 +207,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                 )));
             }
 
+            neo_trace!("[MODULE] load {url} -> ok ({size_kb}KB, {import_kind})");
             // R5: Rewrite Promise.allSettled before serving.
             let patched = rewrite_promise_all_settled(code);
             let cache_info = self.make_cache_info(&url, &patched);
@@ -123,15 +221,18 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
 
         // Skip known failures.
         if store.failed_urls.contains(&url) {
+            neo_trace!("[MODULE] load {url} -> failed (known-failure, {import_kind})");
             return empty_module(module_specifier);
         }
 
         // Skip non-JS URLs.
         if !url.contains(".js") && !url.contains(".mjs") {
+            neo_trace!("[MODULE] load {url} -> empty (non-js, {import_kind})");
             return empty_module(module_specifier);
         }
 
         // Not in store — return empty placeholder.
+        neo_trace!("[MODULE] load {url} -> empty (not-in-store, {import_kind})");
         empty_module(module_specifier)
     }
 
@@ -278,6 +379,16 @@ mod tests {
             store: Rc::new(RefCell::new(ScriptStore::default())),
             code_cache: None,
             page_origin: Rc::new(RefCell::new(origin.to_string())),
+            import_map: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    fn make_loader_with_import_map(origin: &str, map: ImportMap) -> NeoModuleLoader {
+        NeoModuleLoader {
+            store: Rc::new(RefCell::new(ScriptStore::default())),
+            code_cache: None,
+            page_origin: Rc::new(RefCell::new(origin.to_string())),
+            import_map: Rc::new(RefCell::new(Some(map))),
         }
     }
 
@@ -293,8 +404,63 @@ mod tests {
     fn test_resolve_bare_specifier_fails() {
         use deno_core::ModuleLoader;
         let loader = make_loader("");
-        assert!(loader
+        let err = loader
             .resolve("react", "file:///<eval>", ResolutionKind::Import)
-            .is_err());
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bare specifier"), "error should mention bare specifier: {msg}");
+        assert!(msg.contains("import map"), "error should mention import map: {msg}");
+    }
+
+    #[test]
+    fn test_import_map_resolution() {
+        use deno_core::ModuleLoader;
+        let map = ImportMap::parse(
+            r#"{"imports": {"react": "https://esm.sh/react@18", "lodash": "https://esm.sh/lodash"}}"#,
+        )
+        .expect("valid import map");
+        let loader = make_loader_with_import_map("https://example.com", map);
+        let r = loader.resolve("react", "https://example.com/app.js", ResolutionKind::Import);
+        assert_eq!(r.unwrap().to_string(), "https://esm.sh/react@18");
+    }
+
+    #[test]
+    fn test_bare_specifier_without_map_errors() {
+        use deno_core::ModuleLoader;
+        let loader = make_loader("https://example.com");
+        let result = loader.resolve("vue", "https://example.com/app.js", ResolutionKind::Import);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("bare specifier"));
+        assert!(msg.contains("import map"));
+    }
+
+    #[test]
+    fn test_relative_module_resolution() {
+        use deno_core::ModuleLoader;
+        let loader = make_loader("https://example.com");
+        let r = loader.resolve(
+            "./foo.js",
+            "https://example.com/app/main.js",
+            ResolutionKind::Import,
+        );
+        assert_eq!(
+            r.unwrap().to_string(),
+            "https://example.com/app/foo.js"
+        );
+    }
+
+    #[test]
+    fn test_import_map_parse() {
+        let json = r#"{"imports": {"react": "https://esm.sh/react@18", "@/utils": "https://example.com/utils.js"}}"#;
+        let map = ImportMap::parse(json).unwrap();
+        assert_eq!(map.imports.get("react").unwrap(), "https://esm.sh/react@18");
+        assert_eq!(map.imports.len(), 2);
+    }
+
+    #[test]
+    fn test_import_map_parse_invalid() {
+        assert!(ImportMap::parse("not json").is_none());
+        assert!(ImportMap::parse(r#"{"scopes": {}}"#).is_none());
     }
 }

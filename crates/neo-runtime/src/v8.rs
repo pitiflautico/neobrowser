@@ -4,7 +4,7 @@
 //! ES module support via NeoModuleLoader, and V8 bytecode caching.
 
 use crate::code_cache::V8CodeCache;
-use crate::modules::{NeoModuleLoader, ScriptStoreHandle};
+use crate::modules::{ImportMapHandle, NeoModuleLoader, ScriptStoreHandle};
 use crate::ops;
 use crate::scheduler::{FetchBudget, SchedulerConfig, TaskTracker, TimerBudget, TimerState};
 use crate::v8_runtime_impl::first_line;
@@ -45,6 +45,8 @@ pub struct DenoRuntime {
     pub(crate) store: ScriptStoreHandle,
     /// Shared page origin for module resolution (R7d).
     pub(crate) page_origin: crate::modules::PageOriginHandle,
+    /// Shared import map for bare specifier resolution.
+    pub(crate) import_map: ImportMapHandle,
     /// Task tracker for pending async work.
     pub(crate) tracker: TaskTracker,
     /// Timer budget for per-page tick limits.
@@ -93,6 +95,7 @@ impl DenoRuntime {
     ) -> Result<Self, RuntimeError> {
         let store = Rc::new(RefCell::new(crate::modules::ScriptStore::default()));
         let page_origin = Rc::new(RefCell::new(String::new()));
+        let import_map: ImportMapHandle = Rc::new(RefCell::new(None));
 
         let code_cache = config
             .cache_dir
@@ -104,6 +107,7 @@ impl DenoRuntime {
             store: store.clone(),
             code_cache,
             page_origin: page_origin.clone(),
+            import_map: import_map.clone(),
         };
 
         let mut runtime = deno_core::JsRuntime::new(RuntimeOptions {
@@ -162,6 +166,7 @@ impl DenoRuntime {
             runtime,
             store,
             page_origin,
+            import_map,
             tracker,
             timer_budget,
             fetch_budget,

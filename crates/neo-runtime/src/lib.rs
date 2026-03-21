@@ -10,6 +10,7 @@ pub mod mock;
 pub mod modules;
 pub mod ops;
 pub mod scheduler;
+pub mod trace;
 pub mod v8;
 mod v8_runtime_impl;
 
@@ -144,6 +145,9 @@ pub trait JsRuntime: Send {
 
     /// Set a cookie from a Set-Cookie string.
     fn set_cookie(&mut self, _cookie_str: &str) {}
+
+    /// Set the import map for bare specifier resolution.
+    fn set_import_map(&mut self, _map: modules::ImportMap) {}
 }
 
 /// Configuration for creating a runtime instance.

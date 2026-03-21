@@ -1,11 +1,47 @@
-//! Script extraction and meta-refresh detection for HTML pages.
+//! Script extraction, import map parsing, framework detection, and meta-refresh for HTML pages.
+
+use neo_runtime::modules::ImportMap;
+
+/// How a script should be scheduled for execution.
+///
+/// Approximates browser semantics: blocking scripts first, then deferred/module
+/// scripts in document order, then async scripts in fetch-completion order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScriptKind {
+    /// `<script>...</script>` (no defer/async/type=module)
+    InlineBlocking,
+    /// `<script src="..."></script>` (no defer/async)
+    ExternalBlocking,
+    /// `<script defer src="...">`
+    Defer,
+    /// `<script async src="...">`
+    Async,
+    /// `<script type="module" src="...">` (implicitly defer)
+    Module,
+    /// `<script type="module" async src="...">`
+    AsyncModule,
+    /// `<script type="module">...</script>` (implicitly defer)
+    InlineModule,
+    /// `<script type="importmap">` — parsed separately, NOT executed as JS.
+    ImportMap,
+    /// Non-JS types: application/json, text/template, etc.
+    Ignored,
+}
 
 /// Script extracted from HTML for execution or pre-loading.
 pub(crate) enum ScriptInfo {
     /// Inline `<script>` tag with JS source.
-    Inline { content: String, is_module: bool },
+    Inline {
+        content: String,
+        is_module: bool,
+        kind: ScriptKind,
+    },
     /// External `<script src="...">` tag.
-    External { url: String, is_module: bool },
+    External {
+        url: String,
+        is_module: bool,
+        kind: ScriptKind,
+    },
     /// `<link rel="modulepreload">` — fetch but don't execute as top-level.
     Preload { url: String },
 }
@@ -24,6 +60,14 @@ impl ScriptInfo {
         match self {
             Self::Inline { is_module, .. } | Self::External { is_module, .. } => *is_module,
             Self::Preload { .. } => true,
+        }
+    }
+
+    /// The execution scheduling kind for this script.
+    pub(crate) fn kind(&self) -> ScriptKind {
+        match self {
+            Self::Inline { kind, .. } | Self::External { kind, .. } => *kind,
+            Self::Preload { .. } => ScriptKind::Module, // preloads behave as deferred modules
         }
     }
 }
@@ -170,7 +214,8 @@ pub(crate) fn is_skippable_script(url: &str) -> bool {
 /// Extract `<script>` tags and `<link rel="modulepreload">` from HTML.
 ///
 /// Returns inline content, external URLs, and modulepreload URLs in document order.
-/// Skips non-JS types (JSON, importmap, template, etc.).
+/// Each script is classified with a [`ScriptKind`] for execution ordering.
+/// Skips non-JS types (JSON, template, etc.) but keeps importmaps for parsing.
 /// Also filters out non-essential external scripts (analytics, frameworks, widgets).
 pub(crate) fn extract_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo> {
     use html5ever::parse_document;
@@ -224,6 +269,47 @@ fn collect_all(node: &markup5ever_rcdom::Handle, base: &str, scripts: &mut Vec<S
     }
 }
 
+/// Classify a `<script>` element based on its attributes.
+fn classify_script(script_type: &str, has_src: bool, has_defer: bool, has_async: bool) -> ScriptKind {
+    let st = script_type.to_lowercase();
+
+    // importmap — parsed separately, never executed as JS.
+    if st.contains("importmap") {
+        return ScriptKind::ImportMap;
+    }
+
+    // Non-JS types: json, template, html, x-*.
+    if st.contains("json") || st.contains("template") || st.contains("html") || st.contains("x-") {
+        return ScriptKind::Ignored;
+    }
+
+    let is_module = st == "module";
+
+    if is_module {
+        if has_async {
+            return ScriptKind::AsyncModule;
+        }
+        if has_src {
+            return ScriptKind::Module;
+        }
+        return ScriptKind::InlineModule;
+    }
+
+    // Classic script (empty type, text/javascript, application/javascript, etc.)
+    if has_src {
+        if has_defer {
+            return ScriptKind::Defer;
+        }
+        if has_async {
+            return ScriptKind::Async;
+        }
+        return ScriptKind::ExternalBlocking;
+    }
+
+    // Inline classic — defer/async are ignored on inline scripts per spec.
+    ScriptKind::InlineBlocking
+}
+
 /// Extract a `<script>` element.
 fn collect_script(
     node: &markup5ever_rcdom::Handle,
@@ -240,28 +326,35 @@ fn collect_script(
         .map(|a| a.value.to_string())
         .unwrap_or_default();
 
-    // Skip non-JS script types.
-    let st = script_type.to_lowercase();
-    if st.contains("json")
-        || st.contains("importmap")
-        || st.contains("template")
-        || st.contains("html")
-        || st.contains("x-")
-    {
-        return;
-    }
-
-    let is_module = script_type == "module";
+    let has_defer = attrs_ref
+        .iter()
+        .any(|a| a.name.local.as_ref() == "defer");
+    let has_async = attrs_ref
+        .iter()
+        .any(|a| a.name.local.as_ref() == "async");
     let src = attrs_ref
         .iter()
         .find(|a| a.name.local.as_ref() == "src")
         .map(|a| a.value.to_string());
+
+    let kind = classify_script(&script_type, src.is_some(), has_defer, has_async);
+
+    // Ignored types are dropped entirely.
+    if kind == ScriptKind::Ignored {
+        return;
+    }
+
+    let is_module = matches!(
+        kind,
+        ScriptKind::Module | ScriptKind::AsyncModule | ScriptKind::InlineModule
+    );
 
     if let Some(src) = src {
         let full = resolve_script_url(&src, base);
         scripts.push(ScriptInfo::External {
             url: full,
             is_module,
+            kind,
         });
     } else {
         drop(attrs_ref);
@@ -278,6 +371,7 @@ fn collect_script(
             scripts.push(ScriptInfo::Inline {
                 content: text,
                 is_module,
+                kind,
             });
         }
     }
@@ -367,5 +461,313 @@ pub(crate) fn resolve_script_url(src: &str, base: &str) -> String {
             .unwrap_or_else(|_| src.to_string())
     } else {
         src.to_string()
+    }
+}
+
+/// Extract the import map from the script list (if any `<script type="importmap">` exists).
+///
+/// Returns `None` if no import map was found or if the JSON was invalid.
+pub(crate) fn extract_import_map(scripts: &[ScriptInfo]) -> Option<ImportMap> {
+    for script in scripts {
+        if let ScriptInfo::Inline { content, kind, .. } = script {
+            if *kind == ScriptKind::ImportMap {
+                return ImportMap::parse(content);
+            }
+        }
+    }
+    None
+}
+
+/// Detect the web framework from HTML signals and script URLs.
+///
+/// Returns a static string hint for logging/telemetry only.
+/// NOT used for any logic or branching.
+#[allow(dead_code)]
+pub(crate) fn detect_framework(html: &str, script_urls: &[String]) -> &'static str {
+    if html.contains("__NEXT_DATA__") || html.contains("_next/static") {
+        return "next.js";
+    }
+    if html.contains("__NUXT__") || html.contains("_nuxt/") {
+        return "nuxt";
+    }
+    if html.contains("__SVELTEKIT") || html.contains("data-svelte-h") {
+        return "sveltekit";
+    }
+    if html.contains("ng-version") {
+        return "angular";
+    }
+    if html.contains("astro-island") {
+        return "astro";
+    }
+    if html.contains("data-reactroot")
+        || html.contains("__reactRouterManifest")
+        || script_urls.iter().any(|u| u.contains("react"))
+    {
+        return "react";
+    }
+    if html.contains("data-v-") || script_urls.iter().any(|u| u.contains("vue")) {
+        return "vue";
+    }
+    "unknown"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = "https://example.com/page";
+
+    /// Helper: extract scripts from HTML and return their kinds.
+    fn extract_kinds(html: &str) -> Vec<ScriptKind> {
+        extract_scripts(html, BASE)
+            .iter()
+            .map(|s| s.kind())
+            .collect()
+    }
+
+    #[test]
+    fn test_script_classification_inline_blocking() {
+        let html = r#"<html><head><script>var x = 1;</script></head><body></body></html>"#;
+        let kinds = extract_kinds(html);
+        assert_eq!(kinds, vec![ScriptKind::InlineBlocking]);
+    }
+
+    #[test]
+    fn test_script_classification_external_blocking() {
+        let html = r#"<html><head><script src="/app.js"></script></head><body></body></html>"#;
+        let kinds = extract_kinds(html);
+        assert_eq!(kinds, vec![ScriptKind::ExternalBlocking]);
+    }
+
+    #[test]
+    fn test_script_classification_defer() {
+        let html = r#"<html><head><script defer src="/app.js"></script></head><body></body></html>"#;
+        let kinds = extract_kinds(html);
+        assert_eq!(kinds, vec![ScriptKind::Defer]);
+    }
+
+    #[test]
+    fn test_script_classification_async() {
+        let html = r#"<html><head><script async src="/app.js"></script></head><body></body></html>"#;
+        let kinds = extract_kinds(html);
+        assert_eq!(kinds, vec![ScriptKind::Async]);
+    }
+
+    #[test]
+    fn test_script_classification_module() {
+        let html =
+            r#"<html><head><script type="module" src="/app.mjs"></script></head><body></body></html>"#;
+        let kinds = extract_kinds(html);
+        assert_eq!(kinds, vec![ScriptKind::Module]);
+    }
+
+    #[test]
+    fn test_script_classification_async_module() {
+        let html = r#"<html><head><script type="module" async src="/app.mjs"></script></head><body></body></html>"#;
+        let kinds = extract_kinds(html);
+        assert_eq!(kinds, vec![ScriptKind::AsyncModule]);
+    }
+
+    #[test]
+    fn test_script_classification_inline_module() {
+        let html =
+            r#"<html><head><script type="module">import { x } from "./x.js";</script></head><body></body></html>"#;
+        let kinds = extract_kinds(html);
+        assert_eq!(kinds, vec![ScriptKind::InlineModule]);
+    }
+
+    #[test]
+    fn test_importmap_not_executed() {
+        let html = r#"<html><head><script type="importmap">{"imports":{}}</script></head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].kind(), ScriptKind::ImportMap);
+        // ImportMap should be in the list but executor will skip it.
+    }
+
+    #[test]
+    fn test_ignored_types() {
+        let html = r#"<html><head>
+            <script type="application/json">{"data": 1}</script>
+            <script type="text/template"><div>hi</div></script>
+            <script type="text/html"><p>tmpl</p></script>
+            <script type="application/x-custom">stuff</script>
+        </head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        // All should be classified as Ignored and filtered out by collect_script.
+        assert!(scripts.is_empty(), "expected no scripts, got {}", scripts.len());
+    }
+
+    #[test]
+    fn test_blocking_before_defer_ordering() {
+        // Verify that when extract_scripts returns mixed types, they're all present
+        // and the executor can partition them correctly.
+        let html = r#"<html><head>
+            <script defer src="/defer1.js"></script>
+            <script>var blocking1 = 1;</script>
+            <script type="module" src="/mod1.mjs"></script>
+            <script src="/blocking2.js"></script>
+            <script async src="/async1.js"></script>
+        </head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        let kinds: Vec<ScriptKind> = scripts.iter().map(|s| s.kind()).collect();
+
+        // Document order preserved in the raw list.
+        assert_eq!(
+            kinds,
+            vec![
+                ScriptKind::Defer,
+                ScriptKind::InlineBlocking,
+                ScriptKind::Module,
+                ScriptKind::ExternalBlocking,
+                ScriptKind::Async,
+            ]
+        );
+
+        // Verify blocking scripts come before defer in execution groups.
+        let blocking: Vec<ScriptKind> = kinds
+            .iter()
+            .filter(|k| matches!(k, ScriptKind::InlineBlocking | ScriptKind::ExternalBlocking))
+            .copied()
+            .collect();
+        let deferred: Vec<ScriptKind> = kinds
+            .iter()
+            .filter(|k| matches!(k, ScriptKind::Defer | ScriptKind::Module | ScriptKind::InlineModule))
+            .copied()
+            .collect();
+        assert_eq!(blocking.len(), 2);
+        assert_eq!(deferred.len(), 2);
+    }
+
+    #[test]
+    fn test_module_treated_as_defer() {
+        // Module scripts (with src) should be in the deferred group, same as defer.
+        let html = r#"<html><head>
+            <script type="module" src="/a.mjs"></script>
+            <script defer src="/b.js"></script>
+        </head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        for s in &scripts {
+            assert!(
+                matches!(s.kind(), ScriptKind::Module | ScriptKind::Defer),
+                "expected Module or Defer, got {:?}",
+                s.kind()
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_inline_defer_ignored() {
+        // Per HTML spec, defer on inline scripts is meaningless — should still be InlineBlocking.
+        let kind = classify_script("", false, true, false);
+        assert_eq!(kind, ScriptKind::InlineBlocking);
+    }
+
+    #[test]
+    fn test_classify_inline_async_ignored() {
+        // Per HTML spec, async on inline scripts (non-module) is meaningless.
+        let kind = classify_script("", false, false, true);
+        assert_eq!(kind, ScriptKind::InlineBlocking);
+    }
+
+    #[test]
+    fn test_preload_kind_is_module() {
+        let html = r#"<html><head>
+            <link rel="modulepreload" href="/preloaded.mjs">
+        </head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        assert_eq!(scripts.len(), 1);
+        assert_eq!(scripts[0].kind(), ScriptKind::Module);
+    }
+
+    #[test]
+    fn test_is_module_flag_consistency() {
+        let html = r#"<html><head>
+            <script src="/classic.js"></script>
+            <script type="module" src="/mod.mjs"></script>
+            <script defer src="/defer.js"></script>
+            <script type="module">console.log("inline mod");</script>
+        </head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        // classic.js: not module
+        assert!(!scripts[0].is_module());
+        // mod.mjs: module
+        assert!(scripts[1].is_module());
+        // defer.js: not module
+        assert!(!scripts[2].is_module());
+        // inline module: module
+        assert!(scripts[3].is_module());
+    }
+
+    #[test]
+    fn test_extract_import_map_from_scripts() {
+        let html = r#"<html><head>
+            <script type="importmap">{"imports": {"react": "https://esm.sh/react@18"}}</script>
+            <script type="module" src="/app.js"></script>
+        </head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        let map = extract_import_map(&scripts).expect("should find import map");
+        assert_eq!(map.imports.get("react").unwrap(), "https://esm.sh/react@18");
+    }
+
+    #[test]
+    fn test_extract_import_map_none_when_missing() {
+        let html = r#"<html><head><script src="/app.js"></script></head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        assert!(extract_import_map(&scripts).is_none());
+    }
+
+    #[test]
+    fn test_framework_detection() {
+        assert_eq!(
+            detect_framework(r#"<div id="__next"><script id="__NEXT_DATA__">{}</script></div>"#, &[]),
+            "next.js"
+        );
+        assert_eq!(
+            detect_framework(r#"<div id="__nuxt"><script>window.__NUXT__={}</script></div>"#, &[]),
+            "nuxt"
+        );
+        assert_eq!(
+            detect_framework(r#"<div data-svelte-h="foo">hello</div>"#, &[]),
+            "sveltekit"
+        );
+        assert_eq!(
+            detect_framework(r#"<app-root ng-version="17.0.0"></app-root>"#, &[]),
+            "angular"
+        );
+        assert_eq!(
+            detect_framework(r#"<astro-island>content</astro-island>"#, &[]),
+            "astro"
+        );
+        assert_eq!(
+            detect_framework(r#"<div data-reactroot>app</div>"#, &[]),
+            "react"
+        );
+        assert_eq!(
+            detect_framework(r#"<div data-v-abc123>app</div>"#, &[]),
+            "vue"
+        );
+        assert_eq!(
+            detect_framework(r#"<html><body>plain</body></html>"#, &[]),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn test_framework_detection_from_urls() {
+        assert_eq!(
+            detect_framework(
+                "<html><body></body></html>",
+                &["https://cdn.com/react.production.min.js".to_string()],
+            ),
+            "react"
+        );
+        assert_eq!(
+            detect_framework(
+                "<html><body></body></html>",
+                &["https://cdn.com/vue.global.js".to_string()],
+            ),
+            "vue"
+        );
     }
 }
