@@ -3,8 +3,88 @@
 //! Handles microtasks (promises), macrotasks (timers), and fetch operations.
 //! The scheduler polls V8's event loop and checks pending counts with timeout.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+
+// ─── Scheduler Configuration ───
+
+/// Configurable limits for the event loop scheduler.
+#[derive(Debug, Clone)]
+pub struct SchedulerConfig {
+    /// Max ticks per setInterval call before auto-clear.
+    pub interval_max_ticks: usize,
+    /// Total timer ticks allowed per page before budget exhaustion.
+    pub timer_budget: usize,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            interval_max_ticks: 20,
+            timer_budget: 200,
+        }
+    }
+}
+
+// ─── Timer Budget ───
+
+/// Tracks total timer ticks to enforce per-page budget.
+///
+/// When the budget is exhausted, new timer ticks are rejected
+/// (setTimeout callbacks silently dropped, setInterval auto-cleared).
+#[derive(Debug, Clone)]
+pub struct TimerBudget {
+    /// Total ticks consumed so far.
+    used: Arc<AtomicUsize>,
+    /// Maximum allowed ticks.
+    limit: usize,
+    /// Whether budget has been exhausted (sticky flag for fast checks).
+    exhausted: Arc<AtomicBool>,
+}
+
+impl TimerBudget {
+    /// Create a new timer budget with the given limit.
+    pub fn new(limit: usize) -> Self {
+        Self {
+            used: Arc::new(AtomicUsize::new(0)),
+            limit,
+            exhausted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Try to consume one tick. Returns true if within budget.
+    pub fn tick(&self) -> bool {
+        if self.exhausted.load(Ordering::Relaxed) {
+            return false;
+        }
+        let prev = self.used.fetch_add(1, Ordering::Relaxed);
+        if prev >= self.limit {
+            self.exhausted.store(true, Ordering::Relaxed);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// How many ticks remain.
+    pub fn remaining(&self) -> usize {
+        let used = self.used.load(Ordering::Relaxed);
+        self.limit.saturating_sub(used)
+    }
+
+    /// Whether the budget is exhausted.
+    pub fn is_exhausted(&self) -> bool {
+        self.exhausted.load(Ordering::Relaxed)
+    }
+
+    /// Reset the budget (for reuse across pages).
+    pub fn reset(&self) {
+        self.used.store(0, Ordering::Relaxed);
+        self.exhausted.store(false, Ordering::Relaxed);
+    }
+}
+
+// ─── Task Tracker ───
 
 /// Tracks pending async tasks in the runtime.
 ///
@@ -74,6 +154,11 @@ impl TaskTracker {
         }
     }
 
+    /// Number of active timers.
+    pub fn timer_count(&self) -> usize {
+        self.timers.load(Ordering::Relaxed)
+    }
+
     /// Increment the fetch counter.
     pub fn add_fetch(&self) {
         self.fetches.fetch_add(1, Ordering::Relaxed);
@@ -124,5 +209,39 @@ mod tests {
         tracker.resolve_timer();
         tracker.resolve_fetch();
         assert_eq!(tracker.pending(), 0);
+    }
+
+    #[test]
+    fn test_timer_budget_lifecycle() {
+        let budget = TimerBudget::new(3);
+        assert_eq!(budget.remaining(), 3);
+        assert!(!budget.is_exhausted());
+
+        assert!(budget.tick());
+        assert!(budget.tick());
+        assert!(budget.tick());
+        assert!(!budget.tick()); // 4th tick exceeds budget
+        assert!(budget.is_exhausted());
+        assert_eq!(budget.remaining(), 0);
+    }
+
+    #[test]
+    fn test_timer_budget_reset() {
+        let budget = TimerBudget::new(2);
+        assert!(budget.tick());
+        assert!(budget.tick());
+        assert!(!budget.tick());
+
+        budget.reset();
+        assert!(!budget.is_exhausted());
+        assert_eq!(budget.remaining(), 2);
+        assert!(budget.tick());
+    }
+
+    #[test]
+    fn test_scheduler_config_defaults() {
+        let cfg = SchedulerConfig::default();
+        assert_eq!(cfg.interval_max_ticks, 20);
+        assert_eq!(cfg.timer_budget, 200);
     }
 }

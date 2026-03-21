@@ -5,7 +5,7 @@
 
 use crate::modules::{NeoModuleLoader, ScriptStoreHandle};
 use crate::ops;
-use crate::scheduler::TaskTracker;
+use crate::scheduler::{SchedulerConfig, TaskTracker, TimerBudget};
 use crate::{JsRuntime as JsRuntimeTrait, RuntimeConfig, RuntimeError};
 use deno_core::{PollEventLoopOptions, RuntimeOptions};
 use neo_http::HttpClient;
@@ -15,6 +15,7 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 // ─── Extension declaration ───
 
@@ -23,6 +24,9 @@ deno_core::extension!(
     ops = [
         ops::op_fetch,
         ops::op_timer,
+        ops::op_timer_register,
+        ops::op_timer_fire,
+        ops::op_scheduler_config,
         ops::op_storage_get,
         ops::op_storage_set,
         ops::op_storage_remove,
@@ -98,6 +102,8 @@ pub struct DenoRuntime {
     store: ScriptStoreHandle,
     /// Task tracker for pending async work.
     tracker: TaskTracker,
+    /// Timer budget for per-page tick limits.
+    timer_budget: TimerBudget,
     /// Tokio runtime for blocking on async ops.
     tokio_rt: tokio::runtime::Runtime,
 }
@@ -110,7 +116,7 @@ unsafe impl Send for DenoRuntime {}
 impl DenoRuntime {
     /// Create a new V8 runtime with the given configuration.
     pub fn new(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
-        Self::new_inner(config, None)
+        Self::new_inner(config, None, SchedulerConfig::default())
     }
 
     /// Create a new V8 runtime with an HttpClient for op_fetch.
@@ -121,12 +127,22 @@ impl DenoRuntime {
         config: &RuntimeConfig,
         http_client: Arc<dyn HttpClient>,
     ) -> Result<Self, RuntimeError> {
-        Self::new_inner(config, Some(http_client))
+        Self::new_inner(config, Some(http_client), SchedulerConfig::default())
+    }
+
+    /// Create a new V8 runtime with custom scheduler configuration.
+    pub fn new_with_scheduler(
+        config: &RuntimeConfig,
+        http_client: Option<Arc<dyn HttpClient>>,
+        scheduler_config: SchedulerConfig,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_inner(config, http_client, scheduler_config)
     }
 
     fn new_inner(
         config: &RuntimeConfig,
         http_client: Option<Arc<dyn HttpClient>>,
+        scheduler_config: SchedulerConfig,
     ) -> Result<Self, RuntimeError> {
         let store = Rc::new(RefCell::new(crate::modules::ScriptStore::default()));
 
@@ -147,6 +163,9 @@ impl DenoRuntime {
             ..Default::default()
         });
 
+        let tracker = TaskTracker::new();
+        let timer_budget = TimerBudget::new(scheduler_config.timer_budget);
+
         // Put HttpClient and other state in OpState for ops.
         {
             let op_state = runtime.op_state();
@@ -156,6 +175,12 @@ impl DenoRuntime {
             }
             state.put(ops::ConsoleBuffer::default());
             state.put(ops::StorageState::default());
+            // Scheduler state — shared with ops via Arc atomics.
+            state.put(tracker.clone());
+            state.put(timer_budget.clone());
+            state.put(ops::OpsSchedulerConfig {
+                interval_max_ticks: scheduler_config.interval_max_ticks as u32,
+            });
         }
 
         // Node.js polyfills required by linkedom (Buffer, process, atob/btoa).
@@ -185,7 +210,8 @@ impl DenoRuntime {
         Ok(Self {
             runtime,
             store,
-            tracker: TaskTracker::new(),
+            tracker,
+            timer_budget,
             tokio_rt,
         })
     }
@@ -198,6 +224,11 @@ impl DenoRuntime {
     /// Access the task tracker.
     pub fn tracker(&self) -> &TaskTracker {
         &self.tracker
+    }
+
+    /// Access the timer budget.
+    pub fn timer_budget(&self) -> &TimerBudget {
+        &self.timer_budget
     }
 }
 
@@ -260,26 +291,56 @@ impl JsRuntimeTrait for DenoRuntime {
     }
 
     fn run_until_settled(&mut self, timeout_ms: u64) -> Result<(), RuntimeError> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+
         self.tokio_rt.block_on(async {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(timeout_ms),
-                self.runtime.run_event_loop(PollEventLoopOptions::default()),
-            )
-            .await
-            {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => {
-                    // Non-fatal event loop errors (React internals, etc.)
-                    eprintln!(
-                        "[neo-runtime] event loop error (non-fatal): {}",
-                        first_line(&e.to_string())
-                    );
-                    Ok(())
+            loop {
+                // Run V8 event loop for up to 100ms per iteration.
+                let loop_timeout = Duration::from_millis(100).min(
+                    deadline.saturating_duration_since(Instant::now()),
+                );
+
+                match tokio::time::timeout(
+                    loop_timeout,
+                    self.runtime
+                        .run_event_loop(PollEventLoopOptions::default()),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
+                        // Event loop completed — no more pending work in V8.
+                        // Check our tracker too (might have timer ops queued).
+                        if self.tracker.is_settled() {
+                            return Ok(());
+                        }
+                        // Tracker still has pending work but V8 event loop
+                        // thinks it's done — this means timers are processing.
+                        // Continue looping to let microtasks drain.
+                    }
+                    Ok(Err(e)) => {
+                        // Non-fatal event loop errors (React internals, etc.)
+                        eprintln!(
+                            "[neo-runtime] event loop error (non-fatal): {}",
+                            first_line(&e.to_string())
+                        );
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        // Timeout on this iteration — check overall deadline.
+                    }
                 }
-                Err(_) => Err(RuntimeError::Timeout {
-                    timeout_ms,
-                    pending: self.tracker.pending(),
-                }),
+
+                // Check: overall timeout?
+                if Instant::now() >= deadline {
+                    let pending = self.tracker.pending();
+                    if pending > 0 {
+                        return Err(RuntimeError::Timeout {
+                            timeout_ms,
+                            pending,
+                        });
+                    }
+                    return Ok(());
+                }
             }
         })
     }
@@ -289,6 +350,10 @@ impl JsRuntimeTrait for DenoRuntime {
     }
 
     fn set_document_html(&mut self, html: &str, url: &str) -> Result<(), RuntimeError> {
+        // Reset timer budget for new page.
+        self.timer_budget.reset();
+        self.tracker.reset();
+
         let escaped = html
             .replace('\\', "\\\\")
             .replace('`', "\\`")

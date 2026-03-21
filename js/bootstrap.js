@@ -264,11 +264,12 @@ globalThis.fetch = function(input, init) {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// 5. TIMERS — real async via Rust tokio
+// 5. TIMERS — real async via Rust tokio, tracked by scheduler
 // ═══════════════════════════════════════════════════════════════
 
 let __timerNextId = 1;
 const __timerCallbacks = new Map();
+const __intervalMaxTicks = ops.op_scheduler_config();
 
 // Timer helper: sync op wrapped in Promise for .then() chaining
 function __timerPromise(ms) {
@@ -280,22 +281,59 @@ function __timerPromise(ms) {
 
 globalThis.setTimeout = function(fn, ms, ...args) {
     if (typeof fn !== 'function') return 0;
+    // Register with Rust scheduler — rejected if budget exhausted.
+    if (!ops.op_timer_register()) return 0;
     const id = __timerNextId++;
     __timerCallbacks.set(id, true);
-    __timerPromise(ms).then(() => {
-        if (__timerCallbacks.delete(id)) try { fn(...args); } catch(e) {}
-    });
+    if (!ms || ms <= 0) {
+        // setTimeout(fn, 0) — immediate via microtask (browser spec: 0ms = next microtask drain)
+        queueMicrotask(() => {
+            if (__timerCallbacks.delete(id)) {
+                ops.op_timer_fire();
+                try { fn(...args); } catch(e) {}
+            }
+        });
+    } else {
+        __timerPromise(ms).then(() => {
+            if (__timerCallbacks.delete(id)) {
+                ops.op_timer_fire();
+                try { fn(...args); } catch(e) {}
+            }
+        });
+    }
     return id;
 };
-globalThis.clearTimeout = (id) => __timerCallbacks.delete(id);
+globalThis.clearTimeout = function(id) {
+    if (__timerCallbacks.delete(id)) {
+        // Fire to decrement tracker (timer cancelled = resolved).
+        ops.op_timer_fire();
+    }
+};
 
 globalThis.setInterval = function(fn, ms, ...args) {
     if (typeof fn !== 'function') return 0;
+    if (!ops.op_timer_register()) return 0;
     const id = __timerNextId++;
     __timerCallbacks.set(id, true);
     let ticks = 0;
     function tick() {
-        if (!__timerCallbacks.has(id) || ticks++ > 10) return;
+        if (!__timerCallbacks.has(id) || ticks >= __intervalMaxTicks) {
+            // Auto-clear: cap reached or manually cleared.
+            if (__timerCallbacks.delete(id)) ops.op_timer_fire();
+            return;
+        }
+        ticks++;
+        // Check budget on each tick
+        if (!ops.op_timer_fire()) {
+            // Budget exhausted — stop interval.
+            __timerCallbacks.delete(id);
+            return;
+        }
+        // Re-register for next tick
+        if (!ops.op_timer_register()) {
+            __timerCallbacks.delete(id);
+            return;
+        }
         try { fn(...args); } catch(e) {}
         if (ticks <= 3) {
             // Fast mode: immediate via microtask (no timer delay)
@@ -308,7 +346,11 @@ globalThis.setInterval = function(fn, ms, ...args) {
     queueMicrotask(tick);
     return id;
 };
-globalThis.clearInterval = (id) => __timerCallbacks.delete(id);
+globalThis.clearInterval = function(id) {
+    if (__timerCallbacks.delete(id)) {
+        ops.op_timer_fire();
+    }
+};
 
 // ═══════════════════════════════════════════════════════════════
 // 6. XMLHTTPREQUEST — backed by fetch

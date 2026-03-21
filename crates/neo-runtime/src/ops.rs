@@ -3,6 +3,7 @@
 //! All ops are sync to avoid deno_core async RefCell panics.
 //! HTTP fetches run on dedicated threads. Timers use thread::sleep.
 
+use crate::scheduler::{TaskTracker, TimerBudget};
 use deno_core::op2;
 use deno_core::OpState;
 use neo_http::{HttpClient, HttpRequest, RequestContext, RequestKind};
@@ -28,6 +29,21 @@ pub struct StorageState {
     pub data: Arc<std::sync::Mutex<HashMap<String, HashMap<String, String>>>>,
     /// Current storage domain (set on navigation).
     pub domain: String,
+}
+
+/// Shared scheduler config values accessible from ops.
+#[derive(Clone)]
+pub struct OpsSchedulerConfig {
+    /// Max ticks per setInterval (exposed to JS).
+    pub interval_max_ticks: u32,
+}
+
+impl Default for OpsSchedulerConfig {
+    fn default() -> Self {
+        Self {
+            interval_max_ticks: 20,
+        }
+    }
 }
 
 /// Fetch a URL. Sync op — runs HTTP on a dedicated thread.
@@ -100,6 +116,53 @@ pub fn op_timer(#[smi] ms: u32) {
     let delay = if ms == 0 { 0 } else { ms.clamp(1, 10) };
     if delay > 0 {
         std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+    }
+}
+
+/// Register a new timer in the task tracker.
+///
+/// Called by JS setTimeout/setInterval to signal pending async work.
+/// Returns false if the timer budget is exhausted.
+#[op2(fast)]
+pub fn op_timer_register(state: Rc<RefCell<OpState>>) -> bool {
+    let s = state.borrow();
+    // Check budget first
+    if let Some(budget) = s.try_borrow::<TimerBudget>() {
+        if budget.is_exhausted() {
+            return false;
+        }
+    }
+    if let Some(tracker) = s.try_borrow::<TaskTracker>() {
+        tracker.add_timer();
+    }
+    true
+}
+
+/// Signal that a timer callback has fired.
+///
+/// Decrements the timer count and consumes one tick from the budget.
+/// Returns false if the budget is now exhausted (interval should stop).
+#[op2(fast)]
+pub fn op_timer_fire(state: Rc<RefCell<OpState>>) -> bool {
+    let s = state.borrow();
+    if let Some(tracker) = s.try_borrow::<TaskTracker>() {
+        tracker.resolve_timer();
+    }
+    // Consume budget tick
+    if let Some(budget) = s.try_borrow::<TimerBudget>() {
+        return budget.tick();
+    }
+    true
+}
+
+/// Get the configured interval max ticks.
+#[op2(fast)]
+pub fn op_scheduler_config(state: Rc<RefCell<OpState>>) -> u32 {
+    let s = state.borrow();
+    if let Some(cfg) = s.try_borrow::<OpsSchedulerConfig>() {
+        cfg.interval_max_ticks
+    } else {
+        20
     }
 }
 

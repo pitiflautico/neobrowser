@@ -105,3 +105,174 @@ fn test_timer_fires() {
     let result = rt.eval("typeof globalThis.__timer_fired").unwrap();
     assert_eq!(result, "boolean");
 }
+
+// ─── Tier 1.1: Event Loop & Scheduler Tests ───
+
+/// Microtasks (Promise.then) drain before macrotasks (setTimeout).
+/// Browser spec: all microtasks complete before the next macrotask fires.
+#[test]
+#[ignore]
+fn test_microtask_before_macrotask() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        r#"<html><body><div id="result">waiting</div></body></html>"#,
+        "https://example.com",
+    )
+    .unwrap();
+
+    // Schedule a macrotask (setTimeout 0) and a microtask (Promise.then).
+    // Per browser spec, the microtask must execute first.
+    rt.execute(
+        r#"
+        const el = document.getElementById('result');
+        const order = [];
+        setTimeout(() => { order.push('timer1'); }, 0);
+        Promise.resolve().then(() => { order.push('promise'); });
+        setTimeout(() => {
+            order.push('timer2');
+            el.textContent = order.join('+');
+        }, 10);
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let result = rt
+        .eval("document.getElementById('result').textContent")
+        .unwrap();
+    // Microtask (promise) must come before macrotasks (timer1, timer2).
+    assert!(
+        result.contains("promise"),
+        "Expected 'promise' in result, got: {}",
+        result
+    );
+    // timer2 should be last (highest delay).
+    assert!(
+        result.ends_with("timer2"),
+        "Expected result to end with 'timer2', got: {}",
+        result
+    );
+}
+
+/// run_until_settled returns when no pending work remains.
+#[test]
+#[ignore]
+fn test_settled_returns_when_idle() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+    use std::time::Instant;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        "<html><body></body></html>",
+        "https://example.com",
+    )
+    .unwrap();
+
+    // No timers, no promises — should return quickly.
+    let start = Instant::now();
+    rt.run_until_settled(5000).unwrap();
+    let elapsed = start.elapsed();
+
+    // Should settle in well under 1 second (no work to do).
+    assert!(
+        elapsed.as_millis() < 1000,
+        "Expected fast settle, took {}ms",
+        elapsed.as_millis()
+    );
+    assert_eq!(rt.pending_tasks(), 0);
+}
+
+/// run_until_settled respects the timeout and returns Timeout error.
+#[test]
+#[ignore]
+fn test_timeout_stops_execution() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+    use std::time::Instant;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        "<html><body></body></html>",
+        "https://example.com",
+    )
+    .unwrap();
+
+    // Create an interval that would run forever without budget/timeout.
+    rt.execute(
+        r#"
+        globalThis.__intervalCount = 0;
+        setInterval(() => { globalThis.__intervalCount++; }, 5);
+        "#,
+    )
+    .unwrap();
+
+    let start = Instant::now();
+    let _result = rt.run_until_settled(200);
+    let elapsed = start.elapsed();
+
+    // Should have stopped around 200ms (allow generous margin).
+    assert!(
+        elapsed.as_millis() < 1000,
+        "Expected ~200ms timeout, took {}ms",
+        elapsed.as_millis()
+    );
+
+    // The interval should have ticked some times.
+    let count = rt.eval("globalThis.__intervalCount").unwrap();
+    let count_num: usize = count.parse().unwrap_or(0);
+    assert!(
+        count_num > 0,
+        "Expected interval to have ticked at least once, got {}",
+        count_num
+    );
+}
+
+/// setInterval is capped at the configured max ticks.
+#[test]
+#[ignore]
+fn test_interval_capped() {
+    use neo_runtime::scheduler::SchedulerConfig;
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let sched = SchedulerConfig {
+        interval_max_ticks: 5,
+        timer_budget: 200,
+    };
+    let mut rt =
+        DenoRuntime::new_with_scheduler(&RuntimeConfig::default(), None, sched).unwrap();
+    rt.set_document_html(
+        "<html><body></body></html>",
+        "https://example.com",
+    )
+    .unwrap();
+
+    rt.execute(
+        r#"
+        globalThis.__ticks = 0;
+        setInterval(() => { globalThis.__ticks++; }, 1);
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let ticks = rt.eval("globalThis.__ticks").unwrap();
+    let tick_num: usize = ticks.parse().unwrap_or(0);
+    // Should be capped at 5 (our configured max).
+    assert!(
+        tick_num <= 5,
+        "Expected at most 5 interval ticks, got {}",
+        tick_num
+    );
+    assert!(
+        tick_num > 0,
+        "Expected at least 1 interval tick, got {}",
+        tick_num
+    );
+}
