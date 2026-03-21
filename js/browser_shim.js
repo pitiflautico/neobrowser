@@ -866,3 +866,18 @@ if (typeof HTMLSelectElement !== 'undefined' && HTMLSelectElement.prototype && !
         configurable: true
     });
 }
+
+// ─── Legacy IE API stubs (React 18 production uses attachEvent) ───
+if (typeof HTMLElement !== 'undefined' && HTMLElement.prototype && !HTMLElement.prototype.attachEvent) {
+    HTMLElement.prototype.attachEvent = function(evt, fn) {
+        this.addEventListener(evt.replace(/^on/, ''), fn);
+    };
+    HTMLElement.prototype.detachEvent = function(evt, fn) {
+        this.removeEventListener(evt.replace(/^on/, ''), fn);
+    };
+}
+if (typeof Document !== 'undefined' && Document.prototype && !Document.prototype.attachEvent) {
+    Document.prototype.attachEvent = function(evt, fn) {
+        this.addEventListener(evt.replace(/^on/, ''), fn);
+    };
+}
