@@ -77,16 +77,14 @@ impl ScriptInfo {
 /// These scripts handle UI interactivity, analytics, A/B testing, etc.
 /// Skipping them saves both fetch time and V8 execution time.
 const SKIP_SCRIPT_PATTERNS: &[&str] = &[
-    // --- Frameworks / heavy bundles ---
-    "react-dom",
-    "react.production",
-    "react-lib",
-    "react-core",
-    "scheduler.production",
-    "chunk-vendors",
-    "webpack-runtime",
-    "polyfill",
-    "regenerator-runtime",
+    // NOTE: DO NOT skip framework scripts (react, vue, svelte, angular).
+    // They are ESSENTIAL for SPA hydration. Only skip truly non-essential
+    // scripts (analytics, ads, widgets, social).
+    //
+    // Previously had: react-dom, react.production, scheduler.production,
+    // chunk-vendors, webpack-runtime, polyfill — REMOVED because they
+    // blocked framework hydration on ALL React/Vue sites.
+    "regenerator-runtime", // OK to skip — legacy polyfill
     // --- GitHub-specific (100+ chunked modules, not needed for content) ---
     "app/assets/modules/github/",
     "github-elements",
@@ -154,7 +152,7 @@ const SKIP_SCRIPT_PATTERNS: &[&str] = &[
     "www-player",
     "www-tampering",
     "desktop_polymer",
-    "scheduler",
+    // NOTE: "scheduler" REMOVED — React's scheduler.production.min.js was being skipped
 ];
 
 /// Check if a filename looks like a numeric code-split chunk: /12345-abcdef.js
@@ -207,8 +205,11 @@ pub(crate) fn is_skippable_script(url: &str) -> bool {
     if SKIP_SCRIPT_PATTERNS.iter().any(|p| lower.contains(p)) {
         return true;
     }
-    // Skip numeric code-split chunks (e.g. /12345-abcdef1234.js).
-    is_numeric_chunk(&lower)
+    // NOTE: numeric chunk skipping DISABLED — it was filtering Vite/Webpack
+    // chunks that SPAs need for hydration. The performance hit is acceptable
+    // because the execution budget (2s) limits total JS time anyway.
+    // is_numeric_chunk(&lower)
+    false
 }
 
 /// Extract `<script>` tags and `<link rel="modulepreload">` from HTML.
