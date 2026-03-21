@@ -14,7 +14,7 @@ pub mod watchdog;
 
 pub use config::{EngineConfig, ResourceLimits, SecurityConfig};
 pub use lifecycle::Lifecycle;
-pub use live_dom::{ActionOutcome, FrameInfo, LiveDom, LiveDomError, LiveDomResult};
+pub use live_dom::{ActionOutcome, ActionTrace, FrameInfo, LiveDom, LiveDomError, LiveDomResult};
 pub use mock::MockBrowserEngine;
 pub use pipeline::{PhaseBudgets, PhaseError, PipelineContext, PipelineDecision, PipelinePhase};
 pub use session::NeoSession;

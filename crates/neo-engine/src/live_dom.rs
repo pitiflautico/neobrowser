@@ -70,22 +70,87 @@ impl From<RuntimeError> for LiveDomError {
 // ─── ActionOutcome ───────────────────────────────────────────────────
 
 /// What happened after an action was executed.
+///
+/// Richer than a simple "changed / not changed" — each variant tells the AI
+/// caller the *kind* of effect so it can decide what to do next.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ActionOutcome {
     /// Nothing observable changed.
     #[default]
-    NoOp,
+    NoEffect,
     /// DOM structure changed (innerHTML length delta).
-    DomMutation,
-    /// JS state may have changed but no DOM/URL change was detected.
-    JsOnlyEffect,
-    /// URL hash or pushState changed (SPA navigation).
-    SpaRouteChange,
-    /// Full page navigation (location.href changed to different origin/path).
-    FullNavigation,
+    DomOnlyUpdate {
+        #[serde(default)]
+        mutations: usize,
+    },
+    /// Input/textarea value changed.
+    ValueChanged,
+    /// Checkbox was toggled.
+    CheckboxToggled {
+        #[serde(default)]
+        checked: bool,
+    },
+    /// Radio button was selected.
+    RadioSelected {
+        #[serde(default)]
+        value: String,
+    },
+    /// Default action was cancelled by `preventDefault()`.
+    DefaultActionCancelled,
+    /// Constraint validation blocked form submission.
+    ValidationBlocked,
+    /// Full page navigation (form submit or link click).
+    HttpNavigation {
+        #[serde(default)]
+        url: String,
+        #[serde(default)]
+        method: String,
+    },
+    /// SPA route change (pushState / hash change).
+    SpaRouteChange {
+        #[serde(default)]
+        url: String,
+    },
+    /// A dialog or modal was closed.
+    DialogClosed,
+    /// A `<details>` element was toggled open/closed.
+    ToggleChanged {
+        #[serde(default)]
+        open: bool,
+    },
+    /// Focus moved between elements.
+    FocusMoved {
+        #[serde(default)]
+        from: String,
+        #[serde(default)]
+        to: String,
+    },
     /// A new window/tab context was requested (window.open, target=_blank).
     NewContext,
+    /// JS state may have changed but no DOM/URL change was detected.
+    JsOnlyEffect,
+}
+
+/// Per-action trace data returned alongside `ActionOutcome`.
+///
+/// Only populated when the `NEORENDER_TRACE` env var is set to `1`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ActionTrace {
+    /// Events dispatched during this action.
+    pub events_dispatched: Vec<String>,
+    /// What default action (if any) was performed.
+    pub default_action: String,
+    /// Selector/id of element focused before the action.
+    pub focus_before: String,
+    /// Selector/id of element focused after the action.
+    pub focus_after: String,
+    /// Value of target element before the action.
+    pub value_before: String,
+    /// Value of target element after the action.
+    pub value_after: String,
+    /// Net change in DOM element count.
+    pub dom_delta: i64,
 }
 
 // ─── LiveDomResult ───────────────────────────────────────────────────
@@ -103,6 +168,8 @@ pub struct LiveDomResult<T> {
     pub elapsed_ms: u64,
     /// Non-fatal warnings (e.g. "element was partially obscured").
     pub warnings: Vec<String>,
+    /// Per-action trace (only when NEORENDER_TRACE=1).
+    pub trace: Option<ActionTrace>,
 }
 
 impl<T> LiveDomResult<T> {
@@ -113,12 +180,19 @@ impl<T> LiveDomResult<T> {
             mutations,
             elapsed_ms,
             warnings: Vec::new(),
+            trace: None,
         }
     }
 
     /// Attach warnings to the result.
     pub fn with_warnings(mut self, warnings: Vec<String>) -> Self {
         self.warnings = warnings;
+        self
+    }
+
+    /// Attach trace data to the result.
+    pub fn with_trace(mut self, trace: ActionTrace) -> Self {
+        self.trace = Some(trace);
         self
     }
 }
@@ -280,27 +354,61 @@ const DISPATCHER_JS: &str = r#"
     return {
       url: location.href,
       hash: location.hash,
-      domLen: document.body ? document.body.innerHTML.length : 0
+      domLen: document.body ? document.body.innerHTML.length : 0,
+      domCount: document.querySelectorAll('*').length,
+      focusId: (document.activeElement && document.activeElement.id) || ''
     };
   }
 
-  function detectOutcome(before, after) {
+  function detectOutcome(before, after, hint) {
+    hint = hint || {};
+    if (hint.cancelled) return {kind:'default_action_cancelled'};
+    if (hint.validationBlocked) return {kind:'validation_blocked'};
+    if (hint.dialogClosed) return {kind:'dialog_closed'};
+    if (hint.toggleChanged !== undefined) return {kind:'toggle_changed', open:hint.toggleChanged};
+    if (hint.checkboxToggled !== undefined) return {kind:'checkbox_toggled', checked:hint.checkboxToggled};
+    if (hint.radioSelected !== undefined) return {kind:'radio_selected', value:hint.radioSelected};
+    if (hint.valueChanged) return {kind:'value_changed'};
     if (before.url !== after.url) {
-      // Different origin/path → full navigation
       var a = before.url.split('#')[0];
       var b = after.url.split('#')[0];
-      if (a !== b) return 'full_navigation';
-      return 'spa_route_change';
+      if (a !== b) return {kind:'http_navigation', url:after.url, method:hint.method||'GET'};
+      return {kind:'spa_route_change', url:after.url};
     }
-    if (before.hash !== after.hash) return 'spa_route_change';
+    if (before.hash !== after.hash) return {kind:'spa_route_change', url:after.url};
     var delta = Math.abs(after.domLen - before.domLen);
-    if (delta > 0) return 'dom_mutation';
-    return 'no_op';
+    if (delta > 0) return {kind:'dom_only_update', mutations:delta};
+    if (before.focusId !== after.focusId) return {kind:'focus_moved', from:before.focusId, to:after.focusId};
+    return {kind:'no_effect'};
+  }
+
+  function buildTrace(el, before, after, events, defaultAction) {
+    return {
+      events_dispatched: events || [],
+      default_action: defaultAction || 'none',
+      focus_before: before.focusId,
+      focus_after: after.focusId,
+      value_before: (el && el.value !== undefined) ? String(el._neo_val_before || '') : '',
+      value_after: (el && el.value !== undefined) ? String(el.value || '') : '',
+      dom_delta: after.domCount - before.domCount
+    };
   }
 
   // ── Event sequences ─────────────────────────────────────────────
 
   function executeFormSubmit(form, submitter) {
+    // F3f: Constraint validation when triggered via button click (not form.submit())
+    if (submitter) {
+      var formValid = true;
+      form.querySelectorAll('input,textarea,select').forEach(function(el) {
+        if (el.willValidate && !el.checkValidity()) {
+          el.dispatchEvent(new Event('invalid', {bubbles:false}));
+          formValid = false;
+        }
+      });
+      if (!formValid) return {action:'validation_blocked'};
+    }
+
     var submitEvt = new Event('submit', {bubbles:false, cancelable:true});
     submitEvt.submitter = submitter || null;
     var prevented = !form.dispatchEvent(submitEvt);
@@ -329,83 +437,189 @@ const DISPATCHER_JS: &str = r#"
 
     var action = (submitter && submitter.formAction) || form.getAttribute('action') || form.action || location.href;
     var method = ((submitter && submitter.formMethod) || form.getAttribute('method') || form.method || 'GET').toUpperCase();
+    var enctype = (submitter && submitter.formEnctype) || form.getAttribute('enctype') || form.enctype || 'application/x-www-form-urlencoded';
 
     globalThis.__neo_ops.op_navigation_request(JSON.stringify({
-      url: action, method: method, form_data: data, type: 'form_submit'
+      url: action, method: method, form_data: data, enctype: enctype, type: 'form_submit'
     }));
   }
 
+  // ── Focus helper with dirty/change-on-blur (F2e) ───────────────
+  function focusElement(target) {
+    var prev = document.activeElement;
+    if (prev === target) return;
+    if (prev && prev !== document.body) {
+      if (prev.__neo_dirty) {
+        prev.dispatchEvent(new Event('change', {bubbles:true}));
+        prev.__neo_dirty = false;
+      }
+      prev.dispatchEvent(new FocusEvent('focusout', {bubbles:true, relatedTarget:target}));
+      prev.dispatchEvent(new FocusEvent('blur', {bubbles:false, relatedTarget:target}));
+    }
+    if (target && target !== document.body) {
+      target.dispatchEvent(new FocusEvent('focusin', {bubbles:true, relatedTarget:prev}));
+      target.dispatchEvent(new FocusEvent('focus', {bubbles:false, relatedTarget:prev}));
+    }
+  }
+
+  // ── Selection helpers (F2d) ────────────────────────────────────
+  function getSelStart(el) {
+    return typeof el.selectionStart === 'number' ? el.selectionStart : (el.value || '').length;
+  }
+  function getSelEnd(el) {
+    return typeof el.selectionEnd === 'number' ? el.selectionEnd : (el.value || '').length;
+  }
+  function setCaret(el, pos) {
+    el.selectionStart = pos;
+    el.selectionEnd = pos;
+  }
+
+  // ── Native value setter (React compat) ─────────────────────────
+  function getNativeSetter(el) {
+    var proto = Object.getPrototypeOf(el);
+    return (Object.getOwnPropertyDescriptor(proto, 'value') ||
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') ||
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value') ||
+            {}).set;
+  }
+  function setElValue(el, val, setter) {
+    if (setter) setter.call(el, val);
+    else el.value = val;
+  }
+
   function fireClick(el) {
-    // Focus sequence
+    var events = [];
+    var hint = {};
+    hint.defaultAction = 'none';
+
+    // Focus sequence (F2e: change-on-blur integrated)
     var prev = document.activeElement;
     if (prev && prev !== el && prev.blur) {
+      if (prev.__neo_dirty) {
+        prev.dispatchEvent(new Event('change', {bubbles:true}));
+        prev.__neo_dirty = false;
+      }
       prev.dispatchEvent(new FocusEvent('focusout', {bubbles:true, relatedTarget:el}));
-      prev.dispatchEvent(new FocusEvent('blur', {relatedTarget:el}));
+      prev.dispatchEvent(new FocusEvent('blur', {bubbles:false, relatedTarget:el}));
+      events.push('focusout','blur');
     }
     if (el.focus) {
       el.dispatchEvent(new FocusEvent('focusin', {bubbles:true, relatedTarget:prev}));
-      el.dispatchEvent(new FocusEvent('focus', {relatedTarget:prev}));
+      el.dispatchEvent(new FocusEvent('focus', {bubbles:false, relatedTarget:prev}));
+      events.push('focusin','focus');
     }
     // Pointer + mouse sequence
     el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true, pointerId:1, pointerType:'mouse'}));
+    events.push('pointerdown');
     el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, button:0}));
+    events.push('mousedown');
     el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true, pointerId:1, pointerType:'mouse'}));
+    events.push('pointerup');
     el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, button:0}));
+    events.push('mouseup');
     var clickEvt = new MouseEvent('click', {bubbles:true, button:0});
     el.dispatchEvent(clickEvt);
+    events.push('click');
 
     // Default actions (only if not prevented)
     if (!clickEvt.defaultPrevented) {
       var tag = (el.tagName || '').toUpperCase();
-      // Anchor navigation
       if (tag === 'A' && el.href) {
         var href = el.getAttribute('href') || '';
-        if (href.startsWith('#')) { /* hash nav - skip */ }
+        if (href.startsWith('#')) { /* hash nav */ }
         else if (href.startsWith('javascript:')) { try { eval(href.slice(11)); } catch(e) {} }
-        else if (el.target === '_blank') { /* new context signal */ }
-        else if (el.hasAttribute('download')) { /* download signal */ }
-        else { globalThis.__neo_ops.op_navigation_request(JSON.stringify({url:el.href,method:'GET',type:'link_click'})); }
+        else if (el.target === '_blank') { hint.defaultAction = 'new_context'; }
+        else if (el.hasAttribute('download')) { hint.defaultAction = 'download'; }
+        else {
+          globalThis.__neo_ops.op_navigation_request(JSON.stringify({url:el.href,method:'GET',type:'link_click'}));
+          hint.defaultAction = 'navigation'; hint.method = 'GET';
+        }
       }
-      // Checkbox toggle
       else if (tag === 'INPUT' && el.type === 'checkbox') {
         el.checked = !el.checked;
         el.dispatchEvent(new InputEvent('input', {bubbles:true}));
         el.dispatchEvent(new Event('change', {bubbles:true}));
+        events.push('input','change');
+        hint.defaultAction = 'checkbox_toggle'; hint.checkboxToggled = el.checked;
       }
-      // Radio toggle
       else if (tag === 'INPUT' && el.type === 'radio') {
-        var form = el.form || document;
+        var form = el.form || el.closest('form') || document;
         var group = form.querySelectorAll('input[type=radio][name="' + el.name + '"]');
         group.forEach(function(r) { if (r !== el) r.checked = false; });
         el.checked = true;
         el.dispatchEvent(new InputEvent('input', {bubbles:true}));
         el.dispatchEvent(new Event('change', {bubbles:true}));
+        events.push('input','change');
+        hint.defaultAction = 'radio_select'; hint.radioSelected = el.value || '';
       }
-      // Submit button
       else if ((tag === 'BUTTON' && (el.type === 'submit' || !el.type || el.type === ''))
               || (tag === 'INPUT' && el.type === 'submit')) {
         var form = el.closest('form');
-        if (form) executeFormSubmit(form, el);
+        if (form) {
+          var submitResult = executeFormSubmit(form, el);
+          if (submitResult && submitResult.action === 'validation_blocked') {
+            hint.defaultAction = 'validation_blocked'; hint.validationBlocked = true;
+          } else {
+            hint.defaultAction = 'form_submit';
+            hint.method = ((form.getAttribute('method') || 'GET').toUpperCase());
+          }
+        }
       }
-      // Label forwarding
       else if (tag === 'LABEL') {
         var forId = el.getAttribute('for');
         var ctrl = forId ? document.getElementById(forId) : el.querySelector('input,select,textarea');
-        if (ctrl && ctrl !== el) fireClick(ctrl);
+        if (ctrl && ctrl !== el) {
+          var sub = fireClick(ctrl);
+          hint = sub.hint || hint;
+          events = events.concat(sub.events || []);
+        }
       }
+      else if (tag === 'SUMMARY') {
+        var details = el.closest('details');
+        if (details) {
+          var wasOpen = details.hasAttribute('open');
+          if (wasOpen) details.removeAttribute('open');
+          else details.setAttribute('open', '');
+          hint.defaultAction = 'toggle'; hint.toggleChanged = !wasOpen;
+        }
+      }
+    } else {
+      hint.cancelled = true; hint.defaultAction = 'cancelled';
     }
+
+    return { events: events, hint: hint };
   }
 
   function fireTypeText(el, text) {
     // Focus if not already focused
     if (document.activeElement !== el && el.focus) el.focus();
 
-    // Get native value setter (React compat)
-    var proto = Object.getPrototypeOf(el);
-    var setter = (Object.getOwnPropertyDescriptor(proto, 'value') ||
-                  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') ||
-                  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value') ||
-                  {}).set;
+    // F3b: Select handling — set value + dispatch change instead of typing
+    if (el.tagName === 'SELECT') {
+      if (el.multiple) {
+        // select-multiple: text is comma-separated values
+        var vals = text.split(',');
+        for (var si = 0; si < el.options.length; si++) {
+          el.options[si].selected = vals.indexOf(el.options[si].value) >= 0;
+        }
+      } else {
+        // select-one
+        el.value = text;
+        for (var si = 0; si < el.options.length; si++) {
+          el.options[si].selected = (el.options[si].value === text);
+        }
+      }
+      el.dispatchEvent(new InputEvent('input', {bubbles:true}));
+      el.dispatchEvent(new Event('change', {bubbles:true}));
+      return;
+    }
+
+    var setter = getNativeSetter(el);
+
+    // F2d: initialize caret at end of existing value if not already set
+    if (typeof el._selStart !== 'number') {
+      setCaret(el, (el.value || '').length);
+    }
 
     for (var i = 0; i < text.length; i++) {
       var ch = text[i];
@@ -417,39 +631,188 @@ const DISPATCHER_JS: &str = r#"
       el.dispatchEvent(new KeyboardEvent('keydown', {key:ch, code:code, bubbles:true}));
       el.dispatchEvent(new KeyboardEvent('keypress', {key:ch, code:code, bubbles:true, charCode:ch.charCodeAt(0)}));
 
-      // Set value incrementally using native setter
-      var newVal = text.substring(0, i + 1);
-      if (setter) setter.call(el, newVal);
-      else el.value = newVal;
+      // F2c: beforeinput — cancelable
+      var bi = new InputEvent('beforeinput', {inputType:'insertText', data:ch, cancelable:true, bubbles:true});
+      el.dispatchEvent(bi);
+      if (bi.defaultPrevented) {
+        el.dispatchEvent(new KeyboardEvent('keyup', {key:ch, code:code, bubbles:true}));
+        continue;
+      }
+
+      // F2d+F2f: insert at caret, replacing selection if any
+      var curVal = el.value || '';
+      var selS = getSelStart(el);
+      var selE = getSelEnd(el);
+      var before = curVal.substring(0, selS);
+      var after = curVal.substring(selE);
+      var newVal = before + ch + after;
+      setElValue(el, newVal, setter);
+      setCaret(el, selS + 1);
+
+      // F2e: mark dirty
+      el.__neo_dirty = true;
 
       el.dispatchEvent(new InputEvent('input', {data:ch, inputType:'insertText', bubbles:true}));
       el.dispatchEvent(new KeyboardEvent('keyup', {key:ch, code:code, bubbles:true}));
     }
-    // Note: change fires on blur/commit in real browsers. We fire it here as compat shortcut.
-    el.dispatchEvent(new Event('change', {bubbles:true}));
+    // F2e: NO change event here — fires on blur
   }
 
   function fireSubmit(form) {
-    // Blur active element first
-    if (document.activeElement && document.activeElement.blur) {
-      document.activeElement.blur();
+    // Blur active element first (F2e: triggers change if dirty)
+    var active = document.activeElement;
+    if (active && active !== document.body) {
+      if (active.__neo_dirty) {
+        active.dispatchEvent(new Event('change', {bubbles:true}));
+        active.__neo_dirty = false;
+      }
+      if (active.blur) active.blur();
     }
     executeFormSubmit(form, null);
     return true;
   }
 
   function firePressKey(el, key) {
+    var _events = [];
+    var _hint = {};
+    _hint.defaultAction = 'none';
     var opts = { key: key, code: key, bubbles: true, cancelable: true };
+
+    // F2a: Tab focus cycling
+    if (key === 'Tab' || key === 'Shift+Tab') {
+      var shift = key === 'Shift+Tab';
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', bubbles: true, cancelable: true, shiftKey: shift }));
+      var focusable = Array.from(document.querySelectorAll(
+        'input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), a[href], [tabindex]'
+      )).filter(function(e) {
+        var ti = parseInt(e.getAttribute('tabindex'), 10);
+        return isNaN(ti) || ti >= 0;
+      });
+      focusable.sort(function(a, b) {
+        var ta = parseInt(a.getAttribute('tabindex'), 10) || 0;
+        var tb = parseInt(b.getAttribute('tabindex'), 10) || 0;
+        if (ta > 0 && tb > 0) return ta - tb;
+        if (ta > 0) return -1;
+        if (tb > 0) return 1;
+        return 0;
+      });
+      if (focusable.length > 0) {
+        var current = document.activeElement;
+        var idx = focusable.indexOf(current);
+        var next = shift ? idx - 1 : idx + 1;
+        if (next >= focusable.length) next = 0;
+        if (next < 0) next = focusable.length - 1;
+        focusElement(focusable[next]);
+      }
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', code: 'Tab', bubbles: true, shiftKey: shift }));
+      return { submitted: false, events: _events, hint: _hint };
+    }
+
     el.dispatchEvent(new KeyboardEvent('keydown', opts));
+    _events.push('keydown');
+
+    // F2b: Backspace
+    if (key === 'Backspace' && el.value !== undefined) {
+      var curVal = el.value || '';
+      var selS = getSelStart(el);
+      var selE = getSelEnd(el);
+      var bi = new InputEvent('beforeinput', {inputType:'deleteContentBackward', data:null, cancelable:true, bubbles:true});
+      el.dispatchEvent(bi);
+      if (!bi.defaultPrevented) {
+        var bsSetter = getNativeSetter(el);
+        if (selS !== selE) {
+          var nv = curVal.substring(0, selS) + curVal.substring(selE);
+          setElValue(el, nv, bsSetter);
+          setCaret(el, selS);
+        } else if (selS > 0) {
+          var nv = curVal.substring(0, selS - 1) + curVal.substring(selS);
+          setElValue(el, nv, bsSetter);
+          setCaret(el, selS - 1);
+        }
+        el.__neo_dirty = true;
+        el.dispatchEvent(new InputEvent('input', {inputType:'deleteContentBackward', bubbles:true}));
+      }
+      el.dispatchEvent(new KeyboardEvent('keyup', opts));
+    _events.push('keyup');
+      return { submitted: false, events: _events, hint: _hint };
+    }
+
+    // F2b: Delete key
+    if (key === 'Delete' && el.value !== undefined) {
+      var curVal = el.value || '';
+      var selS = getSelStart(el);
+      var selE = getSelEnd(el);
+      var bi = new InputEvent('beforeinput', {inputType:'deleteContentForward', data:null, cancelable:true, bubbles:true});
+      el.dispatchEvent(bi);
+      if (!bi.defaultPrevented) {
+        var delSetter = getNativeSetter(el);
+        if (selS !== selE) {
+          var nv = curVal.substring(0, selS) + curVal.substring(selE);
+          setElValue(el, nv, delSetter);
+          setCaret(el, selS);
+        } else if (selS < curVal.length) {
+          var nv = curVal.substring(0, selS) + curVal.substring(selS + 1);
+          setElValue(el, nv, delSetter);
+          setCaret(el, selS);
+        }
+        el.__neo_dirty = true;
+        el.dispatchEvent(new InputEvent('input', {inputType:'deleteContentForward', bubbles:true}));
+      }
+      el.dispatchEvent(new KeyboardEvent('keyup', opts));
+    _events.push('keyup');
+      return { submitted: false, events: _events, hint: _hint };
+    }
+
     el.dispatchEvent(new KeyboardEvent('keyup', opts));
+    _events.push('keyup');
+
+    // Enter: submit form or insertLineBreak for textarea
     if (key === 'Enter') {
+      var tag = (el.tagName || '').toUpperCase();
+      if (tag === 'TEXTAREA') {
+        var bi = new InputEvent('beforeinput', {inputType:'insertLineBreak', data:null, cancelable:true, bubbles:true});
+        el.dispatchEvent(bi);
+        if (!bi.defaultPrevented) {
+          var enterSetter = getNativeSetter(el);
+          var curVal = el.value || '';
+          var selS = getSelStart(el);
+          var selE = getSelEnd(el);
+          var nv = curVal.substring(0, selS) + '\n' + curVal.substring(selE);
+          setElValue(el, nv, enterSetter);
+          setCaret(el, selS + 1);
+          el.__neo_dirty = true;
+          el.dispatchEvent(new InputEvent('input', {inputType:'insertLineBreak', bubbles:true}));
+        }
+        return { submitted: false, events: _events, hint: _hint };
+      }
       var form = el.closest ? el.closest('form') : null;
       if (form) {
-        executeFormSubmit(form, null);
-        return { submitted: true };
+        var submitResult = executeFormSubmit(form, null);
+        if (submitResult && submitResult.action === 'validation_blocked') {
+          _hint.defaultAction = 'validation_blocked'; _hint.validationBlocked = true;
+        } else {
+          _hint.defaultAction = 'form_submit'; _hint.method = ((form.getAttribute('method') || 'GET').toUpperCase());
+        }
+        return { submitted: true, events: _events, hint: _hint };
       }
     }
-    return { submitted: false };
+
+    // F3e: Escape dismiss
+    if (key === 'Escape') {
+      var dialog = document.querySelector('dialog[open]');
+      if (dialog) {
+        dialog.removeAttribute('open');
+        dialog.dispatchEvent(new Event('close'));
+        _hint.defaultAction = 'dialog_closed'; _hint.dialogClosed = true; return { submitted: false, events: _events, hint: _hint };
+      }
+      var roleDialog = document.querySelector('[role=dialog][aria-modal=true]');
+      if (roleDialog) {
+        roleDialog.style.display = 'none';
+        _hint.defaultAction = 'dialog_closed'; _hint.dialogClosed = true; return { submitted: false, events: _events, hint: _hint };
+      }
+    }
+
+    return { submitted: false, events: _events, hint: _hint };
   }
 
   // ── Dispatcher ──────────────────────────────────────────────────
@@ -473,56 +836,73 @@ const DISPATCHER_JS: &str = r#"
         case 'click': {
           var r = resolve(selector, { interactable: true });
           if (r.error) return JSON.stringify(r);
-          fireClick(r.el);
+          r.el._neo_val_before = r.el.value || '';
+          var clickInfo = fireClick(r.el);
           var after = snapshot();
           var mutations = Math.abs(after.domLen - before.domLen);
-          return JSON.stringify({
+          var outcomeObj = detectOutcome(before, after, clickInfo.hint);
+          var result = {
             ok: true,
             text: (r.el.textContent || '').trim().substring(0, 100),
             href: r.el.href || '',
-            outcome: detectOutcome(before, after),
+            outcome: outcomeObj,
             mutations: mutations,
             count: r.count
-          });
+          };
+          result.trace = buildTrace(r.el, before, after, clickInfo.events, clickInfo.hint.defaultAction);
+          return JSON.stringify(result);
         }
 
         case 'type_text': {
           var r = resolve(selector, { interactable: true });
           if (r.error) return JSON.stringify(r);
+          var valBefore = r.el.value || '';
+          r.el._neo_val_before = valBefore;
           fireTypeText(r.el, value);
           var after = snapshot();
-          return JSON.stringify({
+          var typeHint = {valueChanged: (r.el.value || '') !== valBefore};
+          var outcomeObj = detectOutcome(before, after, typeHint);
+          var result = {
             ok: true,
-            outcome: detectOutcome(before, after),
+            outcome: outcomeObj,
             mutations: Math.abs(after.domLen - before.domLen),
             count: r.count
-          });
+          };
+          result.trace = buildTrace(r.el, before, after, ['keydown','keypress','input','keyup'], 'none');
+          return JSON.stringify(result);
         }
 
         case 'press_key': {
           var r = resolve(selector);
           if (r.error) {
-            // Fallback to activeElement
             var active = document.activeElement;
             if (!active) return JSON.stringify(r);
+            active._neo_val_before = active.value || '';
             var info = firePressKey(active, key);
             var after = snapshot();
-            return JSON.stringify({
+            var outcomeObj = detectOutcome(before, after, info.hint);
+            var result = {
               ok: true,
               submitted: info.submitted,
-              outcome: detectOutcome(before, after),
+              outcome: outcomeObj,
               mutations: Math.abs(after.domLen - before.domLen)
-            });
+            };
+            result.trace = buildTrace(active, before, after, info.events, info.hint.defaultAction);
+            return JSON.stringify(result);
           }
+          r.el._neo_val_before = r.el.value || '';
           var info = firePressKey(r.el, key);
           var after = snapshot();
-          return JSON.stringify({
+          var outcomeObj = detectOutcome(before, after, info.hint);
+          var result = {
             ok: true,
             submitted: info.submitted,
-            outcome: detectOutcome(before, after),
+            outcome: outcomeObj,
             mutations: Math.abs(after.domLen - before.domLen),
             count: r.count
-          });
+          };
+          result.trace = buildTrace(r.el, before, after, info.events, info.hint.defaultAction);
+          return JSON.stringify(result);
         }
 
         case 'submit': {
@@ -534,24 +914,27 @@ const DISPATCHER_JS: &str = r#"
             var action_url = form.action || '';
             var submitted = fireSubmit(form);
             var after = snapshot();
+            var submitHint = {method: ((form.getAttribute('method') || 'GET').toUpperCase())};
+            var outcomeObj = detectOutcome(before, after, submitHint);
             return JSON.stringify({
               ok: true,
               action: action_url,
               clicked: false,
               submitted: submitted,
-              outcome: detectOutcome(before, after),
+              outcome: outcomeObj,
               mutations: Math.abs(after.domLen - before.domLen)
             });
           }
           // No form — click the element as fallback
-          fireClick(el);
+          var clickInfo = fireClick(el);
           var after = snapshot();
+          var outcomeObj = detectOutcome(before, after, clickInfo.hint);
           return JSON.stringify({
             ok: true,
             action: '',
             clicked: true,
             submitted: false,
-            outcome: detectOutcome(before, after),
+            outcome: outcomeObj,
             mutations: Math.abs(after.domLen - before.domLen)
           });
         }
@@ -681,8 +1064,9 @@ struct DispatchResponse {
     error: Option<String>,
     #[serde(default)]
     message: Option<String>,
+    /// Structured outcome object from detectOutcome (F4c).
     #[serde(default)]
-    outcome: Option<String>,
+    outcome: Option<serde_json::Value>,
     #[serde(default)]
     mutations: Option<usize>,
     #[serde(default)]
@@ -708,6 +1092,29 @@ struct DispatchResponse {
     submitted: Option<bool>,
     #[serde(default)]
     exists: Option<bool>,
+    /// Per-action trace (F4b) — populated when NEORENDER_TRACE=1.
+    #[serde(default)]
+    trace: Option<TraceResponse>,
+}
+
+/// Raw trace data from JS dispatcher.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct TraceResponse {
+    #[serde(default)]
+    events_dispatched: Vec<String>,
+    #[serde(default)]
+    default_action: String,
+    #[serde(default)]
+    focus_before: String,
+    #[serde(default)]
+    focus_after: String,
+    #[serde(default)]
+    value_before: String,
+    #[serde(default)]
+    value_after: String,
+    #[serde(default)]
+    dom_delta: i64,
 }
 
 /// Link entry from the page.
@@ -751,14 +1158,59 @@ fn js_escape(s: &str) -> String {
         .replace('\t', "\\t")
 }
 
-fn parse_outcome(s: &str) -> ActionOutcome {
-    match s {
-        "dom_mutation" => ActionOutcome::DomMutation,
-        "spa_route_change" => ActionOutcome::SpaRouteChange,
-        "full_navigation" => ActionOutcome::FullNavigation,
+/// Parse a structured outcome object from the JS dispatcher.
+///
+/// Handles both the new object format `{kind: "...", ...}` and legacy
+/// string format `"dom_mutation"` for backward compatibility with mocks.
+fn parse_outcome_value(v: &serde_json::Value) -> ActionOutcome {
+    // Legacy: if the value is a plain string, treat it as the kind directly
+    let kind = if let Some(s) = v.as_str() {
+        s
+    } else {
+        v.get("kind").and_then(|k| k.as_str()).unwrap_or("no_effect")
+    };
+    match kind {
+        "no_effect" => ActionOutcome::NoEffect,
+        "dom_only_update" => ActionOutcome::DomOnlyUpdate {
+            mutations: v.get("mutations").and_then(|m| m.as_u64()).unwrap_or(0) as usize,
+        },
+        "value_changed" => ActionOutcome::ValueChanged,
+        "checkbox_toggled" => ActionOutcome::CheckboxToggled {
+            checked: v.get("checked").and_then(|c| c.as_bool()).unwrap_or(false),
+        },
+        "radio_selected" => ActionOutcome::RadioSelected {
+            value: v.get("value").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        },
+        "default_action_cancelled" => ActionOutcome::DefaultActionCancelled,
+        "validation_blocked" => ActionOutcome::ValidationBlocked,
+        "http_navigation" => ActionOutcome::HttpNavigation {
+            url: v.get("url").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            method: v.get("method").and_then(|s| s.as_str()).unwrap_or("GET").to_string(),
+        },
+        "spa_route_change" => ActionOutcome::SpaRouteChange {
+            url: v.get("url").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        },
+        "dialog_closed" => ActionOutcome::DialogClosed,
+        "toggle_changed" => ActionOutcome::ToggleChanged {
+            open: v.get("open").and_then(|o| o.as_bool()).unwrap_or(false),
+        },
+        "focus_moved" => ActionOutcome::FocusMoved {
+            from: v.get("from").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+            to: v.get("to").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+        },
         "new_context" => ActionOutcome::NewContext,
         "js_only_effect" => ActionOutcome::JsOnlyEffect,
-        _ => ActionOutcome::NoOp,
+        // Legacy string-based outcomes (backward compat with mocks/old format)
+        "no_op" => ActionOutcome::NoEffect,
+        "dom_mutation" => ActionOutcome::DomOnlyUpdate { mutations: 0 },
+        "full_navigation" => ActionOutcome::HttpNavigation {
+            url: String::new(),
+            method: String::new(),
+        },
+        "spa_route" => ActionOutcome::SpaRouteChange {
+            url: String::new(),
+        },
+        _ => ActionOutcome::NoEffect,
     }
 }
 
@@ -855,11 +1307,24 @@ impl<'a> LiveDom<'a> {
         }
     }
 
-    /// Extract outcome and mutations from a dispatch response.
-    fn extract_outcome(resp: &DispatchResponse) -> (ActionOutcome, usize) {
-        let outcome = resp.outcome.as_deref().map(parse_outcome).unwrap_or_default();
+    /// Extract outcome, mutations, and optional trace from a dispatch response.
+    fn extract_outcome(resp: &DispatchResponse) -> (ActionOutcome, usize, Option<ActionTrace>) {
+        let outcome = resp
+            .outcome
+            .as_ref()
+            .map(parse_outcome_value)
+            .unwrap_or_default();
         let mutations = resp.mutations.unwrap_or(0);
-        (outcome, mutations)
+        let trace = resp.trace.as_ref().map(|t| ActionTrace {
+            events_dispatched: t.events_dispatched.clone(),
+            default_action: t.default_action.clone(),
+            focus_before: t.focus_before.clone(),
+            focus_after: t.focus_after.clone(),
+            value_before: t.value_before.clone(),
+            value_after: t.value_after.clone(),
+            dom_delta: t.dom_delta,
+        });
+        (outcome, mutations, trace)
     }
 
     // ─── Public API ──────────────────────────────────────────────────
@@ -871,7 +1336,7 @@ impl<'a> LiveDom<'a> {
         if let Some(e) = Self::check_error(&resp) {
             return Err(e);
         }
-        let (outcome, mutations) = Self::extract_outcome(&resp);
+        let (outcome, mutations, trace) = Self::extract_outcome(&resp);
         let text = resp.text.unwrap_or_default();
         let href = resp.href.unwrap_or_default();
         let mut result = text.clone();
@@ -880,6 +1345,9 @@ impl<'a> LiveDom<'a> {
         }
         let elapsed = start.elapsed().as_millis() as u64;
         let mut r = LiveDomResult::new(result, outcome, mutations, elapsed);
+        if let Some(t) = trace {
+            r = r.with_trace(t);
+        }
         if resp.count.unwrap_or(1) > 1 {
             r.warnings.push(format!(
                 "matched {} elements, used first",
@@ -896,9 +1364,13 @@ impl<'a> LiveDom<'a> {
         if let Some(e) = Self::check_error(&resp) {
             return Err(e);
         }
-        let (outcome, mutations) = Self::extract_outcome(&resp);
+        let (outcome, mutations, trace) = Self::extract_outcome(&resp);
         let elapsed = start.elapsed().as_millis() as u64;
-        Ok(LiveDomResult::new((), outcome, mutations, elapsed))
+        let mut r = LiveDomResult::new((), outcome, mutations, elapsed);
+        if let Some(t) = trace {
+            r = r.with_trace(t);
+        }
+        Ok(r)
     }
 
     /// Press a special key (Enter, Tab, Escape, etc.).
@@ -908,9 +1380,13 @@ impl<'a> LiveDom<'a> {
         if let Some(e) = Self::check_error(&resp) {
             return Err(e);
         }
-        let (outcome, mutations) = Self::extract_outcome(&resp);
+        let (outcome, mutations, trace) = Self::extract_outcome(&resp);
         let elapsed = start.elapsed().as_millis() as u64;
-        Ok(LiveDomResult::new((), outcome, mutations, elapsed))
+        let mut r = LiveDomResult::new((), outcome, mutations, elapsed);
+        if let Some(t) = trace {
+            r = r.with_trace(t);
+        }
+        Ok(r)
     }
 
     /// Submit a form (finds closest `<form>` and submits, or clicks the element).
@@ -920,14 +1396,18 @@ impl<'a> LiveDom<'a> {
         if let Some(e) = Self::check_error(&resp) {
             return Err(e);
         }
-        let (outcome, mutations) = Self::extract_outcome(&resp);
+        let (outcome, mutations, trace) = Self::extract_outcome(&resp);
         let elapsed = start.elapsed().as_millis() as u64;
         let value = if resp.clicked.unwrap_or(false) {
             "clicked".to_string()
         } else {
             resp.action.unwrap_or_default()
         };
-        Ok(LiveDomResult::new(value, outcome, mutations, elapsed))
+        let mut r = LiveDomResult::new(value, outcome, mutations, elapsed);
+        if let Some(t) = trace {
+            r = r.with_trace(t);
+        }
+        Ok(r)
     }
 
     /// Get value of an element (`value` for inputs, `textContent` for others).
@@ -940,7 +1420,7 @@ impl<'a> LiveDom<'a> {
         let elapsed = start.elapsed().as_millis() as u64;
         Ok(LiveDomResult::new(
             resp.value.unwrap_or_default(),
-            ActionOutcome::NoOp,
+            ActionOutcome::NoEffect,
             0,
             elapsed,
         ))
@@ -956,7 +1436,7 @@ impl<'a> LiveDom<'a> {
         let elapsed = start.elapsed().as_millis() as u64;
         Ok(LiveDomResult::new(
             resp.value.unwrap_or_default(),
-            ActionOutcome::NoOp,
+            ActionOutcome::NoEffect,
             0,
             elapsed,
         ))
@@ -980,14 +1460,14 @@ impl<'a> LiveDom<'a> {
         for _ in 0..polls.max(1) {
             if self.exists(selector)? {
                 let elapsed = start.elapsed().as_millis() as u64;
-                return Ok(LiveDomResult::new(true, ActionOutcome::NoOp, 0, elapsed));
+                return Ok(LiveDomResult::new(true, ActionOutcome::NoEffect, 0, elapsed));
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         // Final check
         if self.exists(selector)? {
             let elapsed = start.elapsed().as_millis() as u64;
-            return Ok(LiveDomResult::new(true, ActionOutcome::NoOp, 0, elapsed));
+            return Ok(LiveDomResult::new(true, ActionOutcome::NoEffect, 0, elapsed));
         }
         let elapsed = start.elapsed().as_millis() as u64;
         Err(LiveDomError::Timeout {
@@ -1008,7 +1488,7 @@ impl<'a> LiveDom<'a> {
             if let Ok(wt) = serde_json::from_str::<WaitTextResponse>(&raw) {
                 if wt.found {
                     let elapsed = start.elapsed().as_millis() as u64;
-                    return Ok(LiveDomResult::new(true, ActionOutcome::NoOp, 0, elapsed));
+                    return Ok(LiveDomResult::new(true, ActionOutcome::NoEffect, 0, elapsed));
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1046,7 +1526,7 @@ impl<'a> LiveDom<'a> {
 
             if stable_since.elapsed().as_millis() as u32 >= quiet_ms {
                 let total_elapsed = start.elapsed().as_millis() as u64;
-                return Ok(LiveDomResult::new((), ActionOutcome::NoOp, 0, total_elapsed));
+                return Ok(LiveDomResult::new((), ActionOutcome::NoEffect, 0, total_elapsed));
             }
         }
     }
@@ -1089,11 +1569,11 @@ impl<'a> LiveDom<'a> {
     pub fn fill_form(&mut self, fields: &[(&str, &str)]) -> Result<LiveDomResult<()>, LiveDomError> {
         let start = Instant::now();
         let mut total_mutations = 0usize;
-        let mut last_outcome = ActionOutcome::NoOp;
+        let mut last_outcome = ActionOutcome::NoEffect;
         for (selector, value) in fields {
             let r = self.type_text(selector, value)?;
             total_mutations = total_mutations.saturating_add(r.mutations);
-            if r.outcome != ActionOutcome::NoOp {
+            if r.outcome != ActionOutcome::NoEffect {
                 last_outcome = r.outcome;
             }
         }
@@ -1191,7 +1671,7 @@ mod tests {
         let mut dom = LiveDom::new(&mut rt);
         let result = dom.click("button.login").unwrap();
         assert_eq!(result.value, "Login");
-        assert_eq!(result.outcome, ActionOutcome::DomMutation);
+        assert_eq!(result.outcome, ActionOutcome::DomOnlyUpdate { mutations: 0 });
         assert_eq!(result.mutations, 42);
     }
 
@@ -1251,7 +1731,7 @@ mod tests {
         rt.set_default_eval(r#"{"ok":true,"outcome":"dom_mutation","mutations":10}"#);
         let mut dom = LiveDom::new(&mut rt);
         let result = dom.type_text("#email", "test@example.com").unwrap();
-        assert_eq!(result.outcome, ActionOutcome::DomMutation);
+        assert_eq!(result.outcome, ActionOutcome::DomOnlyUpdate { mutations: 0 });
     }
 
     // ─── Get value/text tests ────────────────────────────────────────
@@ -1303,7 +1783,7 @@ mod tests {
         let mut dom = LiveDom::new(&mut rt);
         let result = dom.submit("form#login").unwrap();
         assert_eq!(result.value, "/login");
-        assert_eq!(result.outcome, ActionOutcome::FullNavigation);
+        assert_eq!(result.outcome, ActionOutcome::HttpNavigation { url: String::new(), method: String::new() });
     }
 
     #[test]
@@ -1396,7 +1876,7 @@ mod tests {
         );
         let mut dom = LiveDom::new(&mut rt);
         let result = dom.press_key("#search", "Tab").unwrap();
-        assert_eq!(result.outcome, ActionOutcome::NoOp);
+        assert_eq!(result.outcome, ActionOutcome::NoEffect);
     }
 
     // ─── Eval error tests ────────────────────────────────────────────
@@ -1420,7 +1900,7 @@ mod tests {
         );
         let mut dom = LiveDom::new(&mut rt);
         let result = dom.click(".close").unwrap();
-        assert_eq!(result.outcome, ActionOutcome::DomMutation);
+        assert_eq!(result.outcome, ActionOutcome::DomOnlyUpdate { mutations: 0 });
         assert_eq!(result.mutations, 150);
     }
 
@@ -1432,7 +1912,7 @@ mod tests {
         );
         let mut dom = LiveDom::new(&mut rt);
         let result = dom.click("a.about").unwrap();
-        assert_eq!(result.outcome, ActionOutcome::SpaRouteChange);
+        assert_eq!(result.outcome, ActionOutcome::SpaRouteChange { url: String::new() });
     }
 
     #[test]
@@ -1443,7 +1923,7 @@ mod tests {
         );
         let mut dom = LiveDom::new(&mut rt);
         let result = dom.click("a.external").unwrap();
-        assert_eq!(result.outcome, ActionOutcome::FullNavigation);
+        assert_eq!(result.outcome, ActionOutcome::HttpNavigation { url: String::new(), method: String::new() });
     }
 
     // ─── Error type tests ────────────────────────────────────────────
@@ -1516,7 +1996,7 @@ mod tests {
         let mut dom = LiveDom::new(&mut rt);
         // DOM length stays at 500, so should stabilize in quiet_ms
         let result = dom.wait_for_stable(2000, 150).unwrap();
-        assert_eq!(result.outcome, ActionOutcome::NoOp);
+        assert_eq!(result.outcome, ActionOutcome::NoEffect);
     }
 
     // ─── Legacy compatibility tests ──────────────────────────────────
@@ -1534,7 +2014,7 @@ mod tests {
 
     #[test]
     fn test_result_with_warnings() {
-        let r = LiveDomResult::new("ok".to_string(), ActionOutcome::DomMutation, 5, 10);
+        let r = LiveDomResult::new("ok".to_string(), ActionOutcome::DomOnlyUpdate { mutations: 0 }, 5, 10);
         let r = r.with_warnings(vec!["some warning".to_string()]);
         assert_eq!(r.warnings.len(), 1);
         assert_eq!(r.value, "ok");

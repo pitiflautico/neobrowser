@@ -273,8 +273,12 @@ if (typeof HTMLElement !== 'undefined' && HTMLElement.prototype) {
     HTMLElement.prototype.focus = function() {
         var prev = __activeElement;
         if (prev === this) return; // already focused
-        // Blur previous
+        // Blur previous — fire change if dirty (F2e)
         if (prev && prev !== document.body) {
+            if (prev.__neo_dirty) {
+                prev.dispatchEvent(new Event('change', {bubbles: true}));
+                prev.__neo_dirty = false;
+            }
             prev.dispatchEvent(new FocusEvent('focusout', {bubbles: true, relatedTarget: this}));
             prev.dispatchEvent(new FocusEvent('blur', {bubbles: false, relatedTarget: this}));
         }
@@ -287,6 +291,11 @@ if (typeof HTMLElement !== 'undefined' && HTMLElement.prototype) {
 
     HTMLElement.prototype.blur = function() {
         if (__activeElement !== this) return;
+        // F2e: fire change if dirty
+        if (this.__neo_dirty) {
+            this.dispatchEvent(new Event('change', {bubbles: true}));
+            this.__neo_dirty = false;
+        }
         this.dispatchEvent(new FocusEvent('focusout', {bubbles: true, relatedTarget: null}));
         this.dispatchEvent(new FocusEvent('blur', {bubbles: false, relatedTarget: null}));
         __activeElement = document.body || null;
@@ -811,3 +820,49 @@ globalThis.DOMParser = class DOMParser {
         throw new Error('DOMParser: unsupported type: ' + type);
     }
 };
+
+// ═══════════════════════════════════════════════════════════════
+// 14. DOM IDL SHIMS — input.labels, label.control, select.selectedOptions
+// ═══════════════════════════════════════════════════════════════
+
+// input.labels — returns labels associated with an input element
+if (typeof HTMLInputElement !== 'undefined' && HTMLInputElement.prototype && !('labels' in HTMLInputElement.prototype)) {
+    Object.defineProperty(HTMLInputElement.prototype, 'labels', {
+        get: function() {
+            var id = this.id;
+            if (!id) {
+                // Check ancestor label only
+                var ancestor = this.closest ? this.closest('label') : null;
+                return ancestor ? [ancestor] : [];
+            }
+            var byFor = document.querySelectorAll('label[for="' + id + '"]');
+            var ancestor = this.closest ? this.closest('label') : null;
+            var result = Array.from(byFor);
+            if (ancestor && result.indexOf(ancestor) < 0) result.push(ancestor);
+            return result;
+        },
+        configurable: true
+    });
+}
+
+// label.control — returns the form control associated with a label
+if (typeof HTMLLabelElement !== 'undefined' && HTMLLabelElement.prototype && !('control' in HTMLLabelElement.prototype)) {
+    Object.defineProperty(HTMLLabelElement.prototype, 'control', {
+        get: function() {
+            var forId = this.getAttribute('for') || this.htmlFor;
+            if (forId) return document.getElementById(forId);
+            return this.querySelector('input,select,textarea,button');
+        },
+        configurable: true
+    });
+}
+
+// select.selectedOptions — returns currently selected option elements
+if (typeof HTMLSelectElement !== 'undefined' && HTMLSelectElement.prototype && !('selectedOptions' in HTMLSelectElement.prototype)) {
+    Object.defineProperty(HTMLSelectElement.prototype, 'selectedOptions', {
+        get: function() {
+            return Array.from(this.options || this.querySelectorAll('option')).filter(function(o) { return o.selected; });
+        },
+        configurable: true
+    });
+}

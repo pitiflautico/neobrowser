@@ -389,20 +389,55 @@ impl NeoSession {
 
     /// Pump the V8 event loop after an interaction to let microtasks/timers run.
     ///
-    /// Budget-based: runs up to 100ms or until idle, whichever comes first.
+    /// Budget-based: runs up to 2s or until truly idle, whichever comes first.
+    /// "Truly idle" = no pending fetches AND no DOM mutations for 50ms.
     /// This ensures framework re-renders (React setState, Vue reactivity, etc.)
     /// complete before we check for navigation requests or return results.
     pub(crate) fn pump_after_interaction(&mut self) {
         if let Some(ref mut rt) = self.runtime {
             let start = std::time::Instant::now();
-            let budget = std::time::Duration::from_millis(100);
+            let budget = std::time::Duration::from_millis(2000);
             let mut rounds = 0u32;
+
             while start.elapsed() < budget {
                 match rt.pump_event_loop() {
                     Ok(true) => rounds += 1,
-                    _ => break,
+                    Ok(false) => {
+                        // Idle — check if there are pending fetches
+                        let pending = rt
+                            .eval(
+                                "window.__neorender_trace \
+                                 ? window.__neorender_trace.pendingFetches || 0 \
+                                 : 0",
+                            )
+                            .unwrap_or_default()
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap_or(0);
+
+                        if pending == 0 {
+                            // Check DOM stability (no mutations for 50ms)
+                            let mutation_age = rt
+                                .eval(
+                                    "Date.now() - (window.__neorender_trace \
+                                     ? window.__neorender_trace.lastMutationTime \
+                                     : 0)",
+                                )
+                                .unwrap_or_default()
+                                .trim()
+                                .parse::<u64>()
+                                .unwrap_or(9999);
+
+                            if mutation_age > 50 {
+                                break; // Truly idle
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(_) => break,
                 }
             }
+
             if rounds > 0 {
                 eprintln!(
                     "[NeoRender] pump_after_interaction: {} rounds in {}ms",
@@ -494,30 +529,90 @@ impl NeoSession {
         if nav_type == "form_submit" && form_method == "POST" {
             let mut req = self.build_nav_request(&url);
             req.method = "POST".to_string();
-            // Encode body as application/x-www-form-urlencoded
+            let enctype = nav["enctype"]
+                .as_str()
+                .unwrap_or("application/x-www-form-urlencoded");
+
             if let Some(form_data) = nav["form_data"].as_object() {
-                let mut pairs: Vec<String> = Vec::new();
-                for (k, v) in form_data.iter() {
-                    let enc_k: String = url::form_urlencoded::byte_serialize(k.as_bytes()).collect();
-                    match v {
-                        serde_json::Value::Array(arr) => {
-                            for item in arr {
-                                if let Some(val) = item.as_str() {
-                                    let enc_v: String = url::form_urlencoded::byte_serialize(val.as_bytes()).collect();
-                                    pairs.push(format!("{enc_k}={enc_v}"));
+                if enctype == "multipart/form-data" {
+                    // F3a: multipart/form-data encoding
+                    let boundary = format!(
+                        "----NeoRender{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                    );
+                    let mut body = String::new();
+                    for (k, v) in form_data.iter() {
+                        match v {
+                            serde_json::Value::Array(arr) => {
+                                for item in arr {
+                                    let val = item.as_str().unwrap_or("");
+                                    body.push_str(&format!("--{boundary}\r\n"));
+                                    body.push_str(&format!(
+                                        "Content-Disposition: form-data; name=\"{k}\"\r\n\r\n"
+                                    ));
+                                    body.push_str(&format!("{val}\r\n"));
                                 }
                             }
-                        }
-                        _ => {
-                            let val = v.as_str().unwrap_or("");
-                            let enc_v: String = url::form_urlencoded::byte_serialize(val.as_bytes()).collect();
-                            pairs.push(format!("{enc_k}={enc_v}"));
+                            _ => {
+                                let val = v.as_str().unwrap_or("");
+                                body.push_str(&format!("--{boundary}\r\n"));
+                                body.push_str(&format!(
+                                    "Content-Disposition: form-data; name=\"{k}\"\r\n\r\n"
+                                ));
+                                body.push_str(&format!("{val}\r\n"));
+                            }
                         }
                     }
+                    body.push_str(&format!("--{boundary}--\r\n"));
+                    req.body = Some(body);
+                    req.headers.insert(
+                        "content-type".to_string(),
+                        format!("multipart/form-data; boundary={boundary}"),
+                    );
+                } else if enctype == "text/plain" {
+                    // F3a: text/plain encoding
+                    let mut body = String::new();
+                    for (k, v) in form_data.iter() {
+                        let val = v.as_str().unwrap_or("");
+                        body.push_str(&format!("{k}={val}\r\n"));
+                    }
+                    req.body = Some(body);
+                    req.headers
+                        .insert("content-type".to_string(), "text/plain".to_string());
+                } else {
+                    // Default: application/x-www-form-urlencoded
+                    let mut pairs: Vec<String> = Vec::new();
+                    for (k, v) in form_data.iter() {
+                        let enc_k: String =
+                            url::form_urlencoded::byte_serialize(k.as_bytes()).collect();
+                        match v {
+                            serde_json::Value::Array(arr) => {
+                                for item in arr {
+                                    if let Some(val) = item.as_str() {
+                                        let enc_v: String =
+                                            url::form_urlencoded::byte_serialize(val.as_bytes())
+                                                .collect();
+                                        pairs.push(format!("{enc_k}={enc_v}"));
+                                    }
+                                }
+                            }
+                            _ => {
+                                let val = v.as_str().unwrap_or("");
+                                let enc_v: String =
+                                    url::form_urlencoded::byte_serialize(val.as_bytes()).collect();
+                                pairs.push(format!("{enc_k}={enc_v}"));
+                            }
+                        }
+                    }
+                    req.body = Some(pairs.join("&"));
+                    req.headers.insert(
+                        "content-type".to_string(),
+                        "application/x-www-form-urlencoded".to_string(),
+                    );
                 }
-                req.body = Some(pairs.join("&"));
-                req.headers.insert("content-type".to_string(),
-                    "application/x-www-form-urlencoded".to_string());
             }
             // Inject cookies
             if let Some(ref store) = self.cookie_store {

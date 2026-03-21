@@ -1,0 +1,17 @@
+<html><body>
+<form id="f">
+  <input id="email" type="email" name="email" required>
+  <input id="name" type="text" name="name" required minlength="2">
+  <button type="submit">Go</button>
+</form>
+<div id="log"></div>
+<script>
+document.getElementById('f').addEventListener('submit', function(e) {
+  e.preventDefault();
+  document.getElementById('log').textContent = 'submitted';
+});
+document.getElementById('email').addEventListener('invalid', function() {
+  document.getElementById('log').textContent += 'invalid:email|';
+});
+</script>
+</body></html>

@@ -1,0 +1,13 @@
+<html><body>
+<select id="s" name="country">
+  <option value="ES">Spain</option>
+  <option value="US" selected>USA</option>
+  <option value="UK">UK</option>
+</select>
+<div id="log"></div>
+<script>
+document.getElementById('s').addEventListener('change', function(e) {
+  document.getElementById('log').textContent = 'changed:' + e.target.value;
+});
+</script>
+</body></html>

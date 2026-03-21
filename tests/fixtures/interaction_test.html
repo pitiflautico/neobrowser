@@ -1,0 +1,17 @@
+<html><body>
+<form id="f">
+  <input id="i1" type="text" value="hello" tabindex="2">
+  <input id="i2" type="text" value="" tabindex="1">
+  <input id="i3" type="text" value="">
+  <button type="submit">Go</button>
+</form>
+<div id="log"></div>
+<script>
+var log = document.getElementById('log');
+function addLog(msg) { log.textContent += msg + '|'; }
+document.getElementById('i1').addEventListener('change', function() { addLog('i1:change'); });
+document.getElementById('i2').addEventListener('change', function() { addLog('i2:change'); });
+document.getElementById('i1').addEventListener('beforeinput', function(e) { addLog('i1:beforeinput:'+e.inputType); });
+document.addEventListener('focusin', function(e) { addLog('focusin:'+e.target.id); });
+</script>
+</body></html>
