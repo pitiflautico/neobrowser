@@ -412,6 +412,21 @@ const DISPATCHER_JS: &str = r#"
     var submitEvt = new Event('submit', {bubbles:false, cancelable:true});
     submitEvt.submitter = submitter || null;
     var prevented = !form.dispatchEvent(submitEvt);
+
+    // React compat: linkedom's event dispatch may not reach React's root
+    // delegation. Call React's onSubmit directly if the standard event
+    // wasn't handled (no preventDefault called from native listener).
+    if (!prevented) {
+      var formPropKey = Object.keys(form).find(function(k) { return k.startsWith('__reactProps'); });
+      if (formPropKey) {
+        var formProps = form[formPropKey];
+        if (formProps && typeof formProps.onSubmit === 'function') {
+          var synth = {target: form, currentTarget: form, preventDefault: function() { prevented = true; }, stopPropagation: function() {}, type: 'submit', submitter: submitter};
+          try { formProps.onSubmit(synth); } catch(e) {}
+        }
+      }
+    }
+
     if (prevented) return {action:'prevented'};
 
     // Collect form data
@@ -487,6 +502,18 @@ const DISPATCHER_JS: &str = r#"
     else el.value = val;
   }
 
+  // React controlled input compat: linkedom's event bubbling doesn't reach
+  // React's root event delegation. Call onChange directly via React's internal
+  // __reactProps if standard event dispatch fails to trigger state updates.
+  function reactNotifyChange(el) {
+    var propKey = Object.keys(el).find(function(k) { return k.startsWith('__reactProps'); });
+    if (!propKey) return;
+    var props = el[propKey];
+    if (props && typeof props.onChange === 'function') {
+      try { props.onChange({target: el, currentTarget: el, type: 'change'}); } catch(e) {}
+    }
+  }
+
   function fireClick(el) {
     var events = [];
     var hint = {};
@@ -521,8 +548,20 @@ const DISPATCHER_JS: &str = r#"
     el.dispatchEvent(clickEvt);
     events.push('click');
 
+    // React compat: call onClick directly if present (linkedom bubbling
+    // may not reach React's root event delegation).
+    var __reactPrevented = false;
+    var clickPropKey = Object.keys(el).find(function(k) { return k.startsWith('__reactProps'); });
+    if (clickPropKey) {
+      var clickProps = el[clickPropKey];
+      if (clickProps && typeof clickProps.onClick === 'function') {
+        var synth = {target: el, currentTarget: el, preventDefault: function() { __reactPrevented = true; }, stopPropagation: function() {}, type: 'click', button: 0, nativeEvent: clickEvt};
+        try { clickProps.onClick(synth); } catch(e) {}
+      }
+    }
+
     // Default actions (only if not prevented)
-    if (!clickEvt.defaultPrevented) {
+    if (!clickEvt.defaultPrevented && !__reactPrevented) {
       var tag = (el.tagName || '').toUpperCase();
       if (tag === 'A' && el.href) {
         var href = el.getAttribute('href') || '';
@@ -600,14 +639,21 @@ const DISPATCHER_JS: &str = r#"
         // select-multiple: text is comma-separated values
         var vals = text.split(',');
         for (var si = 0; si < el.options.length; si++) {
-          el.options[si].selected = vals.indexOf(el.options[si].value) >= 0;
+          var match = vals.indexOf(el.options[si].value) >= 0;
+          el.options[si].selected = match;
+          // linkedom: also set/remove attribute since property may not stick
+          if (match) el.options[si].setAttribute('selected', '');
+          else el.options[si].removeAttribute('selected');
         }
       } else {
-        // select-one
-        el.value = text;
+        // select-one: set selected on matching option via both property and attribute
         for (var si = 0; si < el.options.length; si++) {
-          el.options[si].selected = (el.options[si].value === text);
+          var match = (el.options[si].value === text);
+          el.options[si].selected = match;
+          if (match) el.options[si].setAttribute('selected', '');
+          else el.options[si].removeAttribute('selected');
         }
+        try { el.value = text; } catch(e) { /* linkedom: value may be read-only */ }
       }
       el.dispatchEvent(new InputEvent('input', {bubbles:true}));
       el.dispatchEvent(new Event('change', {bubbles:true}));
@@ -655,6 +701,9 @@ const DISPATCHER_JS: &str = r#"
       el.dispatchEvent(new InputEvent('input', {data:ch, inputType:'insertText', bubbles:true}));
       el.dispatchEvent(new KeyboardEvent('keyup', {key:ch, code:code, bubbles:true}));
     }
+    // React compat: notify React of the final value (linkedom bubbling may not
+    // reach React's root delegation, so call onChange directly).
+    reactNotifyChange(el);
     // F2e: NO change event here — fires on blur
   }
 

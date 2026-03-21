@@ -234,16 +234,18 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             return empty_module(module_specifier);
         }
 
-        // Skip non-JS URLs.
-        if !url.contains(".js") && !url.contains(".mjs") {
+        // Skip non-JS URLs — but allow CDN URLs that serve JS without .js extension
+        // (e.g. esm.sh/react@18, cdn.skypack.dev/react, jspm.dev/react).
+        if !url.contains(".js") && !url.contains(".mjs") && !is_esm_cdn_url(&url) {
             neo_trace!("[MODULE] load {url} -> empty (non-js, {import_kind})");
             return empty_module(module_specifier);
         }
 
         // Not in store — try on-demand fetch for HTTP(S) JS URLs.
+        // Fetch for BOTH static and dynamic imports — ESM modules trigger static
+        // imports for their dependencies which also need on-demand fetching.
         if let Some(ref http_client) = self.http_client {
-            if is_dyn_import
-                && (url.starts_with("http://") || url.starts_with("https://"))
+            if url.starts_with("http://") || url.starts_with("https://")
             {
                 let count = *self.on_demand_count.borrow();
                 if count >= ON_DEMAND_FETCH_BUDGET {
@@ -344,6 +346,23 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         }
         Box::pin(async {})
     }
+}
+
+/// Check if a URL points to a known ESM CDN that serves JS without .js/.mjs extension.
+///
+/// These CDNs return `application/javascript` for URLs like `esm.sh/react@18`,
+/// `cdn.skypack.dev/react`, `jspm.dev/react`, etc.
+fn is_esm_cdn_url(url: &str) -> bool {
+    const ESM_CDN_HOSTS: &[&str] = &[
+        "esm.sh",
+        "esm.run",
+        "cdn.skypack.dev",
+        "jspm.dev",
+        "cdn.jsdelivr.net/npm/",
+        "unpkg.com",
+        "ga.jspm.io",
+    ];
+    ESM_CDN_HOSTS.iter().any(|host| url.contains(host))
 }
 
 /// Return an empty JS module (comment-only).
@@ -562,5 +581,17 @@ mod tests {
     fn test_import_map_parse_invalid() {
         assert!(ImportMap::parse("not json").is_none());
         assert!(ImportMap::parse(r#"{"scopes": {}}"#).is_none());
+    }
+
+    #[test]
+    fn test_esm_cdn_url_detection() {
+        assert!(is_esm_cdn_url("https://esm.sh/react@18"));
+        assert!(is_esm_cdn_url("https://esm.sh/react-dom@18/client"));
+        assert!(is_esm_cdn_url("https://cdn.skypack.dev/react"));
+        assert!(is_esm_cdn_url("https://jspm.dev/react"));
+        assert!(is_esm_cdn_url("https://unpkg.com/react@18/umd/react.production.min.js"));
+        assert!(is_esm_cdn_url("https://cdn.jsdelivr.net/npm/react@18"));
+        assert!(!is_esm_cdn_url("https://example.com/app"));
+        assert!(!is_esm_cdn_url("https://cdn.example.com/lib"));
     }
 }

@@ -13,6 +13,35 @@ pub(crate) fn transform_inline_module(content: &str, base: &str) -> String {
 
     let mut code = content.to_string();
 
+    // Normalize single quotes to double quotes for import specifiers
+    // to simplify the regexes below (handles both `from 'path'` and `from "path"`).
+    let re_single_quote = Regex::new(r#"from\s*'([^']+)'"#).expect("valid regex");
+    code = re_single_quote
+        .replace_all(&code, |caps: &regex_lite::Captures| {
+            format!("from \"{}\"", &caps[1])
+        })
+        .to_string();
+    // Also normalize bare side-effect imports: import 'path' → import "path"
+    let re_bare_single = Regex::new(r#"import\s*'([^']+)'"#).expect("valid regex");
+    code = re_bare_single
+        .replace_all(&code, |caps: &regex_lite::Captures| {
+            format!("import \"{}\"", &caps[1])
+        })
+        .to_string();
+
+    // Default import: import Name from "/path" → const {default: Name} = await import("BASE/path")
+    // Must run BEFORE side-effect import to avoid partial match.
+    let re_default =
+        Regex::new(r#"import\s+(\w+)\s+from\s*"([^"]+)""#).expect("valid regex");
+    code = re_default
+        .replace_all(&code, |caps: &regex_lite::Captures| {
+            let name = &caps[1];
+            let path = &caps[2];
+            let full = resolve_import_path(path, base);
+            format!("const {name} = (await import(\"{full}\")).default")
+        })
+        .to_string();
+
     // Side-effect import: import "/path" → await import("BASE/path")
     let re_bare = Regex::new(r#"import\s*"([^"]+)""#).expect("valid regex");
     code = re_bare
@@ -176,6 +205,21 @@ mod tests {
         let code = r#"import("/entry.js");"#;
         let result = transform_inline_module(code, "https://example.com");
         assert!(result.contains(r#"import("https://example.com/entry.js").catch(()=>{})"#));
+    }
+
+    #[test]
+    fn test_transform_default_import() {
+        let code = r#"import React from "https://esm.sh/react@18";"#;
+        let result = transform_inline_module(code, "https://example.com");
+        assert!(result.contains(r#"const React = (await import("https://esm.sh/react@18")).default"#));
+    }
+
+    #[test]
+    fn test_transform_single_quote_imports() {
+        let code = "import React from 'https://esm.sh/react@18';\nimport { useState } from 'https://esm.sh/react@18';";
+        let result = transform_inline_module(code, "https://example.com");
+        assert!(result.contains(r#"const React = (await import("https://esm.sh/react@18")).default"#));
+        assert!(result.contains(r#"const { useState } = await import("https://esm.sh/react@18")"#));
     }
 
     #[test]
