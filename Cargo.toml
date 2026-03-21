@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/neo-types",
+    "crates/neo-http",
+    "crates/neo-dom",
+    "crates/neo-runtime",
+    "crates/neo-engine",
+    "crates/neo-interact",
+    "crates/neo-extract",
+    "crates/neo-trace",
+    "crates/neo-chrome",
+    "crates/neo-mcp",
+]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.0-alpha.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/pitiflautico/neorender"
+
+[workspace.dependencies]
+# Shared deps — pin exact versions
+thiserror = "=2.0.12"
+serde = { version = "=1.0.219", features = ["derive"] }
+serde_json = "=1.0.140"
+tokio = { version = "=1.44.2", features = ["full"] }
+url = "=2.5.4"

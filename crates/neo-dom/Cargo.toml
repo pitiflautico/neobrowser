@@ -1,0 +1,7 @@
+[package]
+name = "neo-dom"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+neo-types = { path = "../neo-types" }

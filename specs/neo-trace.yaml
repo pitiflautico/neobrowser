@@ -1,0 +1,37 @@
+# ═══════════════════════════════════════
+# Task Spec: neo-trace
+# Phase: 0.5 Tracer
+# Generated: 2026-03-21 09:19
+# ═══════════════════════════════════════
+
+crate: neo-trace
+phase: "0.5 Tracer"
+
+# Paste the trait interface this crate must implement
+trait_interface: |
+  // TODO: define trait
+
+# Crates this one depends on (from workspace)
+dependencies:
+  - neo-types
+
+# Files the agent MUST create
+files_to_create:
+  - crates/neo-trace/Cargo.toml
+  - crates/neo-trace/src/lib.rs
+  - crates/neo-trace/src/mock.rs
+
+# Files the agent CANNOT touch
+files_forbidden:
+  - "crates/neo-engine/*"
+  - "crates/neo-mcp/*"
+  - "src/main.rs"
+  - "Cargo.toml"  # workspace root
+
+# What makes this crate DONE
+acceptance_criteria:
+  - "trait defined and exported in lib.rs"
+  - "real implementation exists"
+  - "mock implementation exists"
+  - "3+ unit tests pass"
+  - "pipeline/validate.sh neo-trace exits 0"
