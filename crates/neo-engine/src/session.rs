@@ -152,10 +152,71 @@ impl NeoSession {
             .transition(PageState::Interactive, "dom parsed");
 
         // JS execution (if enabled and runtime available).
+        let mut js_errors: Vec<String> = Vec::new();
         if self.config.execute_js {
             if let Some(rt) = self.runtime.as_mut() {
+                // 1. Initialize the V8 DOM with the page HTML + bootstrap globals.
                 rt.set_document_html(&response.body, &response.url)?;
-                rt.run_until_settled(self.config.script_timeout_ms)?;
+
+                // 2. Extract and execute inline/external scripts.
+                let scripts = extract_scripts(&response.body, &response.url);
+                for script in &scripts {
+                    match script {
+                        ScriptInfo::Inline { content, .. } => {
+                            if let Err(e) = rt.execute(content) {
+                                js_errors.push(format!("inline script: {e}"));
+                            }
+                        }
+                        ScriptInfo::External { url: src, .. } => {
+                            let fetch_req = HttpRequest {
+                                method: "GET".to_string(),
+                                url: src.clone(),
+                                headers: HashMap::new(),
+                                body: None,
+                                context: RequestContext {
+                                    kind: RequestKind::Subresource,
+                                    initiator: "parser".to_string(),
+                                    referrer: Some(response.url.clone()),
+                                    frame_id: None,
+                                    top_level_url: Some(response.url.clone()),
+                                },
+                                timeout_ms: 5000,
+                            };
+                            match self.http.request(&fetch_req) {
+                                Ok(script_resp) => {
+                                    if let Err(e) = rt.execute(&script_resp.body) {
+                                        js_errors.push(format!(
+                                            "script {}: {e}",
+                                            src.rsplit('/').next().unwrap_or(src)
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    js_errors.push(format!("fetch {src}: {e}"));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Run event loop to settle promises, timers, etc.
+                if let Err(e) = rt.run_until_settled(self.config.script_timeout_ms) {
+                    js_errors.push(format!("settle: {e}"));
+                }
+
+                // 4. Export the JS-mutated DOM and re-parse into html5ever.
+                match rt.export_html() {
+                    Ok(html) if !html.is_empty() => {
+                        let mut dom = self.dom.lock().expect("dom lock poisoned");
+                        if let Err(e) = dom.parse_html(&html, &response.url) {
+                            js_errors.push(format!("re-parse: {e}"));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        js_errors.push(format!("export: {e}"));
+                    }
+                }
             }
         }
 
@@ -196,7 +257,7 @@ impl NeoSession {
             state: self.lifecycle.current(),
             render_ms: elapsed,
             wom,
-            errors: Vec::new(),
+            errors: js_errors,
         })
     }
 
@@ -304,7 +365,7 @@ impl BrowserEngine for NeoSession {
             }
         }
 
-        // 4. Loading → parse → extract.
+        // 4. Loading -> parse -> extract.
         self.lifecycle
             .transition(PageState::Loading, "response received");
         self.finish_navigate(url, response, start)
@@ -366,5 +427,127 @@ impl BrowserEngine for NeoSession {
 
     fn summary(&self) -> ExecutionSummary {
         self.tracer.summary()
+    }
+}
+
+// ─── Script extraction ───
+
+/// Script extracted from HTML for execution.
+enum ScriptInfo {
+    /// Inline `<script>` tag with JS source.
+    Inline {
+        content: String,
+        #[allow(dead_code)]
+        is_module: bool,
+    },
+    /// External `<script src="...">` tag.
+    External {
+        url: String,
+        #[allow(dead_code)]
+        is_module: bool,
+    },
+}
+
+/// Extract `<script>` tags from HTML.
+///
+/// Returns inline content and external URLs in document order.
+/// Skips non-JS types (JSON, importmap, template, etc.).
+fn extract_scripts(html: &str, base_url: &str) -> Vec<ScriptInfo> {
+    use html5ever::parse_document;
+    use html5ever::tendril::TendrilSink;
+    use markup5ever_rcdom::RcDom;
+
+    let dom = parse_document(RcDom::default(), Default::default()).one(html);
+
+    let mut scripts = Vec::new();
+    collect_scripts(&dom.document, base_url, &mut scripts);
+    scripts
+}
+
+fn collect_scripts(
+    node: &markup5ever_rcdom::Handle,
+    base: &str,
+    scripts: &mut Vec<ScriptInfo>,
+) {
+    use markup5ever_rcdom::NodeData;
+
+    if let NodeData::Element {
+        ref name,
+        ref attrs,
+        ..
+    } = node.data
+    {
+        if name.local.as_ref() == "script" {
+            let attrs_ref = attrs.borrow();
+            let script_type = attrs_ref
+                .iter()
+                .find(|a| a.name.local.as_ref() == "type")
+                .map(|a| a.value.to_string())
+                .unwrap_or_default();
+
+            // Skip non-JS script types.
+            let st = script_type.to_lowercase();
+            if st.contains("json")
+                || st.contains("importmap")
+                || st.contains("template")
+                || st.contains("html")
+                || st.contains("x-")
+            {
+                for child in node.children.borrow().iter() {
+                    collect_scripts(child, base, scripts);
+                }
+                return;
+            }
+
+            let is_module = script_type == "module";
+            let src = attrs_ref
+                .iter()
+                .find(|a| a.name.local.as_ref() == "src")
+                .map(|a| a.value.to_string());
+
+            if let Some(src) = src {
+                let full = resolve_script_url(&src, base);
+                scripts.push(ScriptInfo::External {
+                    url: full,
+                    is_module,
+                });
+            } else {
+                drop(attrs_ref);
+                let text: String = node
+                    .children
+                    .borrow()
+                    .iter()
+                    .filter_map(|c| match &c.data {
+                        NodeData::Text { contents } => Some(contents.borrow().to_string()),
+                        _ => None,
+                    })
+                    .collect();
+                if !text.trim().is_empty() {
+                    scripts.push(ScriptInfo::Inline {
+                        content: text,
+                        is_module,
+                    });
+                }
+            }
+        }
+    }
+    for child in node.children.borrow().iter() {
+        collect_scripts(child, base, scripts);
+    }
+}
+
+/// Resolve a script src URL against a base URL.
+fn resolve_script_url(src: &str, base: &str) -> String {
+    if src.starts_with("http") {
+        src.to_string()
+    } else if src.starts_with("//") {
+        format!("https:{src}")
+    } else if let Ok(base_url) = url::Url::parse(base) {
+        base_url
+            .join(src)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| src.to_string())
+    } else {
+        src.to_string()
     }
 }

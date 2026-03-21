@@ -73,6 +73,14 @@ impl JsRuntime for MockRuntime {
         Ok(result)
     }
 
+    fn execute(&mut self, code: &str) -> Result<(), RuntimeError> {
+        self.eval_calls.push(code.to_string());
+        if let Some(err) = &self.eval_error {
+            return Err(RuntimeError::Eval(err.clone()));
+        }
+        Ok(())
+    }
+
     fn load_module(&mut self, url: &str) -> Result<(), RuntimeError> {
         self.module_calls.push(url.to_string());
         Ok(())

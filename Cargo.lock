@@ -1323,6 +1323,8 @@ dependencies = [
 name = "neo-engine"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "html5ever",
+ "markup5ever_rcdom",
  "neo-dom",
  "neo-extract",
  "neo-http",

@@ -47,8 +47,13 @@ pub enum RuntimeError {
 
 /// JavaScript runtime for executing web page scripts.
 pub trait JsRuntime: Send {
-    /// Execute a script (non-module) and return result as string.
+    /// Evaluate an expression and return result as string.
+    /// The code is wrapped in `try { String(...) } catch(...)` — use for expressions only.
     fn eval(&mut self, code: &str) -> Result<String, RuntimeError>;
+
+    /// Execute a script (statements). Does not return a value.
+    /// Use this for inline `<script>` tags which contain statements, not expressions.
+    fn execute(&mut self, code: &str) -> Result<(), RuntimeError>;
 
     /// Load and execute an ES module by URL.
     fn load_module(&mut self, url: &str) -> Result<(), RuntimeError>;
@@ -60,7 +65,14 @@ pub trait JsRuntime: Send {
     fn pending_tasks(&self) -> usize;
 
     /// Inject HTML into the DOM (parse and set as document).
+    /// Also loads bootstrap.js which sets up browser globals (fetch, timers, etc.).
     fn set_document_html(&mut self, html: &str, url: &str) -> Result<(), RuntimeError>;
+
+    /// Export the current DOM state as HTML string.
+    /// Returns the outerHTML of document.documentElement after JS execution.
+    fn export_html(&mut self) -> Result<String, RuntimeError> {
+        self.eval("globalThis.__neorender_export ? __neorender_export() : ''")
+    }
 }
 
 /// Configuration for creating a runtime instance.

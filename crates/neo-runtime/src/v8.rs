@@ -8,11 +8,13 @@ use crate::ops;
 use crate::scheduler::TaskTracker;
 use crate::{JsRuntime as JsRuntimeTrait, RuntimeConfig, RuntimeError};
 use deno_core::{PollEventLoopOptions, RuntimeOptions};
+use neo_http::HttpClient;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 // ─── Extension declaration ───
 
@@ -108,6 +110,24 @@ unsafe impl Send for DenoRuntime {}
 impl DenoRuntime {
     /// Create a new V8 runtime with the given configuration.
     pub fn new(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
+        Self::new_inner(config, None)
+    }
+
+    /// Create a new V8 runtime with an HttpClient for op_fetch.
+    ///
+    /// The HttpClient is stored in OpState so that JavaScript `fetch()`
+    /// calls route through the real HTTP layer.
+    pub fn new_with_http(
+        config: &RuntimeConfig,
+        http_client: Arc<dyn HttpClient>,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_inner(config, Some(http_client))
+    }
+
+    fn new_inner(
+        config: &RuntimeConfig,
+        http_client: Option<Arc<dyn HttpClient>>,
+    ) -> Result<Self, RuntimeError> {
         let store = Rc::new(RefCell::new(crate::modules::ScriptStore::default()));
 
         let code_cache = config
@@ -121,11 +141,41 @@ impl DenoRuntime {
             code_cache,
         };
 
-        let runtime = deno_core::JsRuntime::new(RuntimeOptions {
+        let mut runtime = deno_core::JsRuntime::new(RuntimeOptions {
             extensions: vec![neo_runtime_ext::init_ops()],
             module_loader: Some(Rc::new(loader)),
             ..Default::default()
         });
+
+        // Put HttpClient and other state in OpState for ops.
+        {
+            let op_state = runtime.op_state();
+            let mut state = op_state.borrow_mut();
+            if let Some(client) = http_client {
+                state.put(ops::SharedHttpClient(client));
+            }
+            state.put(ops::ConsoleBuffer::default());
+            state.put(ops::StorageState::default());
+        }
+
+        // Node.js polyfills required by linkedom (Buffer, process, atob/btoa).
+        let node_polyfills: &str = include_str!("../../../js/node_polyfills.js");
+        runtime
+            .execute_script("<neorender:node_polyfills>", node_polyfills.to_string())
+            .map_err(|e| {
+                RuntimeError::Init(format!(
+                    "node polyfills: {}",
+                    first_line(&e.to_string())
+                ))
+            })?;
+
+        // Load linkedom DOM implementation (included at compile time).
+        let linkedom_js: &str = include_str!("../../../js/linkedom.js");
+        runtime
+            .execute_script("<neorender:linkedom>", linkedom_js.to_string())
+            .map_err(|e| {
+                RuntimeError::Init(format!("linkedom load: {}", first_line(&e.to_string())))
+            })?;
 
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -169,6 +219,17 @@ impl JsRuntimeTrait for DenoRuntime {
         } else {
             Ok("undefined".to_string())
         }
+    }
+
+    fn execute(&mut self, code: &str) -> Result<(), RuntimeError> {
+        let wrapped = format!(
+            "try {{ {} }} catch(__e) {{ /* non-fatal */ }}",
+            code
+        );
+        self.runtime
+            .execute_script("<script>", wrapped)
+            .map_err(|e| RuntimeError::Eval(first_line(&e.to_string())))?;
+        Ok(())
     }
 
     fn load_module(&mut self, url: &str) -> Result<(), RuntimeError> {
@@ -232,15 +293,50 @@ impl JsRuntimeTrait for DenoRuntime {
             .replace('\\', "\\\\")
             .replace('`', "\\`")
             .replace("${", "\\${");
+        let escaped_url = url.replace('\'', "\\'");
         let js = format!(
             "globalThis.__neorender_html = `{}`;\
              globalThis.__neorender_url = '{}';",
-            escaped, url
+            escaped, escaped_url
         );
         self.runtime
             .execute_script("<set_document_html>", js)
             .map_err(|e| RuntimeError::Dom(first_line(&e.to_string())))?;
+
+        // Load bootstrap.js — parses HTML via linkedom, sets up browser globals
+        // (fetch, timers, console, DOM constructors, etc.).
+        let bootstrap_js: &str = include_str!("../../../js/bootstrap.js");
+        self.runtime
+            .execute_script("<neorender:bootstrap>", bootstrap_js.to_string())
+            .map_err(|e| {
+                RuntimeError::Dom(format!("bootstrap: {}", first_line(&e.to_string())))
+            })?;
+
+        // Set location to match the page URL.
+        let loc_js = format!(
+            "try {{\
+                const __u = new URL('{}');\
+                location.href = __u.href;\
+                location.protocol = __u.protocol;\
+                location.host = __u.host;\
+                location.hostname = __u.hostname;\
+                location.port = __u.port;\
+                location.pathname = __u.pathname;\
+                location.search = __u.search;\
+                location.hash = __u.hash;\
+                location.origin = __u.origin;\
+             }} catch(e) {{}}",
+            escaped_url
+        );
+        self.runtime
+            .execute_script("<set_location>", loc_js)
+            .map_err(|e| RuntimeError::Dom(first_line(&e.to_string())))?;
+
         Ok(())
+    }
+
+    fn export_html(&mut self) -> Result<String, RuntimeError> {
+        self.eval("globalThis.__neorender_export ? __neorender_export() : ''")
     }
 }
 

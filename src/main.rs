@@ -38,9 +38,20 @@ fn create_engine() -> NeoSession {
     let tracer = FileTracer::new(None);
     let lifecycle_tracer = NoopTracer::new();
 
-    let mut config = EngineConfig::default();
-    // Disable JS execution — no V8 runtime wired yet.
-    config.execute_js = false;
+    let config = EngineConfig::default(); // execute_js = true by default
+
+    // Create V8 runtime with shared HttpClient for op_fetch.
+    let http_for_v8: std::sync::Arc<dyn neo_http::HttpClient> =
+        std::sync::Arc::new(RquestClient::default());
+    let rt_config = neo_runtime::RuntimeConfig::default();
+    let runtime: Option<Box<dyn neo_runtime::JsRuntime>> =
+        match neo_runtime::v8::DenoRuntime::new_with_http(&rt_config, http_for_v8) {
+            Ok(rt) => Some(Box::new(rt)),
+            Err(e) => {
+                eprintln!("[NeoRender V2] V8 runtime init failed: {e} -- falling back to no-JS");
+                None
+            }
+        };
 
     let cookie_store = SqliteCookieStore::default_store()
         .expect("failed to open cookie store at ~/.neorender/cookies.db");
@@ -50,7 +61,7 @@ fn create_engine() -> NeoSession {
     NeoSession::new_shared(
         Box::new(http),
         shared_dom,
-        None, // No JS runtime yet
+        runtime,
         Box::new(interactor),
         Box::new(extractor),
         Box::new(tracer),
