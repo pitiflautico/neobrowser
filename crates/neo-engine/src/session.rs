@@ -4,6 +4,7 @@
 //! into the navigation lifecycle.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use neo_dom::DomEngine;
@@ -24,7 +25,7 @@ use crate::{BrowserEngine, EngineError, PageResult};
 /// navigate -> parse -> execute -> extract pipeline.
 pub struct NeoSession {
     http: Box<dyn HttpClient>,
-    dom: Box<dyn DomEngine>,
+    dom: Arc<Mutex<Box<dyn DomEngine>>>,
     runtime: Option<Box<dyn JsRuntime>>,
     interactor: Box<dyn Interactor>,
     extractor: Box<dyn Extractor>,
@@ -38,10 +39,42 @@ pub struct NeoSession {
 
 impl NeoSession {
     /// Create a new session from subsystem implementations.
+    ///
+    /// The DOM is wrapped in `Arc<Mutex<...>>` internally. Use
+    /// [`new_shared`] if you need to share the DOM with the interactor.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         http: Box<dyn HttpClient>,
         dom: Box<dyn DomEngine>,
+        runtime: Option<Box<dyn JsRuntime>>,
+        interactor: Box<dyn Interactor>,
+        extractor: Box<dyn Extractor>,
+        tracer: Box<dyn Tracer>,
+        lifecycle_tracer: Box<dyn Tracer>,
+        config: EngineConfig,
+    ) -> Self {
+        Self {
+            http,
+            dom: Arc::new(Mutex::new(dom)),
+            runtime,
+            interactor,
+            extractor,
+            tracer,
+            lifecycle: Lifecycle::new(lifecycle_tracer),
+            config,
+            history: Vec::new(),
+            last_wom: None,
+        }
+    }
+
+    /// Create a session with a shared DOM reference.
+    ///
+    /// The same `Arc<Mutex<...>>` can be given to a [`DomInteractor`]
+    /// so that interactions mutate the same DOM the session reads from.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_shared(
+        http: Box<dyn HttpClient>,
+        dom: Arc<Mutex<Box<dyn DomEngine>>>,
         runtime: Option<Box<dyn JsRuntime>>,
         interactor: Box<dyn Interactor>,
         extractor: Box<dyn Extractor>,
@@ -110,7 +143,10 @@ impl BrowserEngine for NeoSession {
             .transition(PageState::Loading, "response received");
 
         // 5. DOM parse.
-        self.dom.parse_html(&response.body, &response.url)?;
+        {
+            let mut dom = self.dom.lock().expect("dom lock poisoned");
+            dom.parse_html(&response.body, &response.url)?;
+        }
 
         // 6. Interactive.
         self.lifecycle
@@ -129,7 +165,14 @@ impl BrowserEngine for NeoSession {
             .transition(PageState::Settled, "scripts executed");
 
         // 9. Extract WOM.
-        let wom = self.extractor.extract_wom(self.dom.as_ref());
+        let mut wom = {
+            let dom = self.dom.lock().expect("dom lock poisoned");
+            self.extractor.extract_wom(dom.as_ref())
+        };
+        // Patch URL into WOM (extractors don't have access to the response URL).
+        if wom.url.is_empty() {
+            wom.url = response.url.clone();
+        }
         self.last_wom = Some(wom.clone());
 
         // 10. Trace result.
@@ -143,7 +186,10 @@ impl BrowserEngine for NeoSession {
         // 12. Track history.
         self.history.push(url.to_string());
 
-        let title = self.dom.title();
+        let title = {
+            let dom = self.dom.lock().expect("dom lock poisoned");
+            dom.title()
+        };
         let elapsed = start.elapsed().as_millis() as u64;
 
         Ok(PageResult {
@@ -201,7 +247,8 @@ impl BrowserEngine for NeoSession {
     }
 
     fn extract(&self) -> Result<WomDocument, EngineError> {
-        let wom = self.extractor.extract_wom(self.dom.as_ref());
+        let dom = self.dom.lock().expect("dom lock poisoned");
+        let wom = self.extractor.extract_wom(dom.as_ref());
         Ok(wom)
     }
 

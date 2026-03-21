@@ -18,6 +18,9 @@ pub use resolve::{resolve, ResolveStrategy};
 pub use scroll::scroll;
 pub use type_text::type_text;
 
+use std::sync::{Arc, Mutex};
+use neo_dom::DomEngine;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -107,4 +110,58 @@ pub trait Interactor {
 
     /// Scroll in a direction. Returns new visible element count.
     fn scroll(&mut self, direction: ScrollDirection, amount: u32) -> Result<usize, InteractError>;
+}
+
+/// Real interactor that delegates to the free functions using a shared DOM.
+///
+/// The DOM is shared with [`NeoSession`] via `Arc<Mutex<...>>` so that
+/// interactions mutate the same DOM the session reads from.
+pub struct DomInteractor {
+    dom: Arc<Mutex<Box<dyn DomEngine>>>,
+}
+
+impl DomInteractor {
+    /// Create a new interactor wrapping a shared DOM reference.
+    pub fn new(dom: Arc<Mutex<Box<dyn DomEngine>>>) -> Self {
+        Self { dom }
+    }
+}
+
+impl Interactor for DomInteractor {
+    fn click(&mut self, target: &str) -> Result<ClickResult, InteractError> {
+        let mut dom = self.dom.lock().expect("dom lock poisoned");
+        click::click(dom.as_mut(), target)
+    }
+
+    fn type_text(&mut self, target: &str, text: &str, clear: bool) -> Result<(), InteractError> {
+        let mut dom = self.dom.lock().expect("dom lock poisoned");
+        type_text::type_text(dom.as_mut(), target, text, clear)
+    }
+
+    fn fill_form(&mut self, fields: &HashMap<String, String>) -> Result<(), InteractError> {
+        let mut dom = self.dom.lock().expect("dom lock poisoned");
+        forms::fill_form(dom.as_mut(), fields)
+    }
+
+    fn select(&mut self, _target: &str, _value: &str) -> Result<(), InteractError> {
+        // Select is not yet implemented as a free function.
+        // TODO: implement select logic
+        Ok(())
+    }
+
+    fn check(&mut self, _target: &str, _checked: bool) -> Result<(), InteractError> {
+        // Check/uncheck is not yet implemented as a free function.
+        // TODO: implement checkbox toggle logic
+        Ok(())
+    }
+
+    fn submit(&mut self, target: Option<&str>) -> Result<SubmitResult, InteractError> {
+        let mut dom = self.dom.lock().expect("dom lock poisoned");
+        forms::submit(dom.as_mut(), target)
+    }
+
+    fn scroll(&mut self, direction: ScrollDirection, amount: u32) -> Result<usize, InteractError> {
+        let dom = self.dom.lock().expect("dom lock poisoned");
+        scroll::scroll(dom.as_ref(), direction, amount)
+    }
 }

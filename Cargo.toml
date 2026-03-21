@@ -20,9 +20,29 @@ license = "MIT"
 repository = "https://github.com/pitiflautico/neorender"
 
 [workspace.dependencies]
-# Shared deps — pin exact versions
 thiserror = "=2.0.12"
 serde = { version = "=1.0.219", features = ["derive"] }
 serde_json = "=1.0.140"
 tokio = { version = "=1.44.2", features = ["full"] }
 url = "=2.5.4"
+
+[package]
+name = "neorender"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "neorender"
+path = "src/main.rs"
+
+[dependencies]
+neo-mcp = { path = "crates/neo-mcp" }
+neo-engine = { path = "crates/neo-engine" }
+neo-http = { path = "crates/neo-http" }
+neo-dom = { path = "crates/neo-dom" }
+neo-runtime = { path = "crates/neo-runtime" }
+neo-interact = { path = "crates/neo-interact" }
+neo-extract = { path = "crates/neo-extract" }
+neo-trace = { path = "crates/neo-trace" }
+neo-types = { path = "crates/neo-types" }
+serde_json.workspace = true

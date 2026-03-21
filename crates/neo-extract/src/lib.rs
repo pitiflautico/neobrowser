@@ -21,6 +21,47 @@ pub use wom::{WomDocument, WomNode};
 
 use neo_dom::DomEngine;
 
+/// Default extractor — uses the real WOM builder, classifier, and structured extractors.
+pub struct DefaultExtractor;
+
+impl DefaultExtractor {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DefaultExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Extractor for DefaultExtractor {
+    fn extract_wom(&self, dom: &dyn DomEngine) -> WomDocument {
+        let mut wom = wom::build_wom(dom, "");
+        // Enrich with page classification.
+        let classification = classify::classify(dom);
+        wom.page_type = format!("{:?}", classification.page_type);
+        wom
+    }
+
+    fn extract_structured(&self, dom: &dyn DomEngine) -> Vec<StructuredData> {
+        structured::extract_structured(dom)
+    }
+
+    fn classify(&self, dom: &dyn DomEngine) -> PageClassification {
+        classify::classify(dom)
+    }
+
+    fn delta(&self, before: &WomDocument, after: &WomDocument) -> WomDelta {
+        delta::compute_delta(before, after)
+    }
+
+    fn semantic_text(&self, dom: &dyn DomEngine, max_chars: usize) -> String {
+        semantic::semantic_text(dom, max_chars)
+    }
+}
+
 /// Extractor trait — the interface for turning DOM into AI-consumable data.
 pub trait Extractor {
     /// Extract WOM — the action map an AI uses to understand and interact.

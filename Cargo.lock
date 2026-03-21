@@ -1422,6 +1422,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "neorender"
+version = "2.0.0-alpha.1"
+dependencies = [
+ "neo-dom",
+ "neo-engine",
+ "neo-extract",
+ "neo-http",
+ "neo-interact",
+ "neo-mcp",
+ "neo-runtime",
+ "neo-trace",
+ "neo-types",
+ "serde_json",
+]
+
+[[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
