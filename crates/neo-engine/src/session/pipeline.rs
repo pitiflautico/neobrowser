@@ -241,34 +241,64 @@ impl NeoSession {
         }
         eprintln!("[profile] settle: {}ms", t5.elapsed().as_millis());
 
-        // Phase A: Pump microtasks aggressively — React/Next.js schedule mount
-        // via queueMicrotask/Promise.then which aren't tracked by TaskTracker.
+        // Extended settle: repeatedly pump event loop until DOM stabilizes.
+        // run_until_settled() returns immediately because TaskTracker doesn't
+        // track V8 internal promises/module evaluations. Instead, pump with
+        // increasing timeouts and check DOM node count for changes.
         let t5a = Instant::now();
-        let mut micro_rounds = 0u32;
-        for _ in 0..50 {
-            match rt.pump_event_loop() {
-                Ok(true) => micro_rounds += 1,
-                Ok(false) => break,
-                Err(e) => {
-                    neo_trace!("[SETTLE] microtask pump error at round {micro_rounds}: {e}");
-                    break;
+        let settle_budget = std::time::Duration::from_millis(
+            std::env::var("NEORENDER_SETTLE_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(3000)
+        );
+
+        let nodes_before = rt.eval("document.querySelectorAll('*').length")
+            .unwrap_or_else(|_| "0".to_string())
+            .trim().parse::<usize>().unwrap_or(0);
+
+        let mut rounds = 0u32;
+        let mut last_node_count = nodes_before;
+        let mut stable_ticks = 0u32;
+
+        while t5a.elapsed() < settle_budget && stable_ticks < 3 {
+            // Pump with 100ms timeout per round
+            let pump_timeout = std::cmp::min(100, settle_budget.as_millis() as u64 - t5a.elapsed().as_millis() as u64);
+            if pump_timeout == 0 { break; }
+
+            // Use pump_event_loop which has 5ms internal timeout
+            // But call it repeatedly for 100ms
+            let round_start = Instant::now();
+            while round_start.elapsed().as_millis() < pump_timeout as u128 {
+                match rt.pump_event_loop() {
+                    Ok(true) => {} // had work
+                    Ok(false) => {
+                        // No work — sleep briefly and retry (macrotask may fire after delay)
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(_) => break,
                 }
+            }
+
+            rounds += 1;
+
+            // Check DOM node count
+            let current_nodes = rt.eval("document.querySelectorAll('*').length")
+                .unwrap_or_else(|_| "0".to_string())
+                .trim().parse::<usize>().unwrap_or(0);
+
+            if current_nodes == last_node_count {
+                stable_ticks += 1;
+            } else {
+                stable_ticks = 0;
+                neo_trace!("[SETTLE] DOM changed: {} -> {} nodes (round {})", last_node_count, current_nodes, rounds);
+                last_node_count = current_nodes;
             }
         }
 
-        // Phase B: Pump macrotasks — setTimeout(0), requestIdleCallback, etc.
-        let mut macro_rounds = 0u32;
-        for _ in 0..20 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            match rt.pump_event_loop() {
-                Ok(true) => macro_rounds += 1,
-                Ok(false) => break,
-                Err(e) => {
-                    neo_trace!("[SETTLE] macrotask pump error at round {macro_rounds}: {e}");
-                    break;
-                }
-            }
-        }
+        let nodes_after = last_node_count;
+        let micro_rounds = rounds;
+        let macro_rounds = 0u32;
 
         // Diagnostics: node count after settle.
         let node_count = rt
