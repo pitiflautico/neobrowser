@@ -24,7 +24,7 @@ impl RquestClient {
     pub fn new(timeout_ms: u64) -> Result<Self, HttpError> {
         let timeout = Duration::from_millis(timeout_ms);
         let client = rquest::Client::builder()
-            .emulation(rquest_util::Emulation::Chrome135)
+            .emulation(rquest_util::Emulation::Chrome136)
             .cookie_store(true)
             .redirect(rquest::redirect::Policy::limited(10))
             .timeout(timeout)
