@@ -1323,7 +1323,17 @@ dependencies = [
 name = "neo-engine"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "neo-dom",
+ "neo-extract",
+ "neo-http",
+ "neo-interact",
+ "neo-runtime",
+ "neo-trace",
  "neo-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+ "url",
 ]
 
 [[package]]

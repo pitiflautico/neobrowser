@@ -5,3 +5,13 @@ edition.workspace = true
 
 [dependencies]
 neo-types = { path = "../neo-types" }
+neo-http = { path = "../neo-http" }
+neo-dom = { path = "../neo-dom" }
+neo-runtime = { path = "../neo-runtime" }
+neo-interact = { path = "../neo-interact" }
+neo-extract = { path = "../neo-extract" }
+neo-trace = { path = "../neo-trace" }
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+url.workspace = true
