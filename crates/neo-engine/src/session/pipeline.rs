@@ -349,6 +349,32 @@ impl NeoSession {
         }
     }
 
+    /// Pump the V8 event loop after an interaction to let microtasks/timers run.
+    ///
+    /// Budget-based: runs up to 100ms or until idle, whichever comes first.
+    /// This ensures framework re-renders (React setState, Vue reactivity, etc.)
+    /// complete before we check for navigation requests or return results.
+    pub(crate) fn pump_after_interaction(&mut self) {
+        if let Some(ref mut rt) = self.runtime {
+            let start = std::time::Instant::now();
+            let budget = std::time::Duration::from_millis(100);
+            let mut rounds = 0u32;
+            while start.elapsed() < budget {
+                match rt.pump_event_loop() {
+                    Ok(true) => rounds += 1,
+                    _ => break,
+                }
+            }
+            if rounds > 0 {
+                eprintln!(
+                    "[NeoRender] pump_after_interaction: {} rounds in {}ms",
+                    rounds,
+                    start.elapsed().as_millis()
+                );
+            }
+        }
+    }
+
     /// Drain pending navigation requests from the JS shim and execute the first one.
     ///
     /// Called after click/submit/eval — if JS triggered form.submit() or

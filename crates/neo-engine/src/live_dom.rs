@@ -300,35 +300,127 @@ const DISPATCHER_JS: &str = r#"
 
   // ── Event sequences ─────────────────────────────────────────────
 
-  function fireClick(el) {
-    var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : {x:0,y:0,width:0,height:0};
-    var cx = rect.x + rect.width / 2;
-    var cy = rect.y + rect.height / 2;
-    var shared = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+  function executeFormSubmit(form, submitter) {
+    var submitEvt = new Event('submit', {bubbles:false, cancelable:true});
+    submitEvt.submitter = submitter || null;
+    var prevented = !form.dispatchEvent(submitEvt);
+    if (prevented) return {action:'prevented'};
 
-    el.focus && el.focus();
-    try { el.dispatchEvent(new PointerEvent('pointerdown', shared)); } catch(e) {
-      el.dispatchEvent(new MouseEvent('pointerdown', shared));
+    // Collect form data
+    var data = {};
+    var els = form.querySelectorAll('input,select,textarea');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      if (!el.name || el.disabled) continue;
+      if (el.type === 'checkbox' || el.type === 'radio') {
+        if (el.checked) data[el.name] = el.value || 'on';
+      } else {
+        data[el.name] = el.value || '';
+      }
     }
-    el.dispatchEvent(new MouseEvent('mousedown', shared));
-    try { el.dispatchEvent(new PointerEvent('pointerup', shared)); } catch(e) {
-      el.dispatchEvent(new MouseEvent('pointerup', shared));
+    // Include submitter value
+    if (submitter && submitter.name) data[submitter.name] = submitter.value || '';
+
+    var action = (submitter && submitter.formAction) || form.action || location.href;
+    var method = ((submitter && submitter.formMethod) || form.method || 'GET').toUpperCase();
+
+    globalThis.__neo_ops.op_navigation_request(JSON.stringify({
+      url: action, method: method, form_data: data, type: 'form_submit'
+    }));
+  }
+
+  function fireClick(el) {
+    // Focus sequence
+    var prev = document.activeElement;
+    if (prev && prev !== el && prev.blur) {
+      prev.dispatchEvent(new FocusEvent('focusout', {bubbles:true, relatedTarget:el}));
+      prev.dispatchEvent(new FocusEvent('blur', {relatedTarget:el}));
     }
-    el.dispatchEvent(new MouseEvent('mouseup', shared));
-    el.dispatchEvent(new MouseEvent('click', shared));
+    if (el.focus) {
+      el.dispatchEvent(new FocusEvent('focusin', {bubbles:true, relatedTarget:prev}));
+      el.dispatchEvent(new FocusEvent('focus', {relatedTarget:prev}));
+    }
+    // Pointer + mouse sequence
+    el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true, pointerId:1, pointerType:'mouse'}));
+    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, button:0}));
+    el.dispatchEvent(new PointerEvent('pointerup', {bubbles:true, pointerId:1, pointerType:'mouse'}));
+    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true, button:0}));
+    var clickEvt = new MouseEvent('click', {bubbles:true, button:0});
+    el.dispatchEvent(clickEvt);
+
+    // Default actions (only if not prevented)
+    if (!clickEvt.defaultPrevented) {
+      var tag = (el.tagName || '').toUpperCase();
+      // Anchor navigation
+      if (tag === 'A' && el.href) {
+        var href = el.getAttribute('href') || '';
+        if (href.startsWith('#')) { /* hash nav - skip */ }
+        else if (href.startsWith('javascript:')) { try { eval(href.slice(11)); } catch(e) {} }
+        else if (el.target === '_blank') { /* new context signal */ }
+        else if (el.hasAttribute('download')) { /* download signal */ }
+        else { globalThis.__neo_ops.op_navigation_request(JSON.stringify({url:el.href,method:'GET',type:'link_click'})); }
+      }
+      // Checkbox toggle
+      else if (tag === 'INPUT' && el.type === 'checkbox') {
+        el.checked = !el.checked;
+        el.dispatchEvent(new InputEvent('input', {bubbles:true}));
+        el.dispatchEvent(new Event('change', {bubbles:true}));
+      }
+      // Radio toggle
+      else if (tag === 'INPUT' && el.type === 'radio') {
+        var form = el.form || document;
+        var group = form.querySelectorAll('input[type=radio][name="' + el.name + '"]');
+        group.forEach(function(r) { if (r !== el) r.checked = false; });
+        el.checked = true;
+        el.dispatchEvent(new InputEvent('input', {bubbles:true}));
+        el.dispatchEvent(new Event('change', {bubbles:true}));
+      }
+      // Submit button
+      else if ((tag === 'BUTTON' && (el.type === 'submit' || !el.type || el.type === ''))
+              || (tag === 'INPUT' && el.type === 'submit')) {
+        var form = el.closest('form');
+        if (form) executeFormSubmit(form, el);
+      }
+      // Label forwarding
+      else if (tag === 'LABEL') {
+        var forId = el.getAttribute('for');
+        var ctrl = forId ? document.getElementById(forId) : el.querySelector('input,select,textarea');
+        if (ctrl && ctrl !== el) fireClick(ctrl);
+      }
+    }
   }
 
   function fireTypeText(el, text) {
-    el.focus && el.focus();
-    el.value = '';
+    // Focus if not already focused
+    if (document.activeElement !== el && el.focus) el.focus();
+
+    // Get native value setter (React compat)
+    var proto = Object.getPrototypeOf(el);
+    var setter = (Object.getOwnPropertyDescriptor(proto, 'value') ||
+                  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value') ||
+                  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value') ||
+                  {}).set;
+
     for (var i = 0; i < text.length; i++) {
       var ch = text[i];
-      el.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
-      el.value += ch;
-      el.dispatchEvent(new InputEvent('input', { data: ch, inputType: 'insertText', bubbles: true }));
-      el.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+      var code = ch >= 'a' && ch <= 'z' ? 'Key' + ch.toUpperCase()
+               : ch >= 'A' && ch <= 'Z' ? 'Key' + ch
+               : ch >= '0' && ch <= '9' ? 'Digit' + ch
+               : ch === ' ' ? 'Space' : 'Key' + ch;
+
+      el.dispatchEvent(new KeyboardEvent('keydown', {key:ch, code:code, bubbles:true}));
+      el.dispatchEvent(new KeyboardEvent('keypress', {key:ch, code:code, bubbles:true, charCode:ch.charCodeAt(0)}));
+
+      // Set value incrementally using native setter
+      var newVal = text.substring(0, i + 1);
+      if (setter) setter.call(el, newVal);
+      else el.value = newVal;
+
+      el.dispatchEvent(new InputEvent('input', {data:ch, inputType:'insertText', bubbles:true}));
+      el.dispatchEvent(new KeyboardEvent('keyup', {key:ch, code:code, bubbles:true}));
     }
-    el.dispatchEvent(new Event('change', { bubbles: true }));
+    // Note: change fires on blur/commit in real browsers. We fire it here as compat shortcut.
+    el.dispatchEvent(new Event('change', {bubbles:true}));
   }
 
   function fireSubmit(form) {
@@ -336,12 +428,8 @@ const DISPATCHER_JS: &str = r#"
     if (document.activeElement && document.activeElement.blur) {
       document.activeElement.blur();
     }
-    var ev = new Event('submit', { bubbles: true, cancelable: true });
-    var cancelled = !form.dispatchEvent(ev);
-    if (!cancelled && form.submit) {
-      form.submit();
-    }
-    return !cancelled;
+    executeFormSubmit(form, null);
+    return true;
   }
 
   function firePressKey(el, key) {
@@ -351,7 +439,7 @@ const DISPATCHER_JS: &str = r#"
     if (key === 'Enter') {
       var form = el.closest ? el.closest('form') : null;
       if (form) {
-        fireSubmit(form);
+        executeFormSubmit(form, null);
         return { submitted: true };
       }
     }

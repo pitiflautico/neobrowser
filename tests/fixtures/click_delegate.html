@@ -1,0 +1,9 @@
+<html><body>
+<button id="btn">Click me</button>
+<div id="log"></div>
+<script>
+document.addEventListener('click', function(e) {
+    document.getElementById('log').textContent = 'clicked:' + e.target.id;
+});
+</script>
+</body></html>

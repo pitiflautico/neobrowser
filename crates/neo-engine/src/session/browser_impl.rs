@@ -263,6 +263,7 @@ impl BrowserEngine for NeoSession {
         };
         self.tracer
             .action_result("click", true, &format!("{result:?}"), None);
+        self.pump_after_interaction();
         self.process_pending_navigations();
         Ok(result)
     }
@@ -278,6 +279,8 @@ impl BrowserEngine for NeoSession {
             self.interactor.type_text(target, text, true)?;
         }
         self.tracer.action_result("type", true, "text typed", None);
+        self.pump_after_interaction();
+        self.process_pending_navigations();
         Ok(())
     }
 
@@ -293,6 +296,8 @@ impl BrowserEngine for NeoSession {
             self.interactor.fill_form(fields)?;
         }
         self.tracer.action_result("fill", true, "form filled", None);
+        self.pump_after_interaction();
+        self.process_pending_navigations();
         Ok(())
     }
 
@@ -309,6 +314,7 @@ impl BrowserEngine for NeoSession {
         }
         self.tracer
             .action_result("submit", true, "submitted", None);
+        self.pump_after_interaction();
         self.process_pending_navigations();
         Ok(SubmitResult::Navigation(String::new()))
     }
@@ -329,12 +335,16 @@ impl BrowserEngine for NeoSession {
                 })?;
                 self.tracer
                     .action_result("press_key", true, &format!("key={key}"), None);
-                Ok(())
             }
-            None => Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
-                "no runtime available".into(),
-            ))),
+            None => {
+                return Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
+                    "no runtime available".into(),
+                )));
+            }
         }
+        self.pump_after_interaction();
+        self.process_pending_navigations();
+        Ok(())
     }
 
     fn wait_for(&mut self, selector: &str, timeout_ms: u32) -> Result<bool, EngineError> {

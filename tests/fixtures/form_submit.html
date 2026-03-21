@@ -1,0 +1,13 @@
+<html><body>
+<form id="f" action="/test">
+<input name="q" value="hello">
+<button type="submit">Go</button>
+</form>
+<div id="sublog"></div>
+<script>
+document.getElementById('f').addEventListener('submit', function(e) {
+    e.preventDefault();
+    document.getElementById('sublog').textContent = 'submitted:' + new FormData(e.target).get('q');
+});
+</script>
+</body></html>

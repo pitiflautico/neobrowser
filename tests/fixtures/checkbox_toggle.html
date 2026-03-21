@@ -1,0 +1,9 @@
+<html><body>
+<input type="checkbox" id="cb">
+<div id="cblog"></div>
+<script>
+document.getElementById('cb').addEventListener('change', function(e) {
+    document.getElementById('cblog').textContent = 'checked:' + e.target.checked;
+});
+</script>
+</body></html>

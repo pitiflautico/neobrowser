@@ -1,0 +1,11 @@
+<html><body>
+<input id="inp" value="">
+<div id="out"></div>
+<script>
+document.addEventListener('input', function(e) {
+    if (e.target.id === 'inp') {
+        document.getElementById('out').textContent = 'value:' + e.target.value;
+    }
+});
+</script>
+</body></html>
