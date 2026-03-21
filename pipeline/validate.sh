@@ -66,7 +66,7 @@ fi
 
 # ── Step 3: No todo!() in non-test code ──
 step 3 "Implementation complete"
-TODO_COUNT=$(grep -r 'todo!()' "$CRATE_DIR/src/" 2>/dev/null | grep -v '#\[cfg(test)\]' | grep -v 'mod tests' | grep -cv '^$' || echo "0")
+TODO_COUNT=$(grep -r 'todo!()' "$CRATE_DIR/src/" 2>/dev/null | grep -v '#\[cfg(test)\]' | grep -v 'mod tests' | wc -l | tr -d ' ')
 if [ "$TODO_COUNT" = "0" ]; then
     pass 3 "No todo!()"
 else
@@ -101,7 +101,7 @@ fi
 
 # ── Step 7: Doc comments ──
 step 7 "Documentation"
-DOC_WARNINGS=$(cargo doc -p "$CRATE" --no-deps 2>&1 | grep -c "missing documentation" || echo "0")
+DOC_WARNINGS=$(cargo doc -p "$CRATE" --no-deps 2>&1 | grep "missing documentation" | wc -l | tr -d ' ')
 if [ "$DOC_WARNINGS" = "0" ]; then
     pass 7 "Docs"
 else
@@ -126,7 +126,17 @@ fi
 
 # ── Step 9: No unwrap outside tests ──
 step 9 "No unwrap()"
-UNWRAP_COUNT=$(grep -rn '\.unwrap()' "$CRATE_DIR/src/" 2>/dev/null | grep -v '#\[cfg(test)\]' | grep -v 'mod tests {' | grep -v '// safe:' | grep -cv '^$' || echo "0")
+# Count unwrap() only in non-test code: for each .rs file, take lines before #[cfg(test)]
+UNWRAP_COUNT=0
+for f in $(find "$CRATE_DIR/src" -name "*.rs" 2>/dev/null); do
+    test_line=$(grep -n '#\[cfg(test)\]' "$f" 2>/dev/null | head -1 | cut -d: -f1)
+    if [ -n "$test_line" ]; then
+        count=$(head -n "$((test_line - 1))" "$f" | grep '\.unwrap()' | grep -v '// safe:' | wc -l | tr -d ' ')
+    else
+        count=$(grep '\.unwrap()' "$f" | grep -v '// safe:' | wc -l | tr -d ' ')
+    fi
+    UNWRAP_COUNT=$((UNWRAP_COUNT + count))
+done
 if [ "$UNWRAP_COUNT" = "0" ]; then
     pass 9 "No unwrap()"
 else

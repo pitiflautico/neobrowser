@@ -40,9 +40,27 @@
 - **R8e**: Scheduler/task ordering parity (interaction with timers/fetch/hydration)
   - Gate por cada sub: unit tests + fixture JS-heavy page
 
+### Fase E.5: Interaction completeness (después de performance)
+- **R8f**: doubleclick support (mousedown→mouseup→click→mousedown→mouseup→click→dblclick)
+- **R8g**: right-click / context menu detection
+- **R8h**: hover (mouseenter→mouseover sequence)
+- **R8i**: keyboard events (keydown→keypress→keyup, Enter for submit)
+- **R8j**: file upload in NeoSession (read file, build multipart)
+  - Gate: fixture page with all interaction types, verify event sequence
+
 ### Fase F: Validation (secuencial)
-- **R9.0**: Define exit criteria (qué es "content extracted", umbrales, tolerancias por site)
-- **R9**: Real sites (synthetic fixtures → known-hard → top 10, cada uno <15s)
+- **R9.0**: Define exit criteria por site:
+  - content extracted (links > 0, text > 100 chars)
+  - forms detected (inputs, buttons counted)
+  - classification correct (Article, DataTable, LoginForm, etc.)
+  - hydration markers (routeModules for React, __vue_app__ for Vue)
+  - interactive elements found (buttons, links with actions)
+  - tolerancias: allow 10% variance between V1 and V2
+- **R9**: Real sites validation tiers:
+  1. Synthetic fixtures (local HTML)
+  2. Known-hard (React SPA, Vue SPA, heavy JS)
+  3. Top 10 (Google, ChatGPT, Reddit, Wikipedia, SO, Amazon, YouTube, GitHub, NYT, Netflix)
+  - Cada site <15s, content extracted, classification correct
 
 ### Fase G: Benchmark (secuencial)
 - **R10.0**: Freeze entorno (warm/cold cache, network, repetitions, hardware, timeout)

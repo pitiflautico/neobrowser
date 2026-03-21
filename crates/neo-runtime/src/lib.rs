@@ -4,6 +4,7 @@
 //! This is how NeoRender runs React, Vue, Angular — any SPA.
 //! Provides fetch/timer/storage ops, ES module loading, and V8 bytecode caching.
 
+pub mod code_cache;
 pub mod mock;
 pub mod modules;
 pub mod ops;

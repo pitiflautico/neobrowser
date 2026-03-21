@@ -89,7 +89,8 @@ pub trait HttpClient: Send + Sync {
 
 /// Trait for cookie storage with SameSite awareness.
 pub trait CookieStore: Send + Sync {
-    fn get_for_request(&self, url: &str, top_level_url: Option<&str>, is_top_level: bool) -> String;
+    fn get_for_request(&self, url: &str, top_level_url: Option<&str>, is_top_level: bool)
+        -> String;
     fn store_set_cookie(&self, url: &str, set_cookie: &str);
     fn delete(&self, name: &str, domain: &str, path: &str);
     fn evict_expired(&self);

@@ -6,6 +6,7 @@
 pub mod file_tracer;
 pub mod mock;
 pub mod noop;
+pub mod redaction;
 pub mod summary;
 pub mod tracer;
 

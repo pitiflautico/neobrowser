@@ -7,11 +7,13 @@
 //! - **Delta**: what changed since last observation
 
 pub mod classify;
+mod classify_signals;
 pub mod delta;
 mod mock;
 pub mod semantic;
 pub mod structured;
 pub mod wom;
+mod wom_builder;
 
 pub use classify::{PageClassification, PageType};
 pub use delta::WomDelta;

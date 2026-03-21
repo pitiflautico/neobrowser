@@ -168,5 +168,8 @@ fn test_redact_cookie_and_api_key_in_trace() {
     assert_eq!(entry.metadata["content-type"], "application/json");
     // Authorization key matches case-insensitively — but the JSON key is "Authorization"
     // which lowercased is "authorization", a known auth key
-    assert_eq!(entry.metadata["Authorization"], serde_json::json!("[REDACTED]"));
+    assert_eq!(
+        entry.metadata["Authorization"],
+        serde_json::json!("[REDACTED]")
+    );
 }

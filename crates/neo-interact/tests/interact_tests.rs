@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 
 use neo_dom::{DomEngine, MockDomEngine};
-use neo_interact::{click, detect_modal, dismiss_consent, fill_form, resolve, scroll, scroll_until_stable, submit, type_slowly, type_text};
+use neo_interact::{
+    click, detect_modal, dismiss_consent, fill_form, resolve, scroll, scroll_until_stable, submit,
+    type_slowly, type_text,
+};
 use neo_interact::{ClickResult, InteractError, ScrollDirection, SubmitResult};
 
 fn make_dom_with_button() -> MockDomEngine {
@@ -298,8 +301,7 @@ fn test_type_contenteditable_append() {
 fn test_type_slowly_char_by_char() {
     let mut dom = make_dom_with_input();
 
-    let count = type_slowly(&mut dom, "Email address", "abc", 50)
-        .expect("should type slowly");
+    let count = type_slowly(&mut dom, "Email address", "abc", 50).expect("should type slowly");
     assert_eq!(count, 3);
 
     let el = resolve(&dom, "Email address").unwrap();
@@ -312,8 +314,8 @@ fn test_type_slowly_contenteditable() {
     let mut dom = MockDomEngine::new();
     let _div = dom.add_element("div", &[("contenteditable", "true")], "");
 
-    let count = type_slowly(&mut dom, "div", "hi", 10)
-        .expect("should type slowly into contenteditable");
+    let count =
+        type_slowly(&mut dom, "div", "hi", 10).expect("should type slowly into contenteditable");
     assert_eq!(count, 2);
 
     let el = resolve(&dom, "div").unwrap();

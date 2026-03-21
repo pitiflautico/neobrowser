@@ -118,7 +118,12 @@ impl Interactor for MockInteractor {
         Ok(self.submit_result.clone())
     }
 
-    fn type_slowly(&mut self, target: &str, text: &str, delay_ms: u64) -> Result<usize, InteractError> {
+    fn type_slowly(
+        &mut self,
+        target: &str,
+        text: &str,
+        delay_ms: u64,
+    ) -> Result<usize, InteractError> {
         self.actions.push(RecordedAction::TypeSlowly {
             target: target.to_string(),
             text: text.to_string(),
@@ -150,7 +155,11 @@ impl Interactor for MockInteractor {
     }
 
     fn detect_modal(&self) -> Option<neo_dom::ElementId> {
-        if self.has_modal { Some(0) } else { None }
+        if self.has_modal {
+            Some(0)
+        } else {
+            None
+        }
     }
 
     fn dismiss_consent(&mut self) -> bool {

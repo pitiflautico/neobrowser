@@ -229,7 +229,13 @@ fn extract_pagination(dom: &dyn DomEngine, results: &mut Vec<StructuredData>) {
 
     let next_keywords = ["next", "siguiente", "suivant", ">>", "\u{203a}", "\u{00bb}"];
     let prev_keywords = [
-        "prev", "previous", "anterior", "pr\u{00e9}c\u{00e9}dent", "<<", "\u{2039}", "\u{00ab}",
+        "prev",
+        "previous",
+        "anterior",
+        "pr\u{00e9}c\u{00e9}dent",
+        "<<",
+        "\u{2039}",
+        "\u{00ab}",
     ];
 
     for link in &links {
@@ -328,14 +334,15 @@ fn parse_colspan(tag_text: &str) -> usize {
         // Find the value after =
         if let Some(eq) = rest.find('=') {
             let val_start = &rest[eq + 1..].trim_start();
-            let val = val_start
-                .trim_start_matches('"')
-                .trim_start_matches('\'');
+            let val = val_start.trim_start_matches('"').trim_start_matches('\'');
             if let Some(end) = val.find(|c: char| !c.is_ascii_digit()) {
                 if let Ok(n) = val[..end].parse::<usize>() {
                     return n.max(1);
                 }
-            } else if let Ok(n) = val.trim_end_matches('"').trim_end_matches('\'').parse::<usize>()
+            } else if let Ok(n) = val
+                .trim_end_matches('"')
+                .trim_end_matches('\'')
+                .parse::<usize>()
             {
                 return n.max(1);
             }

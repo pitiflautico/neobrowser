@@ -121,10 +121,7 @@ fn diff_node(old: &WomNode, new: &WomNode) -> String {
         changes.push(format!("value: {:?} -> {:?}", old.value, new.value));
     }
     if old.visible != new.visible {
-        changes.push(format!(
-            "visibility: {} -> {}",
-            old.visible, new.visible
-        ));
+        changes.push(format!("visibility: {} -> {}", old.visible, new.visible));
     }
     if old.href != new.href {
         changes.push(format!("href: {:?} -> {:?}", old.href, new.href));

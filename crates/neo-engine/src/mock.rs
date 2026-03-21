@@ -83,32 +83,48 @@ impl BrowserEngine for MockBrowserEngine {
 
     fn back(&mut self) -> Result<PageResult, EngineError> {
         if self.history_index <= 0 {
-            return Err(EngineError::InvalidUrl("no previous page in history".to_string()));
+            return Err(EngineError::InvalidUrl(
+                "no previous page in history".to_string(),
+            ));
         }
         self.history_index -= 1;
         let url = self.history[self.history_index as usize].clone();
         self.actions.push(format!("back:{url}"));
         Ok(PageResult {
-            url, title: "Mock Page".to_string(), state: PageState::Complete,
-            render_ms: 0, wom: self.wom.clone(), errors: Vec::new(), redirect_chain: Vec::new(),
+            url,
+            title: "Mock Page".to_string(),
+            state: PageState::Complete,
+            render_ms: 0,
+            wom: self.wom.clone(),
+            errors: Vec::new(),
+            redirect_chain: Vec::new(),
         })
     }
 
     fn forward(&mut self) -> Result<PageResult, EngineError> {
         let max_index = self.history.len() as isize - 1;
         if self.history_index >= max_index {
-            return Err(EngineError::InvalidUrl("no next page in history".to_string()));
+            return Err(EngineError::InvalidUrl(
+                "no next page in history".to_string(),
+            ));
         }
         self.history_index += 1;
         let url = self.history[self.history_index as usize].clone();
         self.actions.push(format!("forward:{url}"));
         Ok(PageResult {
-            url, title: "Mock Page".to_string(), state: PageState::Complete,
-            render_ms: 0, wom: self.wom.clone(), errors: Vec::new(), redirect_chain: Vec::new(),
+            url,
+            title: "Mock Page".to_string(),
+            state: PageState::Complete,
+            render_ms: 0,
+            wom: self.wom.clone(),
+            errors: Vec::new(),
+            redirect_chain: Vec::new(),
         })
     }
 
-    fn history(&self) -> Vec<String> { self.history.clone() }
+    fn history(&self) -> Vec<String> {
+        self.history.clone()
+    }
 
     fn page_state(&self) -> PageState {
         self.state

@@ -304,9 +304,7 @@ fn generate_summary(title: &str, nodes: &[WomNode]) -> String {
     if n_buttons > 0 {
         let submit_count = nodes
             .iter()
-            .filter(|n| {
-                n.role == "button" && n.actions.contains(&"click".to_string())
-            })
+            .filter(|n| n.role == "button" && n.actions.contains(&"click".to_string()))
             .count();
         if submit_count > 0 && submit_count == n_buttons {
             parts.push(format!("{n_buttons} submit buttons"));

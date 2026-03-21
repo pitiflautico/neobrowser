@@ -282,7 +282,10 @@ fn test_wom_actions() {
     assert!(link.actions.contains(&"navigate".to_string()));
 
     // Text input should have type + clear
-    let text_input = wom.nodes.iter().find(|n| n.role == "input" && n.tag == "input");
+    let text_input = wom
+        .nodes
+        .iter()
+        .find(|n| n.role == "input" && n.tag == "input");
     assert!(text_input.is_some());
     let ti = text_input.unwrap();
     assert!(ti.actions.contains(&"type".to_string()));
@@ -335,9 +338,21 @@ fn test_wom_summary() {
     let wom = neo_extract::wom::build_wom(&dom, "https://example.com");
 
     // Summary should mention inputs, buttons, and title
-    assert!(wom.summary.contains("Login"), "summary should contain title: {}", wom.summary);
-    assert!(wom.summary.contains("input"), "summary should mention inputs: {}", wom.summary);
-    assert!(wom.summary.contains("button"), "summary should mention buttons: {}", wom.summary);
+    assert!(
+        wom.summary.contains("Login"),
+        "summary should contain title: {}",
+        wom.summary
+    );
+    assert!(
+        wom.summary.contains("input"),
+        "summary should mention inputs: {}",
+        wom.summary
+    );
+    assert!(
+        wom.summary.contains("button"),
+        "summary should mention buttons: {}",
+        wom.summary
+    );
 }
 
 // -- Structured JSON-LD verification --
@@ -360,7 +375,10 @@ fn test_structured_jsonld_detailed() {
     let product = data
         .iter()
         .find(|d| matches!(d, StructuredData::Product { .. }));
-    assert!(product.is_some(), "should extract JSON-LD product with numeric price");
+    assert!(
+        product.is_some(),
+        "should extract JSON-LD product with numeric price"
+    );
 
     if let Some(StructuredData::Product { name, price, url }) = product {
         assert_eq!(name, "Super Gadget");
@@ -474,7 +492,10 @@ fn test_classify_pricing() {
         result.features
     );
     assert!(result.confidence > 0.5);
-    assert!(!result.features.is_empty(), "should have classification features");
+    assert!(
+        !result.features.is_empty(),
+        "should have classification features"
+    );
 }
 
 // -- Classification: new types exist --

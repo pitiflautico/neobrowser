@@ -15,7 +15,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 
-use crate::v8::V8CodeCache;
+use crate::code_cache::V8CodeCache;
 
 /// Pre-fetched script contents keyed by URL.
 #[derive(Default)]

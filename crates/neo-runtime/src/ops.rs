@@ -188,7 +188,10 @@ pub fn op_storage_get(
     let storage = s
         .try_borrow::<StorageState>()
         .ok_or_else(|| deno_core::error::generic_error("No StorageState"))?;
-    let val = storage.backend.get(&storage.origin, &key).unwrap_or_default();
+    let val = storage
+        .backend
+        .get(&storage.origin, &key)
+        .unwrap_or_default();
     Ok(val)
 }
 /// Set a value in localStorage.

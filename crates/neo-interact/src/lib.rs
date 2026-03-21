@@ -24,8 +24,8 @@ pub use scroll::{scroll, scroll_until_stable};
 pub use select::select;
 pub use type_text::{type_slowly, type_text};
 
-use std::sync::{Arc, Mutex};
 use neo_dom::DomEngine;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -126,7 +126,12 @@ pub trait Interactor {
     fn submit(&mut self, target: Option<&str>) -> Result<SubmitResult, InteractError>;
 
     /// Type text character by character. Returns char count typed.
-    fn type_slowly(&mut self, target: &str, text: &str, delay_ms: u64) -> Result<usize, InteractError>;
+    fn type_slowly(
+        &mut self,
+        target: &str,
+        text: &str,
+        delay_ms: u64,
+    ) -> Result<usize, InteractError>;
 
     /// Scroll in a direction. Returns new visible element count.
     fn scroll(&mut self, direction: ScrollDirection, amount: u32) -> Result<usize, InteractError>;
@@ -188,7 +193,12 @@ impl Interactor for DomInteractor {
         forms::submit(dom.as_mut(), target)
     }
 
-    fn type_slowly(&mut self, target: &str, text: &str, delay_ms: u64) -> Result<usize, InteractError> {
+    fn type_slowly(
+        &mut self,
+        target: &str,
+        text: &str,
+        delay_ms: u64,
+    ) -> Result<usize, InteractError> {
         let mut dom = self.dom.lock().expect("dom lock poisoned");
         type_text::type_slowly(dom.as_mut(), target, text, delay_ms)
     }

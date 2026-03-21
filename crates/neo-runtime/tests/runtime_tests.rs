@@ -167,11 +167,8 @@ fn test_settled_returns_when_idle() {
     use std::time::Instant;
 
     let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
-    rt.set_document_html(
-        "<html><body></body></html>",
-        "https://example.com",
-    )
-    .unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
 
     // No timers, no promises — should return quickly.
     let start = Instant::now();
@@ -196,11 +193,8 @@ fn test_timeout_stops_execution() {
     use std::time::Instant;
 
     let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
-    rt.set_document_html(
-        "<html><body></body></html>",
-        "https://example.com",
-    )
-    .unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
 
     // Create an interval that would run forever without budget/timeout.
     rt.execute(
@@ -244,13 +238,9 @@ fn test_interval_capped() {
         interval_max_ticks: 5,
         timer_budget: 200,
     };
-    let mut rt =
-        DenoRuntime::new_with_scheduler(&RuntimeConfig::default(), None, sched).unwrap();
-    rt.set_document_html(
-        "<html><body></body></html>",
-        "https://example.com",
-    )
-    .unwrap();
+    let mut rt = DenoRuntime::new_with_scheduler(&RuntimeConfig::default(), None, sched).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
 
     rt.execute(
         r#"

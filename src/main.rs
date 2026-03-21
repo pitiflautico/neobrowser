@@ -55,8 +55,8 @@ fn create_engine() -> NeoSession {
 
     let cookie_store = SqliteCookieStore::default_store()
         .expect("failed to open cookie store at ~/.neorender/cookies.db");
-    let disk_cache = DiskCache::default_cache()
-        .expect("failed to open disk cache at ~/.neorender/cache/http/");
+    let disk_cache =
+        DiskCache::default_cache().expect("failed to open disk cache at ~/.neorender/cache/http/");
 
     NeoSession::new_shared(
         Box::new(http),
@@ -122,7 +122,8 @@ fn run_see(args: &[String]) {
         Ok(result) => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("JSON error: {e}"))
+                serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|e| format!("JSON error: {e}"))
             );
         }
         Err(e) => {

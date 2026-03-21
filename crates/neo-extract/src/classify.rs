@@ -7,6 +7,10 @@
 use neo_dom::DomEngine;
 use serde::{Deserialize, Serialize};
 
+use crate::classify_signals::{
+    check_documentation, check_pricing_page, check_profile, check_settings, has_price_pattern,
+};
+
 /// Classification result with confidence.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PageClassification {
@@ -21,18 +25,31 @@ pub struct PageClassification {
 /// Known page types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PageType {
+    /// Search engine results page.
     SearchResults,
+    /// Long-form article or blog post.
     Article,
+    /// E-commerce product detail page.
     ProductPage,
+    /// Authentication / login form.
     LoginForm,
+    /// Dashboard or admin panel.
     Dashboard,
+    /// Data-heavy table page.
     DataTable,
+    /// Site homepage.
     Homepage,
+    /// Error page (404, 500, etc.).
     Error,
+    /// Pricing / plans page.
     Pricing,
+    /// Technical documentation.
     Documentation,
+    /// User profile page.
     Profile,
+    /// Settings / preferences page.
     Settings,
+    /// Could not determine page type.
     Unknown,
 }
 
@@ -95,7 +112,10 @@ fn check_login_form(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Ve
 }
 
 /// Search results: search input + repeated result items.
-fn check_search_results(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Vec<String>)>) {
+fn check_search_results(
+    dom: &dyn DomEngine,
+    candidates: &mut Vec<(PageType, f32, Vec<String>)>,
+) {
     let mut features = Vec::new();
     let mut score: f32 = 0.0;
 
@@ -132,7 +152,6 @@ fn check_article(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Vec<S
         features.push(format!("{} article elements", articles.len()));
     }
 
-    // Check for substantial paragraph content
     let paragraphs = dom.query_selector_all("p");
     if paragraphs.len() > 3 {
         score += 0.2;
@@ -154,7 +173,6 @@ fn check_data_table(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Ve
         score += 0.3;
         features.push(format!("{} tables", tables.len()));
 
-        // Check for rows via inner HTML parsing
         for &table_el in &tables {
             let html = dom.inner_html(table_el);
             let row_count = html.matches("<tr").count();
@@ -186,7 +204,6 @@ fn check_product_page(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, 
         }
     }
 
-    // Check for price patterns in text content
     let body_text = dom
         .query_selector("body")
         .map(|el| dom.text_content(el))
@@ -219,197 +236,4 @@ fn check_error_page(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Ve
     if score > 0.0 {
         candidates.push((PageType::Error, score.min(1.0), features));
     }
-}
-
-/// Pricing page: pricing tables, price patterns, plan/tier keywords.
-fn check_pricing_page(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Vec<String>)>) {
-    let mut features = Vec::new();
-    let mut score: f32 = 0.0;
-
-    let title = dom.title().to_lowercase();
-    let pricing_keywords = ["pricing", "plans", "prices", "precios", "tarif"];
-    for kw in &pricing_keywords {
-        if title.contains(kw) {
-            score += 0.5;
-            features.push(format!("title contains '{kw}'"));
-            break;
-        }
-    }
-
-    // Check body text for price patterns
-    let body_text = dom
-        .query_selector("body")
-        .map(|el| dom.text_content(el))
-        .unwrap_or_default();
-    let body_lower = body_text.to_lowercase();
-
-    // Multiple price patterns = pricing page
-    let price_count = count_price_patterns(&body_text);
-    if price_count >= 2 {
-        score += 0.3;
-        features.push(format!("{price_count} price patterns found"));
-    }
-
-    // Plan/tier keywords
-    let plan_keywords = [
-        "free plan",
-        "pro plan",
-        "enterprise",
-        "basic",
-        "premium",
-        "starter",
-        "/month",
-        "/mo",
-        "/year",
-        "/yr",
-    ];
-    let mut plan_count = 0;
-    for kw in &plan_keywords {
-        if body_lower.contains(kw) {
-            plan_count += 1;
-        }
-    }
-    if plan_count >= 2 {
-        score += 0.3;
-        features.push(format!("{plan_count} plan/tier keywords"));
-    }
-
-    if score > 0.0 {
-        candidates.push((PageType::Pricing, score.min(1.0), features));
-    }
-}
-
-/// Documentation page: code blocks, nav with TOC-like links, breadcrumbs.
-fn check_documentation(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Vec<String>)>) {
-    let mut features = Vec::new();
-    let mut score: f32 = 0.0;
-
-    let title = dom.title().to_lowercase();
-    let doc_keywords = ["docs", "documentation", "reference", "api", "guide"];
-    for kw in &doc_keywords {
-        if title.contains(kw) {
-            score += 0.4;
-            features.push(format!("title contains '{kw}'"));
-            break;
-        }
-    }
-
-    let code_blocks = dom.query_selector_all("code");
-    let pre_blocks = dom.query_selector_all("pre");
-    let code_count = code_blocks.len() + pre_blocks.len();
-    if code_count > 2 {
-        score += 0.3;
-        features.push(format!("{code_count} code/pre blocks"));
-    }
-
-    // nav with many heading-like anchors = TOC
-    let navs = dom.query_selector_all("nav");
-    if !navs.is_empty() && code_count > 0 {
-        score += 0.1;
-        features.push("nav + code blocks".to_string());
-    }
-
-    if score > 0.0 {
-        candidates.push((PageType::Documentation, score.min(1.0), features));
-    }
-}
-
-/// Profile page: avatar image, user details, bio.
-fn check_profile(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Vec<String>)>) {
-    let mut features = Vec::new();
-    let mut score: f32 = 0.0;
-
-    let title = dom.title().to_lowercase();
-    let profile_keywords = ["profile", "perfil", "account", "user"];
-    for kw in &profile_keywords {
-        if title.contains(kw) {
-            score += 0.4;
-            features.push(format!("title contains '{kw}'"));
-            break;
-        }
-    }
-
-    // Check for avatar-like images
-    let imgs = dom.query_selector_all("img");
-    for &img in &imgs {
-        let alt = dom
-            .get_attribute(img, "alt")
-            .unwrap_or_default()
-            .to_lowercase();
-        let src = dom
-            .get_attribute(img, "src")
-            .unwrap_or_default()
-            .to_lowercase();
-        if alt.contains("avatar")
-            || alt.contains("profile")
-            || src.contains("avatar")
-            || src.contains("profile")
-        {
-            score += 0.3;
-            features.push("avatar/profile image".to_string());
-            break;
-        }
-    }
-
-    if score > 0.0 {
-        candidates.push((PageType::Profile, score.min(1.0), features));
-    }
-}
-
-/// Settings page: toggles, checkboxes, save buttons.
-fn check_settings(dom: &dyn DomEngine, candidates: &mut Vec<(PageType, f32, Vec<String>)>) {
-    let mut features = Vec::new();
-    let mut score: f32 = 0.0;
-
-    let title = dom.title().to_lowercase();
-    let settings_keywords = [
-        "settings",
-        "preferences",
-        "configuration",
-        "ajustes",
-        "configuraci",
-    ];
-    for kw in &settings_keywords {
-        if title.contains(kw) {
-            score += 0.5;
-            features.push(format!("title contains '{kw}'"));
-            break;
-        }
-    }
-
-    // Many checkboxes/toggles = settings
-    let inputs = dom.get_inputs();
-    let checkbox_count = inputs
-        .iter()
-        .filter(|&&el| dom.get_attribute(el, "type").as_deref() == Some("checkbox"))
-        .count();
-    if checkbox_count >= 3 {
-        score += 0.3;
-        features.push(format!("{checkbox_count} checkboxes"));
-    }
-
-    if score > 0.0 {
-        candidates.push((PageType::Settings, score.min(1.0), features));
-    }
-}
-
-/// Check if text contains price-like patterns ($X, EURZX, etc.).
-fn has_price_pattern(text: &str) -> bool {
-    count_price_patterns(text) > 0
-}
-
-/// Count price pattern occurrences in text.
-fn count_price_patterns(text: &str) -> usize {
-    let mut count = 0;
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-
-    for i in 0..len {
-        let ch = chars[i];
-        // $ or EUR or GBP followed by digit
-        if (ch == '$' || ch == '\u{20ac}' || ch == '\u{00a3}') && i + 1 < len && chars[i + 1].is_ascii_digit() {
-            count += 1;
-        }
-    }
-    count
 }

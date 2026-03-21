@@ -50,23 +50,35 @@ impl SqliteWebStorage {
         }
         let conn = Connection::open(path).map_err(|e| HttpError::CookieStore(e.to_string()))?;
         create_table(&conn)?;
-        Ok(Self { conn: Mutex::new(conn), storage_type })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            storage_type,
+        })
     }
 
     pub fn default_local() -> Result<Self, HttpError> {
-        let home = std::env::var("HOME").map_err(|_| HttpError::CookieStore("HOME not set".into()))?;
+        let home =
+            std::env::var("HOME").map_err(|_| HttpError::CookieStore("HOME not set".into()))?;
         Self::open(&format!("{home}/.neorender/cookies.db"), StorageType::Local)
     }
 
     pub fn default_session() -> Result<Self, HttpError> {
-        let home = std::env::var("HOME").map_err(|_| HttpError::CookieStore("HOME not set".into()))?;
-        Self::open(&format!("{home}/.neorender/cookies.db"), StorageType::Session)
+        let home =
+            std::env::var("HOME").map_err(|_| HttpError::CookieStore("HOME not set".into()))?;
+        Self::open(
+            &format!("{home}/.neorender/cookies.db"),
+            StorageType::Session,
+        )
     }
 
     pub fn in_memory(storage_type: StorageType) -> Result<Self, HttpError> {
-        let conn = Connection::open_in_memory().map_err(|e| HttpError::CookieStore(e.to_string()))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| HttpError::CookieStore(e.to_string()))?;
         create_table(&conn)?;
-        Ok(Self { conn: Mutex::new(conn), storage_type })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            storage_type,
+        })
     }
 
     pub fn clear_session_storage(&self) {
@@ -82,7 +94,8 @@ impl WebStorage for SqliteWebStorage {
             "SELECT value FROM storage WHERE origin = ?1 AND key = ?2 AND storage_type = ?3",
             rusqlite::params![origin, key, self.storage_type.as_str()],
             |row| row.get(0),
-        ).ok()
+        )
+        .ok()
     }
 
     fn set(&self, origin: &str, key: &str, value: &str) {
@@ -111,9 +124,9 @@ impl WebStorage for SqliteWebStorage {
 
     fn keys(&self, origin: &str) -> Vec<String> {
         let conn = self.conn.lock().expect("lock poisoned");
-        let mut stmt = match conn.prepare(
-            "SELECT key FROM storage WHERE origin = ?1 AND storage_type = ?2 ORDER BY key",
-        ) {
+        let mut stmt = match conn
+            .prepare("SELECT key FROM storage WHERE origin = ?1 AND storage_type = ?2 ORDER BY key")
+        {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
@@ -131,7 +144,8 @@ impl WebStorage for SqliteWebStorage {
             "SELECT COUNT(*) FROM storage WHERE origin = ?1 AND storage_type = ?2",
             rusqlite::params![origin, self.storage_type.as_str()],
             |row| row.get::<_, usize>(0),
-        ).unwrap_or(0)
+        )
+        .unwrap_or(0)
     }
 }
 
@@ -150,7 +164,10 @@ mod tests {
         }
         {
             let store = SqliteWebStorage::open(path, StorageType::Local).unwrap();
-            assert_eq!(store.get("https://example.com", "token"), Some("abc123".to_string()));
+            assert_eq!(
+                store.get("https://example.com", "token"),
+                Some("abc123".to_string())
+            );
         }
     }
 
@@ -158,7 +175,10 @@ mod tests {
     fn test_session_storage_cleared() {
         let store = SqliteWebStorage::in_memory(StorageType::Session).unwrap();
         store.set("https://example.com", "sid", "xyz");
-        assert_eq!(store.get("https://example.com", "sid"), Some("xyz".to_string()));
+        assert_eq!(
+            store.get("https://example.com", "sid"),
+            Some("xyz".to_string())
+        );
         store.clear_session_storage();
         assert_eq!(store.get("https://example.com", "sid"), None);
     }

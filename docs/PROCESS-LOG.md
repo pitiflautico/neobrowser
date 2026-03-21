@@ -47,4 +47,15 @@ Para cada Tier:
 
 **Resultado**: PDR-RECOVERY-FINAL.md con 26 tareas, 7 fases (A-G), gates por cada feature.
 
-**Paso 4 (pendiente)**: Empezar Fase A (R1+R2) siguiendo pipeline de verdad.
+**Paso 4**: Lanzado agente R1+R2 (quality gates, 10 crates, pipeline 9/9).
+
+**Requisitos funcionales obligatorios para V2** (definidos por Dani):
+- React hydration (ChatGPT, SPAs modernos)
+- fill_form (con CSRF auto)
+- navigate (multi-page, redirects, back/forward)
+- click (con stale recovery)
+- doubleclick
+- scroll (infinite scroll)
+- actions: type, select, check, submit
+- Todos los hidratadores de V1 portados
+- 10/10 top sites funcionando

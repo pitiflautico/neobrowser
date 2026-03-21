@@ -3,6 +3,7 @@
 //! Creates a deno_core::JsRuntime with browser polyfills (linkedom DOM),
 //! ES module support via NeoModuleLoader, and V8 bytecode caching.
 
+use crate::code_cache::V8CodeCache;
 use crate::modules::{NeoModuleLoader, ScriptStoreHandle};
 use crate::ops;
 use crate::scheduler::{SchedulerConfig, TaskTracker, TimerBudget};
@@ -10,9 +11,6 @@ use crate::{JsRuntime as JsRuntimeTrait, RuntimeConfig, RuntimeError};
 use deno_core::{PollEventLoopOptions, RuntimeOptions};
 use neo_http::HttpClient;
 use std::cell::RefCell;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,64 +31,6 @@ deno_core::extension!(
         ops::op_console_log,
     ],
 );
-
-// ─── V8 Bytecode Cache ───
-
-/// Disk-backed V8 compiled bytecode cache.
-///
-/// Stores compiled bytecode keyed by URL hash.
-/// File format: `[8 bytes source_hash LE] [V8 bytecode...]`
-pub struct V8CodeCache {
-    cache_dir: PathBuf,
-}
-
-impl V8CodeCache {
-    /// Create a new code cache at the given directory.
-    pub fn new(cache_dir: &PathBuf) -> Result<Self, std::io::Error> {
-        std::fs::create_dir_all(cache_dir)?;
-        Ok(Self {
-            cache_dir: cache_dir.clone(),
-        })
-    }
-
-    /// Hash source code for cache invalidation.
-    pub fn hash_source(code: &str) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        code.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    /// Try to read cached bytecode. Returns None if missing or stale.
-    pub fn read(&self, url: &str, source_hash: u64) -> Option<Vec<u8>> {
-        let path = self.cache_path(url);
-        let data = std::fs::read(&path).ok()?;
-        if data.len() < 8 {
-            return None;
-        }
-        let stored = u64::from_le_bytes(data[..8].try_into().ok()?);
-        if stored != source_hash {
-            return None;
-        }
-        Some(data[8..].to_vec())
-    }
-
-    /// Write bytecode to disk with source hash prefix.
-    pub fn write(&self, url: &str, source_hash: u64, bytecode: &[u8]) {
-        let path = self.cache_path(url);
-        let mut data = Vec::with_capacity(8 + bytecode.len());
-        data.extend_from_slice(&source_hash.to_le_bytes());
-        data.extend_from_slice(bytecode);
-        let _ = std::fs::write(&path, &data);
-    }
-
-    /// Deterministic filename from URL.
-    fn cache_path(&self, url: &str) -> PathBuf {
-        let mut hasher = DefaultHasher::new();
-        url.hash(&mut hasher);
-        self.cache_dir
-            .join(format!("{:016x}.v8cache", hasher.finish()))
-    }
-}
 
 // ─── DenoRuntime ───
 
@@ -188,10 +128,7 @@ impl DenoRuntime {
         runtime
             .execute_script("<neorender:node_polyfills>", node_polyfills.to_string())
             .map_err(|e| {
-                RuntimeError::Init(format!(
-                    "node polyfills: {}",
-                    first_line(&e.to_string())
-                ))
+                RuntimeError::Init(format!("node polyfills: {}", first_line(&e.to_string())))
             })?;
 
         // Load linkedom DOM implementation (included at compile time).
@@ -253,10 +190,7 @@ impl JsRuntimeTrait for DenoRuntime {
     }
 
     fn execute(&mut self, code: &str) -> Result<(), RuntimeError> {
-        let wrapped = format!(
-            "try {{ {} }} catch(__e) {{ /* non-fatal */ }}",
-            code
-        );
+        let wrapped = format!("try {{ {} }} catch(__e) {{ /* non-fatal */ }}", code);
         self.runtime
             .execute_script("<script>", wrapped)
             .map_err(|e| RuntimeError::Eval(first_line(&e.to_string())))?;
@@ -296,14 +230,12 @@ impl JsRuntimeTrait for DenoRuntime {
         self.tokio_rt.block_on(async {
             loop {
                 // Run V8 event loop for up to 100ms per iteration.
-                let loop_timeout = Duration::from_millis(100).min(
-                    deadline.saturating_duration_since(Instant::now()),
-                );
+                let loop_timeout = Duration::from_millis(100)
+                    .min(deadline.saturating_duration_since(Instant::now()));
 
                 match tokio::time::timeout(
                     loop_timeout,
-                    self.runtime
-                        .run_event_loop(PollEventLoopOptions::default()),
+                    self.runtime.run_event_loop(PollEventLoopOptions::default()),
                 )
                 .await
                 {
@@ -373,9 +305,7 @@ impl JsRuntimeTrait for DenoRuntime {
         let bootstrap_js: &str = include_str!("../../../js/bootstrap.js");
         self.runtime
             .execute_script("<neorender:bootstrap>", bootstrap_js.to_string())
-            .map_err(|e| {
-                RuntimeError::Dom(format!("bootstrap: {}", first_line(&e.to_string())))
-            })?;
+            .map_err(|e| RuntimeError::Dom(format!("bootstrap: {}", first_line(&e.to_string()))))?;
 
         // Set location to match the page URL.
         let loc_js = format!(
