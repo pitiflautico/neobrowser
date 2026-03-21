@@ -15,11 +15,19 @@ use neo_http::{
 use neo_interact::{ClickResult, Interactor, SubmitResult};
 use neo_runtime::JsRuntime;
 use neo_trace::{ExecutionSummary, Tracer};
-use neo_types::{PageState, TraceEntry};
+use neo_types::{NetworkLogEntry, PageState, TraceEntry};
 
 use crate::config::EngineConfig;
 use crate::lifecycle::Lifecycle;
 use crate::{BrowserEngine, EngineError, PageResult};
+
+/// An entry in the navigation history.
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub url: String,
+    pub title: String,
+    pub timestamp: u64,
+}
 
 /// The main browser engine session.
 ///
@@ -34,7 +42,9 @@ pub struct NeoSession {
     tracer: Box<dyn Tracer>,
     lifecycle: Lifecycle,
     config: EngineConfig,
-    history: Vec<String>,
+    history_stack: Vec<HistoryEntry>,
+    history_index: isize,
+    network_log: Vec<NetworkLogEntry>,
     /// Cached WOM from last navigation.
     last_wom: Option<WomDocument>,
     /// Cookie store for cross-navigation persistence.
@@ -68,7 +78,9 @@ impl NeoSession {
             tracer,
             lifecycle: Lifecycle::new(lifecycle_tracer),
             config,
-            history: Vec::new(),
+            history_stack: Vec::new(),
+            history_index: -1,
+            network_log: Vec::new(),
             last_wom: None,
             cookie_store: None,
             http_cache: None,
@@ -99,7 +111,9 @@ impl NeoSession {
             tracer,
             lifecycle: Lifecycle::new(lifecycle_tracer),
             config,
-            history: Vec::new(),
+            history_stack: Vec::new(),
+            history_index: -1,
+            network_log: Vec::new(),
             last_wom: None,
             cookie_store: None,
             http_cache: None,
@@ -127,9 +141,19 @@ impl NeoSession {
         }
     }
 
-    /// Navigation history (all visited URLs).
-    pub fn history(&self) -> &[String] {
-        &self.history
+    /// Navigation history as URL list.
+    pub fn history_urls(&self) -> Vec<String> {
+        self.history_stack.iter().map(|e| e.url.clone()).collect()
+    }
+
+    /// Full history stack.
+    pub fn history_stack(&self) -> &[HistoryEntry] {
+        &self.history_stack
+    }
+
+    /// Network log of all requests made.
+    pub fn network_log(&self) -> &[NetworkLogEntry] {
+        &self.network_log
     }
 
     /// Finish navigation after the HTTP response (or cache hit) is available.
@@ -140,6 +164,7 @@ impl NeoSession {
         url: &str,
         response: neo_types::HttpResponse,
         start: Instant,
+        redirect_chain: Vec<String>,
     ) -> Result<PageResult, EngineError> {
         // DOM parse.
         {
@@ -242,14 +267,31 @@ impl NeoSession {
         self.lifecycle
             .transition(PageState::Complete, "extraction done");
 
-        // Track history.
-        self.history.push(url.to_string());
-
         let title = {
             let dom = self.dom.lock().expect("dom lock poisoned");
             dom.title()
         };
+        // Track history: truncate forward entries, push new.
+        let new_index = self.history_index + 1;
+        self.history_stack.truncate(new_index as usize);
+        self.history_stack.push(HistoryEntry {
+            url: url.to_string(),
+            title: title.clone(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        });
+        self.history_index = new_index;
+
         let elapsed = start.elapsed().as_millis() as u64;
+
+        // Check for meta-refresh redirect.
+        if let Some(meta_url) = detect_meta_refresh(&response.body, &response.url) {
+            let mut chain = redirect_chain;
+            chain.push(response.url.clone());
+            return self.navigate_with_chain(&meta_url, chain);
+        }
 
         Ok(PageResult {
             url: response.url,
@@ -258,7 +300,30 @@ impl NeoSession {
             render_ms: elapsed,
             wom,
             errors: js_errors,
+            redirect_chain,
         })
+    }
+
+    /// Navigate with an existing redirect chain (used for meta-refresh).
+    fn navigate_with_chain(&mut self, url: &str, chain: Vec<String>) -> Result<PageResult, EngineError> {
+        let start = Instant::now();
+        url::Url::parse(url).map_err(|e| EngineError::InvalidUrl(e.to_string()))?;
+        self.lifecycle.transition(PageState::Navigating, "meta-refresh redirect");
+        let mut req = self.build_nav_request(url);
+        if let Some(ref store) = self.cookie_store {
+            let is_top = req.context.kind == RequestKind::Navigation;
+            let tlu = req.context.top_level_url.clone();
+            let cookie_header = store.get_for_request(&req.url, tlu.as_deref(), is_top);
+            if !cookie_header.is_empty() { req.headers.insert("cookie".to_string(), cookie_header); }
+        }
+        let response = self.http.request(&req)?;
+        self.network_log.push(NetworkLogEntry {
+            url: req.url.clone(), method: req.method.clone(), status: response.status,
+            duration_ms: response.duration_ms, kind: format!("{:?}", req.context.kind),
+            initiator: "meta-refresh".to_string(),
+        });
+        self.lifecycle.transition(PageState::Loading, "response received");
+        self.finish_navigate(url, response, start, chain)
     }
 
     /// Build an HTTP GET request for navigation.
@@ -271,7 +336,7 @@ impl NeoSession {
             context: RequestContext {
                 kind: RequestKind::Navigation,
                 initiator: "engine".to_string(),
-                referrer: self.history.last().cloned(),
+                referrer: self.history_stack.last().map(|e| e.url.clone()),
                 frame_id: None,
                 top_level_url: Some(url.to_string()),
             },
@@ -315,7 +380,7 @@ impl BrowserEngine for NeoSession {
             let response = resp.clone();
             self.lifecycle
                 .transition(PageState::Loading, "cache hit (fresh)");
-            return self.finish_navigate(url, response, start);
+            return self.finish_navigate(url, response, start, Vec::new());
         }
         // Stale — add conditional headers for revalidation.
         if let Some(CacheDecision::Stale {
@@ -336,7 +401,18 @@ impl BrowserEngine for NeoSession {
         // 3c. HTTP fetch.
         let response = self.http.request(&req)?;
 
-        // 3d. Handle 304 Not Modified — use stale cached body.
+        // 3d. Track redirect chain.
+        let mut redirect_chain = Vec::new();
+        if response.url != url { redirect_chain.push(url.to_string()); }
+
+        // 3e. Log network request.
+        self.network_log.push(NetworkLogEntry {
+            url: req.url.clone(), method: req.method.clone(), status: response.status,
+            duration_ms: response.duration_ms, kind: format!("{:?}", req.context.kind),
+            initiator: req.context.initiator.clone(),
+        });
+
+        // 3f. Handle 304 Not Modified — use stale cached body.
         let response = if response.status == 304 {
             if let Some(CacheDecision::Stale {
                 response: cached, ..
@@ -356,7 +432,7 @@ impl BrowserEngine for NeoSession {
             response
         };
 
-        // 3e. Store Set-Cookie headers from response.
+        // 3g. Store Set-Cookie headers from response.
         if let Some(ref store) = self.cookie_store {
             for (key, value) in &response.headers {
                 if key.eq_ignore_ascii_case("set-cookie") {
@@ -368,8 +444,61 @@ impl BrowserEngine for NeoSession {
         // 4. Loading -> parse -> extract.
         self.lifecycle
             .transition(PageState::Loading, "response received");
-        self.finish_navigate(url, response, start)
+        self.finish_navigate(url, response, start, redirect_chain)
     }
+
+    fn back(&mut self) -> Result<PageResult, EngineError> {
+        if self.history_index <= 0 {
+            return Err(EngineError::InvalidUrl("no previous page in history".to_string()));
+        }
+        let target_index = self.history_index - 1;
+        let entry = self.history_stack[target_index as usize].clone();
+        let start = Instant::now();
+        self.lifecycle.transition(PageState::Navigating, "back navigation");
+        let req = self.build_nav_request(&entry.url);
+        let response = self.http.request(&req)?;
+        self.network_log.push(NetworkLogEntry {
+            url: req.url.clone(), method: req.method.clone(), status: response.status,
+            duration_ms: response.duration_ms, kind: format!("{:?}", req.context.kind),
+            initiator: "back".to_string(),
+        });
+        self.lifecycle.transition(PageState::Loading, "response received");
+        // Save history state, finish_navigate will push a new entry.
+        let saved_stack = self.history_stack.clone();
+        let result = self.finish_navigate(&entry.url, response, start, Vec::new())?;
+        // Restore history stack and just move the index.
+        self.history_stack = saved_stack;
+        self.history_index = target_index;
+        Ok(result)
+    }
+
+    fn forward(&mut self) -> Result<PageResult, EngineError> {
+        let max_index = self.history_stack.len() as isize - 1;
+        if self.history_index >= max_index {
+            return Err(EngineError::InvalidUrl("no next page in history".to_string()));
+        }
+        let target_index = self.history_index + 1;
+        let entry = self.history_stack[target_index as usize].clone();
+        let start = Instant::now();
+        self.lifecycle.transition(PageState::Navigating, "forward navigation");
+        let req = self.build_nav_request(&entry.url);
+        let response = self.http.request(&req)?;
+        self.network_log.push(NetworkLogEntry {
+            url: req.url.clone(), method: req.method.clone(), status: response.status,
+            duration_ms: response.duration_ms, kind: format!("{:?}", req.context.kind),
+            initiator: "forward".to_string(),
+        });
+        self.lifecycle.transition(PageState::Loading, "response received");
+        // Save history state, finish_navigate will push a new entry.
+        let saved_stack = self.history_stack.clone();
+        let result = self.finish_navigate(&entry.url, response, start, Vec::new())?;
+        // Restore history stack and just move the index.
+        self.history_stack = saved_stack;
+        self.history_index = target_index;
+        Ok(result)
+    }
+
+    fn history(&self) -> Vec<String> { self.history_urls() }
 
     fn page_state(&self) -> PageState {
         self.lifecycle.current()
@@ -534,6 +663,46 @@ fn collect_scripts(
     for child in node.children.borrow().iter() {
         collect_scripts(child, base, scripts);
     }
+}
+
+
+/// Detect `<meta http-equiv="refresh" content="...;url=...">` in HTML.
+fn detect_meta_refresh(html: &str, base_url: &str) -> Option<String> {
+    let lower = html.to_lowercase();
+    let needle = "http-equiv";
+    let mut search_from = 0;
+    while let Some(pos) = lower[search_from..].find(needle) {
+        let abs_pos = search_from + pos;
+        search_from = abs_pos + needle.len();
+        let surrounding = &lower[abs_pos..std::cmp::min(abs_pos + 100, lower.len())];
+        if !surrounding.contains("refresh") { continue; }
+        let tag_start = lower[..abs_pos].rfind('<').unwrap_or(abs_pos);
+        let tag_end = lower[tag_start..].find('>').map(|p| tag_start + p).unwrap_or(lower.len());
+        let tag = &html[tag_start..tag_end];
+        let tag_lower = tag.to_lowercase();
+        if let Some(ci) = tag_lower.find("content=") {
+            let after = &tag[ci + 8..];
+            let (delim, start_offset) = if after.starts_with('"') {
+                ('"', 1)
+            } else if after.starts_with('\'') {
+                ('\'', 1)
+            } else {
+                continue;
+            };
+            let content_str = &after[start_offset..];
+            if let Some(end) = content_str.find(delim) {
+                let content_val = &content_str[..end];
+                let content_lower = content_val.to_lowercase();
+                if let Some(url_pos) = content_lower.find("url=") {
+                    let target = content_val[url_pos + 4..].trim();
+                    if !target.is_empty() {
+                        return Some(resolve_script_url(target, base_url));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Resolve a script src URL against a base URL.

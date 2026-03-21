@@ -29,6 +29,8 @@ pub struct MockBrowserEngine {
     pub wom: WomDocument,
     /// Recorded actions for assertions.
     pub actions: Vec<String>,
+    pub history: Vec<String>,
+    pub history_index: isize,
 }
 
 impl Default for MockBrowserEngine {
@@ -54,6 +56,8 @@ impl MockBrowserEngine {
                 summary: "mock page".to_string(),
             },
             actions: Vec::new(),
+            history: Vec::new(),
+            history_index: -1,
         }
     }
 }
@@ -62,6 +66,10 @@ impl BrowserEngine for MockBrowserEngine {
     fn navigate(&mut self, url: &str) -> Result<PageResult, EngineError> {
         self.actions.push(format!("navigate:{url}"));
         self.state = PageState::Complete;
+        let new_index = self.history_index + 1;
+        self.history.truncate(new_index as usize);
+        self.history.push(url.to_string());
+        self.history_index = new_index;
         Ok(self.navigate_result.clone().unwrap_or(PageResult {
             url: url.to_string(),
             title: "Mock Page".to_string(),
@@ -69,8 +77,38 @@ impl BrowserEngine for MockBrowserEngine {
             render_ms: 0,
             wom: self.wom.clone(),
             errors: Vec::new(),
+            redirect_chain: Vec::new(),
         }))
     }
+
+    fn back(&mut self) -> Result<PageResult, EngineError> {
+        if self.history_index <= 0 {
+            return Err(EngineError::InvalidUrl("no previous page in history".to_string()));
+        }
+        self.history_index -= 1;
+        let url = self.history[self.history_index as usize].clone();
+        self.actions.push(format!("back:{url}"));
+        Ok(PageResult {
+            url, title: "Mock Page".to_string(), state: PageState::Complete,
+            render_ms: 0, wom: self.wom.clone(), errors: Vec::new(), redirect_chain: Vec::new(),
+        })
+    }
+
+    fn forward(&mut self) -> Result<PageResult, EngineError> {
+        let max_index = self.history.len() as isize - 1;
+        if self.history_index >= max_index {
+            return Err(EngineError::InvalidUrl("no next page in history".to_string()));
+        }
+        self.history_index += 1;
+        let url = self.history[self.history_index as usize].clone();
+        self.actions.push(format!("forward:{url}"));
+        Ok(PageResult {
+            url, title: "Mock Page".to_string(), state: PageState::Complete,
+            render_ms: 0, wom: self.wom.clone(), errors: Vec::new(), redirect_chain: Vec::new(),
+        })
+    }
+
+    fn history(&self) -> Vec<String> { self.history.clone() }
 
     fn page_state(&self) -> PageState {
         self.state

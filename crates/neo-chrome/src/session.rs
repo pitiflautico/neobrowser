@@ -183,6 +183,7 @@ impl ChromeSession {
             buttons: parsed["buttons"].as_u64().unwrap_or(0) as usize,
             scripts: parsed["scripts"].as_u64().unwrap_or(0) as usize,
             errors: vec![],
+            redirect_chain: vec![],
         })
     }
 }

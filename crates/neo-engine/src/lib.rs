@@ -60,6 +60,15 @@ pub trait BrowserEngine {
     /// Navigate to URL. Returns structured page data.
     fn navigate(&mut self, url: &str) -> Result<PageResult, EngineError>;
 
+    /// Navigate back in history.
+    fn back(&mut self) -> Result<PageResult, EngineError>;
+
+    /// Navigate forward in history.
+    fn forward(&mut self) -> Result<PageResult, EngineError>;
+
+    /// Get the navigation history as a list of URLs.
+    fn history(&self) -> Vec<String>;
+
     /// Current page state in the lifecycle.
     fn page_state(&self) -> PageState;
 
@@ -103,4 +112,7 @@ pub struct PageResult {
     pub wom: WomDocument,
     /// Errors encountered during navigation.
     pub errors: Vec<String>,
+    /// URLs visited during redirect chain (empty if no redirects).
+    #[serde(default)]
+    pub redirect_chain: Vec<String>,
 }

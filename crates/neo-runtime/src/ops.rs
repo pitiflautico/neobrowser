@@ -6,7 +6,7 @@
 use crate::scheduler::{TaskTracker, TimerBudget};
 use deno_core::op2;
 use deno_core::OpState;
-use neo_http::{HttpClient, HttpRequest, RequestContext, RequestKind};
+use neo_http::{HttpClient, HttpRequest, RequestContext, RequestKind, WebStorage};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -22,15 +22,26 @@ pub struct ConsoleBuffer {
     pub messages: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-/// In-memory localStorage store keyed by domain.
-#[derive(Default, Clone)]
+/// Web storage state: wraps a `WebStorage` trait object + current origin.
+///
+/// Falls back to an in-memory HashMap when no `WebStorage` backend is provided
+/// (preserves backward compatibility with code that used `StorageState::default()`).
+#[derive(Clone)]
 pub struct StorageState {
-    /// Storage data: domain -> (key -> value).
-    pub data: Arc<std::sync::Mutex<HashMap<String, HashMap<String, String>>>>,
-    /// Current storage domain (set on navigation).
-    pub domain: String,
+    /// Backend (SQLite, in-memory mock, etc.).
+    pub backend: Arc<dyn WebStorage>,
+    /// Current storage origin (set on navigation, e.g. "https://example.com").
+    pub origin: String,
 }
 
+impl Default for StorageState {
+    fn default() -> Self {
+        Self {
+            backend: Arc::new(neo_http::InMemoryWebStorage::new()),
+            origin: String::new(),
+        }
+    }
+}
 /// Shared scheduler config values accessible from ops.
 #[derive(Clone)]
 pub struct OpsSchedulerConfig {
@@ -177,15 +188,9 @@ pub fn op_storage_get(
     let storage = s
         .try_borrow::<StorageState>()
         .ok_or_else(|| deno_core::error::generic_error("No StorageState"))?;
-    let data = storage.data.lock().unwrap();
-    let val = data
-        .get(&storage.domain)
-        .and_then(|m| m.get(&key))
-        .cloned()
-        .unwrap_or_default();
+    let val = storage.backend.get(&storage.origin, &key).unwrap_or_default();
     Ok(val)
 }
-
 /// Set a value in localStorage.
 #[op2(fast)]
 pub fn op_storage_set(
@@ -197,13 +202,9 @@ pub fn op_storage_set(
     let storage = s
         .try_borrow::<StorageState>()
         .ok_or_else(|| deno_core::error::generic_error("No StorageState"))?;
-    let mut data = storage.data.lock().unwrap();
-    data.entry(storage.domain.clone())
-        .or_default()
-        .insert(key, value);
+    storage.backend.set(&storage.origin, &key, &value);
     Ok(())
 }
-
 /// Remove a key from localStorage.
 #[op2(fast)]
 pub fn op_storage_remove(
@@ -214,13 +215,9 @@ pub fn op_storage_remove(
     let storage = s
         .try_borrow::<StorageState>()
         .ok_or_else(|| deno_core::error::generic_error("No StorageState"))?;
-    let mut data = storage.data.lock().unwrap();
-    if let Some(domain_map) = data.get_mut(&storage.domain) {
-        domain_map.remove(&key);
-    }
+    storage.backend.remove(&storage.origin, &key);
     Ok(())
 }
-
 /// Capture console.log output from JavaScript.
 #[op2(fast)]
 pub fn op_console_log(state: Rc<RefCell<OpState>>, #[string] msg: String) {

@@ -53,6 +53,20 @@ pub struct PageResult {
     pub buttons: usize,
     pub scripts: usize,
     pub errors: Vec<String>,
+    /// URLs visited during redirect chain (empty if no redirects).
+    #[serde(default)]
+    pub redirect_chain: Vec<String>,
+}
+
+/// Entry in the network log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkLogEntry {
+    pub url: String,
+    pub method: String,
+    pub status: u16,
+    pub duration_ms: u64,
+    pub kind: String,
+    pub initiator: String,
 }
 
 /// A trace entry — one action or event in the execution log.
