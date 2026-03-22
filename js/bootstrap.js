@@ -631,12 +631,17 @@ globalThis.MessagePort = class MessagePort extends EventTarget {
         if (this._other && !this._other._closed && !__budgetExhausted) {
             const target = this._other;
             const event = new MessageEvent('message', { data });
-            Promise.resolve().then(() => {
+            // CRITICAL: Use setTimeout (macrotask), NOT Promise.resolve().then (microtask).
+            // React scheduler uses MessageChannel for yielding between work chunks.
+            // With microtask delivery, React never yields → infinite microtask storm.
+            // With setTimeout delivery, React yields between chunks → event loop progresses.
+            // This matches real browser behavior: MessageChannel messages are TASKS, not microtasks.
+            setTimeout(() => {
                 if (__checkBudget('MessageChannel')) {
                     target.dispatchEvent(event);
                     if (target.onmessage) target.onmessage(event);
                 }
-            });
+            }, 0);
         }
     }
     close() { this._closed = true; }

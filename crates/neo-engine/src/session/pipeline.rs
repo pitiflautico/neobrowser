@@ -409,6 +409,14 @@ impl NeoSession {
             }
         }
         let response = self.http.request(&req)?;
+        // Store Set-Cookie headers from meta-refresh response.
+        if let Some(ref store) = self.cookie_store {
+            for (key, value) in &response.headers {
+                if key.eq_ignore_ascii_case("set-cookie") {
+                    store.store_set_cookie(&response.url, value);
+                }
+            }
+        }
         self.network_log.push(NetworkLogEntry {
             url: req.url.clone(),
             method: req.method.clone(),
@@ -679,6 +687,14 @@ impl NeoSession {
             let start = Instant::now();
             match self.http.request(&req) {
                 Ok(response) => {
+                    // Store Set-Cookie headers from POST response.
+                    if let Some(ref store) = self.cookie_store {
+                        for (key, value) in &response.headers {
+                            if key.eq_ignore_ascii_case("set-cookie") {
+                                store.store_set_cookie(&response.url, value);
+                            }
+                        }
+                    }
                     self.network_log.push(NetworkLogEntry {
                         url: req.url.clone(),
                         method: req.method.clone(),

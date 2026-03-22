@@ -182,8 +182,23 @@ impl BrowserEngine for NeoSession {
         let start = Instant::now();
         self.lifecycle
             .transition(PageState::Navigating, "back navigation");
-        let req = self.build_nav_request(&entry.url);
+        let mut req = self.build_nav_request(&entry.url);
+        if let Some(ref store) = self.cookie_store {
+            let is_top = req.context.kind == RequestKind::Navigation;
+            let tlu = req.context.top_level_url.clone();
+            let cookie_header = store.get_for_request(&req.url, tlu.as_deref(), is_top);
+            if !cookie_header.is_empty() {
+                req.headers.insert("cookie".to_string(), cookie_header);
+            }
+        }
         let response = self.http.request(&req)?;
+        if let Some(ref store) = self.cookie_store {
+            for (key, value) in &response.headers {
+                if key.eq_ignore_ascii_case("set-cookie") {
+                    store.store_set_cookie(&response.url, value);
+                }
+            }
+        }
         self.network_log.push(NetworkLogEntry {
             url: req.url.clone(),
             method: req.method.clone(),
@@ -213,8 +228,23 @@ impl BrowserEngine for NeoSession {
         let start = Instant::now();
         self.lifecycle
             .transition(PageState::Navigating, "forward navigation");
-        let req = self.build_nav_request(&entry.url);
+        let mut req = self.build_nav_request(&entry.url);
+        if let Some(ref store) = self.cookie_store {
+            let is_top = req.context.kind == RequestKind::Navigation;
+            let tlu = req.context.top_level_url.clone();
+            let cookie_header = store.get_for_request(&req.url, tlu.as_deref(), is_top);
+            if !cookie_header.is_empty() {
+                req.headers.insert("cookie".to_string(), cookie_header);
+            }
+        }
         let response = self.http.request(&req)?;
+        if let Some(ref store) = self.cookie_store {
+            for (key, value) in &response.headers {
+                if key.eq_ignore_ascii_case("set-cookie") {
+                    store.store_set_cookie(&response.url, value);
+                }
+            }
+        }
         self.network_log.push(NetworkLogEntry {
             url: req.url.clone(),
             method: req.method.clone(),

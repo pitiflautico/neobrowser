@@ -1,6 +1,8 @@
 //! JsRuntime trait implementation for DenoRuntime.
 
 use deno_core::PollEventLoopOptions;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::v8::DenoRuntime;
@@ -17,10 +19,25 @@ impl JsRuntimeTrait for DenoRuntime {
             "try {{ String(\n{}\n) }} catch(__e) {{ 'Error: ' + __e.message }}",
             code
         );
-        let result = self
-            .runtime
-            .execute_script("<eval>", wrapped)
-            .map_err(|e| RuntimeError::Eval(first_line(&e.to_string())))?;
+
+        let result = match self.runtime.execute_script("<eval>", wrapped.clone()) {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("erminated") {
+                    // V8 termination flag still set — recover and retry once
+                    self.runtime.v8_isolate().cancel_terminate_execution();
+                    let _ = self
+                        .runtime
+                        .execute_script("<eval-recovery>", "void 0".to_string());
+                    self.runtime
+                        .execute_script("<eval-retry>", wrapped)
+                        .map_err(|e2| RuntimeError::Eval(first_line(&e2.to_string())))?
+                } else {
+                    return Err(RuntimeError::Eval(first_line(&msg)));
+                }
+            }
+        };
 
         let scope = &mut self.runtime.handle_scope();
         let local = deno_core::v8::Local::new(scope, result);
@@ -33,10 +50,25 @@ impl JsRuntimeTrait for DenoRuntime {
 
     fn execute(&mut self, code: &str) -> Result<(), RuntimeError> {
         let wrapped = format!("try {{\n{}\n}} catch(__e) {{ /* non-fatal */ }}", code);
-        self.runtime
-            .execute_script("<script>", wrapped)
-            .map_err(|e| RuntimeError::Eval(first_line(&e.to_string())))?;
-        Ok(())
+        match self.runtime.execute_script("<script>", wrapped.clone()) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("erminated") {
+                    // V8 termination flag still set — recover and retry once
+                    self.runtime.v8_isolate().cancel_terminate_execution();
+                    let _ = self
+                        .runtime
+                        .execute_script("<exec-recovery>", "void 0".to_string());
+                    self.runtime
+                        .execute_script("<exec-retry>", wrapped)
+                        .map_err(|e2| RuntimeError::Eval(first_line(&e2.to_string())))?;
+                    Ok(())
+                } else {
+                    Err(RuntimeError::Eval(first_line(&msg)))
+                }
+            }
+        }
     }
 
     fn load_module(&mut self, url: &str) -> Result<(), RuntimeError> {
@@ -116,10 +148,15 @@ impl JsRuntimeTrait for DenoRuntime {
         // inside V8). Only terminate_execution can break infinite Promise.then chains.
         let isolate_handle = self.runtime.v8_isolate().thread_safe_handle();
         let watchdog_deadline = deadline;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel_flag.clone();
         let watchdog = std::thread::spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                if std::time::Instant::now() >= watchdog_deadline {
+                std::thread::sleep(Duration::from_millis(50));
+                if cancel_clone.load(Ordering::Relaxed) {
+                    return; // Cancelled — event loop finished normally
+                }
+                if Instant::now() >= watchdog_deadline {
                     isolate_handle.terminate_execution();
                     return;
                 }
@@ -174,14 +211,28 @@ impl JsRuntimeTrait for DenoRuntime {
             }
         });
 
-        // Cancel watchdog: even if terminated, V8 can be resumed for future use
-        // by calling cancel_terminate_execution. The watchdog thread will exit
-        // on its own when deadline passes, or we just let it run.
-        // Cancel any pending termination so future eval() calls work.
+        // Signal watchdog to stop (prevents late termination if we finished early)
+        cancel_flag.store(true, Ordering::Relaxed);
+        let _ = watchdog.join();
+
+        // Cancel any pending termination so future eval/execute calls work.
         self.runtime.v8_isolate().cancel_terminate_execution();
 
-        // Drop watchdog handle (thread detaches)
-        drop(watchdog);
+        // Verify the runtime is usable after potential termination.
+        // If the watchdog fired, V8 may still have residual termination state.
+        match self
+            .runtime
+            .execute_script("<settle-recovery>", "void 0".to_string())
+        {
+            Ok(_) => {} // Runtime recovered successfully
+            Err(_) => {
+                // Runtime still poisoned — cancel again and retry
+                self.runtime.v8_isolate().cancel_terminate_execution();
+                let _ = self
+                    .runtime
+                    .execute_script("<settle-recovery2>", "void 0".to_string());
+            }
+        }
 
         result
     }
