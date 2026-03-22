@@ -525,6 +525,19 @@ fn ensure_promise_finally(code: &str) -> String {
     format!("{polyfill}{code}")
 }
 
+/// Inject EditorView capture hook into ProseMirror code.
+/// When ProseMirror creates an EditorView, store a reference globally
+/// so we can dispatch transactions for text input.
+fn inject_editor_view_capture(code: &str) -> String {
+    // Detect ProseMirror by looking for EditorView constructor pattern
+    if !code.contains("pmViewDesc") && !code.contains("EditorView") {
+        return code.to_string();
+    }
+    // Inject a hook at module start that patches the global scope
+    let hook = r#"(function(){if(!globalThis.__neo_pmViews)globalThis.__neo_pmViews=[];var _origDefProp=Object.defineProperty;Object.defineProperty=function(obj,prop,desc){var r=_origDefProp.call(Object,obj,prop,desc);if(prop==="pmViewDesc"&&desc?.value?.view){globalThis.__neo_pmViews.push(desc.value.view)}return r}})();"#;
+    format!("{hook}{code}")
+}
+
 pub fn rewrite_promise_all_settled(code: &str) -> String {
     if !code.contains("Promise.allSettled(") {
         return code.to_string();

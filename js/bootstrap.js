@@ -811,6 +811,12 @@ if (typeof Promise.prototype.finally !== 'function') {
         );
     };
 }
+// CompositionEvent — needed for ProseMirror/Tiptap text input
+if (typeof globalThis.CompositionEvent === 'undefined') {
+    globalThis.CompositionEvent = class CompositionEvent extends Event {
+        constructor(type, init) { super(type, init); this.data = init?.data || ''; }
+    };
+}
 // CSS.supports — containerQuery polyfill check uses this
 if (typeof globalThis.CSS === 'undefined') {
     globalThis.CSS = { supports: () => false, escape: (s) => s };
