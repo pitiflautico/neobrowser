@@ -664,8 +664,8 @@ mod tests {
     #[test]
     fn test_scheduler_config_defaults() {
         let cfg = SchedulerConfig::default();
-        assert_eq!(cfg.interval_max_ticks, 10);
-        assert_eq!(cfg.timer_budget, 50);
+        assert_eq!(cfg.interval_max_ticks, 20);
+        assert_eq!(cfg.timer_budget, 200);
     }
 
     // ─── R8e: Long Task Detection ───

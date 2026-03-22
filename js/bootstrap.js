@@ -1,7 +1,7 @@
 // NeoRender V2 Bootstrap — universal browser environment for AI.
 // Connects linkedom (real DOM) + deno_core ops to create a headless browser.
 // Runs AFTER linkedom.js. Expects __linkedom_parseHTML on globalThis.
-// V2: uses op_fetch/op_timer/op_console_log (not op_neorender_*).
+// V2: uses op_fetch/op_console_log + deno_core native WebTimers (not op_neorender_*).
 
 // ═══════════════════════════════════════════════════════════════
 // REACT INTERCEPTION PRIMITIVES — must run BEFORE any page scripts.
@@ -325,12 +325,31 @@ globalThis.fetch = function(input, init) {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// 5. TIMERS — real async via Rust tokio, tracked by scheduler
+// 5. TIMERS — REAL async via deno_core WebTimers (tokio-backed)
 // ═══════════════════════════════════════════════════════════════
+//
+// deno_core 0.311 has a built-in WebTimers system (BTreeMap + tokio::time::Sleep)
+// that integrates directly with the V8 event loop. Timer callbacks are fired
+// by the event loop as true macrotasks (between microtask checkpoints).
+//
+// API: Deno.core.queueUserTimer(depth, repeat, timeoutMs, callback) -> id
+//      Deno.core.cancelTimer(id)
+//      Deno.core.getTimerDepth() -> nesting depth
+//
+// This replaces our old sync op_timer approach (thread::sleep) which blocked
+// the V8 thread and couldn't integrate with the async event loop.
 
-let __timerNextId = 1;
-const __timerCallbacks = new Map();
 const __intervalMaxTicks = ops.op_scheduler_config();
+
+// Capture deno_core timer API before Deno gets deleted (section 9).
+const __coreQueueTimer = Deno.core.queueUserTimer;
+const __coreCancelTimer = Deno.core.cancelTimer;
+const __coreTimerDepth = Deno.core.getTimerDepth;
+
+// Map: our external timer ID -> deno_core internal timer ID
+// We maintain our own ID space so page JS can't guess internal IDs.
+let __timerNextId = 1;
+const __timerMap = new Map();  // externalId -> coreId
 
 // ── Global callback budget ──
 // Covers ALL async entrypoints: setTimeout, setInterval, queueMicrotask,
@@ -356,6 +375,11 @@ function __checkBudget(source) {
 globalThis.__neo_resetBudget = function() {
     __callbackCount = 0;
     __budgetExhausted = false;
+    // Cancel all pending timers
+    for (const [extId, coreId] of __timerMap) {
+        __coreCancelTimer(coreId);
+    }
+    __timerMap.clear();
 };
 
 // Wrap queueMicrotask with budget
@@ -369,92 +393,61 @@ globalThis.queueMicrotask = function(fn) {
     });
 };
 
-// Timer helper: sync op wrapped in Promise for .then() chaining
-function __timerPromise(ms) {
-    return new Promise(resolve => {
-        ops.op_timer(ms || 0);
-        queueMicrotask(resolve);
-    });
-}
-
 globalThis.setTimeout = function(fn, ms, ...args) {
     if (typeof fn !== 'function') return 0;
     if (__budgetExhausted) return 0;
-    if (!ops.op_timer_register()) return 0;
-    const id = __timerNextId++;
-    __timerCallbacks.set(id, true);
-    if (!ms || ms <= 0) {
-        // setTimeout(fn, 0): queueMicrotask for fast delivery.
-        // Note: this is microtask semantics (not macrotask like real browsers).
-        // React scheduler without MessageChannel uses setTimeout for scheduling.
-        // With queueMicrotask delivery, React's scheduler loop runs as tight 
-        // microtask chain. The timer budget (200 ticks) limits how long this runs.
-        queueMicrotask(() => {
-            if (__timerCallbacks.delete(id)) {
-                ops.op_timer_fire();
-                if (__checkBudget('setTimeout-0')) {
-                    try { fn(...args); } catch(e) {}
-                }
-            }
-        });
-    } else {
-        __timerPromise(ms).then(() => {
-            if (__timerCallbacks.delete(id)) {
-                ops.op_timer_fire();
-                if (__checkBudget('setTimeout-' + ms)) {
-                    try { fn(...args); } catch(e) {}
-                }
-            }
-        });
-    }
-    return id;
+    const extId = __timerNextId++;
+    const delay = Math.max(0, ms || 0);
+    const depth = __coreTimerDepth();
+    // queueUserTimer(depth, repeat, timeoutMs, callback) -> coreId
+    const coreId = __coreQueueTimer(depth, false, delay, function() {
+        __timerMap.delete(extId);
+        if (__checkBudget('setTimeout-' + delay)) {
+            try { fn(...args); } catch(e) {}
+        }
+    });
+    __timerMap.set(extId, coreId);
+    return extId;
 };
 globalThis.clearTimeout = function(id) {
-    if (__timerCallbacks.delete(id)) {
-        // Fire to decrement tracker (timer cancelled = resolved).
-        ops.op_timer_fire();
+    const coreId = __timerMap.get(id);
+    if (coreId !== undefined) {
+        __timerMap.delete(id);
+        __coreCancelTimer(coreId);
     }
 };
 
 globalThis.setInterval = function(fn, ms, ...args) {
     if (typeof fn !== 'function') return 0;
-    if (!ops.op_timer_register()) return 0;
-    const id = __timerNextId++;
-    __timerCallbacks.set(id, true);
+    if (__budgetExhausted) return 0;
+    const extId = __timerNextId++;
+    const delay = Math.max(1, ms || 1);  // min 1ms for intervals
+    const depth = __coreTimerDepth();
     let ticks = 0;
-    function tick() {
-        if (!__timerCallbacks.has(id) || ticks >= __intervalMaxTicks) {
-            // Auto-clear: cap reached or manually cleared.
-            if (__timerCallbacks.delete(id)) ops.op_timer_fire();
-            return;
-        }
+    // queueUserTimer(depth, repeat=true, timeoutMs, callback) -> coreId
+    const coreId = __coreQueueTimer(depth, true, delay, function() {
         ticks++;
-        // Check budget on each tick
-        if (!ops.op_timer_fire()) {
-            // Budget exhausted — stop interval.
-            __timerCallbacks.delete(id);
+        if (ticks >= __intervalMaxTicks || __budgetExhausted) {
+            // Auto-clear after max ticks or budget exhaustion
+            __timerMap.delete(extId);
+            __coreCancelTimer(coreId);
             return;
         }
-        // Re-register for next tick
-        if (!ops.op_timer_register()) {
-            __timerCallbacks.delete(id);
+        if (!__checkBudget('setInterval-' + delay)) {
+            __timerMap.delete(extId);
+            __coreCancelTimer(coreId);
             return;
         }
         try { fn(...args); } catch(e) {}
-        if (ticks <= 3) {
-            // Fast mode: immediate via microtask (no timer delay)
-            queueMicrotask(tick);
-        } else {
-            __timerPromise(ms).then(tick);
-        }
-    }
-    // First tick: immediate via microtask
-    queueMicrotask(tick);
-    return id;
+    });
+    __timerMap.set(extId, coreId);
+    return extId;
 };
 globalThis.clearInterval = function(id) {
-    if (__timerCallbacks.delete(id)) {
-        ops.op_timer_fire();
+    const coreId = __timerMap.get(id);
+    if (coreId !== undefined) {
+        __timerMap.delete(id);
+        __coreCancelTimer(coreId);
     }
 };
 
@@ -636,37 +629,34 @@ globalThis.MessageEvent = globalThis.MessageEvent || class MessageEvent extends 
         this.ports = init.ports || [];
     }
 };
-// MessagePort with actual async message passing
-globalThis.__MessagePort_disabled = class MessagePort extends EventTarget {
+// MessagePort with actual async message passing.
+// Now uses REAL async timers (deno_core WebTimers) so macrotask delivery works.
+globalThis.MessagePort = class MessagePort extends EventTarget {
     constructor() { super(); this._other = null; this._closed = false; this.onmessage = null; }
     postMessage(data) {
         if (this._other && !this._other._closed && !__budgetExhausted) {
             const target = this._other;
             const event = new MessageEvent('message', { data });
-            // CRITICAL: Use setTimeout with delay >= 1ms to force REAL macrotask delivery.
-            // setTimeout(fn, 0) falls through to queueMicrotask → still microtask.
-            // setTimeout(fn, 1) uses __timerPromise(1) → op_timer(1ms sleep) → real yield.
-            // React scheduler needs this yield to check performance.now() deadline.
+            // Real macrotask delivery via deno_core WebTimers.
+            // setTimeout(fn, 0) now goes through queueUserTimer which is a true
+            // async timer polled by the event loop (not microtask, not thread::sleep).
             setTimeout(() => {
                 if (__checkBudget('MessageChannel')) {
                     target.dispatchEvent(event);
                     if (target.onmessage) target.onmessage(event);
                 }
-            }, 1);  // 1ms, NOT 0 — forces real macrotask via op_timer sleep
+            }, 0);
         }
     }
     close() { this._closed = true; }
     start() {}
 };
-// MessageChannel with connected ports
-// MessageChannel INTENTIONALLY not provided as global.
-// React scheduler checks for it and falls back to setTimeout if absent.
-// With MessageChannel, React creates a scheduling loop that requires
-// real macrotask delivery (which our V8 env can't provide because
-// op_timer blocks the thread). Without it, React uses setTimeout
-// which is self-throttling and works correctly.
-// jsdom uses the same approach.
-globalThis.__MessageChannel_disabled = class MessageChannel {
+// MessageChannel with connected ports.
+// Now ENABLED as global — React scheduler detects it and uses it for scheduling.
+// With real async timers backed by deno_core WebTimers, the macrotask delivery
+// that React needs works correctly. The event loop yields between timer callbacks,
+// letting React check performance.now() deadlines.
+globalThis.MessageChannel = class MessageChannel {
     constructor() {
         this.port1 = new MessagePort();
         this.port2 = new MessagePort();
@@ -1192,6 +1182,9 @@ globalThis.prompt = function(msg, def) {
 // Block access to runtime internals that page JS should never see.
 // Preserve ops reference for browser_shim.js (loaded after bootstrap).
 globalThis.__neo_ops = Deno.core.ops;
+// Preserve core timer API for internal use (browser_shim.js etc.)
+globalThis.__neo_ops.__coreQueueTimer = Deno.core.queueUserTimer;
+globalThis.__neo_ops.__coreCancelTimer = Deno.core.cancelTimer;
 delete globalThis.Deno;
 Object.defineProperty(globalThis, 'process', {
     value: undefined,

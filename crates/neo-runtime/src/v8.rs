@@ -114,6 +114,14 @@ impl DenoRuntime {
             on_demand_count: RefCell::new(0),
         };
 
+        // Create tokio runtime BEFORE JsRuntime so that deno_core's WebTimers
+        // have access to the tokio reactor from the very first execute_script call.
+        let tokio_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| RuntimeError::Init(e.to_string()))?;
+        let _guard = tokio_rt.enter();
+
         let mut runtime = deno_core::JsRuntime::new(RuntimeOptions {
             extensions: vec![neo_runtime_ext::init_ops()],
             module_loader: Some(Rc::new(loader)),
@@ -160,11 +168,6 @@ impl DenoRuntime {
             .map_err(|e| {
                 RuntimeError::Init(format!("linkedom load: {}", first_line(&e.to_string())))
             })?;
-
-        let tokio_rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| RuntimeError::Init(e.to_string()))?;
 
         Ok(Self {
             runtime,

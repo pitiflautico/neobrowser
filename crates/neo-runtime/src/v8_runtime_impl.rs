@@ -15,6 +15,10 @@ pub(crate) fn first_line(s: &str) -> String {
 
 impl JsRuntimeTrait for DenoRuntime {
     fn eval(&mut self, code: &str) -> Result<String, RuntimeError> {
+        // Enter tokio runtime context so deno_core's WebTimers can create
+        // tokio::time::Sleep futures when JS calls setTimeout/setInterval.
+        let _guard = self.tokio_rt.enter();
+
         let wrapped = format!(
             "try {{ String(\n{}\n) }} catch(__e) {{ 'Error: ' + __e.message }}",
             code
@@ -49,6 +53,10 @@ impl JsRuntimeTrait for DenoRuntime {
     }
 
     fn execute(&mut self, code: &str) -> Result<(), RuntimeError> {
+        // Enter tokio runtime context so deno_core's WebTimers can create
+        // tokio::time::Sleep futures when JS calls setTimeout/setInterval.
+        let _guard = self.tokio_rt.enter();
+
         let wrapped = format!("try {{\n{}\n}} catch(__e) {{ /* non-fatal */ }}", code);
         match self.runtime.execute_script("<script>", wrapped.clone()) {
             Ok(_) => Ok(()),
@@ -264,6 +272,7 @@ impl JsRuntimeTrait for DenoRuntime {
         let result = self.tokio_rt.block_on(async {
             tokio::time::timeout(
                 Duration::from_millis(timeout_ms),
+                #[allow(deprecated)]
                 self.runtime.resolve_value(global),
             )
             .await
@@ -292,6 +301,10 @@ impl JsRuntimeTrait for DenoRuntime {
     }
 
     fn set_document_html(&mut self, html: &str, url: &str) -> Result<(), RuntimeError> {
+        // Enter tokio runtime context — bootstrap.js and page scripts may call
+        // setTimeout/setInterval which need the tokio reactor for WebTimers.
+        let _guard = self.tokio_rt.enter();
+
         self.timer_budget.reset();
         self.tracker.reset();
 
