@@ -362,10 +362,14 @@ impl NeoSession {
                     neo_trace!("[SETTLE] entry module loaded successfully");
                     // Pump to let the app initialize
                     let _ = rt.run_until_settled(3000);
+
+                    // Don't pump after entry module — React scheduler creates
+                    // tight loops that hang. The settle phase handles it.
+
                     let new_nodes = rt.eval("document.querySelectorAll('*').length")
                         .unwrap_or_default().trim().parse::<usize>().unwrap_or(0);
-                    neo_trace!("[SETTLE] DOM after entry module: {} nodes (was {})", new_nodes, last_node_count);
-                    let _ = new_nodes; // node count tracked via rt.eval below
+                    neo_trace!("[SETTLE] DOM after entry module + flush: {} nodes (was {})", new_nodes, last_node_count);
+                    let _ = new_nodes;
                 }
                 Err(e) => {
                     neo_trace!("[SETTLE] entry module load failed: {e}");

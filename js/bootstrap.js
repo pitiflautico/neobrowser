@@ -384,10 +384,11 @@ globalThis.setTimeout = function(fn, ms, ...args) {
     const id = __timerNextId++;
     __timerCallbacks.set(id, true);
     if (!ms || ms <= 0) {
-        // setTimeout(fn, 0): use queueMicrotask for fast delivery.
-        // React scheduler yields based on performance.now() deadline (5ms),
-        // not on task queue boundaries. As long as performance.now() advances
-        // (it does — based on Date.now()), React yields after ~5ms of work.
+        // setTimeout(fn, 0): queueMicrotask for fast delivery.
+        // Note: this is microtask semantics (not macrotask like real browsers).
+        // React scheduler without MessageChannel uses setTimeout for scheduling.
+        // With queueMicrotask delivery, React's scheduler loop runs as tight 
+        // microtask chain. The timer budget (200 ticks) limits how long this runs.
         queueMicrotask(() => {
             if (__timerCallbacks.delete(id)) {
                 ops.op_timer_fire();
