@@ -791,20 +791,18 @@ impl JsRuntimeTrait for DenoRuntime {
                 })?;
 
             // CRITICAL: Promise.prototype.finally polyfill.
-            // deno_core 0.311 V8 Promises lack .finally. Must be set here
-            // (after all init) because module evaluation uses V8's Promise directly.
+            // deno_core 0.311 V8 Promises lack .finally. Set as non-configurable
+            // to prevent page scripts from accidentally deleting it.
             self.runtime.execute_script("<promise-finally>", r#"
-                if (typeof Promise.prototype.finally !== 'function') {
-                    Object.defineProperty(Promise.prototype, 'finally', {
-                        value: function(onFinally) {
-                            return this.then(
-                                function(v) { return Promise.resolve(onFinally()).then(function() { return v; }); },
-                                function(r) { return Promise.resolve(onFinally()).then(function() { throw r; }); }
-                            );
-                        },
-                        writable: true, configurable: true
-                    });
-                }
+                Object.defineProperty(Promise.prototype, 'finally', {
+                    value: function(onFinally) {
+                        return this.then(
+                            function(v) { return Promise.resolve(onFinally()).then(function() { return v; }); },
+                            function(r) { return Promise.resolve(onFinally()).then(function() { throw r; }); }
+                        );
+                    },
+                    writable: false, configurable: false, enumerable: false
+                });
             "#.to_string()).ok();
 
             // Mark runtime as initialized.

@@ -304,6 +304,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             // Source transforms for browser compat:
             let patched = rewrite_promise_all_settled(code);
             let patched = safe_getall_transform(&patched);
+            let patched = ensure_promise_finally(&patched);
             let cache_info = self.make_cache_info(&url, &patched);
             self.module_tracker.on_loaded(&url);
             return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -389,6 +390,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                         // 1. Promise.allSettled polyfill
                         let patched = rewrite_promise_all_settled(&code);
                         let patched = safe_getall_transform(&patched);
+                        let patched = ensure_promise_finally(&patched);
                         let cache_info = self.make_cache_info(&url, &patched);
                         self.module_tracker.on_loaded(&url);
                         return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -510,6 +512,17 @@ fn safe_getall_transform(code: &str) -> String {
     // 3. Also handle: `).flatMap(o=>o.trim` (similar pattern in same code)
     let patched = patched.replace(").flatMap(o=>o.trim", ").filter(Boolean).flatMap(o=>o.trim");
     patched
+}
+
+/// Ensure Promise.prototype.finally exists before module code runs.
+/// deno_core 0.311 V8 lacks .finally, and page code can delete our polyfill.
+/// Injected at the top of each module so it's always available.
+fn ensure_promise_finally(code: &str) -> String {
+    if !code.contains(".finally") && !code.contains("finally(") {
+        return code.to_string();
+    }
+    let polyfill = "if(!Promise.prototype.finally)Promise.prototype.finally=function(f){return this.then(function(v){return Promise.resolve(f()).then(function(){return v})},function(r){return Promise.resolve(f()).then(function(){throw r})})};";
+    format!("{polyfill}{code}")
 }
 
 pub fn rewrite_promise_all_settled(code: &str) -> String {
