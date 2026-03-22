@@ -87,6 +87,13 @@ impl JsRuntimeTrait for DenoRuntime {
         let load_start = Instant::now();
         neo_trace!("[MODULE-LIFECYCLE] load_module START: {url}");
 
+        // Notify JS side that a module load is starting.
+        let escaped_url = url.replace('\'', "\\'");
+        let _ = self.runtime.execute_script(
+            "<module-track-req>",
+            format!("typeof __neo_moduleRequested==='function'&&__neo_moduleRequested('{escaped_url}')"),
+        );
+
         self.tokio_rt.block_on(async {
             // Phase 1: Load (fetch + instantiate)
             let mod_id = self
@@ -95,6 +102,11 @@ impl JsRuntimeTrait for DenoRuntime {
                 .await
                 .map_err(|e| {
                     neo_trace!("[MODULE-LIFECYCLE] load_module LOAD-FAILED: {url} — {}", first_line(&e.to_string()));
+                    // Notify JS side of failure.
+                    let _ = self.runtime.execute_script(
+                        "<module-track-fail>",
+                        format!("typeof __neo_moduleFailed==='function'&&__neo_moduleFailed('{escaped_url}','load-failed')"),
+                    );
                     RuntimeError::Module(first_line(&e.to_string()))
                 })?;
 
@@ -125,6 +137,10 @@ impl JsRuntimeTrait for DenoRuntime {
                         "[MODULE-LIFECYCLE] load_module EVENT-LOOP-ERROR: {url} — {}",
                         first_line(&e.to_string())
                     );
+                    let _ = self.runtime.execute_script(
+                        "<module-track-fail>",
+                        format!("typeof __neo_moduleFailed==='function'&&__neo_moduleFailed('{escaped_url}','event-loop-error')"),
+                    );
                     return Err(RuntimeError::Module(format!(
                         "event loop: {}",
                         first_line(&e.to_string())
@@ -151,6 +167,10 @@ impl JsRuntimeTrait for DenoRuntime {
                         "[MODULE-LIFECYCLE] load_module EVAL-FAILED: {url} — {}",
                         first_line(&e.to_string())
                     );
+                    let _ = self.runtime.execute_script(
+                        "<module-track-fail>",
+                        format!("typeof __neo_moduleFailed==='function'&&__neo_moduleFailed('{escaped_url}','eval-failed')"),
+                    );
                     return Err(RuntimeError::Module(first_line(&e.to_string())));
                 }
                 Err(_) => {
@@ -158,6 +178,12 @@ impl JsRuntimeTrait for DenoRuntime {
                     neo_trace!("[MODULE-LIFECYCLE] load_module EVAL-TIMEOUT: {url} (1000ms)");
                 }
             }
+
+            // Notify JS side of success.
+            let _ = self.runtime.execute_script(
+                "<module-track-ok>",
+                format!("typeof __neo_moduleLoaded==='function'&&__neo_moduleLoaded('{escaped_url}')"),
+            );
 
             // Log module tracker state after this module completes.
             let tracker = &self.module_tracker;
@@ -489,7 +515,8 @@ impl JsRuntimeTrait for DenoRuntime {
     fn reset_budgets(&mut self) {
         self.timer_budget.reset();
         self.tracker.reset();
-        // Also reset JS-side callback budget
+        self.module_tracker.reset();
+        // Also reset JS-side callback budget and module counters
         let _ = self.execute("if(typeof __callbackCount!=='undefined'){__callbackCount=0;__budgetExhausted=false;}");
     }
 
