@@ -771,7 +771,53 @@ globalThis.FileReader = globalThis.FileReader || class { readAsText(){} readAsDa
 
 // Misc
 globalThis.Image = class { constructor(){this.src='';this.onload=null;this.onerror=null;this.width=0;this.height=0;} };
-globalThis.AbortController = globalThis.AbortController || class { constructor(){this.signal={aborted:false,addEventListener(){},removeEventListener(){},onabort:null};} abort(){this.signal.aborted=true;} };
+// AbortController + AbortSignal — full implementation (not stub).
+// ChatGPT's React Router uses signal.aborted, addEventListener, throwIfAborted, reason.
+if (!globalThis.AbortSignal || !globalThis.AbortSignal.prototype?.throwIfAborted) {
+    class NeoAbortSignal extends EventTarget {
+        constructor() { super(); this._aborted = false; this._reason = undefined; }
+        get aborted() { return this._aborted; }
+        get reason() { return this._reason; }
+        throwIfAborted() { if (this._aborted) throw this._reason; }
+        static abort(reason) { const s = new NeoAbortSignal(); s._aborted = true; s._reason = reason || new DOMException('The operation was aborted.', 'AbortError'); return s; }
+        static timeout(ms) { const c = new AbortController(); setTimeout(() => c.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms); return c.signal; }
+        static any(signals) { const c = new AbortController(); signals.forEach(s => { if (s.aborted) c.abort(s.reason); else s.addEventListener('abort', () => c.abort(s.reason), { once: true }); }); return c.signal; }
+    }
+    globalThis.AbortSignal = NeoAbortSignal;
+    globalThis.AbortController = class NeoAbortController {
+        constructor() { this._signal = new NeoAbortSignal(); }
+        get signal() { return this._signal; }
+        abort(reason) {
+            if (this._signal._aborted) return;
+            this._signal._aborted = true;
+            this._signal._reason = reason || new DOMException('The operation was aborted.', 'AbortError');
+            this._signal.dispatchEvent(new Event('abort'));
+        }
+    };
+}
+// DOMException — needed by AbortController
+if (typeof globalThis.DOMException === 'undefined') {
+    globalThis.DOMException = class DOMException extends Error {
+        constructor(message, name) { super(message); this.name = name || 'DOMException'; this.code = 0; }
+    };
+}
+// Promise.prototype.finally — ChatGPT code uses .finally() extensively
+if (typeof Promise.prototype.finally !== 'function') {
+    Promise.prototype.finally = function(onFinally) {
+        return this.then(
+            value => Promise.resolve(onFinally()).then(() => value),
+            reason => Promise.resolve(onFinally()).then(() => { throw reason; })
+        );
+    };
+}
+// CSS.supports — containerQuery polyfill check uses this
+if (typeof globalThis.CSS === 'undefined') {
+    globalThis.CSS = { supports: () => false, escape: (s) => s };
+}
+// structuredClone — used by React Router for state management
+if (typeof globalThis.structuredClone === 'undefined') {
+    globalThis.structuredClone = function(obj) { return JSON.parse(JSON.stringify(obj)); };
+}
 globalThis.Headers = globalThis.Headers || class extends Map { constructor(init){super();if(init)Object.entries(init).forEach(([k,v])=>this.set(k.toLowerCase(),v));} };
 globalThis.FormData = globalThis.FormData || class { constructor(){this.__d=[];} append(k,v){this.__d.push([k,v]);} get(k){const e=this.__d.find(([n])=>n===k);return e?e[1]:null;} set(k,v){this.__d=this.__d.filter(([n])=>n!==k);this.__d.push([k,v]);} entries(){return this.__d[Symbol.iterator]();} forEach(fn){this.__d.forEach(([k,v])=>fn(v,k));} };
 globalThis.DOMParser = globalThis.DOMParser || class { parseFromString(html) { return __linkedom_parseHTML(html).document; } };
