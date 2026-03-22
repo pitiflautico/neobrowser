@@ -498,19 +498,55 @@ const DISPATCHER_JS: &str = r#"
             {}).set;
   }
   function setElValue(el, val, setter) {
+    // PDR F5: React _valueTracker compat — React compares tracker's cached
+    // value with the DOM value to decide whether onChange should fire.
+    // We must set the tracker to the OLD value BEFORE updating the DOM,
+    // so React detects a delta and fires its synthetic onChange.
+    var tracker = el._valueTracker;
+    if (tracker && typeof tracker.getValue === 'function') {
+      var oldVal = el.value || '';
+      tracker.setValue(oldVal);
+    }
     if (setter) setter.call(el, val);
     else el.value = val;
   }
 
-  // React controlled input compat: linkedom's event bubbling doesn't reach
-  // React's root event delegation. Call onChange directly via React's internal
-  // __reactProps if standard event dispatch fails to trigger state updates.
+  // PDR F5: React controlled input compat.
+  // Strategy 1: Re-dispatch an InputEvent after ensuring _valueTracker has the
+  // old value cached, so React's root delegation detects the delta.
+  // Strategy 2 (fallback): Call __reactProps.onChange / onInput directly.
   function reactNotifyChange(el) {
+    // Strategy 1: reset tracker and dispatch — React's SyntheticEvent system
+    // listens for native 'input' at the root and compares tracker values.
+    var tracker = el._valueTracker;
+    if (tracker && typeof tracker.getValue === 'function') {
+      // Tracker should already hold the old value from setElValue, but
+      // if somehow it got overwritten, force it to empty to guarantee delta.
+      var curDom = el.value || '';
+      var trackerVal = tracker.getValue();
+      if (trackerVal === curDom) {
+        // No delta — force one by setting tracker to empty
+        tracker.setValue('');
+      }
+      el.dispatchEvent(new InputEvent('input', {
+        bubbles: true, inputType: 'insertText', data: curDom
+      }));
+    }
+    // Strategy 2: direct prop call as last resort (linkedom may not bubble
+    // to the React root)
     var propKey = Object.keys(el).find(function(k) { return k.startsWith('__reactProps'); });
     if (!propKey) return;
     var props = el[propKey];
+    var syntheticEvt = {target: el, currentTarget: el, type: 'change',
+                        nativeEvent: new InputEvent('input', {bubbles:true}),
+                        preventDefault: function(){}, stopPropagation: function(){},
+                        isDefaultPrevented: function(){ return false; },
+                        isPropagationStopped: function(){ return false; }};
     if (props && typeof props.onChange === 'function') {
-      try { props.onChange({target: el, currentTarget: el, type: 'change'}); } catch(e) {}
+      try { props.onChange(syntheticEvt); } catch(e) {}
+    }
+    if (props && typeof props.onInput === 'function') {
+      try { props.onInput(syntheticEvt); } catch(e) {}
     }
   }
 

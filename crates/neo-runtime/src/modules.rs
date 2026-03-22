@@ -14,10 +14,88 @@ use std::rc::Rc;
 use crate::code_cache::V8CodeCache;
 use crate::neo_trace;
 use neo_http::{HttpClient, HttpRequest, RequestContext, RequestKind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 // Re-export import extraction from the dedicated module.
 pub use crate::imports::extract_es_imports;
+
+/// Tracks the number of in-flight module loads (requested but not yet fully loaded).
+///
+/// Shared between NeoModuleLoader and the settle loop so Rust can accurately
+/// know when dynamic imports are still in progress — even before JS gets a
+/// chance to update `__pendingModules`.
+#[derive(Clone, Default)]
+pub struct ModuleTracker {
+    inner: Arc<ModuleTrackerInner>,
+}
+
+#[derive(Default)]
+struct ModuleTrackerInner {
+    /// Modules currently being fetched / evaluated.
+    pending: AtomicUsize,
+    /// Total modules requested (lifetime counter, never decremented).
+    total_requested: AtomicUsize,
+    /// Total modules that completed successfully.
+    total_loaded: AtomicUsize,
+    /// Total modules that failed to load.
+    total_failed: AtomicUsize,
+}
+
+impl ModuleTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Mark a module as requested (about to fetch/load).
+    pub fn on_requested(&self, url: &str) {
+        self.inner.pending.fetch_add(1, Ordering::SeqCst);
+        self.inner.total_requested.fetch_add(1, Ordering::SeqCst);
+        neo_trace!("[MODULE-TRACK] requested: {url} (pending={})", self.pending());
+    }
+
+    /// Mark a module as successfully loaded.
+    pub fn on_loaded(&self, url: &str) {
+        let prev = self.inner.pending.fetch_sub(1, Ordering::SeqCst);
+        self.inner.total_loaded.fetch_add(1, Ordering::SeqCst);
+        neo_trace!("[MODULE-TRACK] loaded: {url} (pending={})", prev.saturating_sub(1));
+    }
+
+    /// Mark a module as failed.
+    pub fn on_failed(&self, url: &str) {
+        let prev = self.inner.pending.fetch_sub(1, Ordering::SeqCst);
+        self.inner.total_failed.fetch_add(1, Ordering::SeqCst);
+        neo_trace!("[MODULE-TRACK] failed: {url} (pending={})", prev.saturating_sub(1));
+    }
+
+    /// Number of modules currently in-flight.
+    pub fn pending(&self) -> usize {
+        self.inner.pending.load(Ordering::SeqCst)
+    }
+
+    /// Total modules requested since creation.
+    pub fn total_requested(&self) -> usize {
+        self.inner.total_requested.load(Ordering::SeqCst)
+    }
+
+    /// Total modules loaded successfully.
+    pub fn total_loaded(&self) -> usize {
+        self.inner.total_loaded.load(Ordering::SeqCst)
+    }
+
+    /// Total modules that failed.
+    pub fn total_failed(&self) -> usize {
+        self.inner.total_failed.load(Ordering::SeqCst)
+    }
+
+    /// Reset all counters (between page loads).
+    pub fn reset(&self) {
+        self.inner.pending.store(0, Ordering::SeqCst);
+        self.inner.total_requested.store(0, Ordering::SeqCst);
+        self.inner.total_loaded.store(0, Ordering::SeqCst);
+        self.inner.total_failed.store(0, Ordering::SeqCst);
+    }
+}
 
 /// Maximum number of on-demand module fetches per page load.
 const ON_DEMAND_FETCH_BUDGET: usize = 50;
@@ -102,6 +180,8 @@ pub struct NeoModuleLoader {
     pub http_client: Option<Arc<dyn HttpClient>>,
     /// Counter for on-demand fetches (budget: max ON_DEMAND_FETCH_BUDGET per page).
     pub on_demand_count: RefCell<usize>,
+    /// Tracks module lifecycle (pending/loaded/failed) for quiescence detection.
+    pub module_tracker: ModuleTracker,
 }
 
 impl NeoModuleLoader {
@@ -200,6 +280,9 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         let store = self.store.borrow();
         let import_kind = if is_dyn_import { "dynamic" } else { "static" };
 
+        // Track: module requested
+        self.module_tracker.on_requested(&url);
+
         // Check pre-fetched store first.
         if let Some(code) = store.scripts.get(&url) {
             let size_kb = code.len() / 1024;
@@ -208,6 +291,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                 neo_trace!("[MODULE] load {url} -> stubbed ({size_kb}KB, {import_kind})");
                 let exports = extract_export_names(code);
                 let stub = generate_stub_module(&exports);
+                self.module_tracker.on_loaded(&url);
                 return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
                     ModuleType::JavaScript,
                     ModuleSourceCode::String(stub.into()),
@@ -220,6 +304,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             // R5: Rewrite Promise.allSettled before serving.
             let patched = rewrite_promise_all_settled(code);
             let cache_info = self.make_cache_info(&url, &patched);
+            self.module_tracker.on_loaded(&url);
             return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
                 ModuleType::JavaScript,
                 ModuleSourceCode::String(patched.into()),
@@ -231,6 +316,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         // Skip known failures.
         if store.failed_urls.contains(&url) {
             neo_trace!("[MODULE] load {url} -> failed (known-failure, {import_kind})");
+            self.module_tracker.on_failed(&url);
             return empty_module(module_specifier);
         }
 
@@ -238,6 +324,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
         // (e.g. esm.sh/react@18, cdn.skypack.dev/react, jspm.dev/react).
         if !url.contains(".js") && !url.contains(".mjs") && !is_esm_cdn_url(&url) {
             neo_trace!("[MODULE] load {url} -> empty (non-js, {import_kind})");
+            self.module_tracker.on_failed(&url);
             return empty_module(module_specifier);
         }
 
@@ -252,6 +339,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                     neo_trace!(
                         "[MODULE] load {url} -> empty (on-demand budget exhausted: {count}, {import_kind})"
                     );
+                    self.module_tracker.on_failed(&url);
                     return empty_module(module_specifier);
                 }
 
@@ -298,6 +386,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
 
                         let patched = rewrite_promise_all_settled(&code);
                         let cache_info = self.make_cache_info(&url, &patched);
+                        self.module_tracker.on_loaded(&url);
                         return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
                             ModuleType::JavaScript,
                             ModuleSourceCode::String(patched.into()),
@@ -311,17 +400,20 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                             resp.status
                         );
                         drop(store);
-                        self.store.borrow_mut().failed_urls.insert(url);
+                        self.store.borrow_mut().failed_urls.insert(url.clone());
+                        self.module_tracker.on_failed(&url);
                     }
                     Ok(Err(e)) => {
                         neo_trace!("[MODULE] fetch error {url}: {e} ({import_kind})");
                         drop(store);
-                        self.store.borrow_mut().failed_urls.insert(url);
+                        self.store.borrow_mut().failed_urls.insert(url.clone());
+                        self.module_tracker.on_failed(&url);
                     }
                     Err(_) => {
                         neo_trace!("[MODULE] fetch thread panicked {url} ({import_kind})");
                         drop(store);
-                        self.store.borrow_mut().failed_urls.insert(url);
+                        self.store.borrow_mut().failed_urls.insert(url.clone());
+                        self.module_tracker.on_failed(&url);
                     }
                 }
 
@@ -331,6 +423,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
 
         // Not in store and not fetchable — return empty placeholder.
         neo_trace!("[MODULE] load {url} -> empty (not-in-store, {import_kind})");
+        self.module_tracker.on_failed(&url);
         empty_module(module_specifier)
     }
 
@@ -497,6 +590,7 @@ mod tests {
             import_map: Rc::new(RefCell::new(None)),
             http_client: None,
             on_demand_count: RefCell::new(0),
+            module_tracker: ModuleTracker::new(),
         }
     }
 
@@ -508,6 +602,7 @@ mod tests {
             import_map: Rc::new(RefCell::new(Some(map))),
             http_client: None,
             on_demand_count: RefCell::new(0),
+            module_tracker: ModuleTracker::new(),
         }
     }
 

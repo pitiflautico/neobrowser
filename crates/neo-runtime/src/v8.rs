@@ -4,7 +4,7 @@
 //! ES module support via NeoModuleLoader, and V8 bytecode caching.
 
 use crate::code_cache::V8CodeCache;
-use crate::modules::{ImportMapHandle, NeoModuleLoader, ScriptStoreHandle};
+use crate::modules::{ImportMapHandle, ModuleTracker, NeoModuleLoader, ScriptStoreHandle};
 use crate::ops;
 use crate::scheduler::{FetchBudget, SchedulerConfig, TaskTracker, TimerBudget, TimerState};
 use crate::v8_runtime_impl::first_line;
@@ -55,6 +55,8 @@ pub struct DenoRuntime {
     pub(crate) timer_budget: TimerBudget,
     /// Fetch budget for per-page concurrency and timeout limits.
     pub(crate) fetch_budget: FetchBudget,
+    /// Module lifecycle tracker for quiescence detection.
+    pub(crate) module_tracker: ModuleTracker,
     /// Tokio runtime for blocking on async ops.
     pub(crate) tokio_rt: tokio::runtime::Runtime,
 }
@@ -105,6 +107,8 @@ impl DenoRuntime {
             .and_then(|dir| V8CodeCache::new(dir).ok())
             .map(Rc::new);
 
+        let module_tracker = ModuleTracker::new();
+
         let loader = NeoModuleLoader {
             store: store.clone(),
             code_cache,
@@ -112,6 +116,7 @@ impl DenoRuntime {
             import_map: import_map.clone(),
             http_client: http_client.clone(),
             on_demand_count: RefCell::new(0),
+            module_tracker: module_tracker.clone(),
         };
 
         // Create tokio runtime BEFORE JsRuntime so that deno_core's WebTimers
@@ -222,6 +227,7 @@ impl DenoRuntime {
             tracker,
             timer_budget,
             fetch_budget,
+            module_tracker,
             tokio_rt,
         })
     }
@@ -244,6 +250,11 @@ impl DenoRuntime {
     /// Access the fetch budget.
     pub fn fetch_budget(&self) -> &FetchBudget {
         &self.fetch_budget
+    }
+
+    /// Access the module tracker for lifecycle instrumentation.
+    pub fn module_tracker(&self) -> &ModuleTracker {
+        &self.module_tracker
     }
 }
 

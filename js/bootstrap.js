@@ -421,12 +421,48 @@ globalThis.__neo_pendingTimers = function() { return __timerMap.size; };
 let __activityTs = Date.now();    // ms since epoch of last work
 let __domMutations = 0;           // mutation count since last reset
 let __pendingFetches = 0;         // in-flight fetch count
-let __pendingModules = 0;         // in-flight module evals
+let __pendingModules = 0;         // in-flight module evals (JS-side tracking)
 let __schedulerCallbacks = 0;     // pending MessageChannel/rAF/microtask callbacks
+let __totalModulesRequested = 0;  // lifetime module request counter
+let __totalModulesLoaded = 0;     // lifetime module success counter
+let __totalModulesFailed = 0;     // lifetime module failure counter
 
 function __neo_markActivity(source) {
     __activityTs = Date.now();
 }
+
+// Module lifecycle tracking — called from Rust via execute_script or
+// usable by any JS code that wraps dynamic import().
+globalThis.__neo_moduleRequested = function(url) {
+    __pendingModules++;
+    __totalModulesRequested++;
+    __neo_markActivity('module-request');
+    neo_trace('[MODULE-JS] requested: ' + url + ' (pending=' + __pendingModules + ')');
+};
+
+globalThis.__neo_moduleLoaded = function(url) {
+    __pendingModules = Math.max(0, __pendingModules - 1);
+    __totalModulesLoaded++;
+    __neo_markActivity('module-loaded');
+    neo_trace('[MODULE-JS] loaded: ' + url + ' (pending=' + __pendingModules + ')');
+};
+
+globalThis.__neo_moduleFailed = function(url, error) {
+    __pendingModules = Math.max(0, __pendingModules - 1);
+    __totalModulesFailed++;
+    __neo_markActivity('module-failed');
+    neo_trace('[MODULE-JS] failed: ' + url + ' — ' + (error || 'unknown') + ' (pending=' + __pendingModules + ')');
+};
+
+// Module graph stats — Rust calls this for diagnostics.
+globalThis.__neo_moduleStats = function() {
+    return JSON.stringify({
+        pending: __pendingModules,
+        total_requested: __totalModulesRequested,
+        total_loaded: __totalModulesLoaded,
+        total_failed: __totalModulesFailed,
+    });
+};
 
 // Quiescence query — Rust calls this. Returns JSON with all signals.
 globalThis.__neo_quiescence = function() {
@@ -438,6 +474,9 @@ globalThis.__neo_quiescence = function() {
         pending_modules: __pendingModules,
         dom_mutations: __domMutations,
         callback_count: __callbackCount,
+        modules_requested: __totalModulesRequested,
+        modules_loaded: __totalModulesLoaded,
+        modules_failed: __totalModulesFailed,
     });
 };
 

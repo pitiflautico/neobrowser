@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::neo_trace;
 use crate::v8::DenoRuntime;
 use crate::{EvalSettleResult, JsRuntime as JsRuntimeTrait, RuntimeError, RuntimeHandle};
 
@@ -83,13 +84,26 @@ impl JsRuntimeTrait for DenoRuntime {
         let specifier = deno_core::ModuleSpecifier::parse(url)
             .map_err(|e| RuntimeError::Module(e.to_string()))?;
 
+        let load_start = Instant::now();
+        neo_trace!("[MODULE-LIFECYCLE] load_module START: {url}");
+
         self.tokio_rt.block_on(async {
+            // Phase 1: Load (fetch + instantiate)
             let mod_id = self
                 .runtime
                 .load_main_es_module(&specifier)
                 .await
-                .map_err(|e| RuntimeError::Module(first_line(&e.to_string())))?;
+                .map_err(|e| {
+                    neo_trace!("[MODULE-LIFECYCLE] load_module LOAD-FAILED: {url} — {}", first_line(&e.to_string()));
+                    RuntimeError::Module(first_line(&e.to_string()))
+                })?;
 
+            neo_trace!(
+                "[MODULE-LIFECYCLE] load_module INSTANTIATED: {url} (id={mod_id}, {}ms)",
+                load_start.elapsed().as_millis()
+            );
+
+            // Phase 2: Evaluate
             let eval = self.runtime.mod_evaluate(mod_id);
 
             // Run event loop with timeout — modules that create infinite
@@ -100,8 +114,17 @@ impl JsRuntimeTrait for DenoRuntime {
             )
             .await
             {
-                Ok(Ok(())) => {}
+                Ok(Ok(())) => {
+                    neo_trace!(
+                        "[MODULE-LIFECYCLE] load_module EVENT-LOOP-IDLE: {url} ({}ms)",
+                        load_start.elapsed().as_millis()
+                    );
+                }
                 Ok(Err(e)) => {
+                    neo_trace!(
+                        "[MODULE-LIFECYCLE] load_module EVENT-LOOP-ERROR: {url} — {}",
+                        first_line(&e.to_string())
+                    );
                     return Err(RuntimeError::Module(format!(
                         "event loop: {}",
                         first_line(&e.to_string())
@@ -111,19 +134,41 @@ impl JsRuntimeTrait for DenoRuntime {
                     // Timeout — module may have created timer loops.
                     // Don't fail — the module may have partially evaluated.
                     eprintln!("[MODULE] event loop timeout for {url} (5s) — continuing");
+                    neo_trace!("[MODULE-LIFECYCLE] load_module EVENT-LOOP-TIMEOUT: {url} (5000ms)");
                 }
             }
 
-            // Try to get eval result, but don't block forever
+            // Phase 3: Await evaluation promise
             match tokio::time::timeout(Duration::from_millis(1000), eval).await {
-                Ok(Ok(())) => {}
+                Ok(Ok(())) => {
+                    neo_trace!(
+                        "[MODULE-LIFECYCLE] load_module EVALUATED: {url} ({}ms total)",
+                        load_start.elapsed().as_millis()
+                    );
+                }
                 Ok(Err(e)) => {
+                    neo_trace!(
+                        "[MODULE-LIFECYCLE] load_module EVAL-FAILED: {url} — {}",
+                        first_line(&e.to_string())
+                    );
                     return Err(RuntimeError::Module(first_line(&e.to_string())));
                 }
                 Err(_) => {
                     eprintln!("[MODULE] eval timeout for {url} (1s) — continuing");
+                    neo_trace!("[MODULE-LIFECYCLE] load_module EVAL-TIMEOUT: {url} (1000ms)");
                 }
             }
+
+            // Log module tracker state after this module completes.
+            let tracker = &self.module_tracker;
+            neo_trace!(
+                "[MODULE-LIFECYCLE] load_module DONE: {url} ({}ms) — tracker: pending={}, loaded={}, failed={}, total={}",
+                load_start.elapsed().as_millis(),
+                tracker.pending(),
+                tracker.total_loaded(),
+                tracker.total_failed(),
+                tracker.total_requested(),
+            );
 
             Ok(())
         })
@@ -249,17 +294,29 @@ impl JsRuntimeTrait for DenoRuntime {
                     "typeof __neo_resetMutationCount==='function'&&__neo_resetMutationCount()".to_string(),
                 );
 
+                // Also check Rust-side module tracker — catches modules that
+                // are in-flight at the loader level (fetching, not yet evaluated).
+                let rust_pending_modules = self.module_tracker.pending();
+
                 // Quiescence criteria:
                 // 1. Minimum settle time elapsed
                 // 2. No recent JS activity (quiet window)
-                // 3. No pending async work
+                // 3. No pending async work (JS-side AND Rust-side)
                 // 4. No recent DOM mutations
                 let min_elapsed = elapsed >= min_settle_ms;
                 let quiet = q.idle_ms >= QUIET_WINDOW_MS;
                 let no_pending = q.pending_timers == 0
                     && q.pending_fetches == 0
-                    && q.pending_modules == 0;
+                    && q.pending_modules == 0
+                    && rust_pending_modules == 0;
                 let no_mutations = q.dom_mutations == 0;
+
+                neo_trace!(
+                    "[SETTLE] elapsed={}ms idle={}ms timers={} fetches={} js_modules={} rust_modules={} mutations={} -> {}",
+                    elapsed, q.idle_ms, q.pending_timers, q.pending_fetches,
+                    q.pending_modules, rust_pending_modules, q.dom_mutations,
+                    if min_elapsed && quiet && no_pending && no_mutations { "SETTLED" } else { "waiting" }
+                );
 
                 if min_elapsed && quiet && no_pending && no_mutations {
                     return Ok(());
