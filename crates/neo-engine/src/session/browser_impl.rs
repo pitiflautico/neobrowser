@@ -271,12 +271,23 @@ impl BrowserEngine for NeoSession {
     }
 
     fn eval(&mut self, js: &str) -> Result<String, EngineError> {
-        match self.runtime.as_mut() {
+        let result = match self.runtime.as_mut() {
             Some(rt) => Ok(rt.eval(js)?),
             None => Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
                 "no runtime available".into(),
             ))),
+        };
+        // Pump after eval: brief event loop runs to process timer callbacks.
+        // Use pump_event_loop (no watchdog) to avoid terminating V8.
+        if let Some(ref mut rt) = self.runtime {
+            for _ in 0..50 {
+                match rt.pump_event_loop() {
+                    Ok(false) => break, // idle
+                    _ => {}
+                }
+            }
         }
+        result
     }
 
     fn click(&mut self, target: &str) -> Result<ClickResult, EngineError> {

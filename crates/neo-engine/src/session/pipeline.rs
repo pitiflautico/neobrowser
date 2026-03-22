@@ -501,6 +501,10 @@ impl NeoSession {
     pub(crate) fn pump_after_interaction(&mut self) {
         if let Some(ref mut rt) = self.runtime {
             let start = std::time::Instant::now();
+            // Use run_until_settled (which checks WebTimers) for proper macrotask delivery.
+            let _ = rt.run_until_settled(2000);
+            let _rounds = 1u32;
+            if false { // keep old code path for reference
             let budget = std::time::Duration::from_millis(2000);
             let mut rounds = 0u32;
 
@@ -543,13 +547,11 @@ impl NeoSession {
                 }
             }
 
-            if rounds > 0 {
-                eprintln!(
-                    "[NeoRender] pump_after_interaction: {} rounds in {}ms",
-                    rounds,
-                    start.elapsed().as_millis()
-                );
-            }
+            } // end if false
+            eprintln!(
+                "[NeoRender] pump_after_interaction: settled in {}ms",
+                start.elapsed().as_millis()
+            );
         }
     }
 
