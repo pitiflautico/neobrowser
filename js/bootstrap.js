@@ -1295,6 +1295,12 @@ if (!globalThis.crypto?.subtle?.digest || globalThis.crypto?.subtle?.digest?.toS
     globalThis.crypto.subtle.importKey = async () => ({});
     globalThis.crypto.subtle.sign = async () => new ArrayBuffer(32);
     globalThis.crypto.subtle.verify = async () => true;
+    globalThis.crypto.subtle.generateKey = async () => ({ publicKey: {}, privateKey: {} });
+    globalThis.crypto.subtle.exportKey = async () => new ArrayBuffer(32);
+    globalThis.crypto.subtle.encrypt = async () => new ArrayBuffer(32);
+    globalThis.crypto.subtle.decrypt = async () => new ArrayBuffer(0);
+    globalThis.crypto.subtle.deriveBits = async () => new ArrayBuffer(32);
+    globalThis.crypto.subtle.deriveKey = async () => ({});
 }
 
 // ═══════════════════════════════════════════════════════════════

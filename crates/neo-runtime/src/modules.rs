@@ -305,6 +305,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             let patched = rewrite_promise_all_settled(code);
             let patched = safe_getall_transform(&patched);
             let patched = ensure_promise_finally(&patched);
+            let patched = inject_editor_view_capture(&patched);
             let cache_info = self.make_cache_info(&url, &patched);
             self.module_tracker.on_loaded(&url);
             return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -391,6 +392,7 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                         let patched = rewrite_promise_all_settled(&code);
                         let patched = safe_getall_transform(&patched);
                         let patched = ensure_promise_finally(&patched);
+                        let patched = inject_editor_view_capture(&patched);
                         let cache_info = self.make_cache_info(&url, &patched);
                         self.module_tracker.on_loaded(&url);
                         return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -525,17 +527,23 @@ fn ensure_promise_finally(code: &str) -> String {
     format!("{polyfill}{code}")
 }
 
-/// Inject EditorView capture hook into ProseMirror code.
-/// When ProseMirror creates an EditorView, store a reference globally
-/// so we can dispatch transactions for text input.
+/// Inject EditorView capture into ProseMirror code.
+/// After `this.docView = ND(...)` in the EditorView constructor,
+/// insert `globalThis.__neo_pmView = this` to expose the view.
+/// Inject EditorView capture into ProseMirror code.
+/// Patches `this.domObserver=` (which follows docView init in EditorView constructor)
+/// to also store `this` globally for our editor bridge.
 fn inject_editor_view_capture(code: &str) -> String {
-    // Detect ProseMirror by looking for EditorView constructor pattern
-    if !code.contains("pmViewDesc") && !code.contains("EditorView") {
+    if !code.contains("this.domObserver=") || !code.contains("pmViewDesc") {
         return code.to_string();
     }
-    // Inject a hook at module start that patches the global scope
-    let hook = r#"(function(){if(!globalThis.__neo_pmViews)globalThis.__neo_pmViews=[];var _origDefProp=Object.defineProperty;Object.defineProperty=function(obj,prop,desc){var r=_origDefProp.call(Object,obj,prop,desc);if(prop==="pmViewDesc"&&desc?.value?.view){globalThis.__neo_pmViews.push(desc.value.view)}return r}})();"#;
-    format!("{hook}{code}")
+    // `this.domObserver=` only appears once in EditorView constructor.
+    // Prepend our capture: `globalThis.__neo_pmView=this,this.domObserver=`
+    code.replacen(
+        "this.domObserver=",
+        "globalThis.__neo_pmView=this,this.domObserver=",
+        1, // only first occurrence
+    )
 }
 
 pub fn rewrite_promise_all_settled(code: &str) -> String {

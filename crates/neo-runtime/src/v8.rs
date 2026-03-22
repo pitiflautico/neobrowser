@@ -198,7 +198,7 @@ impl DenoRuntime {
                     'NodeList','HTMLCollection','DOMTokenList','NamedNodeMap',
                     'Attr','CSSStyleDeclaration','CSSStyleSheet',
                     'Blob','File','FileReader','FormData',
-                    'Headers','Request','Response','URL','URLSearchParams','MediaQueryList','Storage',
+                    'Headers','Response','URL','URLSearchParams','MediaQueryList','Storage',
                     'HTMLDivElement','HTMLSpanElement','HTMLInputElement','HTMLButtonElement',
                     'HTMLAnchorElement','HTMLFormElement','HTMLSelectElement','HTMLOptionElement',
                     'HTMLTextAreaElement','HTMLImageElement','HTMLScriptElement','HTMLStyleElement',
