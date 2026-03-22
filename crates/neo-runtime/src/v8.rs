@@ -219,6 +219,25 @@ impl DenoRuntime {
                 RuntimeError::Init(format!("happy-dom exports: {}", first_line(&e.to_string())))
             })?;
 
+        // Critical polyfills that must be set AFTER all other init.
+        // deno_core 0.311's V8 Promise doesn't have .finally (removed from snapshot).
+        // Must be set here because happy-dom or other init may reset Promise.prototype.
+        let polyfills = r#"
+            if (typeof Promise.prototype.finally !== 'function') {
+                Promise.prototype.finally = function(onFinally) {
+                    return this.then(
+                        function(v) { return Promise.resolve(onFinally()).then(function() { return v; }); },
+                        function(r) { return Promise.resolve(onFinally()).then(function() { throw r; }); }
+                    );
+                };
+            }
+        "#;
+        runtime
+            .execute_script("<neorender:critical_polyfills>", polyfills.to_string())
+            .map_err(|e| {
+                RuntimeError::Init(format!("polyfills: {}", first_line(&e.to_string())))
+            })?;
+
         Ok(Self {
             runtime,
             store,

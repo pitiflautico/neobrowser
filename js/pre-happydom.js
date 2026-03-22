@@ -77,6 +77,7 @@ if (typeof globalThis.URL === 'undefined') {
             this.origin = this.protocol + '//' + this.host;
             this.username = '';
             this.password = '';
+            this.searchParams = new URLSearchParams(this.search);
         }
         toString() { return this.href; }
         toJSON() { return this.href; }

@@ -790,6 +790,27 @@ impl JsRuntimeTrait for DenoRuntime {
                     RuntimeError::Dom(format!("browser_shim: {}", first_line(&e.to_string())))
                 })?;
 
+            // CRITICAL: Promise.prototype.finally polyfill.
+            // deno_core 0.311 V8 Promises lack .finally. Must be set here
+            // (after all init) because module evaluation uses V8's Promise directly.
+            self.runtime.execute_script("<promise-finally>", r#"
+                if (typeof Promise.prototype.finally !== 'function') {
+                    Object.defineProperty(Promise.prototype, 'finally', {
+                        value: function(onFinally) {
+                            return this.then(
+                                function(v) { return Promise.resolve(onFinally()).then(function() { return v; }); },
+                                function(r) { return Promise.resolve(onFinally()).then(function() { throw r; }); }
+                            );
+                        },
+                        writable: true, configurable: true
+                    });
+                }
+            "#.to_string()).ok();
+
+            // Mark runtime as initialized.
+            self.runtime.execute_script("<neo-init>",
+                "globalThis.__neo_initialized = true;".to_string()).ok();
+
             // Hydration trace — monitors DOM mutations after initial load.
             let hydration_tracer = r#"
                 window.__neorender_trace = window.__neorender_trace || {};
