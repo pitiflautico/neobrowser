@@ -375,12 +375,14 @@ function __checkBudget(source) {
 globalThis.__neo_resetBudget = function() {
     __callbackCount = 0;
     __budgetExhausted = false;
-    // Cancel all pending timers
     for (const [extId, coreId] of __timerMap) {
         __coreCancelTimer(coreId);
     }
     __timerMap.clear();
 };
+
+// Pending timer count — queried by Rust settle loop to know if work is pending.
+globalThis.__neo_pendingTimers = function() { return __timerMap.size; };
 
 // Wrap queueMicrotask with budget
 const __origQueueMicrotask = globalThis.queueMicrotask;

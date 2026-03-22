@@ -281,7 +281,7 @@ impl NeoSession {
         while t5a.elapsed() < settle_budget && stable_ticks < 5 {
             // Run event loop for a real 200ms chunk — enough for module eval + promises
             let remaining = settle_budget.saturating_sub(t5a.elapsed());
-            let chunk = std::cmp::min(remaining, std::time::Duration::from_millis(200));
+            let chunk = std::cmp::min(remaining, std::time::Duration::from_millis(1000));
             if chunk.is_zero() { break; }
 
             // Use run_until_settled which actually runs the full event loop

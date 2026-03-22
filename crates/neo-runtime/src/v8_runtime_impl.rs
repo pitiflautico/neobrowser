@@ -192,16 +192,35 @@ impl JsRuntimeTrait for DenoRuntime {
                 .await
                 {
                     Ok(Ok(())) => {
-                        // Event loop reports idle. Dynamic import evaluations
-                        // may have just completed and scheduled new work.
-                        // Require 3 consecutive idle cycles before declaring settled.
-                        // This gives module evaluations time to trigger next imports.
-                        consecutive_idle += 1;
-                        if consecutive_idle >= 3 {
-                            return Ok(());
+                        // Event loop idle. Check pending WebTimers via JS eval.
+                        let pending_timers = {
+                            let code = "typeof __neo_pendingTimers==='function'?String(__neo_pendingTimers()):'0'";
+                            let result = self.runtime.execute_script("<pending-check>", code.to_string());
+                            match result {
+                                Ok(val) => {
+                                    let scope = &mut self.runtime.handle_scope();
+                                    let local = deno_core::v8::Local::new(scope, val);
+                                    local.to_string(scope)
+                                        .map(|s| s.to_rust_string_lossy(scope))
+                                        .unwrap_or_default()
+                                        .trim()
+                                        .parse::<usize>()
+                                        .unwrap_or(0)
+                                }
+                                Err(_) => 0,
+                            }
+                        };
+
+                        if pending_timers > 0 {
+                            consecutive_idle = 0;
+                            tokio::time::sleep(Duration::from_millis(5)).await;
+                        } else {
+                            consecutive_idle += 1;
+                            if consecutive_idle >= 3 {
+                                return Ok(());
+                            }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
                         }
-                        // Small delay between idle checks to let microtasks schedule
-                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     Ok(Err(e)) => {
                         eprintln!(
