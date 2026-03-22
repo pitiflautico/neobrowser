@@ -86,7 +86,7 @@ fn test_eval_dom_after_set_html() {
         "https://example.com",
     )
     .unwrap();
-    // Note: document.title requires linkedom bootstrap to work.
+    // Note: document.title requires happy-dom bootstrap to work.
     // Without it, this tests that set_document_html doesn't crash.
     let result = rt.eval("globalThis.__neorender_html").unwrap();
     assert!(result.contains("Test Page"));
@@ -469,7 +469,7 @@ fn test_mutation_observer_fires() {
 
     let mutations = rt.eval("JSON.stringify(globalThis.__mo_mutations)").unwrap();
     eprintln!("MutationObserver mutations: {}", mutations);
-    // linkedom's MutationObserver may or may not fire; document what happens.
+    // happy-dom's MutationObserver may or may not fire; document what happens.
     // If it doesn't fire, our shim stub is the fallback.
     // At minimum, the code should not crash.
     assert!(
@@ -720,4 +720,199 @@ fn test_response_json() {
         "json() should parse version, got: {}",
         result
     );
+}
+
+// ─── TASK 2A: New integration tests ───
+
+/// Verify op_fetch is async and returns a Promise.
+#[test]
+#[ignore]
+fn test_async_fetch_returns_promise() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    // fetch() should return a thenable (Promise). We don't need a real HTTP
+    // response — just verify the return type is a Promise, not undefined.
+    rt.execute(
+        r#"
+        globalThis.__fetchResult = 'pending';
+        const p = fetch('https://httpbin.org/status/200');
+        globalThis.__isPromise = (p && typeof p.then === 'function');
+        p.then(() => { globalThis.__fetchResult = 'resolved'; })
+         .catch(() => { globalThis.__fetchResult = 'rejected'; });
+        "#,
+    )
+    .unwrap();
+
+    let is_promise = rt.eval("String(globalThis.__isPromise)").unwrap();
+    assert_eq!(is_promise, "true", "fetch() should return a Promise");
+}
+
+/// Verify Promise.prototype.finally exists after full bootstrap init.
+#[test]
+#[ignore]
+fn test_promise_finally_polyfill() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    // After bootstrap, Promise.prototype.finally must be a function.
+    let has_finally = rt
+        .eval("typeof Promise.prototype.finally")
+        .unwrap();
+    assert_eq!(
+        has_finally, "function",
+        "Promise.prototype.finally should exist after bootstrap"
+    );
+
+    // Verify it actually works: finally callback fires on both resolve and reject.
+    rt.execute(
+        r#"
+        globalThis.__finallyResults = [];
+        Promise.resolve(42).finally(() => { globalThis.__finallyResults.push('resolved'); });
+        Promise.reject(new Error('x')).finally(() => { globalThis.__finallyResults.push('rejected'); }).catch(() => {});
+        "#,
+    )
+    .unwrap();
+
+    rt.run_until_settled(2000).unwrap();
+
+    let results = rt.eval("globalThis.__finallyResults.join(',')").unwrap();
+    assert!(
+        results.contains("resolved"),
+        "finally should fire on resolve, got: {results}"
+    );
+    assert!(
+        results.contains("rejected"),
+        "finally should fire on reject, got: {results}"
+    );
+}
+
+/// Verify className/classList sync works (the reason we migrated to happy-dom).
+#[test]
+#[ignore]
+fn test_happy_dom_classname_works() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html(
+        r#"<html><body><div id="target" class="initial"></div></body></html>"#,
+        "https://example.com",
+    )
+    .unwrap();
+
+    // classList.add should sync with className
+    rt.execute(
+        r#"
+        const el = document.getElementById('target');
+        el.classList.add('added');
+        globalThis.__className = el.className;
+        globalThis.__hasBoth = el.classList.contains('initial') && el.classList.contains('added');
+        "#,
+    )
+    .unwrap();
+
+    let class_name = rt.eval("globalThis.__className").unwrap();
+    assert!(
+        class_name.contains("initial") && class_name.contains("added"),
+        "className should contain both classes, got: {class_name}"
+    );
+
+    let has_both = rt.eval("String(globalThis.__hasBoth)").unwrap();
+    assert_eq!(has_both, "true", "classList should contain both classes");
+
+    // className assignment should sync back to classList
+    rt.execute(
+        r#"
+        const el2 = document.getElementById('target');
+        el2.className = 'fresh new-class';
+        globalThis.__hasFresh = el2.classList.contains('fresh');
+        globalThis.__noInitial = !el2.classList.contains('initial');
+        "#,
+    )
+    .unwrap();
+
+    let has_fresh = rt.eval("String(globalThis.__hasFresh)").unwrap();
+    assert_eq!(has_fresh, "true", "classList should reflect className assignment");
+
+    let no_initial = rt.eval("String(globalThis.__noInitial)").unwrap();
+    assert_eq!(no_initial, "true", "old classes should be removed after className assignment");
+}
+
+/// Verify __neo_quiescence() returns correct JSON with expected fields.
+#[test]
+#[ignore]
+fn test_quiescence_signals() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    // After bootstrap, __neo_quiescence should be defined and return JSON.
+    let q = rt
+        .eval("typeof __neo_quiescence === 'function' ? __neo_quiescence() : 'missing'")
+        .unwrap();
+    assert_ne!(q, "missing", "__neo_quiescence should be defined after bootstrap");
+
+    // Parse the result and verify expected fields.
+    let parsed: serde_json::Value = serde_json::from_str(&q)
+        .unwrap_or_else(|_| panic!("quiescence should return valid JSON, got: {q}"));
+
+    assert!(
+        parsed.get("idle_ms").is_some(),
+        "quiescence should have idle_ms field: {parsed}"
+    );
+    assert!(
+        parsed.get("pending_timers").is_some(),
+        "quiescence should have pending_timers field: {parsed}"
+    );
+    assert!(
+        parsed.get("pending_fetches").is_some(),
+        "quiescence should have pending_fetches field: {parsed}"
+    );
+}
+
+/// Verify ModuleTracker increments and decrements correctly.
+#[test]
+fn test_module_tracker_counts() {
+    use neo_runtime::modules::ModuleTracker;
+
+    let tracker = ModuleTracker::new();
+    assert_eq!(tracker.pending(), 0);
+    assert_eq!(tracker.total_requested(), 0);
+
+    tracker.on_requested("https://example.com/app.js");
+    assert_eq!(tracker.pending(), 1);
+    assert_eq!(tracker.total_requested(), 1);
+
+    tracker.on_requested("https://example.com/vendor.js");
+    assert_eq!(tracker.pending(), 2);
+    assert_eq!(tracker.total_requested(), 2);
+
+    tracker.on_loaded("https://example.com/app.js");
+    assert_eq!(tracker.pending(), 1);
+    assert_eq!(tracker.total_loaded(), 1);
+
+    tracker.on_failed("https://example.com/vendor.js");
+    assert_eq!(tracker.pending(), 0);
+    assert_eq!(tracker.total_failed(), 1);
+    assert_eq!(tracker.total_loaded(), 1);
+    assert_eq!(tracker.total_requested(), 2);
+
+    // Reset clears everything
+    tracker.reset();
+    assert_eq!(tracker.pending(), 0);
+    assert_eq!(tracker.total_requested(), 0);
+    assert_eq!(tracker.total_loaded(), 0);
+    assert_eq!(tracker.total_failed(), 0);
 }

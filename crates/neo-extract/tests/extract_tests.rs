@@ -543,3 +543,112 @@ fn test_semantic_removes_nav() {
         "should include main paragraph: {text}"
     );
 }
+
+// --- TASK 2C: New WOM extraction tests ---
+
+/// WOM should include inputs with their labels.
+#[test]
+fn test_wom_extracts_inputs() {
+    let html = r#"<html><body>
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" placeholder="your@email.com">
+        <label for="name">Full Name</label>
+        <input type="text" id="name" name="name">
+    </body></html>"#;
+    let dom = dom_from(html);
+    let wom = neo_extract::wom::build_wom(&dom, "https://example.com");
+
+    let inputs: Vec<_> = wom.nodes.iter().filter(|n| n.tag == "input").collect();
+    assert!(
+        inputs.len() >= 2,
+        "should find at least 2 inputs, got {}",
+        inputs.len()
+    );
+
+    // Email input should have type action
+    let email_input = inputs.iter().find(|n| {
+        n.label.contains("email") || n.label.contains("Email") || n.label.contains("your@email")
+    });
+    assert!(
+        email_input.is_some(),
+        "should find email input with label, nodes: {:?}",
+        inputs.iter().map(|n| &n.label).collect::<Vec<_>>()
+    );
+    assert!(
+        email_input.unwrap().actions.contains(&"type".to_string()),
+        "email input should have 'type' action"
+    );
+}
+
+/// WOM should include links with their href.
+#[test]
+fn test_wom_extracts_links() {
+    let html = r#"<html><body>
+        <a href="https://example.com/about">About Us</a>
+        <a href="https://example.com/contact">Contact</a>
+        <a href="https://example.com/blog">Blog</a>
+    </body></html>"#;
+    let dom = dom_from(html);
+    let wom = neo_extract::wom::build_wom(&dom, "https://example.com");
+
+    let links: Vec<_> = wom.nodes.iter().filter(|n| n.role == "link").collect();
+    assert_eq!(links.len(), 3, "should find 3 links");
+
+    // Each link should have click + navigate actions
+    for link in &links {
+        assert!(
+            link.actions.contains(&"click".to_string()),
+            "link should have click action: {:?}",
+            link
+        );
+        assert!(
+            link.actions.contains(&"navigate".to_string()),
+            "link should have navigate action: {:?}",
+            link
+        );
+    }
+
+    // Check label contains the link text
+    let about = links.iter().find(|n| n.label.contains("About"));
+    assert!(about.is_some(), "should find 'About Us' link by label");
+}
+
+/// WOM summary format should include title, element counts.
+#[test]
+fn test_wom_summary_format() {
+    let html = r#"<html><head><title>Dashboard</title></head><body>
+        <nav><a href="/">Home</a><a href="/settings">Settings</a></nav>
+        <main>
+            <h1>Dashboard</h1>
+            <form action="/save">
+                <input type="text" name="q" placeholder="Search">
+                <button type="submit">Go</button>
+            </form>
+            <table><tr><th>Name</th></tr><tr><td>Row 1</td></tr></table>
+        </main>
+    </body></html>"#;
+    let dom = dom_from(html);
+    let wom = neo_extract::wom::build_wom(&dom, "https://example.com");
+
+    // Summary should contain the page title
+    assert!(
+        wom.summary.contains("Dashboard"),
+        "summary should contain page title: {}",
+        wom.summary
+    );
+
+    // Summary should mention interactive element types
+    assert!(
+        wom.summary.contains("link") || wom.summary.contains("button") || wom.summary.contains("input"),
+        "summary should mention interactive elements: {}",
+        wom.summary
+    );
+
+    // Summary should be reasonably compact (under 500 chars)
+    assert!(
+        wom.summary.len() < 500,
+        "summary should be compact, got {} chars: {}",
+        wom.summary.len(),
+        wom.summary
+    );
+}

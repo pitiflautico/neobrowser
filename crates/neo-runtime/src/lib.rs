@@ -227,8 +227,8 @@ pub struct RuntimeConfig {
     pub script_timeout_ms: u64,
     /// Directory for V8 bytecode cache. None disables caching.
     pub cache_dir: Option<PathBuf>,
-    /// Path to linkedom JS bundle for DOM polyfill.
-    pub linkedom_path: Option<PathBuf>,
+    /// Path to DOM polyfill JS bundle (happy-dom). Unused when using bundled version.
+    pub dom_polyfill_path: Option<PathBuf>,
     /// Path to bootstrap JS that wires up globals.
     pub bootstrap_path: Option<PathBuf>,
 }
@@ -239,7 +239,7 @@ impl Default for RuntimeConfig {
             settle_timeout_ms: 5000,
             script_timeout_ms: 3000,
             cache_dir: None,
-            linkedom_path: None,
+            dom_polyfill_path: None,
             bootstrap_path: None,
         }
     }

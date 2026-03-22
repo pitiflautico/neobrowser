@@ -1,6 +1,6 @@
 //! DenoRuntime — V8-backed implementation of JsRuntime trait.
 //!
-//! Creates a deno_core::JsRuntime with browser polyfills (linkedom DOM),
+//! Creates a deno_core::JsRuntime with browser polyfills (happy-dom DOM),
 //! ES module support via NeoModuleLoader, and V8 bytecode caching.
 
 use crate::code_cache::V8CodeCache;

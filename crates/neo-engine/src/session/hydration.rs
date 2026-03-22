@@ -191,7 +191,15 @@ mod tests {
     fn test_transform_star_import() {
         let code = r#"import * as route0 from "/route0.js";"#;
         let result = transform_inline_module(code, "https://example.com");
-        assert!(result.contains(r#"const route0 = await import("https://example.com/route0.js")"#));
+        // Star imports get try/catch wrapping with fallback to empty object.
+        assert!(
+            result.contains(r#"route0 = await import("https://example.com/route0.js")"#),
+            "star import should resolve URL: {result}"
+        );
+        assert!(
+            result.contains("let route0"),
+            "star import should use let for try/catch: {result}"
+        );
     }
 
     #[test]
@@ -207,7 +215,11 @@ mod tests {
     fn test_transform_dynamic_import() {
         let code = r#"import("/entry.js");"#;
         let result = transform_inline_module(code, "https://example.com");
-        assert!(result.contains(r#"import("https://example.com/entry.js").catch(()=>{})"#));
+        // Dynamic imports get base URL prepended and are awaited.
+        assert!(
+            result.contains(r#"import("https://example.com/entry.js")"#),
+            "dynamic import should resolve URL: {result}"
+        );
     }
 
     #[test]

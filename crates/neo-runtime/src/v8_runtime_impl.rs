@@ -9,6 +9,24 @@ use crate::neo_trace;
 use crate::v8::DenoRuntime;
 use crate::{EvalSettleResult, JsRuntime as JsRuntimeTrait, RuntimeError, RuntimeHandle};
 
+/// Quiescence signals reported by the JS `__neo_quiescence()` function.
+///
+/// Used by both `run_until_settled` and `run_until_interaction_stable` to
+/// determine when the page has finished all async work and DOM mutations.
+#[derive(serde::Deserialize, Default)]
+struct Quiescence {
+    #[serde(default)]
+    idle_ms: u64,
+    #[serde(default)]
+    pending_timers: usize,
+    #[serde(default)]
+    pending_fetches: usize,
+    #[serde(default)]
+    pending_modules: usize,
+    #[serde(default)]
+    dom_mutations: usize,
+}
+
 /// Extract the first line of an error message.
 pub(crate) fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or(s).to_string()
@@ -296,20 +314,6 @@ impl JsRuntimeTrait for DenoRuntime {
                     }
                 };
 
-                // Parse quiescence signals
-                #[derive(serde::Deserialize, Default)]
-                struct Quiescence {
-                    #[serde(default)]
-                    idle_ms: u64,
-                    #[serde(default)]
-                    pending_timers: usize,
-                    #[serde(default)]
-                    pending_fetches: usize,
-                    #[serde(default)]
-                    pending_modules: usize,
-                    #[serde(default)]
-                    dom_mutations: usize,
-                }
                 let q: Quiescence = serde_json::from_str(&quiescence).unwrap_or_default();
 
                 let elapsed = settle_start.elapsed().as_millis() as u64;
@@ -474,20 +478,6 @@ impl JsRuntimeTrait for DenoRuntime {
                     }
                 };
 
-                // Parse quiescence signals
-                #[derive(serde::Deserialize, Default)]
-                struct Quiescence {
-                    #[serde(default)]
-                    idle_ms: u64,
-                    #[serde(default)]
-                    pending_timers: usize,
-                    #[serde(default)]
-                    pending_fetches: usize,
-                    #[serde(default)]
-                    pending_modules: usize,
-                    #[serde(default)]
-                    dom_mutations: usize,
-                }
                 let q: Quiescence = serde_json::from_str(&quiescence).unwrap_or_default();
 
                 let elapsed = settle_start.elapsed().as_millis() as u64;
@@ -740,8 +730,8 @@ impl JsRuntimeTrait for DenoRuntime {
         let escaped_url = url.replace('\'', "\\'");
 
         // On first call, execute full bootstrap. On subsequent calls, just
-        // reinitialize the DOM via __linkedom_parseHTML (bootstrap.js uses
-        // const declarations which can't be re-executed in the same V8 context).
+        // reinitialize the DOM via __linkedom_parseHTML (legacy name, now uses happy-dom).
+        // bootstrap.js uses const declarations which can't be re-executed in the same V8 context.
         let is_first = self
             .eval("typeof globalThis.__neo_initialized !== 'undefined' ? 'yes' : 'no'")
             .map(|v| v.contains("yes"))
@@ -834,11 +824,6 @@ impl JsRuntimeTrait for DenoRuntime {
                     ))
                 })?;
 
-            // Mark as initialized.
-            let _ = self.runtime.execute_script(
-                "<mark_init>",
-                "globalThis.__neo_initialized = true".to_string(),
-            );
         }
 
         // Set location properties directly on __neo_location to avoid

@@ -316,3 +316,77 @@ fn test_network_log() {
     assert_eq!(log[0].method, "GET");
     assert_eq!(log[0].status, 200);
 }
+
+// --- TASK 2B: New engine integration tests ---
+
+#[test]
+fn test_mock_engine_find_element() {
+    use neo_engine::{BrowserEngine, MockBrowserEngine};
+
+    let mut mock = MockBrowserEngine::new();
+    mock.navigate("https://example.com").unwrap();
+    // MockBrowserEngine.find_element returns empty vec (no real DOM).
+    let results = mock.find_element("button").unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_mock_engine_find_element_css() {
+    use neo_engine::{BrowserEngine, MockBrowserEngine};
+
+    let mut mock = MockBrowserEngine::new();
+    mock.navigate("https://example.com").unwrap();
+    let results = mock.find_element("#submit-btn").unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_mock_engine_fill_form() {
+    use neo_engine::{BrowserEngine, MockBrowserEngine};
+
+    let mut mock = MockBrowserEngine::new();
+    mock.navigate("https://example.com").unwrap();
+    let mut fields = HashMap::new();
+    fields.insert("email".to_string(), "test@test.com".to_string());
+    mock.fill_form(&fields).unwrap();
+    assert!(
+        mock.actions.iter().any(|a| a.contains("fill")),
+        "fill_form should be recorded in actions: {:?}",
+        mock.actions
+    );
+}
+
+#[test]
+fn test_eval_delegates_to_runtime() {
+    use neo_engine::BrowserEngine;
+
+    let mut session = build_session();
+    session.navigate("https://example.com").unwrap();
+    // MockRuntime returns "undefined" for unmatched evals.
+    let result = session.eval("document.title").unwrap();
+    assert_eq!(result, "undefined", "mock eval returns default value");
+}
+
+#[test]
+fn test_session_state_transitions() {
+    use neo_engine::BrowserEngine;
+    use neo_types::SessionState;
+
+    let session = build_session();
+    // Before any navigation, session should be idle.
+    assert_eq!(session.session_state(), SessionState::Idle);
+}
+
+#[test]
+fn test_page_id_increments() {
+    use neo_engine::BrowserEngine;
+
+    let mut session = build_session();
+    let id0 = session.page_id();
+    session.navigate("https://example.com").unwrap();
+    let id1 = session.page_id();
+    session.navigate("https://example.com/page2").unwrap();
+    let id2 = session.page_id();
+    assert!(id1 > id0, "page_id should increase after navigate");
+    assert!(id2 > id1, "page_id should increase after second navigate");
+}

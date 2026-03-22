@@ -1,4 +1,4 @@
-// NeoRender V2 Browser Shim — intercepts browser behaviors that linkedom can't handle.
+// NeoRender V2 Browser Shim — intercepts browser behaviors that happy-dom can't handle.
 // Loaded AFTER bootstrap.js. Overrides basic stubs with navigation-aware versions.
 // Hooks into Rust ops: op_navigation_request, op_cookie_get, op_cookie_set.
 
@@ -90,13 +90,13 @@ function __neoFormSubmit() {
     } catch(e) {}
 }
 
-// Intercept form.submit() — linkedom's form elements may have a different
+// Intercept form.submit() — happy-dom's form elements may have a different
 // prototype chain than globalThis.HTMLFormElement, so we patch both the
 // exported prototype AND the actual prototype from a real form element.
 if (typeof HTMLFormElement !== 'undefined' && HTMLFormElement.prototype) {
     HTMLFormElement.prototype.submit = __neoFormSubmit;
 }
-// Also patch the actual prototype chain used by linkedom's form elements.
+// Also patch the actual prototype chain used by happy-dom's form elements.
 if (typeof document !== 'undefined') {
     try {
         var __testForm = document.createElement('form');
@@ -415,7 +415,7 @@ globalThis.ResizeObserver = class ResizeObserver {
     disconnect() { this._elements = []; }
 };
 
-// MutationObserver — use linkedom's if available, otherwise stub
+// MutationObserver — use happy-dom's if available, otherwise stub
 if (!globalThis.MutationObserver) {
     globalThis.MutationObserver = class MutationObserver {
         constructor(callback) { this._callback = callback; }
@@ -939,7 +939,7 @@ if (typeof HTMLSelectElement !== 'undefined' && HTMLSelectElement.prototype && !
 // 15. IDL ATTRIBUTE SYNCHRONIZATION — React controlled inputs
 // ═══════════════════════════════════════════════════════════════
 // Real browsers separate content attributes (getAttribute/setAttribute) from
-// IDL properties (el.value, el.checked). linkedom conflates them. React reads
+// IDL properties (el.value, el.checked). happy-dom conflates them. React reads
 // IDL properties to determine current state and uses setAttribute for initial
 // render — if they aren't independent, controlled inputs break.
 
@@ -1067,10 +1067,10 @@ if (typeof HTMLSelectElement !== 'undefined' && HTMLSelectElement.prototype && !
     });
 })();
 
-// 15e. input.type — defaults to 'text' per spec (linkedom returns null instead)
+// 15e. input.type — defaults to 'text' per spec (happy-dom may return null instead)
 (function() {
     if (typeof HTMLInputElement === 'undefined' || !HTMLInputElement.prototype) return;
-    // Always override — linkedom's getter returns null when no type attribute is set
+    // Always override — happy-dom's getter may return null when no type attribute is set
     Object.defineProperty(HTMLInputElement.prototype, 'type', {
         get: function() { return this.getAttribute('type') || 'text'; },
         set: function(v) { this.setAttribute('type', v); },
@@ -1094,7 +1094,7 @@ if (typeof Document !== 'undefined' && Document.prototype && !Document.prototype
     };
 }
 
-// ─── Fix read-only toString on prototypes (linkedom makes some non-writable) ───
+// ─── Fix read-only toString on prototypes (happy-dom makes some non-writable) ───
 // Real browsers have toString as writable on all standard prototypes.
 // Some bundled JS (Vite/ChatGPT) assigns custom toString to objects.
 try {
@@ -1155,7 +1155,7 @@ if (!globalThis.Request) {
 // 15. EVENT SYSTEM FIXES — stopImmediatePropagation, composedPath, SubmitEvent, isConnected
 // ═══════════════════════════════════════════════════════════════
 
-// 15a. stopImmediatePropagation — linkedom doesn't implement the flag check
+// 15a. stopImmediatePropagation — happy-dom doesn't implement the flag check
 (function() {
     if (!Event.prototype) return;
     // Only patch once
