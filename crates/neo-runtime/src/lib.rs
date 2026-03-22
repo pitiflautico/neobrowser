@@ -105,6 +105,10 @@ pub trait JsRuntime: Send {
     /// Number of pending async tasks (promises, timers, fetches).
     fn pending_tasks(&self) -> usize;
 
+    /// Reset timer and callback budgets (call between script exec and settle
+    /// so React scheduler gets fresh budget for hydration).
+    fn reset_budgets(&mut self) {}
+
     /// Inject HTML into the DOM (parse and set as document).
     /// Also loads bootstrap.js which sets up browser globals (fetch, timers, etc.).
     fn set_document_html(&mut self, html: &str, url: &str) -> Result<(), RuntimeError>;

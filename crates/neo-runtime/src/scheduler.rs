@@ -32,7 +32,7 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
-            interval_max_ticks: 10,
+            interval_max_ticks: 20,
             timer_budget: 50,
         }
     }

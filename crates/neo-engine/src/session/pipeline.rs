@@ -240,6 +240,12 @@ impl NeoSession {
             t4.elapsed().as_millis()
         );
 
+        // Reset timer budget before settle — inline scripts may have exhausted it,
+        // but React scheduler needs setTimeout to work during hydration.
+        // The V8 watchdog (terminate_execution) prevents infinite loops,
+        // not the timer budget.
+        rt.reset_budgets();
+
         // Settle: run event loop for promises, timers, etc.
         let t5 = Instant::now();
         if let Err(e) = rt.run_until_settled(self.config.script_timeout_ms) {

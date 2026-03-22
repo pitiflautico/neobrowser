@@ -251,6 +251,13 @@ impl JsRuntimeTrait for DenoRuntime {
         self.tracker.pending()
     }
 
+    fn reset_budgets(&mut self) {
+        self.timer_budget.reset();
+        self.tracker.reset();
+        // Also reset JS-side callback budget
+        let _ = self.execute("if(typeof __callbackCount!=='undefined'){__callbackCount=0;__budgetExhausted=false;}");
+    }
+
     fn set_document_html(&mut self, html: &str, url: &str) -> Result<(), RuntimeError> {
         self.timer_budget.reset();
         self.tracker.reset();
