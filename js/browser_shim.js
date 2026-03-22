@@ -1212,102 +1212,154 @@ if (!globalThis.SubmitEvent) {
 })();
 
 // ═══════════════════════════════════════════════════════════════
-// REACT EVENT DELEGATION BRIDGE
+// REACT EVENT PIPELINE — dispatchEvent monkeypatch
 // ═══════════════════════════════════════════════════════════════
 //
-// React 16/17 installs event listeners on document (v16) or root (v17+)
-// to implement SyntheticEvent delegation. In happy-dom, this installation
-// may silently fail or get lost. This bridge ensures that when native
-// DOM events bubble, React's handlers in __reactEventHandlers get invoked.
+// Problem: React 16/17/18 installs event listeners on document or root
+// container via listenToAllSupportedEvents(). In happy-dom this installation
+// silently fails — React's internal event plugin system never fires.
 //
-// This is framework-aware but NOT framework-dependent — it only fires
-// if __reactEventHandlers exists on the target element.
-(function installReactEventBridge() {
-    // Map of React prop names to native event types
-    var reactToNative = {
-        onChange: ['change', 'input'],
-        onClick: ['click'],
-        onMouseDown: ['mousedown'],
-        onMouseUp: ['mouseup'],
-        onKeyDown: ['keydown'],
-        onKeyUp: ['keyup'],
-        onFocus: ['focus'],
-        onBlur: ['blur'],
-        onSubmit: ['submit'],
-        onInput: ['input'],
+// Fix: monkeypatch EventTarget.prototype.dispatchEvent so that when ANY
+// bubbling event is dispatched, we SYNCHRONOUSLY walk the DOM from target
+// up to root and invoke React handlers found in __reactEventHandlers (v16)
+// or __reactProps (v17/18). This runs DURING the dispatch, before any
+// event loop pump can reset controlled component values.
+//
+// This is the ONLY reliable way to connect React's handler system without
+// modifying React internals or depending on listenToAllSupportedEvents.
+(function installReactEventPipeline() {
+    // Native event type → React handler prop name(s)
+    var EVENT_MAP = {
+        click: ['onClick'],
+        dblclick: ['onDoubleClick'],
+        mousedown: ['onMouseDown'],
+        mouseup: ['onMouseUp'],
+        mousemove: ['onMouseMove'],
+        mouseenter: ['onMouseEnter'],
+        mouseleave: ['onMouseLeave'],
+        keydown: ['onKeyDown'],
+        keyup: ['onKeyUp'],
+        keypress: ['onKeyPress'],
+        input: ['onInput', 'onChange'],  // React fires onChange on input events
+        change: ['onChange'],
+        focus: ['onFocus'],
+        blur: ['onBlur'],
+        focusin: ['onFocus'],
+        focusout: ['onBlur'],
+        submit: ['onSubmit'],
+        reset: ['onReset'],
+        scroll: ['onScroll'],
+        wheel: ['onWheel'],
+        touchstart: ['onTouchStart'],
+        touchend: ['onTouchEnd'],
+        touchmove: ['onTouchMove'],
+        pointerdown: ['onPointerDown'],
+        pointerup: ['onPointerUp'],
+        compositionstart: ['onCompositionStart'],
+        compositionend: ['onCompositionEnd'],
+        compositionupdate: ['onCompositionUpdate'],
     };
 
-    // Collect all native event types we need to listen for
-    var nativeEvents = {};
-    Object.keys(reactToNative).forEach(function(reactProp) {
-        reactToNative[reactProp].forEach(function(nativeType) {
-            if (!nativeEvents[nativeType]) nativeEvents[nativeType] = [];
-            nativeEvents[nativeType].push(reactProp);
-        });
-    });
+    // Find React handler keys on an element (cached per suffix)
+    var _handlerKeySuffix = null;
+    function findHandlerKey(el) {
+        // Fast path: cached suffix
+        if (_handlerKeySuffix) {
+            var k = '__reactEventHandlers' + _handlerKeySuffix;
+            if (el[k]) return k;
+            k = '__reactProps' + _handlerKeySuffix;
+            if (el[k]) return k;
+        }
+        // Slow path: scan keys
+        var keys = Object.keys(el);
+        for (var i = 0; i < keys.length; i++) {
+            if (keys[i].startsWith('__reactEventHandlers') || keys[i].startsWith('__reactProps')) {
+                // Cache the suffix for fast future lookups
+                _handlerKeySuffix = keys[i].replace(/^__react(?:EventHandlers|Props)/, '');
+                return keys[i];
+            }
+        }
+        return null;
+    }
 
-    // For each native event type, install a document-level listener
-    Object.keys(nativeEvents).forEach(function(nativeType) {
-        document.addEventListener(nativeType, function(nativeEvent) {
-            var target = nativeEvent.target;
-            if (!target) return;
+    // Build synthetic event that React handlers expect
+    function makeSynthetic(nativeEvent, currentTarget) {
+        return {
+            target: nativeEvent.target,
+            currentTarget: currentTarget,
+            type: nativeEvent.type,
+            bubbles: nativeEvent.bubbles,
+            cancelable: nativeEvent.cancelable,
+            defaultPrevented: nativeEvent.defaultPrevented,
+            timeStamp: nativeEvent.timeStamp || Date.now(),
+            nativeEvent: nativeEvent,
+            preventDefault: function() { nativeEvent.preventDefault(); this.defaultPrevented = true; },
+            stopPropagation: function() { nativeEvent.stopPropagation(); this._stopped = true; },
+            stopImmediatePropagation: function() { nativeEvent.stopImmediatePropagation(); this._stopped = true; },
+            persist: function() {},
+            isPersistent: function() { return true; },
+            isDefaultPrevented: function() { return this.defaultPrevented; },
+            isPropagationStopped: function() { return !!this._stopped; },
+            // Copy common properties
+            key: nativeEvent.key,
+            code: nativeEvent.code,
+            charCode: nativeEvent.charCode,
+            keyCode: nativeEvent.keyCode,
+            which: nativeEvent.which,
+            data: nativeEvent.data,
+            inputType: nativeEvent.inputType,
+            button: nativeEvent.button,
+            buttons: nativeEvent.buttons,
+            clientX: nativeEvent.clientX,
+            clientY: nativeEvent.clientY,
+            screenX: nativeEvent.screenX,
+            screenY: nativeEvent.screenY,
+            altKey: nativeEvent.altKey,
+            ctrlKey: nativeEvent.ctrlKey,
+            metaKey: nativeEvent.metaKey,
+            shiftKey: nativeEvent.shiftKey,
+            detail: nativeEvent.detail,
+        };
+    }
 
-            // Walk up from target to find __reactEventHandlers
-            var el = target;
-            while (el) {
-                var ehKey = null;
-                var keys = Object.keys(el);
-                for (var i = 0; i < keys.length; i++) {
-                    if (keys[i].startsWith('__reactEventHandlers')) {
-                        ehKey = keys[i];
-                        break;
-                    }
-                }
+    // The core: monkeypatch dispatchEvent
+    var _origDispatchEvent = EventTarget.prototype.dispatchEvent;
+    EventTarget.prototype.dispatchEvent = function(event) {
+        // 1. Call original dispatchEvent (happy-dom's native bubbling)
+        var result = _origDispatchEvent.call(this, event);
 
-                if (ehKey) {
-                    var handlers = el[ehKey];
-                    // Build a React-like synthetic event
-                    var syntheticEvent = {
-                        target: target,
-                        currentTarget: el,
-                        type: nativeType,
-                        bubbles: nativeEvent.bubbles,
-                        cancelable: nativeEvent.cancelable,
-                        defaultPrevented: nativeEvent.defaultPrevented,
-                        nativeEvent: nativeEvent,
-                        preventDefault: function() { nativeEvent.preventDefault(); this.defaultPrevented = true; },
-                        stopPropagation: function() { nativeEvent.stopPropagation(); },
-                        persist: function() {},
-                        isPersistent: function() { return true; },
-                    };
-                    // Copy common properties from native event
-                    if (nativeEvent.key) syntheticEvent.key = nativeEvent.key;
-                    if (nativeEvent.code) syntheticEvent.code = nativeEvent.code;
-                    if (nativeEvent.data) syntheticEvent.data = nativeEvent.data;
-                    if (nativeEvent.inputType) syntheticEvent.inputType = nativeEvent.inputType;
-                    if (nativeEvent.clientX !== undefined) {
-                        syntheticEvent.clientX = nativeEvent.clientX;
-                        syntheticEvent.clientY = nativeEvent.clientY;
-                    }
+        // 2. If this is a bubbling event and has React handler mappings, walk the tree
+        var reactHandlerNames = EVENT_MAP[event.type];
+        if (!reactHandlerNames || !event.bubbles) return result;
 
-                    // Call matching React handlers
-                    var reactProps = nativeEvents[nativeType];
-                    for (var j = 0; j < reactProps.length; j++) {
-                        var handler = handlers[reactProps[j]];
+        // 3. Walk from target up through DOM, invoking React handlers
+        var el = event.target || this;
+        var stopped = false;
+        while (el && !stopped) {
+            var hk = findHandlerKey(el);
+            if (hk) {
+                var handlers = el[hk];
+                if (handlers) {
+                    var synth = makeSynthetic(event, el);
+                    for (var i = 0; i < reactHandlerNames.length && !stopped; i++) {
+                        var handler = handlers[reactHandlerNames[i]];
                         if (typeof handler === 'function') {
-                            try { handler(syntheticEvent); } catch (e) {
-                                if (typeof console !== 'undefined') {
-                                    console.error('[react-bridge] ' + reactProps[j] + ' error: ' + e.message);
-                                }
+                            try {
+                                handler(synth);
+                            } catch (e) {
+                                console.error('[react-event] ' + reactHandlerNames[i] + ' on <' +
+                                    (el.tagName||'?').toLowerCase() + '>: ' + e.message);
                             }
+                            if (synth._stopped) stopped = true;
                         }
                     }
                 }
-
-                // Stop at document (don't go to window)
-                if (el === document) break;
-                el = el.parentNode;
             }
-        }, false); // bubble phase
-    });
+            // Walk up (but stop at document — don't go to window)
+            if (el === document || el === document.documentElement) break;
+            el = el.parentNode || el.parentElement;
+        }
+
+        return result;
+    };
 })();
