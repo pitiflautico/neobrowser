@@ -217,7 +217,9 @@ function __getCookiesForUrl(url) {
         const hostname = new URL(url).hostname;
         const parts = [];
         for (const [domain, cookies] of Object.entries(__neorender_cookies)) {
-            if (hostname === domain || hostname.endsWith('.' + domain)) {
+            // Strip leading dot for matching (RFC 6265: .example.com matches example.com)
+            const d = domain.startsWith('.') ? domain.slice(1) : domain;
+            if (hostname === d || hostname.endsWith('.' + d) || hostname === domain) {
                 parts.push(cookies);
             }
         }
