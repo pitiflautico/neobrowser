@@ -305,8 +305,9 @@ globalThis.Response = NeoResponse;
 // The underlying op_fetch is sync (runs HTTP on a dedicated thread).
 globalThis.fetch = function(input, init) {
     const url = typeof input === 'string' ? input : input?.url || String(input);
-    const method = init?.method || 'GET';
-    const body = init?.body || null;
+    // Read method/body from Request object if input is Request and init doesn't override
+    const method = init?.method || (input instanceof Request ? input.method : null) || 'GET';
+    const body = init?.body !== undefined ? init.body : (input instanceof Request ? input.body : null);
     __pendingFetches++;
     __neo_markActivity('fetch-start');
 
@@ -338,12 +339,12 @@ globalThis.fetch = function(input, init) {
     const cookies = __getCookiesForUrl(fullUrl);
     if (cookies) hdrs['Cookie'] = cookies;
 
-    // Merge user headers
-    if (init?.headers) {
-        const src = init.headers;
-        if (typeof src.forEach === 'function') { src.forEach((v, k) => { hdrs[k] = v; }); }
-        else if (Array.isArray(src)) { src.forEach(([k, v]) => { hdrs[k] = v; }); }
-        else { Object.entries(src).forEach(([k, v]) => { hdrs[k] = String(v); }); }
+    // Merge user headers (from init or Request object)
+    const headerSrc = init?.headers || (input instanceof Request ? input.headers : null);
+    if (headerSrc) {
+        if (typeof headerSrc.forEach === 'function') { headerSrc.forEach((v, k) => { hdrs[k] = v; }); }
+        else if (Array.isArray(headerSrc)) { headerSrc.forEach(([k, v]) => { hdrs[k] = v; }); }
+        else if (typeof headerSrc === 'object') { Object.entries(headerSrc).forEach(([k, v]) => { hdrs[k] = String(v); }); }
     }
 
     const headersJson = Object.keys(hdrs).length > 0 ? JSON.stringify(hdrs) : '';
