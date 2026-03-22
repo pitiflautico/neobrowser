@@ -1481,6 +1481,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "neo-nrp"
+version = "2.0.0-alpha.1"
+dependencies = [
+ "neo-dom",
+ "neo-engine",
+ "neo-extract",
+ "neo-interact",
+ "neo-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "neo-runtime"
 version = "2.0.0-alpha.1"
 dependencies = [

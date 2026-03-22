@@ -265,6 +265,37 @@ impl DomEngine for Html5everDom {
             String::new()
         }
     }
+
+    fn element_count(&self) -> usize {
+        self.elements.len()
+    }
+
+    fn children(&self, el: ElementId) -> Vec<ElementId> {
+        let handle = match self.handles.get(el) {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        let mut result = Vec::new();
+        for child in handle.children.borrow().iter() {
+            if let NodeData::Element { .. } = child.data {
+                // Find this child's index in our handles list by pointer equality
+                for (idx, h) in self.handles.iter().enumerate() {
+                    if std::ptr::eq(h.as_ref(), child.as_ref()) {
+                        result.push(idx);
+                        break;
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn get_attributes(&self, el: ElementId) -> Vec<(String, String)> {
+        self.elements
+            .get(el)
+            .map(|e| e.attrs.clone())
+            .unwrap_or_default()
+    }
 }
 
 // Safety: RcDom uses Rc (not Arc) so it is !Send by default.

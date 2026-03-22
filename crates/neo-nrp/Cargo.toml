@@ -1,0 +1,19 @@
+[package]
+name = "neo-nrp"
+version.workspace = true
+edition.workspace = true
+description = "NeoRender Protocol — types, semantic tree, target resolution, command dispatch"
+
+[dependencies]
+neo-types = { path = "../neo-types" }
+neo-engine = { path = "../neo-engine" }
+neo-extract = { path = "../neo-extract" }
+neo-dom = { path = "../neo-dom" }
+neo-interact = { path = "../neo-interact" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+neo-dom = { path = "../neo-dom" }
+neo-engine = { path = "../neo-engine" }

@@ -26,6 +26,7 @@ pub struct MockDomEngine {
     links: Vec<Link>,
     forms: Vec<Form>,
     parsed: bool,
+    children_map: std::collections::HashMap<ElementId, Vec<ElementId>>,
 }
 
 impl MockDomEngine {
@@ -37,6 +38,7 @@ impl MockDomEngine {
             links: Vec::new(),
             forms: Vec::new(),
             parsed: false,
+            children_map: std::collections::HashMap::new(),
         }
     }
 
@@ -82,6 +84,11 @@ impl MockDomEngine {
             href: href.to_string(),
             rel: None,
         });
+    }
+
+    /// Add a parent-child relationship.
+    pub fn add_child(&mut self, parent: ElementId, child: ElementId) {
+        self.children_map.entry(parent).or_default().push(child);
     }
 
     /// Add a form.
@@ -234,5 +241,20 @@ impl DomEngine for MockDomEngine {
         } else {
             String::new()
         }
+    }
+
+    fn element_count(&self) -> usize {
+        self.elements.len()
+    }
+
+    fn children(&self, el: ElementId) -> Vec<ElementId> {
+        self.children_map.get(&el).cloned().unwrap_or_default()
+    }
+
+    fn get_attributes(&self, el: ElementId) -> Vec<(String, String)> {
+        self.elements
+            .get(el)
+            .map(|e| e.attrs.clone())
+            .unwrap_or_default()
     }
 }

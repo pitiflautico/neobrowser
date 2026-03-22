@@ -113,4 +113,26 @@ pub trait DomEngine: Send {
 
     /// Compute the accessible name for an element.
     fn accessible_name(&self, el: ElementId) -> String;
+
+    // -- Tree structure --
+
+    /// Number of elements in the flattened DOM.
+    fn element_count(&self) -> usize {
+        0
+    }
+
+    /// Direct child element IDs of the given element.
+    fn children(&self, _el: ElementId) -> Vec<ElementId> {
+        Vec::new()
+    }
+
+    /// Get all attributes for an element as (name, value) pairs.
+    fn get_attributes(&self, _el: ElementId) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// Find the body element (entry point for tree building).
+    fn body(&self) -> Option<ElementId> {
+        self.query_selector("body")
+    }
 }
