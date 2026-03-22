@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use neo_dom::DomEngine;
 use neo_http::{HttpRequest, RequestContext, RequestKind};
 use neo_types::{NetworkLogEntry, PageState};
 
@@ -36,11 +37,16 @@ impl NeoSession {
             let mut dom = self.dom.lock().expect("dom lock poisoned");
             dom.parse_html(&response.body, &response.url)?;
         }
-        eprintln!(
-            "[profile] html_parse: {}ms ({}KB)",
-            tparse.elapsed().as_millis(),
-            response.body.len() / 1024
-        );
+        {
+            let dom = self.dom.lock().expect("dom lock poisoned");
+            let el_count = dom.query_selector_all("*").len();
+            eprintln!(
+                "[profile] html_parse: {}ms ({}KB, {} elements)",
+                tparse.elapsed().as_millis(),
+                response.body.len() / 1024,
+                el_count,
+            );
+        }
 
         // Interactive.
         self.lifecycle
@@ -316,9 +322,9 @@ impl NeoSession {
         // chain that deno_core's event loop doesn't fully process for dynamic imports.
         let entry_module = rt.eval(
             "(window.__reactRouterManifest && window.__reactRouterManifest.entry && window.__reactRouterManifest.entry.module) || ''"
-        ).unwrap_or_default().trim().replace('"', "").replace('\'', "");
+        ).unwrap_or_default().trim().replace(['"', '\''], "");
 
-        if !entry_module.is_empty() && !entry_module.starts_with('/') == false {
+        if !entry_module.is_empty() && entry_module.starts_with('/') {
             // Resolve relative to page URL
             let base = response.url.clone();
             let full_url = if entry_module.starts_with("http") {
@@ -332,7 +338,7 @@ impl NeoSession {
 
             neo_trace!("[SETTLE] loading entry module: {full_url}");
             // Check if module was already evaluated during settle (dynamic import chain)
-            let already_loaded = rt.eval(&format!(
+            let _already_loaded = rt.eval(&format!(
                 "typeof __neo_module_loaded_{} !== 'undefined' ? 'yes' : 'no'",
                 full_url.len() // cheap hash
             )).unwrap_or_default().contains("yes");
@@ -353,7 +359,7 @@ impl NeoSession {
                     let new_nodes = rt.eval("document.querySelectorAll('*').length")
                         .unwrap_or_default().trim().parse::<usize>().unwrap_or(0);
                     neo_trace!("[SETTLE] DOM after entry module: {} nodes (was {})", new_nodes, last_node_count);
-                    last_node_count = new_nodes;
+                    let _ = new_nodes; // node count tracked via rt.eval below
                 }
                 Err(e) => {
                     neo_trace!("[SETTLE] entry module load failed: {e}");
@@ -372,17 +378,61 @@ impl NeoSession {
         neo_trace!("[SETTLE] DOM nodes after settle: {node_count}");
 
         // Export the JS-mutated DOM and re-parse into html5ever.
+        // Only replace the original parse if V8 produced a RICHER DOM
+        // (hydration succeeded). If V8's DOM is impoverished (failed
+        // hydration, empty __next div), keep the original SSR content.
         let t6 = Instant::now();
         match rt.export_html() {
             Ok(html) if !html.is_empty() => {
-                let mut dom = self.dom.lock().expect("dom lock poisoned");
-                if let Err(e) = dom.parse_html(&html, &response.url) {
-                    js_errors.push(format!("re-parse: {e}"));
+                let original_elements = {
+                    let dom = self.dom.lock().expect("dom lock poisoned");
+                    dom.query_selector_all("*").len()
+                };
+                neo_trace!(
+                    "[DOM_EXPORT] V8: {}B, {} V8 nodes, {} original elements",
+                    html.len(),
+                    node_count,
+                    original_elements
+                );
+
+                // Parse V8 export into a temporary DOM to count elements
+                let mut temp_dom = neo_dom::Html5everDom::new();
+                match temp_dom.parse_html(&html, &response.url) {
+                    Ok(()) => {
+                        let v8_elements = temp_dom.query_selector_all("*").len();
+                        // Only replace if V8 DOM has MORE elements than original
+                        // (meaning hydration added content) or at least 80% of
+                        // original (meaning minor DOM changes, not data loss).
+                        let threshold = (original_elements as f64 * 0.8) as usize;
+                        if v8_elements >= threshold.max(1) {
+                            neo_trace!(
+                                "[DOM_EXPORT] accepting V8 DOM ({} >= {} threshold)",
+                                v8_elements,
+                                threshold
+                            );
+                            let mut dom = self.dom.lock().expect("dom lock poisoned");
+                            if let Err(e) = dom.parse_html(&html, &response.url) {
+                                js_errors.push(format!("re-parse: {e}"));
+                            }
+                        } else {
+                            neo_trace!(
+                                "[DOM_EXPORT] REJECTING V8 DOM ({} < {} threshold) — keeping original SSR parse",
+                                v8_elements,
+                                threshold
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        js_errors.push(format!("re-parse probe: {e}"));
+                    }
                 }
             }
-            Ok(_) => {}
+            Ok(empty) => {
+                neo_trace!("[DOM_EXPORT] empty HTML returned (len={})", empty.len());
+            }
             Err(e) => {
                 js_errors.push(format!("export: {e}"));
+                neo_trace!("[DOM_EXPORT] ERROR: {e}");
             }
         }
         eprintln!("[profile] dom_export: {}ms", t6.elapsed().as_millis());

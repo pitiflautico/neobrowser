@@ -68,6 +68,11 @@ fn matches_simple_selector(info: &ElementInfo, sel: &str) -> bool {
         }
     }
 
+    // Universal selector
+    if sel == "*" {
+        return true;
+    }
+
     // Plain tag name
     info.tag == sel
 }
