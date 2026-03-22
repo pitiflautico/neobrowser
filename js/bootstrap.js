@@ -819,6 +819,34 @@ if (typeof globalThis.CompositionEvent === 'undefined') {
         constructor(type, init) { super(type, init); this.data = init?.data || ''; }
     };
 }
+// Request — happy-dom's Request crashes ("outside Window context").
+// Override with minimal spec-compliant Request that doesn't need Window.
+globalThis.Request = class Request {
+    constructor(input, init) {
+        if (input instanceof Request) {
+            this.url = input.url;
+            this.method = input.method;
+            this.headers = new Headers(input.headers);
+            this.body = input.body;
+        } else {
+            this.url = String(input);
+            this.method = init?.method || 'GET';
+            this.headers = new Headers(init?.headers || {});
+            this.body = init?.body || null;
+        }
+        this.mode = init?.mode || 'cors';
+        this.credentials = init?.credentials || 'same-origin';
+        this.cache = init?.cache || 'default';
+        this.redirect = init?.redirect || 'follow';
+        this.referrer = init?.referrer || '';
+        this.signal = init?.signal || (typeof AbortSignal !== 'undefined' ? new AbortController().signal : null);
+        this.integrity = init?.integrity || '';
+    }
+    clone() { return new Request(this); }
+    async text() { return typeof this.body === 'string' ? this.body : ''; }
+    async json() { return JSON.parse(await this.text()); }
+    async arrayBuffer() { return new TextEncoder().encode(await this.text()).buffer; }
+};
 // CSS.supports — containerQuery polyfill check uses this
 if (typeof globalThis.CSS === 'undefined') {
     globalThis.CSS = { supports: () => false, escape: (s) => s };
