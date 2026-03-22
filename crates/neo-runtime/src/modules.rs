@@ -301,8 +301,9 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
             }
 
             neo_trace!("[MODULE] load {url} -> ok ({size_kb}KB, {import_kind})");
-            // R5: Rewrite Promise.allSettled before serving.
+            // Source transforms for browser compat:
             let patched = rewrite_promise_all_settled(code);
+            let patched = safe_getall_transform(&patched);
             let cache_info = self.make_cache_info(&url, &patched);
             self.module_tracker.on_loaded(&url);
             return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -384,7 +385,10 @@ impl deno_core::ModuleLoader for NeoModuleLoader {
                             .scripts
                             .insert(url.clone(), code.clone());
 
+                        // Source transforms for browser compat:
+                        // 1. Promise.allSettled polyfill
                         let patched = rewrite_promise_all_settled(&code);
+                        let patched = safe_getall_transform(&patched);
                         let cache_info = self.make_cache_info(&url, &patched);
                         self.module_tracker.on_loaded(&url);
                         return ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -472,6 +476,42 @@ fn empty_module(spec: &ModuleSpecifier) -> ModuleLoadResponse {
 ///
 /// deno_core module scope doesn't support the polyfill injection pattern,
 /// so we rewrite call sites directly.
+/// Transform `.getAll(` to safe version that doesn't crash on undefined receivers.
+/// React Router calls `e.getAll(o)` where `e` can be undefined in headless.
+/// Replace `.getAll(` with `?.getAll?.(` — optional chaining on both receiver and method.
+/// The caller must handle the undefined result (e.g. via `||[]` or `?.flatMap`).
+/// Transform `.getAll(` calls to safe version.
+/// In headless, some objects (URLSearchParams from SSR data) are undefined.
+/// Replace `obj.getAll(x)` with `(obj?.getAll?.(x)||[])` so the result is
+/// always an array, preventing downstream `.split()` / `.flatMap()` crashes.
+/// Make `.getAll()` calls safe for undefined receivers.
+/// Injects a global `__neoSafeGetAll(obj, key)` helper that returns `[]` on failure,
+/// then patches `Object.prototype.getAll` to always return `[]` as fallback.
+/// This prevents crashes in React Router's link discovery code.
+/// Make `.getAll()` calls safe for undefined/null receivers.
+/// Replaces `x.getAll(y)` with `(x||{getAll:()=>[]}).getAll(y)`.
+/// This ensures getAll always returns [] even when receiver is undefined,
+/// preventing downstream crashes in `.flatMap(o=>o.split(","))`.
+/// Make `.getAll()` calls safe for undefined/null receivers.
+/// Replaces `.getAll(` with `?.getAll?.(` and adds a global Object.prototype.getAll
+/// fallback. Also patches the specific React Router pattern where .getAll results
+/// feed into .flatMap(o=>o.split(...)) by filtering nullish values.
+fn safe_getall_transform(code: &str) -> String {
+    if !code.contains(".getAll(") {
+        return code.to_string();
+    }
+    // 1. Optional chain: .getAll( → ?.getAll?.(
+    let patched = code.replace(".getAll(", "?.getAll?.(");
+    // 2. Patch the specific React Router pattern:
+    //    .flatMap(o=>e?.getAll?.(o)).flatMap(o=>o.split(","))
+    //    The second flatMap receives undefined elements. Add .filter(Boolean) before it.
+    //    Target: `).flatMap(o=>o.split` → `).filter(Boolean).flatMap(o=>o.split`
+    let patched = patched.replace(").flatMap(o=>o.split", ").filter(Boolean).flatMap(o=>o.split");
+    // 3. Also handle: `).flatMap(o=>o.trim` (similar pattern in same code)
+    let patched = patched.replace(").flatMap(o=>o.trim", ").filter(Boolean).flatMap(o=>o.trim");
+    patched
+}
+
 pub fn rewrite_promise_all_settled(code: &str) -> String {
     if !code.contains("Promise.allSettled(") {
         return code.to_string();

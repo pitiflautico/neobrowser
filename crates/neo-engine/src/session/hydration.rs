@@ -42,17 +42,17 @@ pub(crate) fn transform_inline_module(content: &str, base: &str) -> String {
         })
         .to_string();
 
-    // Side-effect import: import "/path" → await import("BASE/path")
+    // Side-effect import: import "/path" → try/catch wrapped await import
     let re_bare = Regex::new(r#"import\s*"([^"]+)""#).expect("valid regex");
     code = re_bare
         .replace_all(&code, |caps: &regex_lite::Captures| {
             let path = &caps[1];
             let full = resolve_import_path(path, base);
-            format!("await import(\"{full}\")")
+            format!("try {{ await import(\"{full}\") }} catch(_ie) {{ console.error('[import-error] {full}: ' + _ie.message) }}")
         })
         .to_string();
 
-    // Namespace import: import * as name from "/path"
+    // Namespace import: import * as name from "/path" — with fallback to empty module
     let re_star =
         Regex::new(r#"import\s*\*\s*as\s+(\w+)\s+from\s*"([^"]+)""#).expect("valid regex");
     code = re_star
@@ -60,7 +60,7 @@ pub(crate) fn transform_inline_module(content: &str, base: &str) -> String {
             let name = &caps[1];
             let path = &caps[2];
             let full = resolve_import_path(path, base);
-            format!("const {name} = await import(\"{full}\")")
+            format!("let {name}; try {{ {name} = await import(\"{full}\") }} catch(_ie) {{ {name} = {{}}; console.error('[import-error] {full}: ' + _ie.message) }}")
         })
         .to_string();
 
@@ -96,6 +96,8 @@ pub(crate) fn transform_inline_module(content: &str, base: &str) -> String {
     }
 
     // Wrap in async IIFE — execute as script (not module).
+    // Each await import is individually resilient (top-level errors in imported modules
+    // are caught but don't abort subsequent code). The outer try/catch is a safety net.
     format!("(async () => {{ try {{ {code} }} catch(e) {{ console.error('[inline-module-error] ' + (e.message || e) + ' @ ' + (e.stack || '').split('\\n')[1]); }} }})();")
 }
 

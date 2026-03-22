@@ -5,6 +5,31 @@
 // Use __neo_ops saved by bootstrap.js (Deno is deleted for sandbox security).
 const _shimOps = globalThis.__neo_ops;
 
+// ── React Router SSR hydration data stub ──
+// React Router 7 (used by ChatGPT, Remix apps) expects __reactRouterContext.state
+// with loaderData, actionData, and errors. Without this, the router crashes when
+// trying to read response headers from SSR data (e.getAll() on undefined).
+// We provide a minimal stub that prevents crashes without changing app behavior.
+if (typeof globalThis.__reactRouterContext === 'object' && globalThis.__reactRouterContext) {
+    const ctx = globalThis.__reactRouterContext;
+    if (!ctx.state) {
+        ctx.state = {
+            initialized: true,
+            navigation: { state: 'idle', location: undefined, formMethod: undefined, formAction: undefined, formEncType: undefined, formData: undefined },
+            restoreScrollPosition: null,
+            preventScrollReset: false,
+            revalidation: 'idle',
+            loaderData: {},
+            actionData: null,
+            errors: null,
+            fetchers: new Map(),
+            blockers: new Map(),
+        };
+    }
+    // Ensure loaderData exists even if state was partially set
+    if (ctx.state && !ctx.state.loaderData) ctx.state.loaderData = {};
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 1. NAVIGATION INTERCEPTION — capture form.submit(), location changes
 // ═══════════════════════════════════════════════════════════════
