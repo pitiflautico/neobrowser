@@ -111,9 +111,12 @@ globalThis.__neo_location = {
         } catch(e) {}
     },
     replace: function(url) {
+        var s = String(url);
+        // Filter out non-URL arguments (e.g. regex objects from String.replace confusion)
+        if (!s || s.startsWith('/') && s.includes('[') || s.includes('(') || s === 'undefined') return;
         try {
             _shimOps.op_navigation_request(JSON.stringify({
-                url: String(url), method: 'GET', type: 'location_replace'
+                url: s, method: 'GET', type: 'location_replace'
             }));
         } catch(e) {}
     },

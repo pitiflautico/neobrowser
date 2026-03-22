@@ -18,7 +18,7 @@ pub(crate) fn definition() -> ToolDef {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["click", "type", "fill_form", "submit", "press_key"],
+                    "enum": ["click", "type", "fill_form", "submit", "press_key", "find"],
                     "description": "Interaction type"
                 },
                 "target": {
@@ -57,6 +57,7 @@ pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
         "fill_form" => call_fill_form(&args, state),
         "submit" => call_submit(&args, state),
         "press_key" => call_press_key(&args, state),
+        "find" => call_find(&args, state),
         other => Err(McpError::InvalidParams(format!("unknown action: {other}"))),
     }
 }
@@ -95,6 +96,12 @@ fn call_press_key(args: &Value, state: &mut McpState) -> Result<Value, McpError>
     let key = require_str(args, "key")?;
     state.engine.press_key(target, key)?;
     Ok(serde_json::json!({ "ok": true, "key": key }))
+}
+
+fn call_find(args: &Value, state: &mut McpState) -> Result<Value, McpError> {
+    let target = require_str(args, "target")?;
+    let elements = state.engine.find_element(target)?;
+    Ok(serde_json::json!({ "ok": true, "elements": elements, "count": elements.len() }))
 }
 
 /// Extract a required string field from args.

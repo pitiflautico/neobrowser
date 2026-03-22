@@ -153,6 +153,11 @@ impl BrowserEngine for MockBrowserEngine {
         Ok(())
     }
 
+    fn find_element(&mut self, query: &str) -> Result<Vec<crate::FoundElement>, EngineError> {
+        self.actions.push(format!("find:{query}"));
+        Ok(vec![])
+    }
+
     fn submit(&mut self, target: Option<&str>) -> Result<SubmitResult, EngineError> {
         self.actions
             .push(format!("submit:{}", target.unwrap_or("none")));

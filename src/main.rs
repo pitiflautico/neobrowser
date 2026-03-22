@@ -353,6 +353,8 @@ fn run_interact(args: &[String]) {
     eprintln!("  type <selector> <text>     Type text into an input");
     eprintln!("  press <selector> <key>     Press a key (Enter, Tab, Escape)");
     eprintln!("  submit <selector>          Submit a form");
+    eprintln!("  find <query>               Smart element search (CSS, text, ARIA, placeholder, name)");
+    eprintln!("  fill <name>=<val> [...]    Smart form fill (by name/label/placeholder/aria-label)");
     eprintln!("  extract text|links|semantic|wom  Extract page content");
     eprintln!("  wait <selector> [ms]       Wait for element (default 5000ms)");
     eprintln!("  eval <js>                  Execute JavaScript");
@@ -531,6 +533,67 @@ fn run_interact(args: &[String]) {
                             result.wom.nodes.len()
                         );
                     }
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "find" => {
+                let query = match parts.get(1..) {
+                    Some(rest) if !rest.is_empty() => rest.join(" "),
+                    _ => {
+                        eprintln!("Usage: find <query>");
+                        continue;
+                    }
+                };
+                match engine.find_element(&query) {
+                    Ok(elements) => {
+                        if elements.is_empty() {
+                            println!("No elements found.");
+                        } else {
+                            for (i, el) in elements.iter().enumerate() {
+                                println!(
+                                    "  [{}] <{}> role={} type={} label={:?} value={:?} {}",
+                                    i,
+                                    el.tag,
+                                    el.role,
+                                    el.element_type,
+                                    el.label,
+                                    el.value,
+                                    if el.interactable { "interactable" } else { "NOT interactable" }
+                                );
+                                println!("      selector: {}", el.selector);
+                            }
+                            println!("({} elements found)", elements.len());
+                        }
+                    }
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "fill" => {
+                let rest = match parts.get(1..) {
+                    Some(r) if !r.is_empty() => r.join(" "),
+                    _ => {
+                        eprintln!("Usage: fill <name>=<value> [name2=value2 ...]");
+                        continue;
+                    }
+                };
+                let mut fields = std::collections::HashMap::new();
+                for pair in rest.split_whitespace() {
+                    if let Some(eq_pos) = pair.find('=') {
+                        let key = &pair[..eq_pos];
+                        let val = &pair[eq_pos + 1..];
+                        fields.insert(key.to_string(), val.to_string());
+                    } else {
+                        eprintln!("Invalid field format: {pair} (expected name=value)");
+                    }
+                }
+                if fields.is_empty() {
+                    eprintln!("No valid fields to fill.");
+                    continue;
+                }
+                match engine.fill_form(&fields) {
+                    Ok(()) => println!("OK ({} fields filled)", fields.len()),
                     Err(e) => eprintln!("Error: {e}"),
                 }
             }

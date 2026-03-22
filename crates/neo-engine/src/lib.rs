@@ -114,6 +114,9 @@ pub trait BrowserEngine {
     /// Get the current page URL (post-JS, may differ from navigated URL).
     fn current_url(&mut self) -> Result<String, EngineError>;
 
+    /// Smart element finder — searches by CSS, text, ARIA, placeholder, name attribute.
+    fn find_element(&mut self, query: &str) -> Result<Vec<FoundElement>, EngineError>;
+
     /// Get the session state (idle, ready, navigating).
     fn session_state(&self) -> SessionState;
 
@@ -127,6 +130,25 @@ pub trait BrowserEngine {
     fn page_id(&self) -> u64 {
         0
     }
+}
+
+/// An element found by the smart `find_element` search.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FoundElement {
+    /// Unique CSS selector to target this element.
+    pub selector: String,
+    /// Tag name (lowercase).
+    pub tag: String,
+    /// Inferred ARIA/semantic role.
+    pub role: String,
+    /// Best human-readable label.
+    pub label: String,
+    /// Element type (input type, "button", "link", etc.).
+    pub element_type: String,
+    /// Current value if it's an input/select/textarea.
+    pub value: String,
+    /// Whether the element is interactable (visible + enabled).
+    pub interactable: bool,
 }
 
 /// Result of a page navigation (engine-level, wraps neo-types::PageResult).

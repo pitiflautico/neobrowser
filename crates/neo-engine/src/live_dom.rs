@@ -1127,6 +1127,235 @@ const DISPATCHER_JS: &str = r#"
           return JSON.stringify({ found: t.indexOf(value) >= 0, text: t.substring(0, 200) });
         }
 
+        case 'find': {
+          // Smart element finder: CSS, text, ARIA, placeholder, name, fuzzy
+          var query = selector;
+          var found = [];
+          var seen = [];
+
+          function addEl(el) {
+            if (seen.indexOf(el) >= 0) return;
+            seen.push(el);
+            var tag = (el.tagName || '').toLowerCase();
+            // Build unique selector
+            var usel = '';
+            if (el.id) { usel = '#' + el.id; }
+            else {
+              var p = el.parentElement;
+              if (p) {
+                var siblings = p.querySelectorAll(':scope > ' + tag);
+                if (siblings.length === 1) {
+                  usel = tag;
+                } else {
+                  for (var si = 0; si < siblings.length; si++) {
+                    if (siblings[si] === el) { usel = tag + ':nth-of-type(' + (si+1) + ')'; break; }
+                  }
+                }
+                // Prepend parent info for uniqueness
+                if (p.id) usel = '#' + p.id + ' > ' + usel;
+                else if (p.tagName) usel = (p.tagName||'').toLowerCase() + ' > ' + usel;
+              } else {
+                usel = tag;
+              }
+              // If still not unique, add class
+              if (el.className && typeof el.className === 'string') {
+                var cls = el.className.trim().split(/\s+/)[0];
+                if (cls) usel += '.' + cls;
+              }
+            }
+            // Infer role
+            var role = el.getAttribute('role') || '';
+            if (!role) {
+              if (tag === 'a') role = 'link';
+              else if (tag === 'button') role = 'button';
+              else if (tag === 'input') role = el.type === 'checkbox' ? 'checkbox' : el.type === 'radio' ? 'radio' : 'textbox';
+              else if (tag === 'textarea') role = 'textbox';
+              else if (tag === 'select') role = 'combobox';
+              else if (tag === 'img') role = 'img';
+              else if (tag.match(/^h[1-6]$/)) role = 'heading';
+              else role = 'generic';
+            }
+            // Best label
+            var label = el.getAttribute('aria-label')
+              || el.getAttribute('placeholder')
+              || el.getAttribute('title')
+              || (el.labels && el.labels[0] ? (el.labels[0].textContent||'').trim() : '')
+              || (el.textContent || '').trim().substring(0, 60)
+              || '';
+            // Element type
+            var etype = '';
+            if (tag === 'input') etype = el.type || 'text';
+            else if (tag === 'button') etype = 'button';
+            else if (tag === 'a') etype = 'link';
+            else if (tag === 'select') etype = 'select';
+            else if (tag === 'textarea') etype = 'textarea';
+            else etype = tag;
+            // Value
+            var val = '';
+            if ('value' in el && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
+              val = String(el.value || '');
+            }
+            // Interactable
+            var inter = isVisible(el) && isEnabled(el);
+
+            found.push({
+              selector: usel,
+              tag: tag,
+              role: role,
+              label: label.substring(0, 120),
+              element_type: etype,
+              value: val,
+              interactable: inter
+            });
+          }
+
+          // Strategy 1: CSS selector
+          try {
+            var byCSS = document.querySelectorAll(query);
+            for (var ci = 0; ci < byCSS.length && ci < 20; ci++) addEl(byCSS[ci]);
+          } catch(e) {}
+
+          // Strategy 2: text content (exact then fuzzy)
+          var lowerQ = query.toLowerCase();
+          var allText = document.querySelectorAll('a, button, [role="button"], label, span, p, h1, h2, h3, h4, h5, h6, li, td, th, div, input, textarea, select');
+          for (var ti = 0; ti < allText.length && found.length < 20; ti++) {
+            var el = allText[ti];
+            var t = (el.textContent || '').trim().toLowerCase();
+            if (t === lowerQ) addEl(el);
+          }
+
+          // Strategy 3: ARIA label match
+          var byAriaLabel = document.querySelectorAll('[aria-label]');
+          for (var ai = 0; ai < byAriaLabel.length && found.length < 20; ai++) {
+            var ariaVal = (byAriaLabel[ai].getAttribute('aria-label') || '').toLowerCase();
+            if (ariaVal === lowerQ || ariaVal.indexOf(lowerQ) >= 0) addEl(byAriaLabel[ai]);
+          }
+
+          // Strategy 4: placeholder match
+          var byPlaceholder = document.querySelectorAll('[placeholder]');
+          for (var pi = 0; pi < byPlaceholder.length && found.length < 20; pi++) {
+            var phVal = (byPlaceholder[pi].getAttribute('placeholder') || '').toLowerCase();
+            if (phVal === lowerQ || phVal.indexOf(lowerQ) >= 0) addEl(byPlaceholder[pi]);
+          }
+
+          // Strategy 5: name attribute match
+          var byName = document.querySelectorAll('[name]');
+          for (var ni = 0; ni < byName.length && found.length < 20; ni++) {
+            var nameVal = (byName[ni].getAttribute('name') || '').toLowerCase();
+            if (nameVal === lowerQ || nameVal.indexOf(lowerQ) >= 0) addEl(byName[ni]);
+          }
+
+          // Strategy 6: fuzzy text contains (case-insensitive)
+          if (found.length === 0) {
+            for (var fi = 0; fi < allText.length && found.length < 20; fi++) {
+              var ft = (allText[fi].textContent || '').trim().toLowerCase();
+              if (ft.indexOf(lowerQ) >= 0 && ft.length < lowerQ.length * 4) addEl(allText[fi]);
+            }
+          }
+
+          return JSON.stringify(found);
+        }
+
+        case 'fill_smart': {
+          // Smart form fill: fields is a JSON object { label: value, ... }
+          // Finds each field by name/label/placeholder/aria-label, then sets value React-compatible
+          var fieldsObj;
+          try { fieldsObj = JSON.parse(value); } catch(e) {
+            return JSON.stringify({ error: 'parse', message: 'fields must be JSON object' });
+          }
+          var results = [];
+          var keys = Object.keys(fieldsObj);
+          for (var fi = 0; fi < keys.length; fi++) {
+            var fieldKey = keys[fi];
+            var fieldVal = fieldsObj[fieldKey];
+            var el = null;
+            var lk = fieldKey.toLowerCase();
+
+            // Try name attribute first
+            var byName = document.querySelector('[name="' + fieldKey + '"]')
+                      || document.querySelector('[name="' + fieldKey.toLowerCase() + '"]');
+            if (byName) el = byName;
+
+            // Try id
+            if (!el) {
+              try { el = document.getElementById(fieldKey); } catch(e) {}
+            }
+
+            // Try placeholder
+            if (!el) {
+              var allInputs = document.querySelectorAll('input, textarea, select');
+              for (var ii = 0; ii < allInputs.length; ii++) {
+                var ph = (allInputs[ii].getAttribute('placeholder') || '').toLowerCase();
+                if (ph === lk || ph.indexOf(lk) >= 0) { el = allInputs[ii]; break; }
+              }
+            }
+
+            // Try aria-label
+            if (!el) {
+              var allInputs2 = document.querySelectorAll('input, textarea, select');
+              for (var ii2 = 0; ii2 < allInputs2.length; ii2++) {
+                var al = (allInputs2[ii2].getAttribute('aria-label') || '').toLowerCase();
+                if (al === lk || al.indexOf(lk) >= 0) { el = allInputs2[ii2]; break; }
+              }
+            }
+
+            // Try associated label
+            if (!el) {
+              var labels = document.querySelectorAll('label');
+              for (var li = 0; li < labels.length; li++) {
+                var lt = (labels[li].textContent || '').trim().toLowerCase();
+                if (lt === lk || lt.indexOf(lk) >= 0) {
+                  var forId = labels[li].getAttribute('for');
+                  if (forId) { el = document.getElementById(forId); }
+                  else { el = labels[li].querySelector('input, textarea, select'); }
+                  if (el) break;
+                }
+              }
+            }
+
+            if (!el) {
+              results.push({ field: fieldKey, ok: false, error: 'not_found' });
+              continue;
+            }
+
+            // Set value React-compatible
+            var tag = (el.tagName || '').toUpperCase();
+            if (tag === 'SELECT') {
+              // Set selectedIndex
+              for (var oi = 0; oi < el.options.length; oi++) {
+                var match = (el.options[oi].value === fieldVal) || (el.options[oi].textContent || '').trim() === fieldVal;
+                el.options[oi].selected = match;
+                if (match) el.options[oi].setAttribute('selected', '');
+                else el.options[oi].removeAttribute('selected');
+              }
+              try { el.value = fieldVal; } catch(e) {}
+              el.dispatchEvent(new InputEvent('input', {bubbles:true}));
+              el.dispatchEvent(new Event('change', {bubbles:true}));
+              reactNotifyChange(el);
+              results.push({ field: fieldKey, ok: true, tag: tag.toLowerCase() });
+            }
+            else if (tag === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
+              var shouldCheck = fieldVal === 'true' || fieldVal === '1' || fieldVal === 'on' || fieldVal === 'yes';
+              if (el.checked !== shouldCheck) {
+                el.checked = shouldCheck;
+                el.dispatchEvent(new InputEvent('input', {bubbles:true}));
+                el.dispatchEvent(new Event('change', {bubbles:true}));
+              }
+              results.push({ field: fieldKey, ok: true, tag: el.type });
+            }
+            else {
+              // Text input / textarea — use React-compatible setter
+              var setter = getNativeSetter(el);
+              setElValue(el, fieldVal, setter);
+              el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:fieldVal}));
+              el.dispatchEvent(new Event('change', {bubbles:true}));
+              reactNotifyChange(el);
+              results.push({ field: fieldKey, ok: true, tag: tag.toLowerCase() });
+            }
+          }
+          return JSON.stringify({ ok: true, fields: results });
+        }
+
         default:
           return JSON.stringify({ error: 'unknown_action', message: 'unknown action: ' + action });
       }
@@ -1680,6 +1909,39 @@ impl<'a> LiveDom<'a> {
         }
         let elapsed = start.elapsed().as_millis() as u64;
         Ok(LiveDomResult::new((), last_outcome, total_mutations, elapsed))
+    }
+
+    /// Smart element finder — searches by CSS, text, ARIA, placeholder, name, fuzzy.
+    pub fn find_element(&mut self, query: &str) -> Result<Vec<crate::FoundElement>, LiveDomError> {
+        let raw = self.dispatch_raw("find", query, "", "")?;
+        let elements: Vec<crate::FoundElement> = serde_json::from_str(&raw)
+            .map_err(|e| LiveDomError::Parse(format!("{e}: raw={}", &raw[..raw.len().min(200)])))?;
+        Ok(elements)
+    }
+
+    /// Smart form fill — finds fields by name/label/placeholder/aria-label, fills React-compatible.
+    pub fn fill_form_smart(&mut self, fields: &std::collections::HashMap<String, String>) -> Result<(), LiveDomError> {
+        let fields_json = serde_json::to_string(fields)
+            .map_err(|e| LiveDomError::Parse(format!("serialize fields: {e}")))?;
+        let raw = self.dispatch_raw("fill_smart", "", &fields_json, "")?;
+        // Check for errors in response
+        let resp: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| LiveDomError::Parse(format!("{e}: raw={}", &raw[..raw.len().min(200)])))?;
+        if let Some(err) = resp.get("error").and_then(|e| e.as_str()) {
+            let msg = resp.get("message").and_then(|m| m.as_str()).unwrap_or(err);
+            return Err(LiveDomError::JsException(msg.to_string()));
+        }
+        // Check individual field results
+        if let Some(fields_arr) = resp.get("fields").and_then(|f| f.as_array()) {
+            let failed: Vec<String> = fields_arr.iter()
+                .filter(|f| f.get("ok").and_then(|o| o.as_bool()) != Some(true))
+                .filter_map(|f| f.get("field").and_then(|n| n.as_str()).map(String::from))
+                .collect();
+            if !failed.is_empty() {
+                return Err(LiveDomError::NotFound(format!("fields not found: {}", failed.join(", "))));
+            }
+        }
+        Ok(())
     }
 
     /// Execute arbitrary JavaScript and return the result as a string.

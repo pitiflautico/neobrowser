@@ -321,8 +321,8 @@ impl BrowserEngine for NeoSession {
         self.tracer.intent("fill", "fill_form", "form", 1.0);
         if let Some(rt) = self.runtime.as_mut() {
             let mut live = LiveDom::new(rt.as_mut());
-            let field_pairs: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-            live.fill_form(&field_pairs).map_err(|e| {
+            // Use smart fill (name/label/placeholder/aria-label lookup + React compat)
+            live.fill_form_smart(fields).map_err(|e| {
                 EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
             })?;
         } else {
@@ -332,6 +332,18 @@ impl BrowserEngine for NeoSession {
         self.pump_after_interaction();
         self.process_pending_navigations();
         Ok(())
+    }
+
+    fn find_element(&mut self, query: &str) -> Result<Vec<crate::FoundElement>, EngineError> {
+        if let Some(rt) = self.runtime.as_mut() {
+            let mut live = LiveDom::new(rt.as_mut());
+            live.find_element(query).map_err(|e| {
+                EngineError::Runtime(neo_runtime::RuntimeError::Eval(e.to_string()))
+            })
+        } else {
+            // No JS runtime — can't search live DOM
+            Ok(vec![])
+        }
     }
 
     fn submit(&mut self, target: Option<&str>) -> Result<SubmitResult, EngineError> {
