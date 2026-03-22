@@ -363,8 +363,33 @@ impl NeoSession {
                     // Pump to let the app initialize
                     let _ = rt.run_until_settled(3000);
 
-                    // Don't pump after entry module — React scheduler creates
-                    // tight loops that hang. The settle phase handles it.
+                    // startTransition batches hydration work that our event loop
+                    // can't flush (sync setTimeout + microtask loop). Force render
+                    // by calling createRoot().render() directly on the imports.
+                    let _ = rt.execute(r#"
+                        (function() {
+                            try {
+                                var manifest = window.__reactRouterManifest;
+                                if (!manifest || !manifest.entry) return;
+                                var imports = manifest.entry.imports || [];
+                                // Import chunks synchronously (already in module cache)
+                                Promise.all(imports.map(function(u){ return import(u); })).then(function(mods) {
+                                    // Find ReactDOM (has createRoot) and React (has createElement)
+                                    var ReactDOM, React;
+                                    mods.forEach(function(m) {
+                                        if (m.A && m.A.createRoot) ReactDOM = m.A;
+                                        if (m.r && m.r.createElement) React = m.r;
+                                    });
+                                    if (ReactDOM && React) {
+                                        ReactDOM.createRoot(document.body).render(
+                                            React.createElement(function(){return null})
+                                        );
+                                    }
+                                });
+                            } catch(e) {}
+                        })()
+                    "#);
+                    let _ = rt.run_until_settled(2000);
 
                     let new_nodes = rt.eval("document.querySelectorAll('*').length")
                         .unwrap_or_default().trim().parse::<usize>().unwrap_or(0);
