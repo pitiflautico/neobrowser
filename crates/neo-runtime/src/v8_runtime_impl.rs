@@ -164,13 +164,15 @@ impl JsRuntimeTrait for DenoRuntime {
         });
 
         let result = self.tokio_rt.block_on(async {
+            let mut consecutive_idle = 0u32;
+
             loop {
                 // Hard deadline check BEFORE each iteration
                 if Instant::now() >= deadline {
                     return Ok(());
                 }
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                let loop_timeout = Duration::from_millis(100).min(remaining);
+                let loop_timeout = Duration::from_millis(200).min(remaining);
                 if loop_timeout.is_zero() {
                     return Ok(());
                 }
@@ -182,9 +184,16 @@ impl JsRuntimeTrait for DenoRuntime {
                 .await
                 {
                     Ok(Ok(())) => {
-                        if self.tracker.is_settled() {
+                        // Event loop reports idle. Dynamic import evaluations
+                        // may have just completed and scheduled new work.
+                        // Require 3 consecutive idle cycles before declaring settled.
+                        // This gives module evaluations time to trigger next imports.
+                        consecutive_idle += 1;
+                        if consecutive_idle >= 3 {
                             return Ok(());
                         }
+                        // Small delay between idle checks to let microtasks schedule
+                        tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     Ok(Err(e)) => {
                         eprintln!(
@@ -194,7 +203,8 @@ impl JsRuntimeTrait for DenoRuntime {
                         return Ok(());
                     }
                     Err(_) => {
-                        // Timeout on this iteration — check overall deadline.
+                        // Timeout — event loop had work. Reset idle counter.
+                        consecutive_idle = 0;
                     }
                 }
 
