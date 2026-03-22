@@ -339,6 +339,7 @@ fn run_interact(args: &[String]) {
     eprintln!("  extract text|links|semantic|wom  Extract page content");
     eprintln!("  wait <selector> [ms]       Wait for element (default 5000ms)");
     eprintln!("  eval <js>                  Execute JavaScript");
+    eprintln!("  diag                       Run full diagnostics (DOM, frameworks, modules)");
     eprintln!("  url                        Show current URL");
     eprintln!("  nav <url>                  Navigate to new URL");
     eprintln!("  quit                       Exit");
@@ -512,6 +513,60 @@ fn run_interact(args: &[String]) {
                             result.render_ms,
                             result.wom.nodes.len()
                         );
+                    }
+                    Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "diag" => {
+                let diag_js = r#"(function() {
+    var d = {};
+    d.dom_nodes = document.querySelectorAll('*').length;
+    d.react = typeof React;
+    d.reactdom = typeof ReactDOM;
+    d.next = typeof __NEXT_DATA__;
+    d.vite = typeof __vite__mapDeps;
+    d.vue = typeof __VUE__;
+    d.angular = typeof ng;
+    d.svelte = typeof __svelte;
+    d.jquery = typeof jQuery;
+    var els = document.querySelectorAll('*');
+    var fibers = 0;
+    for (var i = 0; i < Math.min(els.length, 500); i++) {
+        var keys = Object.keys(els[i]);
+        for (var j = 0; j < keys.length; j++) {
+            if (keys[j].startsWith('__react')) { fibers++; break; }
+        }
+    }
+    d.react_fibers = fibers;
+    var interesting = [];
+    for (var k in window) {
+        if (k.startsWith('__')) interesting.push(k);
+    }
+    d.dunder_globals = interesting.slice(0, 30);
+    d.dunder_count = interesting.length;
+    d.scripts_total = document.querySelectorAll('script').length;
+    d.scripts_src = document.querySelectorAll('script[src]').length;
+    d.scripts_inline = d.scripts_total - d.scripts_src;
+    d.scripts_module = document.querySelectorAll('script[type="module"]').length;
+    d.title = document.title;
+    d.url = location.href;
+    d.ready_state = document.readyState;
+    return JSON.stringify(d);
+})()"#;
+                match engine.eval(diag_js) {
+                    Ok(raw) => {
+                        // Try to pretty-print JSON, fall back to raw
+                        match serde_json::from_str::<serde_json::Value>(&raw) {
+                            Ok(val) => {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&val)
+                                        .unwrap_or_else(|_| raw.clone())
+                                );
+                            }
+                            Err(_) => println!("{raw}"),
+                        }
                     }
                     Err(e) => eprintln!("Error: {e}"),
                 }
