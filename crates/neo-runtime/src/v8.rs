@@ -153,7 +153,7 @@ impl DenoRuntime {
             state.put(TimerState::new());
         }
 
-        // Node.js polyfills required by linkedom (Buffer, process, atob/btoa).
+        // Node.js polyfills required by DOM implementations (Buffer, process, atob/btoa).
         let node_polyfills: &str = include_str!("../../../js/node_polyfills.js");
         runtime
             .execute_script("<neorender:node_polyfills>", node_polyfills.to_string())
@@ -161,12 +161,57 @@ impl DenoRuntime {
                 RuntimeError::Init(format!("node polyfills: {}", first_line(&e.to_string())))
             })?;
 
-        // Load linkedom DOM implementation (included at compile time).
-        let linkedom_js: &str = include_str!("../../../js/linkedom.js");
+        // Pre-polyfills for happy-dom (globals it expects before loading).
+        let pre_happydom: &str = include_str!("../../../js/pre-happydom.js");
         runtime
-            .execute_script("<neorender:linkedom>", linkedom_js.to_string())
+            .execute_script("<neorender:pre_happydom>", pre_happydom.to_string())
             .map_err(|e| {
-                RuntimeError::Init(format!("linkedom load: {}", first_line(&e.to_string())))
+                RuntimeError::Init(format!("pre-happydom: {}", first_line(&e.to_string())))
+            })?;
+
+        // Load happy-dom DOM implementation (replaces linkedom).
+        let happydom_js: &str = include_str!("../../../js/happy-dom.bundle.js");
+        runtime
+            .execute_script("<neorender:happydom>", happydom_js.to_string())
+            .map_err(|e| {
+                let full = e.to_string();
+                // Print full error for debugging, return first line for error type
+                eprintln!("[happy-dom init error] {}", &full[..full.len().min(500)]);
+                RuntimeError::Init(format!("happy-dom load: {}", first_line(&full)))
+            })?;
+
+        // Export happy-dom classes to globalThis so bootstrap.js and page scripts find them.
+        let export_js = r#"
+            if (typeof happydom !== 'undefined') {
+                const _hd = happydom;
+                const _exports = [
+                    'EventTarget','Node','Element','HTMLElement','Text','Comment','DocumentFragment',
+                    'Event','CustomEvent','MouseEvent','KeyboardEvent','FocusEvent','InputEvent',
+                    'UIEvent','ErrorEvent','SubmitEvent','WheelEvent','AnimationEvent',
+                    'MutationObserver','IntersectionObserver','ResizeObserver',
+                    'DOMParser','XMLSerializer','Range','Selection',
+                    'NodeList','HTMLCollection','DOMTokenList','NamedNodeMap',
+                    'Attr','CSSStyleDeclaration','CSSStyleSheet',
+                    'AbortController','AbortSignal','Blob','File','FileReader','FormData',
+                    'Headers','Request','Response','URL','URLSearchParams','MediaQueryList','Storage',
+                    'HTMLDivElement','HTMLSpanElement','HTMLInputElement','HTMLButtonElement',
+                    'HTMLAnchorElement','HTMLFormElement','HTMLSelectElement','HTMLOptionElement',
+                    'HTMLTextAreaElement','HTMLImageElement','HTMLScriptElement','HTMLStyleElement',
+                    'HTMLLinkElement','HTMLMetaElement','HTMLIFrameElement','HTMLTemplateElement',
+                    'HTMLTableElement','HTMLTableRowElement','HTMLTableCellElement',
+                    'HTMLLabelElement','HTMLCanvasElement','HTMLVideoElement','HTMLAudioElement',
+                    'SVGElement','SVGSVGElement','HTMLDialogElement',
+                    'Document','Window','BrowserWindow',
+                ];
+                for (const name of _exports) {
+                    if (_hd[name] && !globalThis[name]) globalThis[name] = _hd[name];
+                }
+            }
+        "#;
+        runtime
+            .execute_script("<neorender:happydom_exports>", export_js.to_string())
+            .map_err(|e| {
+                RuntimeError::Init(format!("happy-dom exports: {}", first_line(&e.to_string())))
             })?;
 
         Ok(Self {

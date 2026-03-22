@@ -157,7 +157,7 @@ impl NeoSession {
         let t0 = Instant::now();
         rt.set_document_html(&response.body, &response.url)
             .map_err(|e| format!("set_document_html: {e}"))?;
-        eprintln!("[profile] linkedom_load: {}ms", t0.elapsed().as_millis());
+        eprintln!("[profile] dom_load: {}ms", t0.elapsed().as_millis());
 
         let t1 = Instant::now();
         let scripts = extract_scripts(&response.body, &response.url);
@@ -342,15 +342,16 @@ impl NeoSession {
                 format!("{}{}", base.trim_end_matches('/'), path)
             };
 
-            neo_trace!("[SETTLE] loading entry module via eval_promise: {full_url}");
-            // Use eval_promise — drives event loop alongside the import() Promise.
-            // This is the CORRECT way per deno_core: resolve_value + with_event_loop_promise
-            // polls both the promise and the event loop together, handling async ops,
-            // module evaluations, and timer callbacks properly.
+            neo_trace!("[SETTLE] loading entry module via eval_and_settle: {full_url}");
             let import_code = format!("import('{}')", full_url.replace('\'', "\\'"));
-            match rt.eval_promise(&import_code, 5000) {
+            match rt.eval_and_settle(&import_code, 5000) {
                 Ok(result) => {
-                    neo_trace!("[SETTLE] entry module resolved: {}", &result[..result.len().min(80)]);
+                    neo_trace!(
+                        "[SETTLE] entry module: promise={}, {}ms, timers={}",
+                        result.was_promise,
+                        result.settled_ms,
+                        result.pending_timers
+                    );
                     let new_nodes = rt.eval("document.querySelectorAll('*').length")
                         .unwrap_or_default().trim().parse::<usize>().unwrap_or(0);
                     neo_trace!("[SETTLE] DOM after entry module: {} nodes (was {})", new_nodes, last_node_count);
@@ -494,62 +495,14 @@ impl NeoSession {
 
     /// Pump the V8 event loop after an interaction to let microtasks/timers run.
     ///
-    /// Budget-based: runs up to 2s or until truly idle, whichever comes first.
-    /// "Truly idle" = no pending fetches AND no DOM mutations for 50ms.
-    /// This ensures framework re-renders (React setState, Vue reactivity, etc.)
-    /// complete before we check for navigation requests or return results.
+    /// Delegates to `run_until_settled(500)` which handles WebTimers, promises,
+    /// and V8 watchdog termination properly.
     pub(crate) fn pump_after_interaction(&mut self) {
         if let Some(ref mut rt) = self.runtime {
             let start = std::time::Instant::now();
-            // Use run_until_settled (which checks WebTimers) for proper macrotask delivery.
-            let _ = rt.run_until_settled(2000);
-            let _rounds = 1u32;
-            if false { // keep old code path for reference
-            let budget = std::time::Duration::from_millis(2000);
-            let mut rounds = 0u32;
-
-            while start.elapsed() < budget {
-                match rt.pump_event_loop() {
-                    Ok(true) => rounds += 1,
-                    Ok(false) => {
-                        // Idle — check if there are pending fetches
-                        let pending = rt
-                            .eval(
-                                "window.__neorender_trace \
-                                 ? window.__neorender_trace.pendingFetches || 0 \
-                                 : 0",
-                            )
-                            .unwrap_or_default()
-                            .trim()
-                            .parse::<usize>()
-                            .unwrap_or(0);
-
-                        if pending == 0 {
-                            // Check DOM stability (no mutations for 50ms)
-                            let mutation_age = rt
-                                .eval(
-                                    "Date.now() - (window.__neorender_trace \
-                                     ? window.__neorender_trace.lastMutationTime \
-                                     : 0)",
-                                )
-                                .unwrap_or_default()
-                                .trim()
-                                .parse::<u64>()
-                                .unwrap_or(9999);
-
-                            if mutation_age > 50 {
-                                break; // Truly idle
-                            }
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(_) => break,
-                }
-            }
-
-            } // end if false
+            let _ = rt.run_until_settled(2500);
             eprintln!(
-                "[NeoRender] pump_after_interaction: settled in {}ms",
+                "[NeoRender] pump: {}ms",
                 start.elapsed().as_millis()
             );
         }

@@ -15,6 +15,46 @@ pub(crate) const LANDMARK_TAGS: &[(&str, &str)] = &[
     ("main", "main"),
     ("aside", "complementary"),
     ("article", "article"),
+    ("section", "region"),
+    ("form", "form"),
+];
+
+/// Tags that carry text content worth surfacing to the AI.
+pub(crate) const TEXT_CONTENT_TAGS: &[&str] = &[
+    "p", "li", "td", "th", "dt", "dd", "blockquote", "pre", "code", "span", "time", "label",
+];
+
+/// Container tags that provide structural info (item/row counts).
+pub(crate) const CONTAINER_TAGS: &[&str] = &["ul", "ol", "dl", "table"];
+
+/// ARIA roles that indicate meaningful regions or widgets.
+pub(crate) const MEANINGFUL_ARIA_ROLES: &[&str] = &[
+    "dialog",
+    "alertdialog",
+    "alert",
+    "search",
+    "tablist",
+    "tab",
+    "tabpanel",
+    "menu",
+    "menubar",
+    "menuitem",
+    "toolbar",
+    "tooltip",
+    "tree",
+    "treeitem",
+    "listbox",
+    "option",
+    "progressbar",
+    "status",
+    "log",
+    "marquee",
+    "timer",
+    "feed",
+    "grid",
+    "region",
+    "group",
+    "separator",
 ];
 
 /// Build a single WomNode from an element, or None if tag is unknown.
@@ -175,6 +215,20 @@ fn infer_role(dom: &dyn DomEngine, el: ElementId, tag: &str) -> String {
         "main" => "main".to_string(),
         "aside" => "complementary".to_string(),
         "article" => "article".to_string(),
+        "section" => "region".to_string(),
+        "dialog" => "dialog".to_string(),
+        "ul" | "ol" => "list".to_string(),
+        "dl" => "list".to_string(),
+        "li" => "listitem".to_string(),
+        "table" => "table".to_string(),
+        "td" | "th" => "cell".to_string(),
+        "p" => "paragraph".to_string(),
+        "blockquote" => "blockquote".to_string(),
+        "pre" | "code" => "code".to_string(),
+        "details" => "group".to_string(),
+        "summary" => "button".to_string(),
+        "time" => "time".to_string(),
+        "progress" | "meter" => "progressbar".to_string(),
         _ => "text".to_string(),
     }
 }
@@ -193,6 +247,7 @@ fn infer_actions(tag: &str, input_type: Option<&str>) -> Vec<String> {
         "select" => vec!["select".to_string()],
         "textarea" => vec!["type".to_string(), "clear".to_string()],
         "form" => vec!["submit".to_string(), "fill".to_string()],
+        "details" | "summary" => vec!["click".to_string()],
         _ => vec![],
     }
 }
@@ -319,6 +374,31 @@ pub(crate) fn generate_summary(title: &str, nodes: &[WomNode]) -> String {
     }
     if n_forms > 0 {
         parts.push(format!("{n_forms} forms"));
+    }
+
+    let n_headings = nodes.iter().filter(|n| n.role == "heading").count();
+    if n_headings > 0 {
+        parts.push(format!("{n_headings} headings"));
+    }
+
+    let n_paragraphs = nodes.iter().filter(|n| n.role == "paragraph").count();
+    if n_paragraphs > 0 {
+        parts.push(format!("{n_paragraphs} paragraphs"));
+    }
+
+    let n_lists = nodes.iter().filter(|n| n.role == "list").count();
+    if n_lists > 0 {
+        parts.push(format!("{n_lists} lists"));
+    }
+
+    let n_tables = nodes.iter().filter(|n| n.role == "table").count();
+    if n_tables > 0 {
+        parts.push(format!("{n_tables} tables"));
+    }
+
+    let n_images = nodes.iter().filter(|n| n.role == "image").count();
+    if n_images > 0 {
+        parts.push(format!("{n_images} images"));
     }
 
     let elements = if parts.is_empty() {

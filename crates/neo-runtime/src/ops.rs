@@ -57,14 +57,18 @@ impl Default for OpsSchedulerConfig {
     }
 }
 
-/// Fetch a URL. Sync op — runs HTTP on a dedicated thread.
+/// Fetch a URL. ASYNC op — yields to event loop during I/O.
 ///
 /// Delegates to the `HttpClient` trait object in OpState.
 /// Skips telemetry/analytics URLs with a fake 200 response.
 /// Respects `FetchBudget` concurrency limits and abort flag.
-#[op2]
+///
+/// Being async is CRITICAL for SPA correctness: fetch().then(cb) must
+/// resolve cb as a microtask in a FUTURE event loop tick, not the current one.
+/// This lets React scheduler yield between click → fetch → setState → render.
+#[op2(async)]
 #[string]
-pub fn op_fetch(
+pub async fn op_fetch(
     state: Rc<RefCell<OpState>>,
     #[string] url: String,
     #[string] method: String,
@@ -72,6 +76,8 @@ pub fn op_fetch(
     #[string] headers_json: String,
 ) -> Result<String, deno_core::error::AnyError> {
     if should_skip_url(&url) {
+        // Yield even for skipped URLs so the Promise resolves in a future tick.
+        tokio::task::yield_now().await;
         return Ok(r#"{"status":200,"body":"","headers":{}}"#.to_string());
     }
 
@@ -79,7 +85,6 @@ pub fn op_fetch(
     let (client, timeout_ms, budget) = {
         let s = state.borrow();
 
-        // Check abort flag and concurrency budget.
         let fetch_budget = s.try_borrow::<FetchBudget>().cloned();
         if let Some(ref fb) = fetch_budget {
             if fb.is_aborted() {
@@ -122,17 +127,17 @@ pub fn op_fetch(
         timeout_ms: timeout_ms as u64,
     };
 
-    // Run on dedicated thread to avoid async conflicts.
-    let result = std::thread::spawn(move || client.request(&req))
-        .join()
-        .map_err(|_| deno_core::error::generic_error("fetch thread panicked"));
+    // Spawn blocking I/O on a dedicated thread so V8 event loop keeps running.
+    let result = tokio::task::spawn_blocking(move || client.request(&req))
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("fetch task failed: {e}")))?;
 
-    // Always release the budget slot when done.
+    // Release budget slot.
     if let Some(ref fb) = budget {
         fb.finish_fetch();
     }
 
-    match result? {
+    match result {
         Ok(resp) => {
             let json = serde_json::json!({
                 "status": resp.status,
@@ -271,6 +276,10 @@ pub fn op_storage_remove(
 /// Capture console.log output from JavaScript.
 #[op2(fast)]
 pub fn op_console_log(state: Rc<RefCell<OpState>>, #[string] msg: String) {
+    // Print errors/warnings to stderr for debugging
+    if msg.starts_with("[error]") || msg.starts_with("[warn]") || msg.starts_with("[script-error]") {
+        eprintln!("[js] {}", &msg[..msg.len().min(300)]);
+    }
     let s = state.borrow();
     if let Some(buf) = s.try_borrow::<ConsoleBuffer>() {
         let mut messages = buf.messages.lock().expect("console buffer lock poisoned");

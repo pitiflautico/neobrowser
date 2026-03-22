@@ -148,11 +148,28 @@ fn import_cookies_file(engine: &mut NeoSession, path: &str) {
             std::process::exit(1);
         }
     };
-    let cookies: Vec<neo_types::Cookie> = match serde_json::from_str(&data) {
+    // Support both [{...}] and {"cookies": [{...}]} formats
+    let cookies: Vec<neo_types::Cookie> = match serde_json::from_str::<Vec<neo_types::Cookie>>(&data) {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("Failed to parse cookies JSON: {e}");
-            std::process::exit(1);
+        Err(_) => {
+            // Try wrapped format: {"cookies": [...]}
+            match serde_json::from_str::<serde_json::Value>(&data) {
+                Ok(serde_json::Value::Object(map)) => {
+                    if let Some(arr) = map.get("cookies") {
+                        serde_json::from_value(arr.clone()).unwrap_or_else(|e| {
+                            eprintln!("Failed to parse cookies array: {e}");
+                            std::process::exit(1);
+                        })
+                    } else {
+                        eprintln!("JSON object has no 'cookies' key");
+                        std::process::exit(1);
+                    }
+                }
+                _ => {
+                    eprintln!("Failed to parse cookies JSON: expected array or object with 'cookies' key");
+                    std::process::exit(1);
+                }
+            }
         }
     };
     engine.import_cookies(&cookies);

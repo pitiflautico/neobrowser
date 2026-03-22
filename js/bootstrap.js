@@ -1,6 +1,6 @@
 // NeoRender V2 Bootstrap — universal browser environment for AI.
-// Connects linkedom (real DOM) + deno_core ops to create a headless browser.
-// Runs AFTER linkedom.js. Expects __linkedom_parseHTML on globalThis.
+// Connects happy-dom (full DOM) + deno_core ops to create a headless browser.
+// Runs AFTER happy-dom.bundle.js. Expects `happydom` global with Window class.
 // V2: uses op_fetch/op_console_log + deno_core native WebTimers (not op_neorender_*).
 
 // ═══════════════════════════════════════════════════════════════
@@ -75,15 +75,79 @@ function neo_trace(msg) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 1. LINKEDOM INIT — parse HTML into real DOM
+// 1. HAPPY-DOM INIT — create Window + parse HTML into real DOM
 // ═══════════════════════════════════════════════════════════════
 
 const __html = globalThis.__neorender_html || '<html><head></head><body></body></html>';
-const { document, window: __win } = __linkedom_parseHTML(__html);
+const __url = globalThis.__neorender_url || 'about:blank';
 
-globalThis.document = document;
+// Create happy-dom Window (full browser environment)
+const __hdWindow = new happydom.Window({ url: __url });
+const __hdDocument = __hdWindow.document;
+
+// Parse HTML into happy-dom document
+__hdDocument.documentElement.innerHTML = '';
+__hdDocument.write(__html);
+
+// Install happy-dom document and classes as globals
+globalThis.document = __hdDocument;
 globalThis.window = globalThis;
 globalThis.self = globalThis;
+
+// Export happy-dom's DOM classes to global scope so page scripts can use them
+const __hdClasses = [
+    'Node', 'Element', 'HTMLElement', 'Text', 'Comment', 'DocumentFragment',
+    'HTMLDivElement', 'HTMLSpanElement', 'HTMLInputElement', 'HTMLButtonElement',
+    'HTMLAnchorElement', 'HTMLFormElement', 'HTMLSelectElement', 'HTMLOptionElement',
+    'HTMLTextAreaElement', 'HTMLImageElement', 'HTMLScriptElement', 'HTMLStyleElement',
+    'HTMLLinkElement', 'HTMLMetaElement', 'HTMLHeadElement', 'HTMLBodyElement',
+    'HTMLTableElement', 'HTMLTableRowElement', 'HTMLTableCellElement',
+    'HTMLLabelElement', 'HTMLFieldSetElement', 'HTMLLegendElement',
+    'HTMLIFrameElement', 'HTMLCanvasElement', 'HTMLVideoElement', 'HTMLAudioElement',
+    'HTMLTemplateElement', 'HTMLSlotElement', 'HTMLDialogElement',
+    'SVGElement', 'SVGSVGElement',
+    'Event', 'CustomEvent', 'MouseEvent', 'KeyboardEvent', 'FocusEvent',
+    'InputEvent', 'SubmitEvent', 'UIEvent', 'ErrorEvent', 'ProgressEvent',
+    'DragEvent', 'AnimationEvent', 'TransitionEvent', 'WheelEvent',
+    'MutationObserver', 'IntersectionObserver', 'ResizeObserver',
+    'DOMParser', 'XMLSerializer', 'Range', 'Selection',
+    'NodeList', 'HTMLCollection', 'DOMTokenList', 'NamedNodeMap',
+    'Attr', 'CSSStyleDeclaration', 'CSSStyleSheet',
+    'AbortController', 'AbortSignal',
+    'Blob', 'File', 'FileReader', 'FormData',
+    'Headers', 'Request', 'Response',
+    'URL', 'URLSearchParams',
+    'MediaQueryList',
+    'Storage',
+];
+for (const name of __hdClasses) {
+    if (__hdWindow[name] && !globalThis[name]) {
+        globalThis[name] = __hdWindow[name];
+    }
+}
+
+// Also provide the parseHTML function for DOMParser and re-navigation
+globalThis.__linkedom_parseHTML = function(html) {
+    const w = new happydom.Window({ url: __url });
+    w.document.write(html);
+    return { document: w.document, window: w };
+};
+
+// Self-test: verify happy-dom basics work
+(function selfTest() {
+    const el = document.createElement("div");
+    el.setAttribute("class", "test-cls");
+    if (el.className !== "test-cls") {
+        console.error("[happy-dom selftest] className sync FAILED: " + el.className);
+    }
+    el.innerText = "hello";
+    if (el.textContent !== "hello") {
+        console.error("[happy-dom selftest] innerText setter FAILED: " + el.textContent);
+    }
+    if (!document.querySelector) {
+        console.error("[happy-dom selftest] querySelector missing");
+    }
+})();
 
 // document.currentScript must be null (prevents infinite recursion in some libs)
 try { Object.defineProperty(document, 'currentScript', { value: null, writable: true, configurable: true }); } catch {}
@@ -96,12 +160,7 @@ Object.defineProperty(document, 'cookie', {
     configurable: true,
 });
 
-// Sync linkedom internals with our globals
-if (__win && __win !== globalThis) {
-    for (const k of ['location','navigator','fetch','setTimeout','setInterval']) {
-        try { if (globalThis[k]) __win[k] = globalThis[k]; } catch {}
-    }
-}
+// Sync happy-dom window internals with our globals
 try { document.defaultView = globalThis; } catch {}
 
 // ViewTransition API — React 19 uses document.startViewTransition for route changes.
@@ -114,49 +173,13 @@ if (typeof document !== 'undefined' && !document.startViewTransition) {
     };
 }
 
-// Export DOM class constructors from linkedom to globalThis (Twitch, Web Components, etc.)
-for (const cls of ['EventTarget','Node','Element','HTMLElement','HTMLDivElement','HTMLSpanElement',
-    'HTMLInputElement','HTMLButtonElement','HTMLAnchorElement','HTMLImageElement','HTMLCanvasElement',
-    'HTMLFormElement','HTMLSelectElement','HTMLTextAreaElement','HTMLVideoElement','HTMLAudioElement',
-    'HTMLScriptElement','HTMLStyleElement','HTMLLinkElement','HTMLMetaElement','HTMLIFrameElement',
-    'HTMLTemplateElement','SVGElement','DocumentFragment','NodeList','HTMLCollection',
-    'Text','Comment','Document','CharacterData','Attr','NamedNodeMap','DOMTokenList','CSSStyleDeclaration']) {
-    if (!globalThis[cls] && __win[cls]) globalThis[cls] = __win[cls];
-    else if (!globalThis[cls] && document.createElement) {
-        // Try to get constructor from a created element
-        try {
-            const tag = cls.replace('HTML','').replace('Element','').toLowerCase() || 'div';
-            const el = document.createElement(tag);
-            if (el.constructor && el.constructor.name !== 'Object') globalThis[cls] = el.constructor;
-        } catch {}
-    }
-}
-
-// Fallback stubs for DOM constructors linkedom doesn't export
-if (!globalThis.EventTarget) {
-    globalThis.EventTarget = class EventTarget {
-        constructor() { this.__listeners = {}; }
-        addEventListener(type, fn) { (this.__listeners[type] = this.__listeners[type] || []).push(fn); }
-        removeEventListener(type, fn) { this.__listeners[type] = (this.__listeners[type] || []).filter(f => f !== fn); }
-        dispatchEvent(event) { (this.__listeners[event.type] || []).forEach(fn => { try { fn(event); } catch {} }); return true; }
-    };
-}
-if (!globalThis.Node) {
-    // Get from a real element
-    try { globalThis.Node = Object.getPrototypeOf(Object.getPrototypeOf(document.createElement('div'))).constructor; } catch {}
-}
-if (!globalThis.Node) {
-    globalThis.Node = class Node extends EventTarget {
-        constructor() { super(); this.childNodes = []; this.parentNode = null; }
-        static ELEMENT_NODE = 1; static TEXT_NODE = 3; static COMMENT_NODE = 8; static DOCUMENT_NODE = 9; static DOCUMENT_FRAGMENT_NODE = 11;
-    };
-}
+// DOM class constructors already exported from happy-dom in section 1 above.
 
 // ═══════════════════════════════════════════════════════════════
 // 2. BROWSER GLOBALS — what SPAs expect from window.*
 // ═══════════════════════════════════════════════════════════════
 
-globalThis.navigator = __win.navigator || {
+globalThis.navigator = __hdWindow.navigator || {
     userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
     language: 'en-US', languages: ['en-US','en','es'], platform: 'MacIntel',
     cookieEnabled: true, onLine: true, vendor: 'Google Inc.',
@@ -167,13 +190,13 @@ globalThis.navigator = __win.navigator || {
     sendBeacon: () => true,
 };
 
-globalThis.location = __win.location || {
+globalThis.location = __hdWindow.location || {
     href: '', protocol: 'https:', host: '', hostname: '', port: '',
     pathname: '/', search: '', hash: '', origin: '',
     assign(){}, replace(){}, reload(){}, toString(){ return this.href; },
 };
 
-globalThis.history = __win.history || {
+globalThis.history = __hdWindow.history || {
     length: 1, state: null,
     pushState(s,t,u){ if(u) location.href=u; history.length++; },
     replaceState(s,t,u){ if(u) location.href=u; },
@@ -281,6 +304,8 @@ globalThis.fetch = function(input, init) {
     const url = typeof input === 'string' ? input : input?.url || String(input);
     const method = init?.method || 'GET';
     const body = init?.body || null;
+    __pendingFetches++;
+    __neo_markActivity('fetch-start');
 
     let fullUrl = url;
     if (!url.startsWith('http')) {
@@ -304,24 +329,29 @@ globalThis.fetch = function(input, init) {
 
     const headersJson = Object.keys(hdrs).length > 0 ? JSON.stringify(hdrs) : '';
 
-    try {
-        // Sync call — blocks until HTTP completes, returns immediately
-        const resultJson = ops.op_fetch(fullUrl, method.toUpperCase(), body || '', headersJson);
-        const result = JSON.parse(resultJson);
-
-        const bodyText = result.body || '';
-        const bodyBytes = new TextEncoder().encode(bodyText);
-
-        return Promise.resolve(new NeoResponse(bodyBytes, {
-            status: result.status,
-            statusText: result.statusText || (result.status === 200 ? 'OK' : String(result.status)),
-            headers: result.headers || {},
-            url: fullUrl,
-            _text: bodyText,
-        }));
-    } catch (e) {
-        return Promise.reject(new TypeError(`fetch failed: ${e}`));
-    }
+    // Async op — yields to event loop during I/O. The Promise resolves
+    // in a FUTURE tick, not the current one. This is critical for React:
+    // click → fetch → .then(setState) must have a yield between them.
+    // In deno_core 0.311, async ops called via ops.X() return a Promise directly.
+    return ops.op_fetch(fullUrl, method.toUpperCase(), body || '', headersJson)
+        .then(resultJson => {
+            __pendingFetches--;
+            __neo_markActivity('fetch-end');
+            const result = JSON.parse(resultJson);
+            const bodyText = result.body || '';
+            const bodyBytes = new TextEncoder().encode(bodyText);
+            return new NeoResponse(bodyBytes, {
+                status: result.status,
+                statusText: result.statusText || (result.status === 200 ? 'OK' : String(result.status)),
+                headers: result.headers || {},
+                url: fullUrl,
+                _text: bodyText,
+            });
+        })
+        .catch(e => {
+            __pendingFetches--;
+            throw new TypeError(`fetch failed: ${e}`);
+        });
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -384,12 +414,65 @@ globalThis.__neo_resetBudget = function() {
 // Pending timer count — queried by Rust settle loop to know if work is pending.
 globalThis.__neo_pendingTimers = function() { return __timerMap.size; };
 
+// ── Activity tracker for quiescence detection ──
+// Every async work unit updates __neo_lastActivity. The Rust settle loop
+// queries this to implement a "quiet window" criterion: only declare settled
+// if no activity for N ms AND no pending work sources.
+let __activityTs = Date.now();    // ms since epoch of last work
+let __domMutations = 0;           // mutation count since last reset
+let __pendingFetches = 0;         // in-flight fetch count
+let __pendingModules = 0;         // in-flight module evals
+let __schedulerCallbacks = 0;     // pending MessageChannel/rAF/microtask callbacks
+
+function __neo_markActivity(source) {
+    __activityTs = Date.now();
+}
+
+// Quiescence query — Rust calls this. Returns JSON with all signals.
+globalThis.__neo_quiescence = function() {
+    const now = Date.now();
+    return JSON.stringify({
+        idle_ms: now - __activityTs,
+        pending_timers: __timerMap.size,
+        pending_fetches: __pendingFetches,
+        pending_modules: __pendingModules,
+        dom_mutations: __domMutations,
+        callback_count: __callbackCount,
+    });
+};
+
+// Reset quiescence counters (called between settle checks)
+globalThis.__neo_resetMutationCount = function() {
+    const c = __domMutations;
+    __domMutations = 0;
+    return c;
+};
+
+// Global MutationObserver — tracks ALL DOM mutations for quiescence.
+// Framework-agnostic: any DOM change resets the quiet window.
+try {
+    const __neoMO = new MutationObserver(function(records) {
+        __domMutations += records.length;
+        __neo_markActivity('mutation');
+    });
+    // Observe after document.body exists (deferred to after bootstrap completes)
+    globalThis.__neo_startMutationWatch = function() {
+        if (document.documentElement) {
+            __neoMO.observe(document.documentElement, {
+                childList: true, subtree: true,
+                attributes: true, characterData: true,
+            });
+        }
+    };
+} catch(e) {}
+
 // Wrap queueMicrotask with budget
 const __origQueueMicrotask = globalThis.queueMicrotask;
 globalThis.queueMicrotask = function(fn) {
     if (__budgetExhausted) return;
     __origQueueMicrotask(function() {
         if (__checkBudget('microtask')) {
+            __neo_markActivity('microtask');
             try { fn(); } catch(e) {}
         }
     });
@@ -405,6 +488,7 @@ globalThis.setTimeout = function(fn, ms, ...args) {
     const coreId = __coreQueueTimer(depth, false, delay, function() {
         __timerMap.delete(extId);
         if (__checkBudget('setTimeout-' + delay)) {
+            __neo_markActivity('setTimeout');
             try { fn(...args); } catch(e) {}
         }
     });
@@ -440,6 +524,7 @@ globalThis.setInterval = function(fn, ms, ...args) {
             __coreCancelTimer(coreId);
             return;
         }
+        __neo_markActivity('setInterval');
         try { fn(...args); } catch(e) {}
     });
     __timerMap.set(extId, coreId);
@@ -571,7 +656,7 @@ globalThis.getComputedStyle = globalThis.getComputedStyle || ((el) => new Proxy(
 }));
 
 // Animation frame
-globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => setTimeout(fn, 16));
+globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => setTimeout(() => { __neo_markActivity('rAF'); fn(performance.now()); }, 16));
 globalThis.cancelAnimationFrame = globalThis.cancelAnimationFrame || ((id) => clearTimeout(id));
 globalThis.queueMicrotask = globalThis.queueMicrotask || ((fn) => Promise.resolve().then(fn));
 
@@ -606,15 +691,15 @@ globalThis.AbortController = globalThis.AbortController || class { constructor()
 globalThis.Headers = globalThis.Headers || class extends Map { constructor(init){super();if(init)Object.entries(init).forEach(([k,v])=>this.set(k.toLowerCase(),v));} };
 globalThis.FormData = globalThis.FormData || class { constructor(){this.__d=[];} append(k,v){this.__d.push([k,v]);} get(k){const e=this.__d.find(([n])=>n===k);return e?e[1]:null;} set(k,v){this.__d=this.__d.filter(([n])=>n!==k);this.__d.push([k,v]);} entries(){return this.__d[Symbol.iterator]();} forEach(fn){this.__d.forEach(([k,v])=>fn(v,k));} };
 globalThis.DOMParser = globalThis.DOMParser || class { parseFromString(html) { return __linkedom_parseHTML(html).document; } };
-globalThis.MutationObserver = __win.MutationObserver || class { constructor(cb){} observe(){} disconnect(){} takeRecords(){return [];} };
+globalThis.MutationObserver = __hdWindow.MutationObserver || class { constructor(cb){} observe(){} disconnect(){} takeRecords(){return [];} };
 globalThis.IntersectionObserver = class { constructor(cb,opts){} observe(){} unobserve(){} disconnect(){} };
 globalThis.ResizeObserver = class { constructor(cb){} observe(){} unobserve(){} disconnect(){} };
 globalThis.BroadcastChannel = globalThis.BroadcastChannel || class { constructor(){} postMessage(){} addEventListener(){} close(){} };
 globalThis.Worker = globalThis.Worker || class { constructor(){} postMessage(){} addEventListener(){} terminate(){} };
 
 // Event constructors that some libs check for
-globalThis.Event = __win.Event || globalThis.Event || class Event { constructor(t,o={}){this.type=t;this.bubbles=o.bubbles||false;this.cancelable=o.cancelable||false;this.defaultPrevented=false;} preventDefault(){this.defaultPrevented=true;} stopPropagation(){} stopImmediatePropagation(){} };
-globalThis.CustomEvent = __win.CustomEvent || class extends Event { constructor(t,o={}){super(t,o);this.detail=o.detail;} };
+globalThis.Event = __hdWindow.Event || globalThis.Event || class Event { constructor(t,o={}){this.type=t;this.bubbles=o.bubbles||false;this.cancelable=o.cancelable||false;this.defaultPrevented=false;} preventDefault(){this.defaultPrevented=true;} stopPropagation(){} stopImmediatePropagation(){} };
+globalThis.CustomEvent = __hdWindow.CustomEvent || class extends Event { constructor(t,o={}){super(t,o);this.detail=o.detail;} };
 globalThis.MouseEvent = globalThis.MouseEvent || class extends Event { constructor(t,o={}){super(t,o);} };
 globalThis.KeyboardEvent = globalThis.KeyboardEvent || class extends Event { constructor(t,o={}){super(t,o);this.key=o.key||'';this.code=o.code||'';} };
 globalThis.FocusEvent = globalThis.FocusEvent || class extends Event { constructor(t,o={}){super(t,o);} };
@@ -642,12 +727,16 @@ globalThis.MessagePort = class MessagePort extends EventTarget {
             // Real macrotask delivery via deno_core WebTimers.
             // setTimeout(fn, 0) now goes through queueUserTimer which is a true
             // async timer polled by the event loop (not microtask, not thread::sleep).
+            // delay=1 (not 0) to guarantee delivery in a SEPARATE event loop tick.
+            // Real browsers deliver MessageChannel in a distinct macrotask.
+            // setTimeout(fn, 0) in deno_core may collapse into the current tick.
             setTimeout(() => {
                 if (__checkBudget('MessageChannel')) {
+                    __neo_markActivity('MessageChannel');
                     target.dispatchEvent(event);
                     if (target.onmessage) target.onmessage(event);
                 }
-            }, 0);
+            }, 1);
         }
     }
     close() { this._closed = true; }
@@ -669,10 +758,10 @@ globalThis.MessageChannel = class MessageChannel {
 
 // window as EventTarget
 if (!globalThis.addEventListener) {
-    if (__win.addEventListener) {
-        globalThis.addEventListener = __win.addEventListener.bind(__win);
-        globalThis.removeEventListener = __win.removeEventListener.bind(__win);
-        globalThis.dispatchEvent = __win.dispatchEvent.bind(__win);
+    if (__hdWindow.addEventListener) {
+        globalThis.addEventListener = __hdWindow.addEventListener.bind(__hdWindow);
+        globalThis.removeEventListener = __hdWindow.removeEventListener.bind(__hdWindow);
+        globalThis.dispatchEvent = __hdWindow.dispatchEvent.bind(__hdWindow);
     } else {
         const __et = {};
         globalThis.addEventListener = (t,f) => { (__et[t]=__et[t]||[]).push(f); };
@@ -1210,6 +1299,12 @@ Object.defineProperty(globalThis, 'process', {
 globalThis.__neorender_export = function() {
     return document.documentElement.outerHTML;
 };
+
+// Start global MutationObserver for quiescence detection.
+if (typeof __neo_startMutationWatch === 'function') __neo_startMutationWatch();
+
+// Mark bootstrap init time as last activity
+__neo_markActivity('bootstrap-done');
 
 // NOTE: Promise.allSettled is handled via source-level transform in the Rust
 // module loader (v8_runtime.rs). Polyfill injection doesn't work in deno_core

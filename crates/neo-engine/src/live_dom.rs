@@ -1314,8 +1314,17 @@ impl<'a> LiveDom<'a> {
     /// Execute a dispatcher command and parse the response.
     fn dispatch(&mut self, action: &str, selector: &str, value: &str, key: &str) -> Result<DispatchResponse, LiveDomError> {
         self.ensure_dispatcher()?;
-        let cmd = Self::build_cmd(action, selector, value, key);
-        let js = format!("window.__neo.exec('{}')", cmd.replace('\'', "\\'"));
+        // Build JSON cmd and pass via serde to avoid escaping issues with quotes.
+        let cmd = serde_json::json!({
+            "action": action,
+            "selector": selector,
+            "value": value,
+            "key": key,
+        });
+        let cmd_str = cmd.to_string();
+        // Escape for JS template literal (backticks)
+        let safe = cmd_str.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
+        let js = format!("window.__neo.exec(`{}`)", safe);
         let raw = self.runtime.eval(&js)?;
         serde_json::from_str(&raw).map_err(|e| {
             LiveDomError::Parse(format!("{e}: raw={}", &raw[..raw.len().min(200)]))
@@ -1325,8 +1334,15 @@ impl<'a> LiveDom<'a> {
     /// Execute a dispatcher command for actions that return raw strings (page_text, etc.).
     fn dispatch_raw(&mut self, action: &str, selector: &str, value: &str, key: &str) -> Result<String, LiveDomError> {
         self.ensure_dispatcher()?;
-        let cmd = Self::build_cmd(action, selector, value, key);
-        let js = format!("window.__neo.exec('{}')", cmd.replace('\'', "\\'"));
+        let cmd = serde_json::json!({
+            "action": action,
+            "selector": selector,
+            "value": value,
+            "key": key,
+        });
+        let cmd_str = cmd.to_string();
+        let safe = cmd_str.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
+        let js = format!("window.__neo.exec(`{}`)", safe);
         let raw = self.runtime.eval(&js)?;
         Ok(raw)
     }

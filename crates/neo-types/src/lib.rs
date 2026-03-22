@@ -19,11 +19,24 @@ pub struct Cookie {
     pub name: String,
     pub value: String,
     pub domain: String,
+    #[serde(default = "default_path")]
     pub path: String,
+    #[serde(default, deserialize_with = "deserialize_expires")]
     pub expires: Option<i64>,
+    #[serde(default, alias = "httpOnly")]
     pub http_only: bool,
+    #[serde(default)]
     pub secure: bool,
+    #[serde(default, alias = "sameSite")]
     pub same_site: Option<String>,
+}
+
+fn default_path() -> String { "/".to_string() }
+
+fn deserialize_expires<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    use serde::Deserialize;
+    let v = Option::<f64>::deserialize(d)?;
+    Ok(v.map(|f| f as i64))
 }
 
 /// Page state in the navigation lifecycle.

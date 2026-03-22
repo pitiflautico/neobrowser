@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::v8::DenoRuntime;
-use crate::{JsRuntime as JsRuntimeTrait, RuntimeError, RuntimeHandle};
+use crate::{EvalSettleResult, JsRuntime as JsRuntimeTrait, RuntimeError, RuntimeHandle};
 
 /// Extract the first line of an error message.
 pub(crate) fn first_line(s: &str) -> String {
@@ -57,7 +57,7 @@ impl JsRuntimeTrait for DenoRuntime {
         // tokio::time::Sleep futures when JS calls setTimeout/setInterval.
         let _guard = self.tokio_rt.enter();
 
-        let wrapped = format!("try {{\n{}\n}} catch(__e) {{ /* non-fatal */ }}", code);
+        let wrapped = format!("try {{\n{}\n}} catch(__e) {{ if(typeof console!=='undefined')console.error('[script-error] ' + __e.message + ' @ ' + (__e.stack||'').split('\\n')[1]); }}", code);
         match self.runtime.execute_script("<script>", wrapped.clone()) {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -150,10 +150,9 @@ impl JsRuntimeTrait for DenoRuntime {
 
     fn run_until_settled(&mut self, timeout_ms: u64) -> Result<(), RuntimeError> {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let settle_start = Instant::now();
 
         // V8 watchdog: terminate_execution after deadline.
-        // tokio::timeout can't interrupt V8 microtask loops (they're synchronous
-        // inside V8). Only terminate_execution can break infinite Promise.then chains.
         let isolate_handle = self.runtime.v8_isolate().thread_safe_handle();
         let watchdog_deadline = deadline;
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -162,7 +161,7 @@ impl JsRuntimeTrait for DenoRuntime {
             loop {
                 std::thread::sleep(Duration::from_millis(50));
                 if cancel_clone.load(Ordering::Relaxed) {
-                    return; // Cancelled — event loop finished normally
+                    return;
                 }
                 if Instant::now() >= watchdog_deadline {
                     isolate_handle.terminate_execution();
@@ -171,20 +170,24 @@ impl JsRuntimeTrait for DenoRuntime {
             }
         });
 
-        let result = self.tokio_rt.block_on(async {
-            let mut consecutive_idle = 0u32;
+        // Quiescence parameters
+        let min_settle_ms: u64 = 1500.min(timeout_ms * 2 / 3); // at most 2/3 of budget
+        const QUIET_WINDOW_MS: u64 = 400; // no activity for this long = quiet
+        const CHECK_INTERVAL_MS: u64 = 100; // how often to poll quiescence
 
+        let result = self.tokio_rt.block_on(async {
             loop {
-                // Hard deadline check BEFORE each iteration
+                // Hard deadline
                 if Instant::now() >= deadline {
                     return Ok(());
                 }
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                let loop_timeout = Duration::from_millis(200).min(remaining);
+                let loop_timeout = Duration::from_millis(CHECK_INTERVAL_MS).min(remaining);
                 if loop_timeout.is_zero() {
                     return Ok(());
                 }
 
+                // Drive the event loop
                 match tokio::time::timeout(
                     loop_timeout,
                     self.runtime.run_event_loop(PollEventLoopOptions::default()),
@@ -192,35 +195,7 @@ impl JsRuntimeTrait for DenoRuntime {
                 .await
                 {
                     Ok(Ok(())) => {
-                        // Event loop idle. Check pending WebTimers via JS eval.
-                        let pending_timers = {
-                            let code = "typeof __neo_pendingTimers==='function'?String(__neo_pendingTimers()):'0'";
-                            let result = self.runtime.execute_script("<pending-check>", code.to_string());
-                            match result {
-                                Ok(val) => {
-                                    let scope = &mut self.runtime.handle_scope();
-                                    let local = deno_core::v8::Local::new(scope, val);
-                                    local.to_string(scope)
-                                        .map(|s| s.to_rust_string_lossy(scope))
-                                        .unwrap_or_default()
-                                        .trim()
-                                        .parse::<usize>()
-                                        .unwrap_or(0)
-                                }
-                                Err(_) => 0,
-                            }
-                        };
-
-                        if pending_timers > 0 {
-                            consecutive_idle = 0;
-                            tokio::time::sleep(Duration::from_millis(5)).await;
-                        } else {
-                            consecutive_idle += 1;
-                            if consecutive_idle >= 3 {
-                                return Ok(());
-                            }
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                        }
+                        // Event loop went idle. Check quiescence via JS.
                     }
                     Ok(Err(e)) => {
                         eprintln!(
@@ -230,21 +205,68 @@ impl JsRuntimeTrait for DenoRuntime {
                         return Ok(());
                     }
                     Err(_) => {
-                        // Timeout — event loop had work. Reset idle counter.
-                        consecutive_idle = 0;
+                        // Timeout — event loop had work, loop again
+                        continue;
                     }
                 }
 
-                if Instant::now() >= deadline {
-                    let pending = self.tracker.pending();
-                    if pending > 0 {
-                        return Err(RuntimeError::Timeout {
-                            timeout_ms,
-                            pending,
-                        });
+                // Query quiescence state from JS
+                let quiescence = {
+                    let code = "typeof __neo_quiescence==='function'?__neo_quiescence():'{}'";
+                    match self.runtime.execute_script("<quiescence>", code.to_string()) {
+                        Ok(val) => {
+                            let scope = &mut self.runtime.handle_scope();
+                            let local = deno_core::v8::Local::new(scope, val);
+                            local.to_string(scope)
+                                .map(|s| s.to_rust_string_lossy(scope))
+                                .unwrap_or_default()
+                        }
+                        Err(_) => "{}".to_string(),
                     }
+                };
+
+                // Parse quiescence signals
+                #[derive(serde::Deserialize, Default)]
+                struct Quiescence {
+                    #[serde(default)]
+                    idle_ms: u64,
+                    #[serde(default)]
+                    pending_timers: usize,
+                    #[serde(default)]
+                    pending_fetches: usize,
+                    #[serde(default)]
+                    pending_modules: usize,
+                    #[serde(default)]
+                    dom_mutations: usize,
+                }
+                let q: Quiescence = serde_json::from_str(&quiescence).unwrap_or_default();
+
+                let elapsed = settle_start.elapsed().as_millis() as u64;
+
+                // Reset mutation counter after reading
+                let _ = self.runtime.execute_script(
+                    "<reset-mutations>",
+                    "typeof __neo_resetMutationCount==='function'&&__neo_resetMutationCount()".to_string(),
+                );
+
+                // Quiescence criteria:
+                // 1. Minimum settle time elapsed
+                // 2. No recent JS activity (quiet window)
+                // 3. No pending async work
+                // 4. No recent DOM mutations
+                let min_elapsed = elapsed >= min_settle_ms;
+                let quiet = q.idle_ms >= QUIET_WINDOW_MS;
+                let no_pending = q.pending_timers == 0
+                    && q.pending_fetches == 0
+                    && q.pending_modules == 0;
+                let no_mutations = q.dom_mutations == 0;
+
+                if min_elapsed && quiet && no_pending && no_mutations {
                     return Ok(());
                 }
+
+                // Brief sleep before next check
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         });
 
@@ -312,6 +334,101 @@ impl JsRuntimeTrait for DenoRuntime {
         }
     }
 
+    fn eval_and_settle(
+        &mut self,
+        code: &str,
+        timeout_ms: u64,
+    ) -> Result<EvalSettleResult, RuntimeError> {
+        let start = Instant::now();
+        let _guard = self.tokio_rt.enter();
+
+        // Step 1: Execute the code
+        let wrapped = format!(
+            "try {{ (\n{}\n) }} catch(__e) {{ 'Error: ' + __e.message }}",
+            code
+        );
+        let global = self
+            .runtime
+            .execute_script("<eval-settle>", wrapped)
+            .map_err(|e| RuntimeError::Eval(first_line(&e.to_string())))?;
+
+        // Step 2: Check if result is a Promise
+        let is_promise = {
+            let scope = &mut self.runtime.handle_scope();
+            let local = deno_core::v8::Local::new(scope, &global);
+            local.is_promise()
+        };
+
+        if is_promise {
+            // Step 3a: Resolve the Promise with event loop driving
+            #[allow(deprecated)]
+            let result = self.tokio_rt.block_on(async {
+                tokio::time::timeout(
+                    Duration::from_millis(timeout_ms),
+                    self.runtime.resolve_value(global),
+                )
+                .await
+            });
+
+            let value = match result {
+                Ok(Ok(resolved)) => {
+                    let scope = &mut self.runtime.handle_scope();
+                    let local = deno_core::v8::Local::new(scope, resolved);
+                    local
+                        .to_string(scope)
+                        .map(|s| s.to_rust_string_lossy(scope))
+                        .unwrap_or_else(|| "undefined".to_string())
+                }
+                Ok(Err(e)) => format!("Error: {}", first_line(&e.to_string())),
+                Err(_) => "Error: timeout".to_string(),
+            };
+
+            // Step 4: Brief settle after Promise resolution
+            let remaining = timeout_ms.saturating_sub(start.elapsed().as_millis() as u64);
+            if remaining > 100 {
+                let _ = self.run_until_settled(remaining.min(1000));
+            }
+
+            let pending = self
+                .eval("typeof __neo_pendingTimers==='function'?__neo_pendingTimers():0")
+                .unwrap_or_default()
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(0);
+
+            Ok(EvalSettleResult {
+                value,
+                was_promise: true,
+                settled_ms: start.elapsed().as_millis() as u64,
+                pending_timers: pending,
+            })
+        } else {
+            // Step 3b: Not a Promise — return directly, brief pump
+            let value = {
+                let scope = &mut self.runtime.handle_scope();
+                let local = deno_core::v8::Local::new(scope, global);
+                local
+                    .to_string(scope)
+                    .map(|s| s.to_rust_string_lossy(scope))
+                    .unwrap_or_else(|| "undefined".to_string())
+            };
+
+            // Brief pump for any side effects
+            for _ in 0..10 {
+                if let Ok(false) = self.pump_event_loop() {
+                    break;
+                }
+            }
+
+            Ok(EvalSettleResult {
+                value,
+                was_promise: false,
+                settled_ms: start.elapsed().as_millis() as u64,
+                pending_timers: 0,
+            })
+        }
+    }
+
     fn reset_budgets(&mut self) {
         self.timer_budget.reset();
         self.tracker.reset();
@@ -347,9 +464,7 @@ impl JsRuntimeTrait for DenoRuntime {
             .unwrap_or(false);
 
         if is_first {
-            // Re-init: parse new HTML and replace document CONTENT (not the
-            // document object itself — globalThis.document is non-replaceable
-            // once linkedom initializes it).
+            // Re-init: parse new HTML via happy-dom and replace document content.
             let reinit_js = format!(
                 "(function() {{\
                      globalThis.__neorender_html = `{}`;\

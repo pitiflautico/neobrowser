@@ -76,6 +76,21 @@ impl RuntimeHandle {
     }
 }
 
+/// Result of `eval_and_settle` — the unified async execution primitive.
+///
+/// Wraps the evaluated value together with metadata about how it was resolved.
+#[derive(Debug, Clone)]
+pub struct EvalSettleResult {
+    /// The resolved value as a string.
+    pub value: String,
+    /// Whether the evaluated expression returned a Promise.
+    pub was_promise: bool,
+    /// Wall-clock milliseconds from eval to final settle.
+    pub settled_ms: u64,
+    /// Number of pending timers after settling.
+    pub pending_timers: usize,
+}
+
 /// JavaScript runtime for executing web page scripts.
 pub trait JsRuntime: Send {
     /// Evaluate an expression and return result as string.
@@ -115,6 +130,24 @@ pub trait JsRuntime: Send {
     /// Uses deno_core's with_event_loop_promise internally.
     fn eval_promise(&mut self, _code: &str, _timeout_ms: u64) -> Result<String, RuntimeError> {
         Err(RuntimeError::Eval("eval_promise not implemented".into()))
+    }
+
+    /// Execute JS, detect if the result is a Promise, resolve it with the event
+    /// loop, then settle. Returns the resolved value plus metadata.
+    ///
+    /// Default implementation delegates to `eval()` (no Promise handling).
+    fn eval_and_settle(
+        &mut self,
+        code: &str,
+        _timeout_ms: u64,
+    ) -> Result<EvalSettleResult, RuntimeError> {
+        let val = self.eval(code)?;
+        Ok(EvalSettleResult {
+            value: val,
+            was_promise: false,
+            settled_ms: 0,
+            pending_timers: 0,
+        })
     }
 
     /// Inject HTML into the DOM (parse and set as document).
