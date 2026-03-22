@@ -337,7 +337,7 @@ const __intervalMaxTicks = ops.op_scheduler_config();
 // MessageChannel, requestAnimationFrame, requestIdleCallback, Promise.then.
 // Without this, scripts can create infinite microtask storms that hang V8
 // (tokio timeout can't interrupt V8 microtasks — only terminate_execution can).
-let __callbackBudget = 5000;  // max callbacks across ALL sources
+let __callbackBudget = 5000;  // max callbacks — V8 watchdog is the real safety net
 let __callbackCount = 0;
 let __budgetExhausted = false;
 function __checkBudget(source) {
