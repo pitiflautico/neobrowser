@@ -861,11 +861,155 @@ if (typeof HTMLLabelElement !== 'undefined' && HTMLLabelElement.prototype && !('
 if (typeof HTMLSelectElement !== 'undefined' && HTMLSelectElement.prototype && !('selectedOptions' in HTMLSelectElement.prototype)) {
     Object.defineProperty(HTMLSelectElement.prototype, 'selectedOptions', {
         get: function() {
-            return Array.from(this.options || this.querySelectorAll('option')).filter(function(o) { return o.selected; });
+            return Array.from(this.options || this.querySelectorAll('option')).filter(function(o) { return o.__idl_selected || o.selected; });
         },
         configurable: true
     });
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 15. IDL ATTRIBUTE SYNCHRONIZATION — React controlled inputs
+// ═══════════════════════════════════════════════════════════════
+// Real browsers separate content attributes (getAttribute/setAttribute) from
+// IDL properties (el.value, el.checked). linkedom conflates them. React reads
+// IDL properties to determine current state and uses setAttribute for initial
+// render — if they aren't independent, controlled inputs break.
+
+// 15a. input.value / textarea.value — independent of the value attribute
+(function() {
+    [typeof HTMLInputElement !== 'undefined' ? HTMLInputElement : null,
+     typeof HTMLTextAreaElement !== 'undefined' ? HTMLTextAreaElement : null].forEach(function(Ctor) {
+        if (!Ctor || !Ctor.prototype) return;
+        Object.defineProperty(Ctor.prototype, 'value', {
+            get: function() {
+                if ('__idl_value' in this) return this.__idl_value;
+                return this.getAttribute('value') || '';
+            },
+            set: function(v) {
+                this.__idl_value = String(v);
+                // Do NOT call setAttribute — the content attribute stays independent
+            },
+            configurable: true,
+            enumerable: true,
+        });
+    });
+})();
+
+// 15b. input.checked — independent of the checked attribute
+(function() {
+    if (typeof HTMLInputElement === 'undefined' || !HTMLInputElement.prototype) return;
+
+    Object.defineProperty(HTMLInputElement.prototype, 'checked', {
+        get: function() {
+            if ('__idl_checked' in this) return this.__idl_checked;
+            return this.hasAttribute('checked');
+        },
+        set: function(v) {
+            this.__idl_checked = !!v;
+        },
+        configurable: true,
+        enumerable: true,
+    });
+
+    // defaultChecked maps to the checked CONTENT ATTRIBUTE
+    Object.defineProperty(HTMLInputElement.prototype, 'defaultChecked', {
+        get: function() { return this.hasAttribute('checked'); },
+        set: function(v) { if (v) this.setAttribute('checked', ''); else this.removeAttribute('checked'); },
+        configurable: true,
+    });
+
+    // defaultValue maps to the value CONTENT ATTRIBUTE
+    Object.defineProperty(HTMLInputElement.prototype, 'defaultValue', {
+        get: function() { return this.getAttribute('value') || ''; },
+        set: function(v) { this.setAttribute('value', String(v)); },
+        configurable: true,
+    });
+})();
+
+// 15c. select.value / select.selectedIndex / option.selected
+(function() {
+    if (typeof HTMLSelectElement === 'undefined' || !HTMLSelectElement.prototype) return;
+
+    Object.defineProperty(HTMLSelectElement.prototype, 'value', {
+        get: function() {
+            var opts = this.querySelectorAll('option');
+            for (var i = 0; i < opts.length; i++) {
+                if (opts[i].__idl_selected || opts[i].hasAttribute('selected')) return opts[i].value || opts[i].textContent;
+            }
+            return opts.length ? (opts[0].value || opts[0].textContent) : '';
+        },
+        set: function(v) {
+            var opts = this.querySelectorAll('option');
+            for (var i = 0; i < opts.length; i++) {
+                opts[i].__idl_selected = (opts[i].value === v || opts[i].textContent.trim() === v);
+            }
+        },
+        configurable: true,
+        enumerable: true,
+    });
+
+    Object.defineProperty(HTMLSelectElement.prototype, 'selectedIndex', {
+        get: function() {
+            var opts = this.querySelectorAll('option');
+            for (var i = 0; i < opts.length; i++) {
+                if (opts[i].__idl_selected || opts[i].hasAttribute('selected')) return i;
+            }
+            return 0;
+        },
+        set: function(idx) {
+            var opts = this.querySelectorAll('option');
+            for (var i = 0; i < opts.length; i++) {
+                opts[i].__idl_selected = (i === idx);
+            }
+        },
+        configurable: true,
+        enumerable: true,
+    });
+
+    // form.elements — returns form controls
+    if (typeof HTMLFormElement !== 'undefined' && HTMLFormElement.prototype) {
+        Object.defineProperty(HTMLFormElement.prototype, 'elements', {
+            get: function() {
+                return this.querySelectorAll('input,select,textarea,button');
+            },
+            configurable: true,
+        });
+    }
+})();
+
+// 15d. Boolean IDL properties — disabled, required, readOnly, multiple, autofocus
+(function() {
+    ['disabled', 'required', 'readOnly', 'multiple', 'autofocus'].forEach(function(prop) {
+        var attr = prop.toLowerCase();
+        [typeof HTMLInputElement !== 'undefined' ? HTMLInputElement : null,
+         typeof HTMLSelectElement !== 'undefined' ? HTMLSelectElement : null,
+         typeof HTMLTextAreaElement !== 'undefined' ? HTMLTextAreaElement : null,
+         typeof HTMLButtonElement !== 'undefined' ? HTMLButtonElement : null].forEach(function(Ctor) {
+            if (!Ctor || !Ctor.prototype) return;
+            // Only define if not already a proper boolean IDL property
+            var existing = Object.getOwnPropertyDescriptor(Ctor.prototype, prop);
+            if (existing && existing.get) return; // already has getter
+            Object.defineProperty(Ctor.prototype, prop, {
+                get: function() { return this.hasAttribute(attr); },
+                set: function(v) { if (v) this.setAttribute(attr, ''); else this.removeAttribute(attr); },
+                configurable: true,
+                enumerable: true,
+            });
+        });
+    });
+})();
+
+// 15e. input.type — defaults to 'text' per spec (linkedom returns null instead)
+(function() {
+    if (typeof HTMLInputElement === 'undefined' || !HTMLInputElement.prototype) return;
+    // Always override — linkedom's getter returns null when no type attribute is set
+    Object.defineProperty(HTMLInputElement.prototype, 'type', {
+        get: function() { return this.getAttribute('type') || 'text'; },
+        set: function(v) { this.setAttribute('type', v); },
+        configurable: true,
+        enumerable: true,
+    });
+})();
 
 // ─── Legacy IE API stubs (React 18 production uses attachEvent) ───
 if (typeof HTMLElement !== 'undefined' && HTMLElement.prototype && !HTMLElement.prototype.attachEvent) {
@@ -938,3 +1082,126 @@ if (!globalThis.Request) {
         clone() { return new Request(this.url, {method:this.method,headers:this.headers,body:this.body}); }
     };
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 15. EVENT SYSTEM FIXES — stopImmediatePropagation, composedPath, SubmitEvent, isConnected
+// ═══════════════════════════════════════════════════════════════
+
+// 15a. stopImmediatePropagation — linkedom doesn't implement the flag check
+(function() {
+    if (!Event.prototype) return;
+    // Only patch once
+    if (Event.prototype.stopImmediatePropagation && Event.prototype.stopImmediatePropagation.__real) return;
+
+    var origSIP = Event.prototype.stopImmediatePropagation;
+    Event.prototype.stopImmediatePropagation = function() {
+        this._immediateStopped = true;
+        if (origSIP) origSIP.call(this);
+    };
+    Event.prototype.stopImmediatePropagation.__real = true;
+
+    // Wrap addEventListener so listeners respect _immediateStopped
+    var origAddEventListener = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function(type, listener, options) {
+        if (typeof listener !== 'function') {
+            return origAddEventListener.call(this, type, listener, options);
+        }
+        var wrappedListener = function(event) {
+            if (event._immediateStopped) return;
+            return listener.call(this, event);
+        };
+        wrappedListener._original = listener;
+        // Store mapping for removeEventListener
+        if (!this.__neo_listener_map) this.__neo_listener_map = [];
+        this.__neo_listener_map.push({ type: type, original: listener, wrapped: wrappedListener, options: options });
+        return origAddEventListener.call(this, type, wrappedListener, options);
+    };
+
+    var origRemoveEventListener = EventTarget.prototype.removeEventListener;
+    EventTarget.prototype.removeEventListener = function(type, listener, options) {
+        // Find the wrapped version
+        if (this.__neo_listener_map) {
+            for (var i = 0; i < this.__neo_listener_map.length; i++) {
+                var entry = this.__neo_listener_map[i];
+                if (entry.type === type && entry.original === listener) {
+                    this.__neo_listener_map.splice(i, 1);
+                    return origRemoveEventListener.call(this, type, entry.wrapped, options);
+                }
+            }
+        }
+        return origRemoveEventListener.call(this, type, listener, options);
+    };
+})();
+
+// 15b. Event.composedPath() — build path from target to window
+if (Event.prototype && !Event.prototype.composedPath) {
+    Event.prototype.composedPath = function() {
+        var path = [];
+        var node = this.target;
+        while (node) {
+            path.push(node);
+            node = node.parentNode;
+        }
+        if (path.length > 0) {
+            if (typeof document !== 'undefined') path.push(document);
+            if (typeof window !== 'undefined') path.push(window);
+        }
+        return path;
+    };
+}
+
+// 15c. SubmitEvent constructor
+if (!globalThis.SubmitEvent) {
+    globalThis.SubmitEvent = class SubmitEvent extends Event {
+        constructor(type, init) {
+            super(type, init);
+            this.submitter = (init && init.submitter) || null;
+        }
+    };
+}
+
+// 15d. Node.isConnected property
+(function() {
+    if (typeof Node === 'undefined' || !Node.prototype) return;
+    if ('isConnected' in Node.prototype) return;
+    Object.defineProperty(Node.prototype, 'isConnected', {
+        get: function() {
+            var node = this;
+            while (node) {
+                if (node === document) return true;
+                node = node.parentNode;
+            }
+            return false;
+        },
+        configurable: true,
+    });
+})();
+
+// 15e. Element.closest and Element.matches verification + polyfill
+(function() {
+    if (typeof Element === 'undefined' || !Element.prototype) return;
+
+    if (!Element.prototype.matches) {
+        Element.prototype.matches =
+            Element.prototype.msMatchesSelector ||
+            Element.prototype.webkitMatchesSelector ||
+            function(sel) {
+                var matches = (this.ownerDocument || document).querySelectorAll(sel);
+                for (var i = 0; i < matches.length; i++) {
+                    if (matches[i] === this) return true;
+                }
+                return false;
+            };
+    }
+
+    if (!Element.prototype.closest) {
+        Element.prototype.closest = function(sel) {
+            var el = this;
+            while (el && el.nodeType === 1) {
+                if (el.matches(sel)) return el;
+                el = el.parentNode;
+            }
+            return null;
+        };
+    }
+})();
