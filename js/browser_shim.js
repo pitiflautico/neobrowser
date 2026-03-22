@@ -5,30 +5,59 @@
 // Use __neo_ops saved by bootstrap.js (Deno is deleted for sandbox security).
 const _shimOps = globalThis.__neo_ops;
 
-// ── React Router SSR hydration data stub ──
-// React Router 7 (used by ChatGPT, Remix apps) expects __reactRouterContext.state
-// with loaderData, actionData, and errors. Without this, the router crashes when
-// trying to read response headers from SSR data (e.getAll() on undefined).
-// We provide a minimal stub that prevents crashes without changing app behavior.
-if (typeof globalThis.__reactRouterContext === 'object' && globalThis.__reactRouterContext) {
-    const ctx = globalThis.__reactRouterContext;
-    if (!ctx.state) {
-        ctx.state = {
-            initialized: true,
-            navigation: { state: 'idle', location: undefined, formMethod: undefined, formAction: undefined, formEncType: undefined, formData: undefined },
-            restoreScrollPosition: null,
-            preventScrollReset: false,
-            revalidation: 'idle',
-            loaderData: {},
-            actionData: null,
-            errors: null,
-            fetchers: new Map(),
-            blockers: new Map(),
+// ── React Router SSR turbo-stream interceptor ──
+// React Router 7 SSR streams hydration data via __reactRouterContext.streamController.
+// happy-dom's ReadableStream.getReader().read() hangs so the normal decode path fails.
+// Fix: intercept WHEN __reactRouterContext is created (via defineProperty trap on window),
+// then patch streamController.enqueue/close to accumulate data and decode with turbo-stream.
+(function installReactRouterStreamInterceptor() {
+    let _ctx = globalThis.__reactRouterContext;
+    const _chunks = [];
+
+    function patchController(ctx) {
+        if (!ctx || !ctx.streamController || ctx.__neo_patched) return;
+        ctx.__neo_patched = true;
+        const sc = ctx.streamController;
+        const origEnqueue = sc.enqueue?.bind(sc);
+        const origClose = sc.close?.bind(sc);
+
+        sc.enqueue = function(data) {
+            _chunks.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
+            if (origEnqueue) try { origEnqueue(data); } catch(e) {}
+        };
+
+        sc.close = function() {
+            const raw = _chunks.join('');
+            if (raw && typeof turboStream !== 'undefined' && turboStream.decode) {
+                try {
+                    const result = turboStream.decode(raw);
+                    if (result && result.value !== undefined) {
+                        ctx.state = result.value;
+                        console.log('[turbo-stream] decoded SSR state: ' + Object.keys(result.value || {}).join(','));
+                    }
+                } catch(e) {
+                    console.error('[turbo-stream] decode failed: ' + e.message);
+                }
+            }
+            if (origClose) try { origClose(); } catch(e) {}
         };
     }
-    // Ensure loaderData exists even if state was partially set
-    if (ctx.state && !ctx.state.loaderData) ctx.state.loaderData = {};
-}
+
+    // Patch if already exists
+    if (_ctx) patchController(_ctx);
+
+    // Trap future assignment via defineProperty
+    try {
+        Object.defineProperty(globalThis, '__reactRouterContext', {
+            get() { return _ctx; },
+            set(val) {
+                _ctx = val;
+                if (val && typeof val === 'object') patchController(val);
+            },
+            configurable: true, enumerable: true,
+        });
+    } catch(e) {}
+})();
 
 // ═══════════════════════════════════════════════════════════════
 // 1. NAVIGATION INTERCEPTION — capture form.submit(), location changes

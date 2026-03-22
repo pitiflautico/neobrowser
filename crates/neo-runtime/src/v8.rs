@@ -238,6 +238,15 @@ impl DenoRuntime {
                 RuntimeError::Init(format!("polyfills: {}", first_line(&e.to_string())))
             })?;
 
+        // Load turbo-stream decoder AFTER happy-dom exports (needs Blob, ReadableStream).
+        let turbo_stream_js: &str = include_str!("../../../js/turbo-stream.bundle.js");
+        runtime
+            .execute_script("<neorender:turbo_stream>", turbo_stream_js.to_string())
+            .map_err(|e| {
+                eprintln!("[turbo-stream init] {}", &e.to_string()[..e.to_string().len().min(200)]);
+                RuntimeError::Init(format!("turbo-stream: {}", first_line(&e.to_string())))
+            })?;
+
         Ok(Self {
             runtime,
             store,
