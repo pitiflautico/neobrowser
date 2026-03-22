@@ -197,7 +197,7 @@ impl DenoRuntime {
                     'DOMParser','XMLSerializer','Range','Selection',
                     'NodeList','HTMLCollection','DOMTokenList','NamedNodeMap',
                     'Attr','CSSStyleDeclaration','CSSStyleSheet',
-                    'AbortController','AbortSignal','Blob','File','FileReader','FormData',
+                    'Blob','File','FileReader','FormData',
                     'Headers','Request','Response','URL','URLSearchParams','MediaQueryList','Storage',
                     'HTMLDivElement','HTMLSpanElement','HTMLInputElement','HTMLButtonElement',
                     'HTMLAnchorElement','HTMLFormElement','HTMLSelectElement','HTMLOptionElement',

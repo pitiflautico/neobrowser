@@ -35,10 +35,11 @@ try {
 // ═══════════════════════════════════════════════════════════════
 
 globalThis.onerror = function(msg, url, line, col, error) {
-    // Log but don't crash
-    return true; // prevents default handling
+    try { Deno.core.ops.op_console_log('[uncaught] ' + msg + ' @ ' + url + ':' + line + ':' + col + (error?.stack ? ' | ' + error.stack.split('\n')[1] : '')); } catch {}
+    return true;
 };
 globalThis.onunhandledrejection = function(event) {
+    try { var r = event?.reason; Deno.core.ops.op_console_log('[unhandled-rejection] ' + (r?.message || r) + (r?.stack ? ' | ' + r.stack.split('\n')[1] : '')); } catch {}
     if (event && event.preventDefault) event.preventDefault();
 };
 
@@ -49,7 +50,7 @@ const _origConsole = globalThis.console || {};
 globalThis.console = {
     log: (...args) => { try { ops.op_console_log(args.map(String).join(' ')); } catch {} },
     warn: (...args) => { try { ops.op_console_log('[warn] ' + args.map(String).join(' ')); } catch {} },
-    error: (...args) => { try { ops.op_console_log('[error] ' + args.map(String).join(' ')); } catch {} },
+    error: (...args) => { try { const msg = args.map(a => { if (a instanceof Error) return a.message + ' @ ' + (a.stack||'').split('\n').slice(0,3).join(' | '); return String(a); }).join(' '); ops.op_console_log('[error] ' + msg); } catch {} },
     info: (...args) => { try { ops.op_console_log(args.map(String).join(' ')); } catch {} },
     debug: () => {},
     trace: () => {},
