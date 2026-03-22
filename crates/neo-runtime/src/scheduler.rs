@@ -33,7 +33,7 @@ impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
             interval_max_ticks: 20,
-            timer_budget: 50,
+            timer_budget: 200,
         }
     }
 }

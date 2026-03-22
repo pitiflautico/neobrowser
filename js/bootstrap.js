@@ -384,6 +384,10 @@ globalThis.setTimeout = function(fn, ms, ...args) {
     const id = __timerNextId++;
     __timerCallbacks.set(id, true);
     if (!ms || ms <= 0) {
+        // setTimeout(fn, 0): use queueMicrotask for fast delivery.
+        // React scheduler yields based on performance.now() deadline (5ms),
+        // not on task queue boundaries. As long as performance.now() advances
+        // (it does — based on Date.now()), React yields after ~5ms of work.
         queueMicrotask(() => {
             if (__timerCallbacks.delete(id)) {
                 ops.op_timer_fire();
@@ -632,30 +636,36 @@ globalThis.MessageEvent = globalThis.MessageEvent || class MessageEvent extends 
     }
 };
 // MessagePort with actual async message passing
-globalThis.MessagePort = class MessagePort extends EventTarget {
+globalThis.__MessagePort_disabled = class MessagePort extends EventTarget {
     constructor() { super(); this._other = null; this._closed = false; this.onmessage = null; }
     postMessage(data) {
         if (this._other && !this._other._closed && !__budgetExhausted) {
             const target = this._other;
             const event = new MessageEvent('message', { data });
-            // CRITICAL: Use setTimeout (macrotask), NOT Promise.resolve().then (microtask).
-            // React scheduler uses MessageChannel for yielding between work chunks.
-            // With microtask delivery, React never yields → infinite microtask storm.
-            // With setTimeout delivery, React yields between chunks → event loop progresses.
-            // This matches real browser behavior: MessageChannel messages are TASKS, not microtasks.
+            // CRITICAL: Use setTimeout with delay >= 1ms to force REAL macrotask delivery.
+            // setTimeout(fn, 0) falls through to queueMicrotask → still microtask.
+            // setTimeout(fn, 1) uses __timerPromise(1) → op_timer(1ms sleep) → real yield.
+            // React scheduler needs this yield to check performance.now() deadline.
             setTimeout(() => {
                 if (__checkBudget('MessageChannel')) {
                     target.dispatchEvent(event);
                     if (target.onmessage) target.onmessage(event);
                 }
-            }, 0);
+            }, 1);  // 1ms, NOT 0 — forces real macrotask via op_timer sleep
         }
     }
     close() { this._closed = true; }
     start() {}
 };
 // MessageChannel with connected ports
-globalThis.MessageChannel = class MessageChannel {
+// MessageChannel INTENTIONALLY not provided as global.
+// React scheduler checks for it and falls back to setTimeout if absent.
+// With MessageChannel, React creates a scheduling loop that requires
+// real macrotask delivery (which our V8 env can't provide because
+// op_timer blocks the thread). Without it, React uses setTimeout
+// which is self-throttling and works correctly.
+// jsdom uses the same approach.
+globalThis.__MessageChannel_disabled = class MessageChannel {
     constructor() {
         this.port1 = new MessagePort();
         this.port2 = new MessagePort();
