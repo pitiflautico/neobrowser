@@ -451,3 +451,16 @@ pub fn op_cookie_set(state: Rc<RefCell<OpState>>, #[string] cookie_str: String) 
         cookies.set_from_string(&cookie_str);
     }
 }
+
+/// Minimal async op — tests async op integration.
+#[op2(async)]
+pub async fn op_yield() -> () {
+}
+
+/// Async sleep — tests tokio reactor availability.
+#[op2(async)]
+pub async fn op_sleep_ms(#[smi] ms: u32) -> () {
+    if ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+    }
+}
