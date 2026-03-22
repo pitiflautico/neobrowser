@@ -575,11 +575,18 @@ globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => 
 globalThis.cancelAnimationFrame = globalThis.cancelAnimationFrame || ((id) => clearTimeout(id));
 globalThis.queueMicrotask = globalThis.queueMicrotask || ((fn) => Promise.resolve().then(fn));
 
-// Performance
-globalThis.performance = globalThis.performance || {
-    now: () => Date.now(), mark(){}, measure(){},
-    getEntriesByType(){ return []; }, getEntriesByName(){ return []; }
-};
+// Performance — now() must be relative to page load, NOT Date.now()
+// React scheduler uses performance.now() to calculate deadlines.
+// If it returns absolute epoch time (~1.7 trillion ms), the scheduler
+// thinks every frame has exceeded its deadline and never processes work.
+const __perfOrigin = Date.now();
+globalThis.performance = globalThis.performance || {};
+globalThis.performance.now = globalThis.performance.now || function() { return Date.now() - __perfOrigin; };
+globalThis.performance.mark = globalThis.performance.mark || function(){};
+globalThis.performance.measure = globalThis.performance.measure || function(){};
+globalThis.performance.getEntriesByType = globalThis.performance.getEntriesByType || function(){ return []; };
+globalThis.performance.getEntriesByName = globalThis.performance.getEntriesByName || function(){ return []; };
+globalThis.performance.timeOrigin = globalThis.performance.timeOrigin || __perfOrigin;
 
 // Crypto
 globalThis.crypto = globalThis.crypto || {

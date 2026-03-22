@@ -199,8 +199,15 @@ fn execute_single(
                 let iife = hydration::transform_inline_module(content, base);
                 match rt.execute(&iife) {
                     Ok(()) => {
+                        // CRITICAL: Pump event loop after module execution.
+                        // Inline modules often do import() which creates promises.
+                        // Without pumping, those promises never resolve and the
+                        // entire module dependency chain stalls.
+                        // This is what the REPL does between each eval — and why
+                        // import() works in REPL but not in the pipeline.
+                        let _ = rt.run_until_settled(2000);
                         let ms = t.elapsed().as_millis() as u64;
-                        neo_trace!("[EXEC] {label}#{idx} -> ok ({ms}ms)");
+                        neo_trace!("[EXEC] {label}#{idx} -> ok ({ms}ms, pumped)");
                     }
                     Err(e) => {
                         let ms = t.elapsed().as_millis() as u64;
@@ -237,8 +244,10 @@ fn execute_single(
             if *is_module {
                 match rt.load_module(src) {
                     Ok(()) => {
+                        // Pump after module load to resolve dynamic imports
+                        let _ = rt.run_until_settled(2000);
                         let ms = t.elapsed().as_millis() as u64;
-                        neo_trace!("[EXEC] {name} -> ok ({ms}ms)");
+                        neo_trace!("[EXEC] {name} -> ok ({ms}ms, pumped)");
                     }
                     Err(e) => {
                         let ms = t.elapsed().as_millis() as u64;
