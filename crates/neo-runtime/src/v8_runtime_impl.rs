@@ -379,6 +379,206 @@ impl JsRuntimeTrait for DenoRuntime {
         result
     }
 
+    fn run_until_interaction_stable(&mut self, timeout_ms: u64) -> Result<(), RuntimeError> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let settle_start = Instant::now();
+
+        // V8 watchdog: terminate_execution after deadline.
+        let isolate_handle = self.runtime.v8_isolate().thread_safe_handle();
+        let watchdog_deadline = deadline;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel_flag.clone();
+        let watchdog = std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_millis(50));
+                if cancel_clone.load(Ordering::Relaxed) {
+                    return;
+                }
+                if Instant::now() >= watchdog_deadline {
+                    isolate_handle.terminate_execution();
+                    return;
+                }
+            }
+        });
+
+        // Interaction settle parameters — much more aggressive than bootstrap
+        let min_settle_ms: u64 = 75_u64.min(timeout_ms * 2 / 3);
+        const QUIET_WINDOW_MS: u64 = 400;
+        const CHECK_INTERVAL_MS: u64 = 50;
+
+        // Epoch tracking: after a DOM mutation or fetch resolve, we need at least
+        // one more quiet check cycle before declaring settled. This prevents
+        // cutting between React commit phases (e.g. setState -> render -> commit).
+        let mut epoch_dirty = false; // true if we saw activity since last quiet check
+        let mut saw_quiet_after_epoch = false; // true if we've had a quiet cycle after activity
+
+        let result = self.tokio_rt.block_on(async {
+            loop {
+                // Hard deadline
+                if Instant::now() >= deadline {
+                    let elapsed = settle_start.elapsed().as_millis() as u64;
+                    let reason = if epoch_dirty {
+                        "timeout_after_mutation"
+                    } else {
+                        "timeout_with_pending_fetch"
+                    };
+                    eprintln!(
+                        "[neo-runtime] interaction settle: {} after {}ms",
+                        reason, elapsed
+                    );
+                    return Ok(());
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let loop_timeout = Duration::from_millis(CHECK_INTERVAL_MS).min(remaining);
+                if loop_timeout.is_zero() {
+                    return Ok(());
+                }
+
+                // Drive the event loop
+                match tokio::time::timeout(
+                    loop_timeout,
+                    self.runtime.run_event_loop(PollEventLoopOptions::default()),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
+                        // Event loop went idle. Check quiescence via JS.
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!(
+                            "[neo-runtime] interaction event loop error (non-fatal): {}",
+                            first_line(&e.to_string())
+                        );
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        // Timeout — event loop had work, mark epoch dirty
+                        epoch_dirty = true;
+                        saw_quiet_after_epoch = false;
+                        continue;
+                    }
+                }
+
+                // Query quiescence state from JS
+                let quiescence = {
+                    let code = "typeof __neo_quiescence==='function'?__neo_quiescence():'{}'";
+                    match self.runtime.execute_script("<quiescence-interaction>", code.to_string()) {
+                        Ok(val) => {
+                            let scope = &mut self.runtime.handle_scope();
+                            let local = deno_core::v8::Local::new(scope, val);
+                            local.to_string(scope)
+                                .map(|s| s.to_rust_string_lossy(scope))
+                                .unwrap_or_default()
+                        }
+                        Err(_) => "{}".to_string(),
+                    }
+                };
+
+                // Parse quiescence signals
+                #[derive(serde::Deserialize, Default)]
+                struct Quiescence {
+                    #[serde(default)]
+                    idle_ms: u64,
+                    #[serde(default)]
+                    pending_timers: usize,
+                    #[serde(default)]
+                    pending_fetches: usize,
+                    #[serde(default)]
+                    pending_modules: usize,
+                    #[serde(default)]
+                    dom_mutations: usize,
+                }
+                let q: Quiescence = serde_json::from_str(&quiescence).unwrap_or_default();
+
+                let elapsed = settle_start.elapsed().as_millis() as u64;
+
+                // Reset mutation counter after reading
+                let _ = self.runtime.execute_script(
+                    "<reset-mutations-interaction>",
+                    "typeof __neo_resetMutationCount==='function'&&__neo_resetMutationCount()".to_string(),
+                );
+
+                let rust_pending_modules = self.module_tracker.pending();
+
+                // Detect activity in this cycle
+                let has_activity = q.dom_mutations > 0 || q.pending_fetches > 0;
+                let no_pending = q.pending_timers == 0
+                    && q.pending_fetches == 0
+                    && q.pending_modules == 0
+                    && rust_pending_modules == 0;
+                let no_mutations = q.dom_mutations == 0;
+                let quiet = q.idle_ms >= QUIET_WINDOW_MS;
+                let min_elapsed = elapsed >= min_settle_ms;
+
+                // Epoch tracking: if we see activity, mark dirty and require
+                // at least one more quiet cycle after it
+                if has_activity {
+                    epoch_dirty = true;
+                    saw_quiet_after_epoch = false;
+                } else if epoch_dirty && no_pending && no_mutations && quiet {
+                    // First quiet cycle after activity — mark it but don't settle yet
+                    saw_quiet_after_epoch = true;
+                }
+
+                // Settle criteria for interaction:
+                // 1. min_settle elapsed (75ms)
+                // 2. quiet window met
+                // 3. no pending async work
+                // 4. no recent DOM mutations
+                // 5. If there was any epoch of activity, we need at least one
+                //    quiet cycle AFTER it (saw_quiet_after_epoch)
+                let epoch_ok = !epoch_dirty || saw_quiet_after_epoch;
+
+                let settle_reason = if min_elapsed && quiet && no_pending && no_mutations && epoch_ok {
+                    Some("quiet_no_pending")
+                } else {
+                    None
+                };
+
+                neo_trace!(
+                    "[INTERACTION-SETTLE] elapsed={}ms idle={}ms timers={} fetches={} mutations={} epoch_dirty={} saw_quiet={} -> {}",
+                    elapsed, q.idle_ms, q.pending_timers, q.pending_fetches,
+                    q.dom_mutations, epoch_dirty, saw_quiet_after_epoch,
+                    settle_reason.unwrap_or("waiting")
+                );
+
+                if let Some(reason) = settle_reason {
+                    eprintln!(
+                        "[neo-runtime] interaction settle: {} after {}ms",
+                        reason, elapsed
+                    );
+                    return Ok(());
+                }
+
+                // Brief sleep before next check
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        });
+
+        // Signal watchdog to stop
+        cancel_flag.store(true, Ordering::Relaxed);
+        let _ = watchdog.join();
+
+        // Cancel any pending termination so future eval/execute calls work.
+        self.runtime.v8_isolate().cancel_terminate_execution();
+
+        // Verify the runtime is usable after potential termination.
+        match self
+            .runtime
+            .execute_script("<interaction-settle-recovery>", "void 0".to_string())
+        {
+            Ok(_) => {}
+            Err(_) => {
+                self.runtime.v8_isolate().cancel_terminate_execution();
+                let _ = self
+                    .runtime
+                    .execute_script("<interaction-settle-recovery2>", "void 0".to_string());
+            }
+        }
+
+        result
+    }
+
     fn pending_tasks(&self) -> usize {
         self.tracker.pending()
     }

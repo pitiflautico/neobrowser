@@ -180,6 +180,7 @@ globalThis.history = {
         h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
         h.index = h.entries.length - 1;
         if (url) __neoUpdateLocation(url);
+        console.log('[NAV-TRACE] pushState: ' + url);
     },
     replaceState: function(state, title, url) {
         var h = globalThis.__neo_history;
@@ -190,6 +191,7 @@ globalThis.history = {
             h.index = 0;
         }
         if (url) __neoUpdateLocation(url);
+        console.log('[NAV-TRACE] replaceState: ' + url);
     },
     back: function() {
         var h = globalThis.__neo_history;

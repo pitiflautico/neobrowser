@@ -314,6 +314,22 @@ globalThis.fetch = function(input, init) {
 
     neo_trace('[FETCH] ' + method + ' ' + fullUrl);
 
+    // Rich fetch trace
+    const fetchId = ++__fetchIdCounter;
+    const fetchEntry = {
+        id: fetchId,
+        url: fullUrl.substring(0, 120),
+        method: method,
+        startMs: Date.now(),
+        endMs: null,
+        status: null,
+        bodyConsumed: false,
+        error: null,
+    };
+    __fetchLog.push(fetchEntry);
+    if (__fetchLog.length > 50) __fetchLog.shift(); // cap memory
+    console.log('[FETCH-TRACE] #' + fetchId + ' START ' + method + ' ' + fullUrl.substring(0, 80));
+
     // Auto-inject cookies
     const hdrs = {};
     const cookies = __getCookiesForUrl(fullUrl);
@@ -337,19 +353,39 @@ globalThis.fetch = function(input, init) {
         .then(resultJson => {
             __pendingFetches--;
             __neo_markActivity('fetch-end');
+            fetchEntry.endMs = Date.now();
             const result = JSON.parse(resultJson);
+            fetchEntry.status = result.status;
+            console.log('[FETCH-TRACE] #' + fetchId + ' END ' + result.status + ' (' + (fetchEntry.endMs - fetchEntry.startMs) + 'ms)');
             const bodyText = result.body || '';
             const bodyBytes = new TextEncoder().encode(bodyText);
-            return new NeoResponse(bodyBytes, {
+            const resp = new NeoResponse(bodyBytes, {
                 status: result.status,
                 statusText: result.statusText || (result.status === 200 ? 'OK' : String(result.status)),
                 headers: result.headers || {},
                 url: fullUrl,
                 _text: bodyText,
             });
+            // Wrap body consumption methods for tracing
+            const origText = resp.text.bind(resp);
+            const origJson = resp.json.bind(resp);
+            resp.text = async function() {
+                fetchEntry.bodyConsumed = true;
+                console.log('[FETCH-TRACE] #' + fetchId + ' BODY text() consumed');
+                return origText();
+            };
+            resp.json = async function() {
+                fetchEntry.bodyConsumed = true;
+                console.log('[FETCH-TRACE] #' + fetchId + ' BODY json() consumed');
+                return origJson();
+            };
+            return resp;
         })
         .catch(e => {
             __pendingFetches--;
+            fetchEntry.endMs = Date.now();
+            fetchEntry.error = String(e);
+            console.log('[FETCH-TRACE] #' + fetchId + ' ERROR ' + e);
             throw new TypeError(`fetch failed: ${e}`);
         });
 };
@@ -421,6 +457,8 @@ globalThis.__neo_pendingTimers = function() { return __timerMap.size; };
 let __activityTs = Date.now();    // ms since epoch of last work
 let __domMutations = 0;           // mutation count since last reset
 let __pendingFetches = 0;         // in-flight fetch count
+let __fetchLog = [];              // rich fetch trace log
+let __fetchIdCounter = 0;         // monotonic fetch ID
 let __pendingModules = 0;         // in-flight module evals (JS-side tracking)
 let __schedulerCallbacks = 0;     // pending MessageChannel/rAF/microtask callbacks
 let __totalModulesRequested = 0;  // lifetime module request counter
@@ -464,19 +502,26 @@ globalThis.__neo_moduleStats = function() {
     });
 };
 
+// Fetch trace query — returns last 20 entries as JSON.
+globalThis.__neo_fetchLog = function() { return JSON.stringify(__fetchLog.slice(-20)); };
+// Pending fetch count from trace log (entries with no endMs and no error).
+globalThis.__neo_fetchPending = function() { return __fetchLog.filter(function(f) { return !f.endMs && !f.error; }).length; };
+
 // Quiescence query — Rust calls this. Returns JSON with all signals.
 globalThis.__neo_quiescence = function() {
     const now = Date.now();
+    const tracePending = __fetchLog.filter(function(f) { return !f.endMs && !f.error; }).length;
     return JSON.stringify({
         idle_ms: now - __activityTs,
         pending_timers: __timerMap.size,
-        pending_fetches: __pendingFetches,
+        pending_fetches: tracePending,
         pending_modules: __pendingModules,
         dom_mutations: __domMutations,
         callback_count: __callbackCount,
         modules_requested: __totalModulesRequested,
         modules_loaded: __totalModulesLoaded,
         modules_failed: __totalModulesFailed,
+        total_fetches: __fetchIdCounter,
     });
 };
 

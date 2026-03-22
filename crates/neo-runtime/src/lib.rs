@@ -107,6 +107,19 @@ pub trait JsRuntime: Send {
     /// Run the event loop until settled or timeout.
     fn run_until_settled(&mut self, timeout_ms: u64) -> Result<(), RuntimeError>;
 
+    /// Run the event loop until stable after an interaction.
+    ///
+    /// Uses relaxed criteria compared to `run_until_settled`:
+    /// - min_settle = 75ms (vs 1500ms for bootstrap)
+    /// - Tracks "epochs": after a DOM mutation or fetch resolve, requires at least
+    ///   one additional quiet cycle before declaring settled. This prevents cutting
+    ///   between React commit phases.
+    ///
+    /// Default implementation falls back to `run_until_settled`.
+    fn run_until_interaction_stable(&mut self, timeout_ms: u64) -> Result<(), RuntimeError> {
+        self.run_until_settled(timeout_ms)
+    }
+
     /// Pump the event loop once without waiting for new events.
     ///
     /// Returns `true` if there was work to do (microtasks, macrotasks),

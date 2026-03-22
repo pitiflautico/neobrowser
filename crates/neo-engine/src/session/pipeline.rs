@@ -495,12 +495,14 @@ impl NeoSession {
 
     /// Pump the V8 event loop after an interaction to let microtasks/timers run.
     ///
-    /// Delegates to `run_until_settled(500)` which handles WebTimers, promises,
-    /// and V8 watchdog termination properly.
+    /// Uses `run_until_interaction_stable` with relaxed criteria:
+    /// - min_settle = 75ms (vs 1500ms for bootstrap)
+    /// - Epoch tracking: won't settle mid-React-commit (requires quiet cycle after activity)
+    /// - 3s budget, but settles fast if quiet
     pub(crate) fn pump_after_interaction(&mut self) {
         if let Some(ref mut rt) = self.runtime {
             let start = std::time::Instant::now();
-            let _ = rt.run_until_settled(2500);
+            let _ = rt.run_until_interaction_stable(3000);
             eprintln!(
                 "[NeoRender] pump: {}ms",
                 start.elapsed().as_millis()
