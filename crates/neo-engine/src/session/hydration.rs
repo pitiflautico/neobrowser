@@ -75,12 +75,13 @@ pub(crate) fn transform_inline_module(content: &str, base: &str) -> String {
         })
         .to_string();
 
-    // Dynamic import(): add base URL + fire-and-forget (.catch)
+    // Dynamic import(): add base URL, await (not fire-and-forget).
+    // The outer async IIFE try/catch handles errors.
     let re_dynamic = Regex::new(r#"import\("(/[^"]+)"\)"#).expect("valid regex");
     code = re_dynamic
         .replace_all(&code, |caps: &regex_lite::Captures| {
             let path = &caps[1];
-            format!("import(\"{base}{path}\").catch(()=>{{}})")
+            format!("await import(\"{base}{path}\")")
         })
         .to_string();
 
@@ -95,7 +96,7 @@ pub(crate) fn transform_inline_module(content: &str, base: &str) -> String {
     }
 
     // Wrap in async IIFE — execute as script (not module).
-    format!("(async () => {{ try {{ {code} }} catch(e) {{ console.error(e); }} }})();")
+    format!("(async () => {{ try {{ {code} }} catch(e) {{ console.error('[inline-module-error] ' + (e.message || e) + ' @ ' + (e.stack || '').split('\\n')[1]); }} }})();")
 }
 
 /// R7c: After inline scripts execute, find and load the entry module.

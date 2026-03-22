@@ -194,13 +194,18 @@ fn execute_single(
         } => {
             let label = if *is_module { "inline-module" } else { "inline-script" };
             if *is_module {
-                // R7b: Transform inline module to async IIFE.
+                // R7b: Transform inline module to async IIFE with await import().
+                // execute() starts the IIFE, then run_until_settled() drives the
+                // event loop so the dynamic imports inside actually resolve.
                 inline_module_sources.push(content.clone());
                 let iife = hydration::transform_inline_module(content, base);
                 match rt.execute(&iife) {
                     Ok(()) => {
+                        // Drive the event loop to resolve the await import() calls.
+                        let settle_ms = 10000u64;
+                        let _ = rt.run_until_settled(settle_ms);
                         let ms = t.elapsed().as_millis() as u64;
-                        neo_trace!("[EXEC] {label}#{idx} -> ok ({ms}ms)");
+                        neo_trace!("[EXEC] {label}#{idx} -> ok ({ms}ms, settled)");
                     }
                     Err(e) => {
                         let ms = t.elapsed().as_millis() as u64;
