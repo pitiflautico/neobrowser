@@ -837,7 +837,8 @@ if (typeof HTMLInputElement !== 'undefined' && HTMLInputElement.prototype && !HT
 }
 
 // document.execCommand (limited — insertText only)
-if (typeof document !== 'undefined' && !document.execCommand) {
+if (typeof document !== 'undefined') {
+    // Always override — happy-dom's execCommand is a no-op stub.
     document.execCommand = function(cmd, showUI, value) {
         if (cmd === 'insertText' && document.activeElement) {
             var el = document.activeElement;
@@ -852,13 +853,21 @@ if (typeof document !== 'undefined' && !document.execCommand) {
                 return true;
             }
             if (el.contentEditable === 'true' || el.isContentEditable) {
-                var sel = globalThis.getSelection();
-                if (sel && sel.rangeCount) {
-                    var range = sel.getRangeAt(0);
-                    range.deleteContents();
-                    range.insertNode(document.createTextNode(value));
+                // For contenteditable (ProseMirror, etc):
+                // 1. Insert text into the first <p> or create one
+                var target = el.querySelector('p') || el;
+                if (target.tagName === 'P' && target.getAttribute('data-placeholder')) {
+                    target.removeAttribute('data-placeholder');
                 }
-                el.dispatchEvent(new InputEvent('input', {data: value, inputType: 'insertText', bubbles: true}));
+                // Append text node
+                target.textContent = (target.textContent || '') + value;
+                // 2. Dispatch beforeinput + input (ProseMirror listens for both)
+                el.dispatchEvent(new InputEvent('beforeinput', {
+                    data: value, inputType: 'insertText', bubbles: true, cancelable: true
+                }));
+                el.dispatchEvent(new InputEvent('input', {
+                    data: value, inputType: 'insertText', bubbles: true
+                }));
                 return true;
             }
         }
