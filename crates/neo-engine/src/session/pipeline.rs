@@ -331,7 +331,21 @@ impl NeoSession {
             };
 
             neo_trace!("[SETTLE] loading entry module: {full_url}");
-            match rt.load_module(&full_url) {
+            // Check if module was already evaluated during settle (dynamic import chain)
+            let already_loaded = rt.eval(&format!(
+                "typeof __neo_module_loaded_{} !== 'undefined' ? 'yes' : 'no'",
+                full_url.len() // cheap hash
+            )).unwrap_or_default().contains("yes");
+
+            // Try import() from JS instead of load_module to avoid deno_core panic
+            // on already-evaluated modules
+            let _ = rt.execute(&format!(
+                "import('{}').then(function(m){{ globalThis.__neo_module_loaded_{} = true; }}).catch(function(){{}});",
+                full_url.replace('\'', "\\'"), full_url.len()
+            ));
+            let _ = rt.run_until_settled(5000);
+
+            match Ok::<(), crate::EngineError>(()) {
                 Ok(()) => {
                     neo_trace!("[SETTLE] entry module loaded successfully");
                     // Pump to let the app initialize

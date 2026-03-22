@@ -111,7 +111,22 @@ impl JsRuntimeTrait for DenoRuntime {
     fn run_until_settled(&mut self, timeout_ms: u64) -> Result<(), RuntimeError> {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
-        self.tokio_rt.block_on(async {
+        // V8 watchdog: terminate_execution after deadline.
+        // tokio::timeout can't interrupt V8 microtask loops (they're synchronous
+        // inside V8). Only terminate_execution can break infinite Promise.then chains.
+        let isolate_handle = self.runtime.v8_isolate().thread_safe_handle();
+        let watchdog_deadline = deadline;
+        let watchdog = std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if std::time::Instant::now() >= watchdog_deadline {
+                    isolate_handle.terminate_execution();
+                    return;
+                }
+            }
+        });
+
+        let result = self.tokio_rt.block_on(async {
             loop {
                 // Hard deadline check BEFORE each iteration
                 if Instant::now() >= deadline {
@@ -157,7 +172,18 @@ impl JsRuntimeTrait for DenoRuntime {
                     return Ok(());
                 }
             }
-        })
+        });
+
+        // Cancel watchdog: even if terminated, V8 can be resumed for future use
+        // by calling cancel_terminate_execution. The watchdog thread will exit
+        // on its own when deadline passes, or we just let it run.
+        // Cancel any pending termination so future eval() calls work.
+        self.runtime.v8_isolate().cancel_terminate_execution();
+
+        // Drop watchdog handle (thread detaches)
+        drop(watchdog);
+
+        result
     }
 
     fn pending_tasks(&self) -> usize {

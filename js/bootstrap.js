@@ -332,6 +332,43 @@ let __timerNextId = 1;
 const __timerCallbacks = new Map();
 const __intervalMaxTicks = ops.op_scheduler_config();
 
+// ── Global callback budget ──
+// Covers ALL async entrypoints: setTimeout, setInterval, queueMicrotask,
+// MessageChannel, requestAnimationFrame, requestIdleCallback, Promise.then.
+// Without this, scripts can create infinite microtask storms that hang V8
+// (tokio timeout can't interrupt V8 microtasks — only terminate_execution can).
+let __callbackBudget = 5000;  // max callbacks across ALL sources
+let __callbackCount = 0;
+let __budgetExhausted = false;
+function __checkBudget(source) {
+    if (__budgetExhausted) return false;
+    __callbackCount++;
+    if (__callbackCount > __callbackBudget) {
+        __budgetExhausted = true;
+        if (typeof __neo_ops !== 'undefined' && __neo_ops.op_console_log) {
+            __neo_ops.op_console_log('[BUDGET] callback budget exhausted at ' + __callbackCount + ' (last source: ' + source + ')');
+        }
+        return false;
+    }
+    return true;
+}
+// Reset budget (called on re-navigation)
+globalThis.__neo_resetBudget = function() {
+    __callbackCount = 0;
+    __budgetExhausted = false;
+};
+
+// Wrap queueMicrotask with budget
+const __origQueueMicrotask = globalThis.queueMicrotask;
+globalThis.queueMicrotask = function(fn) {
+    if (__budgetExhausted) return;
+    __origQueueMicrotask(function() {
+        if (__checkBudget('microtask')) {
+            try { fn(); } catch(e) {}
+        }
+    });
+};
+
 // Timer helper: sync op wrapped in Promise for .then() chaining
 function __timerPromise(ms) {
     return new Promise(resolve => {
@@ -342,23 +379,26 @@ function __timerPromise(ms) {
 
 globalThis.setTimeout = function(fn, ms, ...args) {
     if (typeof fn !== 'function') return 0;
-    // Register with Rust scheduler — rejected if budget exhausted.
+    if (__budgetExhausted) return 0;
     if (!ops.op_timer_register()) return 0;
     const id = __timerNextId++;
     __timerCallbacks.set(id, true);
     if (!ms || ms <= 0) {
-        // setTimeout(fn, 0) — immediate via microtask (browser spec: 0ms = next microtask drain)
         queueMicrotask(() => {
             if (__timerCallbacks.delete(id)) {
                 ops.op_timer_fire();
-                try { fn(...args); } catch(e) {}
+                if (__checkBudget('setTimeout-0')) {
+                    try { fn(...args); } catch(e) {}
+                }
             }
         });
     } else {
         __timerPromise(ms).then(() => {
             if (__timerCallbacks.delete(id)) {
                 ops.op_timer_fire();
-                try { fn(...args); } catch(e) {}
+                if (__checkBudget('setTimeout-' + ms)) {
+                    try { fn(...args); } catch(e) {}
+                }
             }
         });
     }
@@ -588,12 +628,14 @@ globalThis.MessageEvent = globalThis.MessageEvent || class MessageEvent extends 
 globalThis.MessagePort = class MessagePort extends EventTarget {
     constructor() { super(); this._other = null; this._closed = false; this.onmessage = null; }
     postMessage(data) {
-        if (this._other && !this._other._closed) {
+        if (this._other && !this._other._closed && !__budgetExhausted) {
             const target = this._other;
             const event = new MessageEvent('message', { data });
             Promise.resolve().then(() => {
-                target.dispatchEvent(event);
-                if (target.onmessage) target.onmessage(event);
+                if (__checkBudget('MessageChannel')) {
+                    target.dispatchEvent(event);
+                    if (target.onmessage) target.onmessage(event);
+                }
             });
         }
     }
@@ -1140,12 +1182,8 @@ Object.defineProperty(globalThis, 'process', {
 // MobX does: instance.toString = fn (shadowing inherited toString).
 // With freeze: fails because inherited toString is non-writable.
 // With seal: works because existing properties remain writable.
-Object.freeze(Object.prototype);
-Object.freeze(Array.prototype);
-Object.freeze(String.prototype);
-Object.freeze(Number.prototype);
-Object.freeze(Boolean.prototype);
-Object.freeze(Function.prototype);
+// NO freeze — real browsers never freeze prototypes.
+// Hang protection comes from global callback budget below.
 
 // ═══════════════════════════════════════════════════════════════
 // 10. EXPORT — render DOM as HTML for Rust to extract

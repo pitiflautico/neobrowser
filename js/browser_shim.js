@@ -912,3 +912,29 @@ try {
         }
     });
 } catch(e) {}
+
+// ─── Request API (used by fetch-dependent apps) ───
+if (!globalThis.Request) {
+    globalThis.Request = class Request {
+        constructor(input, init) {
+            if (typeof input === 'string') {
+                this.url = input;
+            } else if (input && input.url) {
+                this.url = input.url;
+            } else {
+                this.url = String(input);
+            }
+            init = init || {};
+            this.method = (init.method || 'GET').toUpperCase();
+            this.headers = new Headers(init.headers || {});
+            this.body = init.body || null;
+            this.mode = init.mode || 'cors';
+            this.credentials = init.credentials || 'same-origin';
+            this.cache = init.cache || 'default';
+            this.redirect = init.redirect || 'follow';
+            this.referrer = init.referrer || '';
+            this.signal = init.signal || null;
+        }
+        clone() { return new Request(this.url, {method:this.method,headers:this.headers,body:this.body}); }
+    };
+}
