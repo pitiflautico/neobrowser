@@ -881,3 +881,34 @@ if (typeof Document !== 'undefined' && Document.prototype && !Document.prototype
         this.addEventListener(evt.replace(/^on/, ''), fn);
     };
 }
+
+// ─── Fix read-only toString on prototypes (linkedom makes some non-writable) ───
+// Real browsers have toString as writable on all standard prototypes.
+// Some bundled JS (Vite/ChatGPT) assigns custom toString to objects.
+try {
+    [Object.prototype, Function.prototype, Error.prototype, RegExp.prototype, Date.prototype, Array.prototype, Number.prototype, String.prototype, Boolean.prototype].forEach(function(proto) {
+        if (!proto) return;
+        var desc = Object.getOwnPropertyDescriptor(proto, 'toString');
+        if (desc && !desc.writable) {
+            Object.defineProperty(proto, 'toString', {
+                value: desc.value,
+                writable: true,
+                configurable: true,
+                enumerable: false
+            });
+        }
+    });
+    // Also fix valueOf
+    [Object.prototype, Number.prototype, String.prototype, Boolean.prototype, Date.prototype].forEach(function(proto) {
+        if (!proto) return;
+        var desc = Object.getOwnPropertyDescriptor(proto, 'valueOf');
+        if (desc && !desc.writable) {
+            Object.defineProperty(proto, 'valueOf', {
+                value: desc.value,
+                writable: true,
+                configurable: true,
+                enumerable: false
+            });
+        }
+    });
+} catch(e) {}

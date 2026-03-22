@@ -52,15 +52,38 @@ impl JsRuntimeTrait for DenoRuntime {
 
             let eval = self.runtime.mod_evaluate(mod_id);
 
-            self.runtime
-                .run_event_loop(PollEventLoopOptions::default())
-                .await
-                .map_err(|e| {
-                    RuntimeError::Module(format!("event loop: {}", first_line(&e.to_string())))
-                })?;
+            // Run event loop with timeout — modules that create infinite
+            // timer loops (MobX, React scheduler) must not hang forever.
+            match tokio::time::timeout(
+                Duration::from_millis(5000),
+                self.runtime.run_event_loop(PollEventLoopOptions::default()),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    return Err(RuntimeError::Module(format!(
+                        "event loop: {}",
+                        first_line(&e.to_string())
+                    )));
+                }
+                Err(_) => {
+                    // Timeout — module may have created timer loops.
+                    // Don't fail — the module may have partially evaluated.
+                    eprintln!("[MODULE] event loop timeout for {url} (5s) — continuing");
+                }
+            }
 
-            eval.await
-                .map_err(|e| RuntimeError::Module(first_line(&e.to_string())))?;
+            // Try to get eval result, but don't block forever
+            match tokio::time::timeout(Duration::from_millis(1000), eval).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    return Err(RuntimeError::Module(first_line(&e.to_string())));
+                }
+                Err(_) => {
+                    eprintln!("[MODULE] eval timeout for {url} (1s) — continuing");
+                }
+            }
 
             Ok(())
         })
@@ -90,8 +113,15 @@ impl JsRuntimeTrait for DenoRuntime {
 
         self.tokio_rt.block_on(async {
             loop {
-                let loop_timeout = Duration::from_millis(100)
-                    .min(deadline.saturating_duration_since(Instant::now()));
+                // Hard deadline check BEFORE each iteration
+                if Instant::now() >= deadline {
+                    return Ok(());
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let loop_timeout = Duration::from_millis(100).min(remaining);
+                if loop_timeout.is_zero() {
+                    return Ok(());
+                }
 
                 match tokio::time::timeout(
                     loop_timeout,

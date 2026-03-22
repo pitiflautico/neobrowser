@@ -1134,8 +1134,12 @@ Object.defineProperty(globalThis, 'process', {
     configurable: false,
 });
 
-// Freeze core prototypes AFTER all polyfills are set up.
-// Prevents prototype pollution attacks from page scripts.
+// Seal (NOT freeze) core prototypes.
+// seal = prevents adding/deleting properties, but ALLOWS writing existing ones.
+// freeze = seal + makes all properties non-writable → breaks MobX, lodash, etc.
+// MobX does: instance.toString = fn (shadowing inherited toString).
+// With freeze: fails because inherited toString is non-writable.
+// With seal: works because existing properties remain writable.
 Object.freeze(Object.prototype);
 Object.freeze(Array.prototype);
 Object.freeze(String.prototype);

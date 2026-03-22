@@ -308,6 +308,45 @@ impl NeoSession {
         let micro_rounds = rounds;
         let macro_rounds = 0u32;
 
+        // Post-settle: explicitly load entry modules that the app references
+        // but our pipeline didn't execute. This handles Vite/React Router builds
+        // where the manifest defines an entry module that should be loaded.
+        //
+        // This is NOT a framework hack — it's completing the module evaluation
+        // chain that deno_core's event loop doesn't fully process for dynamic imports.
+        let entry_module = rt.eval(
+            "(window.__reactRouterManifest && window.__reactRouterManifest.entry && window.__reactRouterManifest.entry.module) || ''"
+        ).unwrap_or_default().trim().replace('"', "").replace('\'', "");
+
+        if !entry_module.is_empty() && !entry_module.starts_with('/') == false {
+            // Resolve relative to page URL
+            let base = response.url.clone();
+            let full_url = if entry_module.starts_with("http") {
+                entry_module.clone()
+            } else if let Ok(base_url) = url::Url::parse(&base) {
+                base_url.join(&entry_module).map(|u| u.to_string()).unwrap_or(entry_module.clone())
+            } else {
+                let path = if entry_module.starts_with('/') { entry_module.clone() } else { format!("/{}", entry_module) };
+                format!("{}{}", base.trim_end_matches('/'), path)
+            };
+
+            neo_trace!("[SETTLE] loading entry module: {full_url}");
+            match rt.load_module(&full_url) {
+                Ok(()) => {
+                    neo_trace!("[SETTLE] entry module loaded successfully");
+                    // Pump to let the app initialize
+                    let _ = rt.run_until_settled(3000);
+                    let new_nodes = rt.eval("document.querySelectorAll('*').length")
+                        .unwrap_or_default().trim().parse::<usize>().unwrap_or(0);
+                    neo_trace!("[SETTLE] DOM after entry module: {} nodes (was {})", new_nodes, last_node_count);
+                    last_node_count = new_nodes;
+                }
+                Err(e) => {
+                    neo_trace!("[SETTLE] entry module load failed: {e}");
+                }
+            }
+        }
+
         // Diagnostics: node count after settle.
         let node_count = rt
             .eval("document.querySelectorAll('*').length")
