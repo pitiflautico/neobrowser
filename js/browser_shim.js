@@ -1207,3 +1207,104 @@ if (!globalThis.SubmitEvent) {
         };
     }
 })();
+
+// ═══════════════════════════════════════════════════════════════
+// REACT EVENT DELEGATION BRIDGE
+// ═══════════════════════════════════════════════════════════════
+//
+// React 16/17 installs event listeners on document (v16) or root (v17+)
+// to implement SyntheticEvent delegation. In happy-dom, this installation
+// may silently fail or get lost. This bridge ensures that when native
+// DOM events bubble, React's handlers in __reactEventHandlers get invoked.
+//
+// This is framework-aware but NOT framework-dependent — it only fires
+// if __reactEventHandlers exists on the target element.
+(function installReactEventBridge() {
+    // Map of React prop names to native event types
+    var reactToNative = {
+        onChange: ['change', 'input'],
+        onClick: ['click'],
+        onMouseDown: ['mousedown'],
+        onMouseUp: ['mouseup'],
+        onKeyDown: ['keydown'],
+        onKeyUp: ['keyup'],
+        onFocus: ['focus'],
+        onBlur: ['blur'],
+        onSubmit: ['submit'],
+        onInput: ['input'],
+    };
+
+    // Collect all native event types we need to listen for
+    var nativeEvents = {};
+    Object.keys(reactToNative).forEach(function(reactProp) {
+        reactToNative[reactProp].forEach(function(nativeType) {
+            if (!nativeEvents[nativeType]) nativeEvents[nativeType] = [];
+            nativeEvents[nativeType].push(reactProp);
+        });
+    });
+
+    // For each native event type, install a document-level listener
+    Object.keys(nativeEvents).forEach(function(nativeType) {
+        document.addEventListener(nativeType, function(nativeEvent) {
+            var target = nativeEvent.target;
+            if (!target) return;
+
+            // Walk up from target to find __reactEventHandlers
+            var el = target;
+            while (el) {
+                var ehKey = null;
+                var keys = Object.keys(el);
+                for (var i = 0; i < keys.length; i++) {
+                    if (keys[i].startsWith('__reactEventHandlers')) {
+                        ehKey = keys[i];
+                        break;
+                    }
+                }
+
+                if (ehKey) {
+                    var handlers = el[ehKey];
+                    // Build a React-like synthetic event
+                    var syntheticEvent = {
+                        target: target,
+                        currentTarget: el,
+                        type: nativeType,
+                        bubbles: nativeEvent.bubbles,
+                        cancelable: nativeEvent.cancelable,
+                        defaultPrevented: nativeEvent.defaultPrevented,
+                        nativeEvent: nativeEvent,
+                        preventDefault: function() { nativeEvent.preventDefault(); this.defaultPrevented = true; },
+                        stopPropagation: function() { nativeEvent.stopPropagation(); },
+                        persist: function() {},
+                        isPersistent: function() { return true; },
+                    };
+                    // Copy common properties from native event
+                    if (nativeEvent.key) syntheticEvent.key = nativeEvent.key;
+                    if (nativeEvent.code) syntheticEvent.code = nativeEvent.code;
+                    if (nativeEvent.data) syntheticEvent.data = nativeEvent.data;
+                    if (nativeEvent.inputType) syntheticEvent.inputType = nativeEvent.inputType;
+                    if (nativeEvent.clientX !== undefined) {
+                        syntheticEvent.clientX = nativeEvent.clientX;
+                        syntheticEvent.clientY = nativeEvent.clientY;
+                    }
+
+                    // Call matching React handlers
+                    var reactProps = nativeEvents[nativeType];
+                    for (var j = 0; j < reactProps.length; j++) {
+                        var handler = handlers[reactProps[j]];
+                        if (typeof handler === 'function') {
+                            try { handler(syntheticEvent); } catch (e) {
+                                if (typeof console !== 'undefined') {
+                                    console.error('[react-bridge] ' + reactProps[j] + ' error: ' + e.message);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Stop at document (don't go to window)
+                if (el === document) break;
+                el = el.parentNode;
+            }
+        }, false); // bubble phase
+    });
+})();
