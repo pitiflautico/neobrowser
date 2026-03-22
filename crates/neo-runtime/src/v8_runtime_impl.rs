@@ -251,6 +251,39 @@ impl JsRuntimeTrait for DenoRuntime {
         self.tracker.pending()
     }
 
+    fn eval_promise(&mut self, code: &str, timeout_ms: u64) -> Result<String, RuntimeError> {
+        // Execute the code — which should return a Promise
+        let global = self.runtime
+            .execute_script("<eval-promise>", code.to_string())
+            .map_err(|e| RuntimeError::Eval(first_line(&e.to_string())))?;
+
+        // Drive the event loop to resolve the promise using deno_core's
+        // with_event_loop_promise / resolve_value. This is the correct way
+        // to wait for a JS promise — it polls the event loop alongside
+        // the promise, handling async ops, timers, and module evaluations.
+        let result = self.tokio_rt.block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(timeout_ms),
+                self.runtime.resolve_value(global),
+            )
+            .await
+        });
+
+        match result {
+            Ok(Ok(resolved)) => {
+                let scope = &mut self.runtime.handle_scope();
+                let local = deno_core::v8::Local::new(scope, resolved);
+                if let Some(s) = local.to_string(scope) {
+                    Ok(s.to_rust_string_lossy(scope))
+                } else {
+                    Ok("undefined".to_string())
+                }
+            }
+            Ok(Err(e)) => Err(RuntimeError::Eval(first_line(&e.to_string()))),
+            Err(_) => Err(RuntimeError::Timeout { timeout_ms, pending: 0 }),
+        }
+    }
+
     fn reset_budgets(&mut self) {
         self.timer_budget.reset();
         self.tracker.reset();

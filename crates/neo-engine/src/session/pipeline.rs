@@ -342,37 +342,21 @@ impl NeoSession {
                 format!("{}{}", base.trim_end_matches('/'), path)
             };
 
-            neo_trace!("[SETTLE] loading entry module: {full_url}");
-            // Check if module was already evaluated during settle (dynamic import chain)
-            let _already_loaded = rt.eval(&format!(
-                "typeof __neo_module_loaded_{} !== 'undefined' ? 'yes' : 'no'",
-                full_url.len() // cheap hash
-            )).unwrap_or_default().contains("yes");
-
-            // Try import() from JS instead of load_module to avoid deno_core panic
-            // on already-evaluated modules
-            let _ = rt.execute(&format!(
-                "import('{}').then(function(m){{ globalThis.__neo_module_loaded_{} = true; }}).catch(function(){{}});",
-                full_url.replace('\'', "\\'"), full_url.len()
-            ));
-            let _ = rt.run_until_settled(5000);
-
-            match Ok::<(), crate::EngineError>(()) {
-                Ok(()) => {
-                    neo_trace!("[SETTLE] entry module loaded successfully");
-                    // Pump to let the app initialize
-                    let _ = rt.run_until_settled(3000);
-
-                    // Don't pump after entry module — React scheduler creates
-                    // tight loops that hang. The settle phase handles it.
-
+            neo_trace!("[SETTLE] loading entry module via eval_promise: {full_url}");
+            // Use eval_promise — drives event loop alongside the import() Promise.
+            // This is the CORRECT way per deno_core: resolve_value + with_event_loop_promise
+            // polls both the promise and the event loop together, handling async ops,
+            // module evaluations, and timer callbacks properly.
+            let import_code = format!("import('{}')", full_url.replace('\'', "\\'"));
+            match rt.eval_promise(&import_code, 5000) {
+                Ok(result) => {
+                    neo_trace!("[SETTLE] entry module resolved: {}", &result[..result.len().min(80)]);
                     let new_nodes = rt.eval("document.querySelectorAll('*').length")
                         .unwrap_or_default().trim().parse::<usize>().unwrap_or(0);
-                    neo_trace!("[SETTLE] DOM after entry module + flush: {} nodes (was {})", new_nodes, last_node_count);
-                    let _ = new_nodes;
+                    neo_trace!("[SETTLE] DOM after entry module: {} nodes (was {})", new_nodes, last_node_count);
                 }
                 Err(e) => {
-                    neo_trace!("[SETTLE] entry module load failed: {e}");
+                    neo_trace!("[SETTLE] entry module failed: {e}");
                 }
             }
         }

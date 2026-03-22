@@ -109,6 +109,14 @@ pub trait JsRuntime: Send {
     /// so React scheduler gets fresh budget for hydration).
     fn reset_budgets(&mut self) {}
 
+    /// Execute JS that returns a Promise, then drive the event loop until
+    /// the promise resolves. Unlike eval() which is fire-and-forget for
+    /// async code, this actually WAITS for the promise to complete.
+    /// Uses deno_core's with_event_loop_promise internally.
+    fn eval_promise(&mut self, _code: &str, _timeout_ms: u64) -> Result<String, RuntimeError> {
+        Err(RuntimeError::Eval("eval_promise not implemented".into()))
+    }
+
     /// Inject HTML into the DOM (parse and set as document).
     /// Also loads bootstrap.js which sets up browser globals (fetch, timers, etc.).
     fn set_document_html(&mut self, html: &str, url: &str) -> Result<(), RuntimeError>;
