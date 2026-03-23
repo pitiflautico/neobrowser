@@ -261,27 +261,55 @@ class NeoResponse {
             neo_trace('[FETCH] response.body accessed for ' + this._url);
             const sseEvents = this._sseEvents;
             if (sseEvents && sseEvents.length > 0) {
-                // SSE: deliver each event as a separate chunk for streaming consumers.
-                // ChatGPT's code does fetch().then(r => r.body.getReader()) and reads
-                // chunks incrementally, expecting each SSE event as a separate chunk.
+                // SSE: deliver each event as a SEPARATE chunk with microtask yields.
+                // CRITICAL: Real browsers deliver SSE chunks with network delays.
+                // React Router + turbo-stream processes each chunk incrementally,
+                // extracting conversation IDs and triggering navigate() from early chunks.
+                // Delivering all at once kills this pipeline — navigate() never fires.
                 const encoder = new TextEncoder();
-                neo_trace('[FETCH] SSE body: delivering ' + sseEvents.length + ' events as chunks');
+                const events = sseEvents.slice();
+                neo_trace('[FETCH] SSE body: delivering ' + events.length + ' events incrementally');
                 this._stream = new ReadableStream({
-                    start(controller) {
-                        for (const evt of sseEvents) {
-                            controller.enqueue(encoder.encode('data: ' + evt + '\n\n'));
+                    async pull(controller) {
+                        if (events.length === 0) {
+                            controller.close();
+                            return;
                         }
-                        controller.close();
+                        const evt = events.shift();
+                        controller.enqueue(encoder.encode('data: ' + evt + '\n\n'));
+                        // Yield to event loop between chunks — lets React process each one
+                        await new Promise(r => setTimeout(r, 1));
                     }
                 });
             } else {
+                // Non-SSE: also deliver incrementally if body is large
                 const bytes = this._body;
-                this._stream = new ReadableStream({
-                    start(controller) {
-                        if (bytes && bytes.length > 0) controller.enqueue(bytes);
-                        controller.close();
-                    }
-                });
+                if (bytes && bytes.length > 65536) {
+                    // Large body: deliver in 32KB chunks with yields
+                    let offset = 0;
+                    const chunkSize = 32768;
+                    this._stream = new ReadableStream({
+                        async pull(controller) {
+                            if (offset >= bytes.length) {
+                                controller.close();
+                                return;
+                            }
+                            const end = Math.min(offset + chunkSize, bytes.length);
+                            controller.enqueue(bytes.slice(offset, end));
+                            offset = end;
+                            if (offset < bytes.length) {
+                                await new Promise(r => setTimeout(r, 0));
+                            }
+                        }
+                    });
+                } else {
+                    this._stream = new ReadableStream({
+                        start(controller) {
+                            if (bytes && bytes.length > 0) controller.enqueue(bytes);
+                            controller.close();
+                        }
+                    });
+                }
             }
         }
         return this._stream;
