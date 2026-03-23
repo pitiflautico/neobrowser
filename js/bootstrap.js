@@ -300,6 +300,7 @@ class NeoResponse {
 
     async json() {
         const t = await this.text();
+        if (!t || !t.trim()) return null;
         return JSON.parse(t);
     }
 
