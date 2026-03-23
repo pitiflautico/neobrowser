@@ -53,7 +53,8 @@ globalThis.encodeURIComponent = function(v) {
 
         sc.enqueue = function(data) {
             _chunks.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
-            if (origEnqueue) try { origEnqueue(data); } catch(e) {}
+            // Do NOT forward to origEnqueue — the original stream's reader hangs
+            // in our polyfill, and we decode separately.
         };
 
         sc.close = function() {
@@ -73,9 +74,10 @@ globalThis.encodeURIComponent = function(v) {
                     // inline <script> tags in deno_core, so state will be set before
                     // the React Router hydration bundle runs.
                     turboStream.decode(stream).then(function(result) {
+                        console.error('[turbo-stream] decode result type: ' + typeof result + ', isArray: ' + Array.isArray(result));
+                        console.error('[turbo-stream] raw first 200: ' + raw.substring(0, 200));
                         if (result !== undefined && result !== null) {
                             ctx.state = result;
-                            console.log('[turbo-stream] decoded SSR state, keys: ' + Object.keys(result).join(','));
                         }
                     }).catch(function(e) {
                         console.error('[turbo-stream] decode promise rejected: ' + e.message);
@@ -84,7 +86,8 @@ globalThis.encodeURIComponent = function(v) {
                     console.error('[turbo-stream] decode threw: ' + e.message);
                 }
             }
-            if (origClose) try { origClose(); } catch(e) {}
+            // Do NOT call origClose — we suppress the original stream entirely
+            // to avoid racing with React Router's own decode on the broken stream.
         };
     }
 
@@ -101,17 +104,23 @@ globalThis.encodeURIComponent = function(v) {
         // streamController doesn't exist yet — trap its assignment.
         ctx.__neo_sc_trapped = true;
         var _sc = undefined;
-        Object.defineProperty(ctx, 'streamController', {
-            get: function() { return _sc; },
-            set: function(val) {
-                _sc = val;
-                if (val && !ctx.__neo_patched) {
-                    ctx.__neo_patched = true;
-                    doPatchController(val, ctx);
-                }
-            },
-            configurable: true, enumerable: true,
-        });
+        try {
+            Object.defineProperty(ctx, 'streamController', {
+                get: function() { return _sc; },
+                set: function(val) {
+                    _sc = val;
+                    if (val && !ctx.__neo_patched) {
+                        ctx.__neo_patched = true;
+                        try { doPatchController(val, ctx); } catch(e) {
+                            console.error('[turbo-stream] doPatchController threw: ' + e.message);
+                        }
+                    }
+                },
+                configurable: true, enumerable: true,
+            });
+        } catch(e) {
+            console.error('[turbo-stream] defineProperty on ctx.streamController failed: ' + e.message);
+        }
     }
 
     // Patch if already exists

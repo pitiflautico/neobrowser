@@ -585,22 +585,49 @@ globalThis.fetch = async function(input, init) {
     __pendingFetches++;
     __neo_markActivity('fetch-start');
 
+    // Decide: use streaming (op_fetch_start) for SSE, or complete (op_fetch) for normal requests.
+    // Streaming keeps the response open as pending async work which prevents the event loop
+    // from settling. Only use streaming when the consumer will actually read incrementally.
+    const wantsStream = (hdrs['Accept'] || '').includes('text/event-stream');
+
     try {
-        const resultJson = await ops.op_fetch_start(fullUrl, method.toUpperCase(), body || '', headersJson);
-        const result = JSON.parse(resultJson);
-
-        __pendingFetches--;
-        __neo_markActivity('fetch-end');
-        fetchEntry.endMs = Date.now();
-        fetchEntry.status = result.status;
-        console.log('[FETCH-TRACE] #' + fetchId + ' END status=' + result.status + ' stream=' + result.stream_id + ' (' + (fetchEntry.endMs - fetchEntry.startMs) + 'ms)');
-        if (typeof __neo_traceStep === 'function') __neo_traceStep('fetch_end', {url: fullUrl, status: result.status});
-
-        const resp = new NeoStreamResponse(result.stream_id, {
-            status: result.status,
-            headers: result.headers || {},
-            url: result.url || fullUrl,
-        });
+        let resp;
+        if (wantsStream && typeof ops.op_fetch_start === 'function') {
+            // Streaming path: returns headers immediately, body read lazily
+            const resultJson = await ops.op_fetch_start(fullUrl, method.toUpperCase(), body || '', headersJson);
+            const result = JSON.parse(resultJson);
+            __pendingFetches--;
+            __neo_markActivity('fetch-end');
+            fetchEntry.endMs = Date.now();
+            fetchEntry.status = result.status;
+            console.log('[FETCH-TRACE] #' + fetchId + ' END status=' + result.status + ' stream=' + result.stream_id + ' (' + (fetchEntry.endMs - fetchEntry.startMs) + 'ms)');
+            if (typeof __neo_traceStep === 'function') __neo_traceStep('fetch_end', {url: fullUrl, status: result.status});
+            resp = new NeoStreamResponse(result.stream_id, {
+                status: result.status,
+                headers: result.headers || {},
+                url: result.url || fullUrl,
+            });
+        } else {
+            // Complete path: reads entire body, returns NeoResponse (old behavior)
+            const resultJson = await ops.op_fetch(fullUrl, method.toUpperCase(), body || '', headersJson);
+            const result = JSON.parse(resultJson);
+            __pendingFetches--;
+            __neo_markActivity('fetch-end');
+            fetchEntry.endMs = Date.now();
+            fetchEntry.status = result.status;
+            console.log('[FETCH-TRACE] #' + fetchId + ' END status=' + result.status + ' (' + (fetchEntry.endMs - fetchEntry.startMs) + 'ms)');
+            if (typeof __neo_traceStep === 'function') __neo_traceStep('fetch_end', {url: fullUrl, status: result.status});
+            const bodyText = result.body || '';
+            const bodyBytes = new TextEncoder().encode(bodyText);
+            resp = new NeoResponse(bodyBytes, {
+                status: result.status,
+                statusText: result.statusText || (result.status === 200 ? 'OK' : String(result.status)),
+                headers: result.headers || {},
+                url: result.url || fullUrl,
+                _text: bodyText,
+                _sseEvents: result.sse_events || null,
+            });
+        }
 
         // Wrap body consumption methods for tracing
         const origText = resp.text.bind(resp);
