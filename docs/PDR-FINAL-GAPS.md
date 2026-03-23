@@ -1,314 +1,303 @@
-# PDR — NeoRender V2: Lo que falta (final, sin excusas)
+# PDR — NeoRender V2: Gaps restantes (v2, corregido)
 
-## Filosofía
+## Orden de ejecución
 
-No necesitamos Chrome real para casi nada. Lo que falta es ingeniería.
-Anti-bot/fingerprint es la única frontera real que requiere Chrome.
-Todo lo demás se implementa.
-
----
-
-## Lo que YA funciona (no tocar)
-
-- 10/10 sites renderizan (332→1334 WOM nodes)
-- React 18 hydration (329/354 fibers)
-- Happy-dom DOM completo (className, classList, querySelector, MutationObserver)
-- Event loop: Promise, queueMicrotask, setTimeout, setInterval, MessageChannel, rAF, rIC
-- Fetch async + cookies auto-injection desde SQLite + SSE detection
-- History/location/pushState/replaceState/back/forward/popstate/hashchange
-- document.defaultView === window
-- find_element multi-strategy + fill_form React-compatible
-- ProseMirror/Tiptap/Lexical/Slate/CodeMirror/Quill detection + input bridge
-- 415+ tests, 0 warnings
+### Sesión 1-2: G2 — Streaming fetch real
+### Sesión 3-4: G1 — crypto.subtle con CryptoKey real
+### Sesión 5: G3 — Instrumentación causal + microtask drain
+### Sesión 5: G5 — Layout plausible + G4 stubs triviales
+### Sesión 6+: G6 — Selection/Range (solo si bridge no cubre)
 
 ---
 
-## G1 — crypto.subtle real
+## G2 — Streaming fetch body (PRIMERO)
 
-**Status**: stubs (generateKey retorna {}, sign retorna ArrayBuffer vacío)
-**Bloquea**: ChatGPT Turnstile, cualquier site con challenge criptográfico, WebAuthn flows
-**Impacto**: P0 absoluta
+**Status**: op_fetch lee body entero antes de retornar
+**Bloquea**: SPA navigation, turbo-stream, ChatGPT conversation rendering
+**Impacto**: Estructural — sin esto, pipelines modernos se rompen
 
-### Qué implementar
+### Diseño completo
 
-| Método | Necesario para | Complejidad |
-|---|---|---|
-| `digest(algo, data)` | PoW, hashing | ✅ YA FUNCIONA (SHA-256 real) |
-| `generateKey(algo, extractable, usages)` | Turnstile, WebCrypto flows | Media |
-| `importKey(format, key, algo, extractable, usages)` | JWT verify, HMAC | Media |
-| `exportKey(format, key)` | Token generation | Baja |
-| `sign(algo, key, data)` | HMAC-SHA256, ECDSA | Media |
-| `verify(algo, key, signature, data)` | Token verify | Media |
-| `encrypt/decrypt` | Raro en frontend | Baja |
-| `deriveBits/deriveKey` | PBKDF2, HKDF | Baja |
+#### Rust ops
 
-### Approach
-
-Usar `ring` crate (ya en el ecosistema Rust):
-```rust
-// Cargo.toml
-ring = "0.17"
-
-// ops.rs
-#[op2(async)]
-async fn op_crypto_sign(#[string] algo: String, #[buffer] key: &[u8], #[buffer] data: &[u8]) -> Result<Vec<u8>, AnyError> {
-    match algo.as_str() {
-        "HMAC-SHA256" => {
-            let k = hmac::Key::new(hmac::HMAC_SHA256, key);
-            Ok(hmac::sign(&k, data).as_ref().to_vec())
-        }
-        _ => Err(...)
-    }
-}
+```
+op_fetch_start(url, method, body, headers) → { stream_id, status, headers }
+op_fetch_read_chunk(stream_id) → { done: bool, data: Option<Vec<u8>>, error: Option<String> }
+op_fetch_close(stream_id) → void
 ```
 
-En JS, `crypto.subtle.sign` llama `ops.op_crypto_sign(algo, key, data)` (async op → Promise).
+#### Invariantes
 
-### Ficheros
-- `crates/neo-runtime/Cargo.toml` — añadir `ring`
-- `crates/neo-runtime/src/ops.rs` — ops crypto
-- `crates/neo-runtime/src/v8.rs` — registrar ops
-- `js/bootstrap.js` — conectar crypto.subtle a ops
+- Un `stream_id` solo puede tener un reader (no shared)
+- `op_fetch_close` libera el response en Rust (cleanup)
+- Abort: si `AbortSignal` fires, el stream se cierra con error
+- EOF: `read_chunk` retorna `{done: true}` y auto-close
+- Error: `read_chunk` retorna `{error: "..."}` y auto-close
+- Timeout: configurable por stream (default 60s total, 15s per-chunk)
+- Límite: max 20 streams abiertos simultáneamente
+- Non-streaming fallback: si Content-Length < 64KB, lee entero (fast path)
+- bodyUsed: tracked en JS (NeoResponse)
+- reader.cancel(): calls op_fetch_close
 
-### Estimado: 1 sesión
-### Test: ChatGPT sentinel completa → conversation POST se dispara
-
----
-
-## G2 — Streaming fetch body (incremental real)
-
-**Status**: op_fetch lee body entero antes de retornar. ReadableStream entrega chunks con yields pero DESPUÉS de que todo el body llegó.
-**Bloquea**: navigation post-streaming en SPAs (turbo-stream, React Router data), ChatGPT conversation rendering
-**Impacto**: P0
-
-### Qué implementar
-
-Separar fetch en 2 fases:
-1. `op_fetch_start(url, method, body, headers)` → retorna `{stream_id, status, headers}` inmediatamente
-2. `op_fetch_read_chunk(stream_id)` → retorna siguiente chunk o `{done: true}`
-
-El HTTP response se mantiene vivo en Rust (HashMap<u32, ActiveStream>). JS llama `read_chunk` en un loop async.
-
-### Approach
+#### Rust state
 
 ```rust
 struct ActiveStream {
     response: rquest::Response,
-    id: u32,
+    created_at: Instant,
+    total_bytes: usize,
 }
 
-static STREAMS: Lazy<Mutex<HashMap<u32, ActiveStream>>> = ...;
-
-#[op2(async)]
-async fn op_fetch_start(...) -> String {
-    let resp = client.get(url).send().await?;
-    let id = next_stream_id();
-    let status = resp.status();
-    let headers = resp.headers().clone();
-    STREAMS.lock().insert(id, ActiveStream { response: resp, id });
-    json!({ "stream_id": id, "status": status, "headers": headers })
-}
-
-#[op2(async)]
-async fn op_fetch_read_chunk(#[smi] stream_id: u32) -> Option<Vec<u8>> {
-    let streams = STREAMS.lock();
-    let stream = streams.get_mut(&stream_id)?;
-    stream.response.chunk().await  // returns next chunk or None
+// In OpState, not global static
+struct StreamStore {
+    streams: HashMap<u32, ActiveStream>,
+    next_id: u32,
 }
 ```
 
-En JS:
+#### JS integration
+
 ```javascript
 globalThis.fetch = async function(input, init) {
+    // ... URL/headers/cookies prep (existing code) ...
     const result = JSON.parse(await ops.op_fetch_start(url, method, body, headers));
-    return new NeoResponse(result.stream_id, result.status, result.headers);
+    return new NeoResponse(result.stream_id, result.status, result.headers, url);
 };
 
-// NeoResponse.body getter:
-get body() {
-    const streamId = this._streamId;
-    return new ReadableStream({
-        async pull(controller) {
-            const chunk = await ops.op_fetch_read_chunk(streamId);
-            if (chunk === null) { controller.close(); return; }
-            controller.enqueue(new Uint8Array(chunk));
+class NeoResponse {
+    constructor(streamId, status, headers, url) {
+        this._streamId = streamId;
+        this.status = status;
+        this.headers = new Headers(headers);
+        this._url = url;
+        this._bodyUsed = false;
+        this._reader = null;
+    }
+
+    get body() {
+        if (!this._stream) {
+            const sid = this._streamId;
+            this._stream = new ReadableStream({
+                async pull(controller) {
+                    const chunk = JSON.parse(await ops.op_fetch_read_chunk(sid));
+                    if (chunk.done) { controller.close(); return; }
+                    if (chunk.error) { controller.error(new Error(chunk.error)); return; }
+                    controller.enqueue(new Uint8Array(chunk.data));
+                }
+            });
         }
-    });
+        return this._stream;
+    }
+
+    async text() {
+        this._bodyUsed = true;
+        const reader = this.body.getReader();
+        const chunks = [];
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+        }
+        return new TextDecoder().decode(concat(chunks));
+    }
+
+    async json() {
+        const t = await this.text();
+        return t ? JSON.parse(t) : null;
+    }
+
+    clone() { /* needs stream tee or re-fetch */ }
 }
 ```
 
 ### Ficheros
-- `crates/neo-runtime/src/ops.rs` — `op_fetch_start`, `op_fetch_read_chunk`, `op_fetch_close`
-- `js/bootstrap.js` — NeoResponse con streaming body
+- `crates/neo-runtime/src/ops.rs` — `op_fetch_start`, `op_fetch_read_chunk`, `op_fetch_close`, `StreamStore`
+- `crates/neo-http/src/client.rs` — `request_streaming()` que retorna headers + body stream
+- `js/bootstrap.js` — NeoResponse rewrite completo
 
-### Complejidad: Alta
 ### Estimado: 2 sesiones
-### Test: `fetch(url).then(r => r.body.getReader().read())` retorna primer chunk antes de body completo
+### Gate: primer chunk visible antes de fin de body en 3 runs consecutivos
 
 ---
 
-## G3 — Pipeline post-interacción robusto
+## G1 — crypto.subtle con CryptoKey real
 
-**Status**: React re-renders post-click pero navigation a nueva ruta no siempre ocurre
-**Bloquea**: SPA transitions complejas (ChatGPT → /c/<id>, Mercadona → categorías)
-**Impacto**: P0/P1
+**Status**: digest real (SHA-256), todo lo demás stubs
+**Bloquea**: ChatGPT Turnstile, WebCrypto flows, JWT verify
+**Impacto**: P0
 
-### Qué implementar
+### Subdivisión
 
-No es una API nueva — es coherencia entre:
-- fetch completion → store update → effect fires → navigate() → URL change → view mount
+#### G1a — Auditoría de algoritmos usados por ChatGPT
 
-### Items concretos
-
-1. **history.state getter**: verificar que `window.history.state` retorna lo que se pasó a pushState
-2. **React Router createBrowserHistory**: verificar que funciona con nuestro history shim (test directo)
-3. **Side-effect timing**: después de un fetch resolve, los microtasks deben drenar ANTES del siguiente macrotask check
-4. **Navigation detection**: log cuando navigate/pushState se llama para debugging
-
-### Ficheros
-- `js/browser_shim.js` — history.state getter, navigate logging
-- `crates/neo-runtime/src/v8_runtime_impl.rs` — microtask drain guarantee
-
-### Complejidad: Media
-### Estimado: 1 sesión
-### Test: Mercadona tienda: type CP → Continuar → categories visible
-
----
-
-## G4 — PerformanceObserver + stubs menores
-
-**Status**: no existe
-**Bloquea**: crashes de telemetría en muchas apps
-**Impacto**: P2
+Instrumentar: qué llama `crypto.subtle.*` durante ChatGPT load + send:
+- Algoritmo (HMAC-SHA256, ECDSA-P256, AES-GCM, etc.)
+- Formato de key (raw, jwk, spki, pkcs8)
+- Usages (sign, verify, encrypt, decrypt)
 
 ```javascript
-globalThis.PerformanceObserver = class PerformanceObserver {
-    constructor(cb) {}
-    observe() {}
-    disconnect() {}
-    takeRecords() { return []; }
-    static supportedEntryTypes = [];
-};
-
-globalThis.Worker = class Worker extends EventTarget {
-    constructor() { super(); }
-    postMessage() {}
-    terminate() {}
-};
+// Trap temporal
+const _orig = crypto.subtle;
+crypto.subtle = new Proxy(_orig, {
+    get(target, prop) {
+        return function(...args) {
+            console.error('[CRYPTO] ' + prop + ' algo=' + JSON.stringify(args[0]) + ' format=' + args[1]?.substring?.(0,20));
+            return target[prop]?.apply(target, args);
+        };
+    }
+});
 ```
 
-### Estimado: 10 minutos
-### Test: `new PerformanceObserver(() => {})` no crashea
+#### G1b — CryptoKey model
+
+```javascript
+class NeoCryptoKey {
+    constructor(type, extractable, algorithm, usages, _raw) {
+        this.type = type;           // 'secret' | 'public' | 'private'
+        this.extractable = extractable;
+        this.algorithm = algorithm;  // { name: 'HMAC', hash: 'SHA-256' }
+        this.usages = usages;        // ['sign', 'verify']
+        this._raw = _raw;           // Uint8Array internal key material
+    }
+}
+```
+
+#### G1c — Operaciones via `ring` crate
+
+| Op | Algoritmo mínimo | ring API |
+|---|---|---|
+| generateKey | HMAC-SHA256, ECDSA-P256 | `hmac::Key::generate`, `agreement::EphemeralPrivateKey` |
+| importKey | raw, jwk | Key parsing |
+| exportKey | raw, jwk | Key serialization |
+| sign | HMAC-SHA256 | `hmac::sign` |
+| verify | HMAC-SHA256 | `hmac::verify` |
+| digest | SHA-256, SHA-384, SHA-512 | Ya funciona |
+
+#### G1d — Tests de compat JS
+
+No solo tests Rust. Tests que ejecutan en el engine:
+```javascript
+const key = await crypto.subtle.generateKey({name: 'HMAC', hash: 'SHA-256'}, true, ['sign','verify']);
+const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('test'));
+const ok = await crypto.subtle.verify('HMAC', key, sig, new TextEncoder().encode('test'));
+assert(ok === true);
+```
+
+### Ficheros
+- `crates/neo-runtime/Cargo.toml` — `ring = "0.17"`
+- `crates/neo-runtime/src/ops.rs` — crypto ops
+- `js/bootstrap.js` — crypto.subtle wired to ops con CryptoKey
+
+### Estimado: 2 sesiones
+### Gate: ChatGPT sentinel/chat-requirements completa consistentemente (3 runs)
+
+---
+
+## G3 — Instrumentación causal + microtask drain
+
+**Status**: sabemos que navigate() no se llama pero no POR QUÉ
+**Bloquea**: debugging de SPA transitions
+**Impacto**: P0/P1
+
+### G3a — Instrumentación causal post-interacción
+
+Logging automático de cada paso del pipeline:
+
+```javascript
+globalThis.__neo_interaction_trace = [];
+function traceStep(step, data) {
+    __neo_interaction_trace.push({ step, ts: Date.now(), data });
+}
+```
+
+Instrumentar:
+- Event dispatched (click, submit, input) → `traceStep('event', {type, target})`
+- Fetch started → `traceStep('fetch_start', {url, method})`
+- Fetch resolved → `traceStep('fetch_end', {url, status})`
+- history.pushState called → `traceStep('pushState', {url})`
+- DOM mutation → `traceStep('mutation', {count})`
+- Timer fired → `traceStep('timer', {source})`
+
+Query: `__neo_interaction_trace` after interaction to see what happened.
+
+### G3b — Microtask drain guarantee
+
+After fetch resolve, ensure microtask queue drains BEFORE next macrotask:
+- Verify `queueMicrotask` fires before `setTimeout(0)`
+- Verify Promise.then() chains complete in same microtask checkpoint
+- Test: `fetch().then(setState).then(navigate)` completes before next pump
+
+### G3c — Route transition assertions
+
+Tests que verifican:
+```
+click(button) → wait → location.pathname changed
+```
+En 3 corridas consecutivas.
+
+### Estimado: 1 sesión
+### Gate: trace shows complete pipeline OR shows WHERE it breaks
 
 ---
 
 ## G5 — Layout con valores plausibles
 
-**Status**: getBoundingClientRect retorna 0s, offsetWidth retorna 0 o undefined
-**Bloquea**: responsive logic, virtualized lists, lazy loading, menús dropdown
-**Impacto**: P1
+**Status**: getBoundingClientRect retorna 0s
+**Bloquea**: responsive logic, virtualized lists, visibility checks
 
-### Qué implementar
-
-Heuristic sizing sin layout engine real:
+### Approach: heuristic sizing
 
 ```javascript
-// En browser_shim.js o bootstrap.js
-const _viewportW = 1920, _viewportH = 1080;
+const VP_W = 1920, VP_H = 1080;
+const BLOCK_TAGS = new Set(['div','p','section','article','main','header','footer','nav','form','ul','ol','li','h1','h2','h3','h4','h5','h6','table','tr','body']);
 
-// Block elements: full viewport width, height based on content
-// Inline elements: width based on text length * avg char width
 Element.prototype.getBoundingClientRect = function() {
-    const tag = this.tagName?.toLowerCase();
-    const isBlock = ['div','p','section','article','main','header','footer','nav','form','ul','ol','li','h1','h2','h3','h4','h5','h6','table','tr'].includes(tag);
+    const isBlock = BLOCK_TAGS.has(this.tagName?.toLowerCase());
     const textLen = this.textContent?.length || 0;
-    const w = isBlock ? _viewportW : Math.min(textLen * 8, _viewportW);
-    const h = isBlock ? Math.max(20, Math.min(textLen * 0.5, 500)) : 20;
+    const w = isBlock ? VP_W : Math.min(textLen * 8, VP_W);
+    const h = isBlock ? Math.max(20, Math.min(textLen * 0.3, 500)) : 20;
     return { top: 0, left: 0, right: w, bottom: h, width: w, height: h, x: 0, y: 0 };
 };
-
-// offsetWidth/Height
-Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { get() { return this.getBoundingClientRect().width; } });
-Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { get() { return this.getBoundingClientRect().height; } });
-Object.defineProperty(HTMLElement.prototype, 'clientWidth', { get() { return this.getBoundingClientRect().width; } });
-Object.defineProperty(HTMLElement.prototype, 'clientHeight', { get() { return this.getBoundingClientRect().height; } });
 ```
 
-### Ficheros: `js/browser_shim.js`
-### Complejidad: Media
-### Estimado: 1 sesión
-### Test: `document.body.offsetWidth > 0`
+Plus: offsetWidth/Height, clientWidth/Height, scrollHeight via getters.
+
+### Estimado: 1 sesión (junto con G4 stubs)
 
 ---
 
-## G6 — Selection/Range mejorados
+## G4 — Stubs triviales (con G5)
 
-**Status**: APIs existen (happy-dom), sin estado real de caret
-**Bloquea**: ProseMirror/Lexical editing nativo (pero tenemos bridge)
-**Impacto**: P1 (P2 si bridge cubre los casos)
-
-### Approach
-
-NO intentar implementar Selection/Range completo. En su lugar:
-
-1. **Virtual caret**: tracking de posición como (node, offset)
-2. **getSelection()** retorna el virtual caret
-3. **execCommand('insertText')** usa el virtual caret para insertar
-4. **Bridge por editor sigue siendo la primera opción** (ProseMirror via view.dispatch, etc.)
-
-### Complejidad: Alta para implementación completa, media para virtual caret
-### Estimado: 2 sesiones para virtual caret, indefinido para Selection/Range real
-
----
-
-## Resumen ejecutivo
-
-| # | Gap | Coste | Impacto | Prioridad |
-|---|---|---|---|---|
-| G1 | crypto.subtle real | 1 sesión | Desbloquea anti-bot flows | **P0** |
-| G2 | Streaming fetch body | 2 sesiones | Desbloquea SPA navigation | **P0** |
-| G3 | Pipeline post-interacción | 1 sesión | Robustez routing | **P0/P1** |
-| G4 | PerformanceObserver + stubs | 10 min | Evita crashes | **P2** |
-| G5 | Layout plausible | 1 sesión | Responsive logic | **P1** |
-| G6 | Selection/Range virtual | 2 sesiones | Rich text | **P1** |
-
-### Total P0: 4 sesiones
-### Total P0+P1: 8 sesiones
-### Total todo: 8.5 sesiones
-
----
-
-## Lo que NO implementamos (y por qué)
-
-| Item | Razón |
-|---|---|
-| Canvas/WebGL/WebRTC | No navegamos, no renderizamos gráficos |
-| Audio/Video real | No consumimos multimedia |
-| Layout engine real | Coste/beneficio desproporcionado. Stubs plausibles cubren 90% |
-| IME composition real | Requiere input method del OS. Bridge por editor cubre |
-| Fingerprint perfecto | Anti-bot evoluciona. Chrome proxy cuando sea necesario |
-| Service Worker real | Stub suficiente. Apps sin SW funcionan |
-
----
-
-## Orden de ejecución
-
-```
-Sesión 1: G1 (crypto.subtle) + G4 (stubs triviales)
-Sesión 2: G2 parte 1 (op_fetch_start + op_fetch_read_chunk en Rust)
-Sesión 3: G2 parte 2 (JS ReadableStream integration + tests)
-Sesión 4: G3 (pipeline post-interacción) + G5 (layout stubs)
-Sesión 5: G6 (Selection/Range virtual) + test battery completa
+```javascript
+globalThis.PerformanceObserver = class { constructor(){} observe(){} disconnect(){} takeRecords(){return []} static supportedEntryTypes=[] };
+globalThis.Worker = class extends EventTarget { constructor(){super()} postMessage(){} terminate(){} };
 ```
 
-### Gate después de sesión 1:
-ChatGPT sentinel completa → conversation POST se dispara
+### Estimado: 10 minutos
 
-### Gate después de sesión 3:
-`fetch(sse_url).then(r => r.body.getReader())` entrega chunks incrementalmente
+---
 
-### Gate después de sesión 4:
-Mercadona tienda: CP → submit → categories visible
+## G6 — Selection/Range virtual (P2)
 
-### Gate final:
-10/10 sites interactivos + ChatGPT PONG + DuckDuckGo search
+Solo si el bridge por editor no cubre.
+Actualmente tenemos bridge para ProseMirror, Lexical, Slate, CodeMirror, Quill.
+
+Si se necesita: virtual caret (node, offset) con getSelection/setSelection tracking.
+
+### Estimado: 2 sesiones
+### Prioridad: P2
+
+---
+
+## Gates corregidos
+
+| Gate | Criterio | Cuándo |
+|---|---|---|
+| Gate 1 | `fetch(sse_url).then(r => r.body.getReader().read())` retorna primer chunk antes de EOF | Fin sesión 2 |
+| Gate 2 | ChatGPT `sentinel/chat-requirements` completa en 3 runs consecutivos | Fin sesión 4 |
+| Gate 3 | Click/submit produce navigate O mount nueva vista en 3 corridas | Fin sesión 5 |
+| Gate final | ChatGPT send → POST dispatched, Mercadona CP → categories, DDG search → results. 3 repeticiones | Fin sesión 5-6 |
+
+---
+
+## Total: 5-6 sesiones para P0+P1
