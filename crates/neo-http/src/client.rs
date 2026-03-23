@@ -29,7 +29,7 @@ impl RquestClient {
             .redirect(rquest::redirect::Policy::limited(10))
             .timeout(timeout)
             .connect_timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(0) // disable connection reuse — each request opens fresh connection
+            // Default pool settings — let rquest manage HTTP/2 multiplexing
             .build()
             .map_err(|e| HttpError::Network(e.to_string()))?;
         Ok(Self {
