@@ -245,7 +245,7 @@ if (typeof document !== 'undefined' && !document.startViewTransition) {
 // ═══════════════════════════════════════════════════════════════
 
 globalThis.navigator = __hdWindow.navigator || {
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.6045.105 Safari/537.36',
     language: 'en-US', languages: ['en-US','en','es'], platform: 'MacIntel',
     cookieEnabled: true, onLine: true, vendor: 'Google Inc.',
     maxTouchPoints: 0, hardwareConcurrency: 8,
@@ -258,11 +258,11 @@ globalThis.navigator = __hdWindow.navigator || {
 // Must match the TLS fingerprint emulation (wreq Chrome 139).
 try {
     Object.defineProperty(globalThis.navigator, 'userAgent', {
-        value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+        value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.6045.105 Safari/537.36',
         writable: false, configurable: true
     });
     Object.defineProperty(globalThis.navigator, 'appVersion', {
-        value: '5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+        value: '5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.6045.105 Safari/537.36',
         writable: false, configurable: true
     });
     Object.defineProperty(globalThis.navigator, 'vendor', {
@@ -615,7 +615,18 @@ globalThis.fetch = async function(input, init) {
     const cookies = __getCookiesForUrl(fullUrl);
     if (cookies) hdrs['Cookie'] = cookies;
 
-    // Merge user headers (from init or Request object)
+    // Chrome always sends Origin + Referer on same-origin POST/PUT/PATCH.
+    // Missing these is a strong bot signal for Cloudflare.
+    const upperMethod = method.toUpperCase();
+    if (upperMethod === 'POST' || upperMethod === 'PUT' || upperMethod === 'PATCH') {
+        try {
+            const u = new URL(fullUrl);
+            hdrs['Origin'] = u.origin;
+            hdrs['Referer'] = location.href || u.origin + '/';
+        } catch(e) {}
+    }
+
+    // Merge user headers (from init or Request object) — user headers override auto-injected
     const headerSrc = init?.headers || (input instanceof Request ? input.headers : null);
     if (headerSrc) {
         if (typeof headerSrc.forEach === 'function') { headerSrc.forEach((v, k) => { hdrs[k] = v; }); }

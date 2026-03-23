@@ -187,12 +187,13 @@ pub async fn op_fetch_start(
         .request(m, &url)
         .timeout(std::time::Duration::from_millis(timeout_ms as u64));
 
-    // Apply merged headers (classification defaults + request-specific).
-    let fetch_headers = neo_http::headers::fetch_headers();
-    for (k, v) in &fetch_headers {
-        builder = builder.header(k.as_str(), v.as_str());
-    }
+    // Merge headers: defaults + request-specific (override, not append).
+    let mut merged_hdrs: HashMap<String, String> =
+        neo_http::headers::fetch_headers().into_iter().collect();
     for (k, v) in &headers {
+        merged_hdrs.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &merged_hdrs {
         builder = builder.header(k.as_str(), v.as_str());
     }
     if let Some(b) = body_opt {
@@ -447,11 +448,14 @@ pub async fn op_fetch(
             .request(m, &url_clone)
             .timeout(std::time::Duration::from_millis(timeout_ms as u64));
 
-        let fetch_hdrs = neo_http::headers::fetch_headers();
-        for (k, v) in &fetch_hdrs {
-            builder = builder.header(k.as_str(), v.as_str());
-        }
+        // Merge headers: defaults first, request-specific override.
+        // Use HashMap to REPLACE (not append) — wreq's .header() appends.
+        let mut merged_hdrs: HashMap<String, String> =
+            neo_http::headers::fetch_headers().into_iter().collect();
         for (k, v) in &headers {
+            merged_hdrs.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &merged_hdrs {
             builder = builder.header(k.as_str(), v.as_str());
         }
         if let Some(b) = body_opt {
