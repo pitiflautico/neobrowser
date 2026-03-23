@@ -423,6 +423,32 @@ globalThis.__chatgpt_send = async function(message, model, conversationId, paren
     var sentinel = JSON.parse(sentinelRaw);
     if (!sentinel.ok) return sentinelRaw;
 
+    var turnTraceId = crypto.randomUUID();
+
+    // Step 1: Get conduit token from /f/conversation/prepare
+    // Chrome always calls this before sending a message.
+    var conduitToken = 'no-token';
+    try {
+        var prepResp = await (globalThis.__neo_fetch || fetch)('/backend-api/f/conversation/prepare', {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + sentinel.accessToken,
+                'Content-Type': 'application/json',
+                'OAI-Device-Id': sentinel.deviceId,
+                'OAI-Language': 'en-US',
+                'oai-client-build-number': '5488639',
+                'oai-client-version': 'prod-8557406a29d79ebb254825467becabab95614ef1',
+                'x-conduit-token': 'no-token',
+                'x-oai-turn-trace-id': turnTraceId,
+            },
+            body: JSON.stringify({
+                conversation_id: conversationId || undefined,
+            }),
+        });
+        var prepData = await prepResp.json();
+        conduitToken = prepData.conduit_token || prepData.token || 'no-token';
+    } catch(e) { /* non-fatal */ }
+
     var body = {
         action: 'next',
         messages: [{
@@ -462,19 +488,24 @@ globalThis.__chatgpt_send = async function(message, model, conversationId, paren
     };
     if (conversationId) body.conversation_id = conversationId;
 
+    // Headers matching Chrome real (captured via Request constructor interception)
     var headers = {
         'Authorization': 'Bearer ' + sentinel.accessToken,
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
         'OAI-Device-Id': sentinel.deviceId,
         'OAI-Language': 'en-US',
+        'oai-client-build-number': '5488639',
+        'oai-client-version': 'prod-8557406a29d79ebb254825467becabab95614ef1',
         'Openai-Sentinel-Chat-Requirements-Token': sentinel.prepareToken,
+        'x-conduit-token': conduitToken,
+        'x-oai-turn-trace-id': turnTraceId,
     };
     if (sentinel.powToken) headers['Openai-Sentinel-Proof-Token'] = sentinel.powToken;
     if (sentinel.turnstileToken) headers['Openai-Sentinel-Turnstile-Token'] = sentinel.turnstileToken;
 
-    // Chrome uses /f/conversation (not /conversation) — the /f/ prefix
-    // routes through a fingerprint-validating proxy.
+    // Chrome uses /f/conversation — the /f/ prefix routes through
+    // a fingerprint-validating proxy.
     var resp = await (globalThis.__neo_fetch || fetch)('/backend-api/f/conversation', {
         method: 'POST',
         headers: headers,
