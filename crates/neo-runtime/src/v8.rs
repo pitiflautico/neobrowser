@@ -35,6 +35,7 @@ deno_core::extension!(
         ops::op_cookie_get_for_url,
         ops::op_yield,
         ops::op_sleep_ms,
+        ops::op_pow_solve,
     ],
 );
 

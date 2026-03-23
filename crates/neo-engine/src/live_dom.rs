@@ -665,9 +665,96 @@ const DISPATCHER_JS: &str = r#"
     return { events: events, hint: hint };
   }
 
+  // ── Rich text editor detection & input bridge ─────────────────
+  function detectEditor(el) {
+    var node = el;
+    while (node) {
+      // ProseMirror / Tiptap
+      if (node.classList && node.classList.contains('ProseMirror') || node.pmViewDesc) {
+        var view = globalThis.__neo_pmView;
+        if (view && view.dispatch) return { type: 'prosemirror', view: view };
+      }
+      // Lexical
+      if (node.__lexicalEditor) {
+        return { type: 'lexical', editor: node.__lexicalEditor };
+      }
+      // Slate
+      if (node.dataset && node.dataset.slateEditor) {
+        return { type: 'slate', node: node };
+      }
+      // CodeMirror 6
+      if (node.cmView) {
+        return { type: 'codemirror', view: node.cmView.view };
+      }
+      // Quill
+      if (node.__quill) {
+        return { type: 'quill', editor: node.__quill };
+      }
+      // Generic contenteditable (topmost)
+      if (node.contentEditable === 'true' && (!node.parentElement || node.parentElement.contentEditable !== 'true')) {
+        return { type: 'contenteditable', node: node };
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function typeInEditor(editor, text) {
+    switch (editor.type) {
+      case 'prosemirror': {
+        var view = editor.view;
+        var tr = view.state.tr;
+        if (view.state.doc.textContent) {
+          tr.delete(0, view.state.doc.content.size);
+        }
+        tr.insertText(text);
+        view.dispatch(tr);
+        return true;
+      }
+      case 'lexical': {
+        var ed = editor.editor;
+        ed.update(function() {
+          var root = $getRoot();
+          root.clear();
+          var p = $createParagraphNode();
+          p.append($createTextNode(text));
+          root.append(p);
+        });
+        return true;
+      }
+      case 'codemirror': {
+        var cmv = editor.view;
+        cmv.dispatch({
+          changes: { from: 0, to: cmv.state.doc.length, insert: text }
+        });
+        return true;
+      }
+      case 'quill': {
+        editor.editor.setText(text);
+        return true;
+      }
+      case 'slate':
+      case 'contenteditable': {
+        var node = editor.node;
+        var p = node.querySelector('p') || node;
+        p.textContent = text;
+        node.dispatchEvent(new CompositionEvent('compositionend', {data: text, bubbles: true}));
+        node.dispatchEvent(new InputEvent('input', {data: text, inputType: 'insertText', bubbles: true}));
+        return true;
+      }
+    }
+    return false;
+  }
+
   function fireTypeText(el, text) {
     // Focus if not already focused
     if (document.activeElement !== el && el.focus) el.focus();
+
+    // Rich text editor detection — try editor-native input before standard path
+    var editorInfo = detectEditor(el);
+    if (editorInfo) {
+      if (typeInEditor(editorInfo, text)) return;
+    }
 
     // F3b: Select handling — set value + dispatch change instead of typing
     if (el.tagName === 'SELECT') {
@@ -1198,6 +1285,11 @@ const DISPATCHER_JS: &str = r#"
             // Interactable
             var inter = isVisible(el) && isEnabled(el);
 
+            // Detect rich text editor type
+            var edType = 'standard';
+            var edInfo = detectEditor(el);
+            if (edInfo) edType = edInfo.type;
+
             found.push({
               selector: usel,
               tag: tag,
@@ -1205,7 +1297,8 @@ const DISPATCHER_JS: &str = r#"
               label: label.substring(0, 120),
               element_type: etype,
               value: val,
-              interactable: inter
+              interactable: inter,
+              editorType: edType
             });
           }
 
