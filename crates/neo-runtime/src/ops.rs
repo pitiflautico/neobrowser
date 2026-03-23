@@ -9,12 +9,9 @@ use crate::scheduler::{FetchBudget, TaskTracker, TimerBudget, TimerState};
 /// No-op async op that resolves immediately.
 /// Used to force deno_core's event loop to do a full cycle (including
 /// microtask checkpoint) when there are no other pending ops.
-/// Chromium drains microtasks after every script execution; deno_core
-/// only drains during run_event_loop when there are pending ops.
 #[op2(async)]
 pub async fn op_microtask_tick() {
-    // Yield once to ensure we go through a full event loop cycle
-    tokio::task::yield_now().await;
+    // Resolves immediately — no tokio dependency
 }
 use deno_core::op2;
 use deno_core::OpState;

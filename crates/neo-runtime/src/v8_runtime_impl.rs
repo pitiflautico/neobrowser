@@ -250,23 +250,13 @@ impl JsRuntimeTrait for DenoRuntime {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let settle_start = Instant::now();
 
-        // V8 watchdog: terminate_execution after deadline.
-        let isolate_handle = self.runtime.v8_isolate().thread_safe_handle();
-        let watchdog_deadline = deadline;
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        let cancel_clone = cancel_flag.clone();
-        let watchdog = std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(50));
-                if cancel_clone.load(Ordering::Relaxed) {
-                    return;
-                }
-                if Instant::now() >= watchdog_deadline {
-                    isolate_handle.terminate_execution();
-                    return;
-                }
-            }
-        });
+        // NOTE: No V8 watchdog (terminate_execution). terminate_execution
+        // permanently breaks V8's kAuto microtask auto-drain, making all
+        // subsequent Promise.then() callbacks never execute. Confirmed via
+        // systematic testing: httpbin (no terminate) → drain works,
+        // ChatGPT (terminate fires) → drain permanently broken.
+        // Instead, we rely on tokio::time::timeout to bound each event loop
+        // poll iteration, and the hard deadline to exit the settle loop.
 
         // Quiescence parameters
         let min_settle_ms: u64 = 1500.min(timeout_ms * 2 / 3); // at most 2/3 of budget
@@ -366,29 +356,6 @@ impl JsRuntimeTrait for DenoRuntime {
             }
         });
 
-        // Signal watchdog to stop (prevents late termination if we finished early)
-        cancel_flag.store(true, Ordering::Relaxed);
-        let _ = watchdog.join();
-
-        // Cancel any pending termination so future eval/execute calls work.
-        self.runtime.v8_isolate().cancel_terminate_execution();
-
-        // Verify the runtime is usable after potential termination.
-        // If the watchdog fired, V8 may still have residual termination state.
-        match self
-            .runtime
-            .execute_script("<settle-recovery>", "void 0".to_string())
-        {
-            Ok(_) => {} // Runtime recovered successfully
-            Err(_) => {
-                // Runtime still poisoned — cancel again and retry
-                self.runtime.v8_isolate().cancel_terminate_execution();
-                let _ = self
-                    .runtime
-                    .execute_script("<settle-recovery2>", "void 0".to_string());
-            }
-        }
-
         result
     }
 
@@ -396,23 +363,8 @@ impl JsRuntimeTrait for DenoRuntime {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let settle_start = Instant::now();
 
-        // V8 watchdog: terminate_execution after deadline.
-        let isolate_handle = self.runtime.v8_isolate().thread_safe_handle();
-        let watchdog_deadline = deadline;
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        let cancel_clone = cancel_flag.clone();
-        let watchdog = std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(50));
-                if cancel_clone.load(Ordering::Relaxed) {
-                    return;
-                }
-                if Instant::now() >= watchdog_deadline {
-                    isolate_handle.terminate_execution();
-                    return;
-                }
-            }
-        });
+        // NOTE: No V8 watchdog here either — terminate_execution permanently
+        // breaks microtask auto-drain. Rely on tokio timeouts only.
 
         // Interaction settle parameters — much more aggressive than bootstrap
         let min_settle_ms: u64 = 75_u64.min(timeout_ms * 2 / 3);
@@ -554,27 +506,6 @@ impl JsRuntimeTrait for DenoRuntime {
             }
         });
 
-        // Signal watchdog to stop
-        cancel_flag.store(true, Ordering::Relaxed);
-        let _ = watchdog.join();
-
-        // Cancel any pending termination so future eval/execute calls work.
-        self.runtime.v8_isolate().cancel_terminate_execution();
-
-        // Verify the runtime is usable after potential termination.
-        match self
-            .runtime
-            .execute_script("<interaction-settle-recovery>", "void 0".to_string())
-        {
-            Ok(_) => {}
-            Err(_) => {
-                self.runtime.v8_isolate().cancel_terminate_execution();
-                let _ = self
-                    .runtime
-                    .execute_script("<interaction-settle-recovery2>", "void 0".to_string());
-            }
-        }
-
         result
     }
 
@@ -624,18 +555,19 @@ impl JsRuntimeTrait for DenoRuntime {
         let start = Instant::now();
         let _guard = self.tokio_rt.enter();
 
-        // V8's microtask checkpoint (perform_microtask_checkpoint) does not drain
-        // microtasks in deno_core 0.311. Root cause unknown — possibly the Rust V8
-        // bindings don't correctly trigger the auto-drain mechanism.
-        //
-        // Solution: implement microtask drain in JavaScript by intercepting
-        // Promise.prototype.then and queueMicrotask at the JS level, maintaining
-        // our own queue, and flushing it synchronously after each eval.
-        //
-        // The wrapped code: execute user code, then call __neo_drainMicrotasks()
-        // which flushes our JS-level microtask queue synchronously.
+        // Check microtask policy before eval
+        let policy = self.runtime.v8_isolate().get_microtasks_policy();
+        if policy != deno_core::v8::MicrotasksPolicy::Auto {
+            eprintln!("[MICROTASK-POLICY] WARNING: policy is {:?}, NOT Auto!", policy);
+            // Force back to Auto
+            self.runtime.v8_isolate().set_microtasks_policy(
+                deno_core::v8::MicrotasksPolicy::Auto
+            );
+        }
+
+        // Simple try/catch wrapper for eval
         let wrapped = format!(
-            "(function(){{var __r;try{{__r=(\n{}\n)}}catch(__e){{__r='Error: '+__e.message}};if(typeof globalThis.__neo_drainMicrotasks==='function')globalThis.__neo_drainMicrotasks();return __r}})()",
+            "try {{ (\n{}\n) }} catch(__e) {{ 'Error: ' + __e.message }}",
             code
         );
         let global = self
