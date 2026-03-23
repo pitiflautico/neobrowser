@@ -449,7 +449,40 @@ class NeoStreamResponse {
     async text() {
         if (this._cachedText !== null) return this._cachedText;
         this._bodyUsed = true;
-        const reader = this.body.getReader();
+        // Read directly from stream op to avoid ReadableStream lock issues.
+        // If body was already accessed via .body getter, the stream may be locked.
+        if (this._streamId != null && !this._stream) {
+            // Fast path: read all chunks directly from Rust without ReadableStream
+            const chunks = [];
+            while (true) {
+                const chunkJson = await ops.op_fetch_read_chunk(this._streamId);
+                const chunk = JSON.parse(chunkJson);
+                if (chunk.done || chunk.error) break;
+                chunks.push(chunk.data);
+            }
+            this._cachedText = chunks.join('');
+            return this._cachedText;
+        }
+        // Slow path: go through ReadableStream (may fail if locked)
+        let reader;
+        try { reader = this.body.getReader(); }
+        catch(e) {
+            // Stream locked — try direct op read
+            if (this._streamId != null) {
+                const chunks = [];
+                while (true) {
+                    try {
+                        const chunkJson = await ops.op_fetch_read_chunk(this._streamId);
+                        const chunk = JSON.parse(chunkJson);
+                        if (chunk.done || chunk.error) break;
+                        chunks.push(chunk.data);
+                    } catch(e2) { break; }
+                }
+                this._cachedText = chunks.join('');
+                return this._cachedText;
+            }
+            throw e;
+        }
         const chunks = [];
         while (true) {
             const { done, value } = await reader.read();
