@@ -5,6 +5,8 @@
 // Use __neo_ops saved by bootstrap.js (Deno is deleted for sandbox security).
 const _shimOps = globalThis.__neo_ops;
 
+// (Turbo-stream state decoder consolidated into streamController interceptor below)
+
 // ═══════════════════════════════════════════════════════════════
 // INTERACTION TRACE — causal pipeline debugging
 // ═══════════════════════════════════════════════════════════════
@@ -47,47 +49,114 @@ globalThis.encodeURIComponent = function(v) {
     let _ctx = globalThis.__reactRouterContext;
     const _chunks = [];
 
+    // ── React Router single-fetch devalue unflatten ──
+    // React Router 7 SSR encodes state as a flat array with `_N` index references.
+    // Negative indices are special values. This function resolves references into
+    // a nested object tree.
+    function unflatten(flat) {
+        if (!Array.isArray(flat) || flat.length === 0) return flat;
+        var hydrated = new Array(flat.length);
+        var filled = new Array(flat.length);
+
+        function hydrate(idx) {
+            if (idx < 0) {
+                // Negative indices = special values in React Router's devalue:
+                // -1 = undefined, -2 = NaN, -3 = Infinity, -4 = -Infinity, -5 = null, -6 = -0
+                if (idx === -1) return undefined;
+                if (idx === -5) return null;
+                if (idx === -2) return NaN;
+                if (idx === -3) return Infinity;
+                if (idx === -4) return -Infinity;
+                if (idx === -6) return -0;
+                return undefined;
+            }
+            if (filled[idx]) return hydrated[idx];
+            filled[idx] = true;
+            var val = flat[idx];
+            if (val === null || val === undefined || typeof val !== 'object') {
+                hydrated[idx] = val;
+                return val;
+            }
+            if (Array.isArray(val)) {
+                var arr = [];
+                hydrated[idx] = arr; // pre-fill to handle cycles
+                for (var i = 0; i < val.length; i++) {
+                    arr.push(typeof val[i] === 'number' ? hydrate(val[i]) : val[i]);
+                }
+                return arr;
+            }
+            // Object with _N: idx references
+            var keys = Object.keys(val);
+            var isRef = keys.length > 0 && keys.every(function(k) { return k.charAt(0) === '_'; });
+            if (isRef) {
+                var obj = {};
+                hydrated[idx] = obj;
+                for (var j = 0; j < keys.length; j++) {
+                    var k = keys[j];
+                    var keyIdx = parseInt(k.substring(1), 10);
+                    var valIdx = val[k];
+                    var realKey = typeof flat[keyIdx] === 'string' ? flat[keyIdx] : String(keyIdx);
+                    obj[realKey] = typeof valIdx === 'number' ? hydrate(valIdx) : valIdx;
+                }
+                return obj;
+            }
+            hydrated[idx] = val;
+            return val;
+        }
+
+        return hydrate(0);
+    }
+
     function doPatchController(sc, ctx) {
-        const origEnqueue = sc.enqueue?.bind(sc);
-        const origClose = sc.close?.bind(sc);
+        var origEnqueue = sc.enqueue ? sc.enqueue.bind(sc) : null;
+        var origClose = sc.close ? sc.close.bind(sc) : null;
 
         sc.enqueue = function(data) {
             _chunks.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
-            // Do NOT forward to origEnqueue — the original stream's reader hangs
-            // in our polyfill, and we decode separately.
+            // Do NOT forward to origEnqueue — the original stream's reader may hang.
         };
 
         sc.close = function() {
             var raw = _chunks.join('');
-            if (raw && typeof turboStream !== 'undefined' && turboStream.decode) {
+            if (raw) {
                 try {
-                    // turboStream.decode() expects a ReadableStream, not a raw string.
-                    // Wrap the accumulated data into a ReadableStream that immediately
-                    // enqueues the full payload and closes synchronously.
-                    var stream = new ReadableStream({
-                        start: function(controller) {
-                            controller.enqueue(raw);
-                            controller.close();
-                        }
-                    });
-                    // decode() is async (returns Promise). Microtasks flush between
-                    // inline <script> tags in deno_core, so state will be set before
-                    // the React Router hydration bundle runs.
-                    turboStream.decode(stream).then(function(result) {
-                        console.error('[turbo-stream] decode result type: ' + typeof result + ', isArray: ' + Array.isArray(result));
-                        console.error('[turbo-stream] raw first 200: ' + raw.substring(0, 200));
-                        if (result !== undefined && result !== null) {
-                            ctx.state = result;
-                        }
-                    }).catch(function(e) {
-                        console.error('[turbo-stream] decode promise rejected: ' + e.message);
-                    });
+                    // Strategy 1: Synchronous JSON parse + unflatten.
+                    // The first line of the turbo-stream data is a JSON array containing
+                    // React Router's flat-reference encoding. Parse and unflatten it
+                    // synchronously so ctx.state is available immediately.
+                    var firstLine = raw.split('\n')[0];
+                    var flat = JSON.parse(firstLine);
+                    var state = unflatten(flat);
+                    if (state && typeof state === 'object') {
+                        ctx.state = state;
+                        console.log('[turbo-stream] sync decoded SSR state, keys: ' + Object.keys(state).join(','));
+                    }
                 } catch(e) {
-                    console.error('[turbo-stream] decode threw: ' + e.message);
+                    console.error('[turbo-stream] sync decode failed: ' + e.message);
+                    // Fallback: async decode via turboStream.decode()
+                    if (typeof turboStream !== 'undefined' && turboStream.decode) {
+                        try {
+                            var stream = new ReadableStream({
+                                start: function(controller) {
+                                    controller.enqueue(raw);
+                                    controller.close();
+                                }
+                            });
+                            turboStream.decode(stream).then(function(result) {
+                                if (result && Array.isArray(result)) {
+                                    var state2 = unflatten(result);
+                                    if (state2 && typeof state2 === 'object') ctx.state = state2;
+                                } else if (result !== undefined && result !== null) {
+                                    ctx.state = result;
+                                }
+                            }).catch(function(e2) {
+                                console.error('[turbo-stream] async decode also failed: ' + e2.message);
+                            });
+                        } catch(e2) {}
+                    }
                 }
             }
-            // Do NOT call origClose — we suppress the original stream entirely
-            // to avoid racing with React Router's own decode on the broken stream.
+            // Do NOT call origClose — suppress the original broken stream.
         };
     }
 
