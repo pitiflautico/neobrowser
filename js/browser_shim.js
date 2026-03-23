@@ -210,6 +210,17 @@ if (typeof document !== 'undefined') {
     } catch(e) {}
 }
 
+// __neo_setLocationHref — called from Rust set_location to update URL without
+// triggering navigation ops. Also updates the initial history entry URL.
+globalThis.__neo_setLocationHref = function(href) {
+    __neoUpdateLocation(href);
+    // Keep the initial history entry URL in sync
+    var h = globalThis.__neo_history;
+    if (h && h.entries.length > 0 && h.index >= 0 && h.entries[h.index].nav_type === 'initial') {
+        h.entries[h.index].url = globalThis.__neo_location.href;
+    }
+};
+
 // window.open — detect but don't follow
 globalThis.open = function(url, target, features) {
     try {
@@ -227,7 +238,18 @@ globalThis.close = function() {};
 // 2. HISTORY API — tracked with state management
 // ═══════════════════════════════════════════════════════════════
 
-globalThis.__neo_history = { entries: [], index: -1 };
+// Pre-populate with initial entry matching Chrome's format.
+// React Router expects history.state to have {usr, key, idx} fields at bootstrap.
+// Chrome sets: {usr: null, key: "default", idx: 1} — we use idx:0 as the first entry.
+globalThis.__neo_history = {
+    entries: [{
+        state: { usr: null, key: "default", idx: 0 },
+        title: "",
+        url: (globalThis.__neo_location && globalThis.__neo_location.href) || "",
+        nav_type: 'initial'
+    }],
+    index: 0
+};
 
 globalThis.history = {
     pushState: function(state, title, url) {
@@ -237,18 +259,18 @@ globalThis.history = {
         h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
         h.index = h.entries.length - 1;
         if (url) __neoUpdateLocation(url);
-        console.log('[NAV-TRACE] pushState: ' + url);
+        console.log('[NAV-TRACE] pushState: ' + JSON.stringify(state));
     },
     replaceState: function(state, title, url) {
         var h = globalThis.__neo_history;
         if (h.entries.length > 0 && h.index >= 0) {
-            h.entries[h.index] = { state: state, title: title, url: url, nav_type: 'synthetic' };
+            h.entries[h.index] = { state: state, title: title, url: url || h.entries[h.index].url, nav_type: 'synthetic' };
         } else {
-            h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
+            h.entries.push({ state: state, title: title, url: url || "", nav_type: 'synthetic' });
             h.index = 0;
         }
         if (url) __neoUpdateLocation(url);
-        console.log('[NAV-TRACE] replaceState: ' + url);
+        console.log('[NAV-TRACE] replaceState: ' + JSON.stringify(state));
     },
     back: function() {
         var h = globalThis.__neo_history;

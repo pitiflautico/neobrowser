@@ -111,7 +111,7 @@ const TELEMETRY_PATTERNS: &[&str] = &[
     "/gen_204",
     "/client_204",
     "/rgstr",
-    "/ces/",
+    // "/ces/" — REMOVED: ChatGPT Experience Settings API is NOT telemetry
     "adservice",
     "adserver",
     "/api/v1/events",
