@@ -1,12 +1,24 @@
 //! V8 operations — bridge between JavaScript and Rust.
 //!
-//! All ops are sync to avoid deno_core async RefCell panics.
-//! HTTP fetches run on dedicated threads. Timers use thread::sleep.
+//! Fetch ops use async I/O on the existing tokio runtime (Chromium-style:
+//! single event loop, shared connection pool, HTTP/2 multiplexing).
+//! Timers use thread::sleep.
 
 use crate::scheduler::{FetchBudget, TaskTracker, TimerBudget, TimerState};
+
+/// No-op async op that resolves immediately.
+/// Used to force deno_core's event loop to do a full cycle (including
+/// microtask checkpoint) when there are no other pending ops.
+/// Chromium drains microtasks after every script execution; deno_core
+/// only drains during run_event_loop when there are pending ops.
+#[op2(async)]
+pub async fn op_microtask_tick() {
+    // Yield once to ensure we go through a full event loop cycle
+    tokio::task::yield_now().await;
+}
 use deno_core::op2;
 use deno_core::OpState;
-use neo_http::{CookieStore, HttpClient, HttpRequest, RequestContext, RequestKind, WebStorage};
+use neo_http::{CookieStore, HttpClient, WebStorage};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -331,10 +343,25 @@ pub fn op_fetch_close(state: Rc<RefCell<OpState>>, #[smi] stream_id: u32) {
 /// Delegates to the `HttpClient` trait object in OpState.
 /// Skips telemetry/analytics URLs with a fake 200 response.
 /// Respects `FetchBudget` concurrency limits and abort flag.
+/// Shared tokio runtime for fetch ops — Chromium-style single network thread.
+///
+/// Chrome runs all network I/O on ONE thread with async I/O and a shared connection pool.
+/// Previous NeoRender: each fetch → spawn_blocking → thread::spawn → new tokio runtime
+/// = 20 fetches → 40 threads × 20 runtimes → connection pool chaos.
+///
+/// Now: ONE shared multi-thread tokio runtime for all fetches. Runs on spawn_blocking
+/// so deno_core's event loop doesn't see pending ops (allowing settle to work), but
+/// all fetches share one connection pool and runtime internally.
+pub struct SharedFetchRuntime(pub Arc<tokio::runtime::Runtime>);
+
+/// Chromium-style fetch — shared network runtime, shared connection pool.
+///
+/// Uses spawn_blocking to keep the fetch off deno_core's event loop (so settle
+/// works correctly), but the blocking thread dispatches the actual HTTP request
+/// on a shared tokio runtime instead of creating a new one per fetch.
 ///
 /// Being async is CRITICAL for SPA correctness: fetch().then(cb) must
 /// resolve cb as a microtask in a FUTURE event loop tick, not the current one.
-/// This lets React scheduler yield between click → fetch → setState → render.
 #[op2(async)]
 #[string]
 pub async fn op_fetch(
@@ -345,13 +372,12 @@ pub async fn op_fetch(
     #[string] headers_json: String,
 ) -> Result<String, deno_core::error::AnyError> {
     if should_skip_url(&url) {
-        // Yield even for skipped URLs so the Promise resolves in a future tick.
         tokio::task::yield_now().await;
         return Ok(r#"{"status":200,"body":"","headers":{}}"#.to_string());
     }
 
     // Check fetch budget before proceeding.
-    let (client, timeout_ms, budget) = {
+    let (raw_client, timeout_ms, budget, fetch_rt) = {
         let s = state.borrow();
 
         let fetch_budget = s.try_borrow::<FetchBudget>().cloned();
@@ -372,10 +398,14 @@ pub async fn op_fetch(
             .unwrap_or(5000);
 
         let handle = s
-            .try_borrow::<SharedHttpClient>()
-            .ok_or_else(|| deno_core::error::generic_error("No HttpClient in OpState"))?;
+            .try_borrow::<SharedRquestClient>()
+            .ok_or_else(|| deno_core::error::generic_error("No RquestClient in OpState"))?;
 
-        (handle.0.clone(), timeout, fetch_budget)
+        let rt = s
+            .try_borrow::<SharedFetchRuntime>()
+            .ok_or_else(|| deno_core::error::generic_error("No FetchRuntime in OpState"))?;
+
+        (handle.0.clone(), timeout, fetch_budget, rt.0.clone())
     };
 
     let mut headers = parse_headers(&headers_json);
@@ -394,88 +424,135 @@ pub async fn op_fetch(
                 }
             }
         }
-        // Clone the Arc for post-response Set-Cookie storage.
         s.try_borrow::<SharedCookieStore>()
             .and_then(|s| s.0.clone())
     };
 
-    let req = HttpRequest {
-        method: method.clone(),
-        url: url.clone(),
-        headers,
-        body: body_opt,
-        context: RequestContext {
-            kind: RequestKind::Fetch,
-            initiator: "script".to_string(),
-            referrer: None,
-            frame_id: None,
-            top_level_url: None,
-        },
-        timeout_ms: timeout_ms as u64,
-    };
+    let url_clone = url.clone();
 
-    // Spawn blocking I/O on a dedicated thread so V8 event loop keeps running.
-    let result = tokio::task::spawn_blocking(move || client.request(&req))
-        .await
-        .map_err(|e| deno_core::error::generic_error(format!("fetch task failed: {e}")))?;
+    // Run fetch on a dedicated thread using the shared fetch runtime.
+    // Uses std::thread::spawn + fetch_rt.block_on (NOT tokio::spawn_blocking
+    // which would try to use the deno runtime and cause nested-block_on panics).
+    // The shared fetch_rt provides connection pooling across all fetches.
+    // spawn_blocking moves us to a tokio blocking thread where block_on
+    // on the SEPARATE fetch_rt is safe (no nested block_on on same runtime).
+    // Use tokio::task::spawn_blocking which properly integrates with deno_core's
+    // event loop — the blocking task wakes up the async poller when done.
+    // Inside, we use fetch_rt.block_on() on the SEPARATE shared fetch runtime.
+    // This is safe because spawn_blocking runs on a dedicated blocking thread pool,
+    // not inside the current_thread runtime's async executor.
+    let result = tokio::task::spawn_blocking(move || {
+        let m: rquest::Method = method
+            .parse()
+            .map_err(|e| format!("bad method: {e}"))?;
+
+        let mut builder = raw_client
+            .request(m, &url_clone)
+            .timeout(std::time::Duration::from_millis(timeout_ms as u64));
+
+        let fetch_hdrs = neo_http::headers::fetch_headers();
+        for (k, v) in &fetch_hdrs {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        for (k, v) in &headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        if let Some(b) = body_opt {
+            builder = builder.body(b);
+        }
+
+        // block_on the shared fetch runtime — safe because we're on a
+        // std::thread, not inside tokio.
+        fetch_rt.block_on(async move {
+            let mut resp = builder.send().await
+                .map_err(|e| format!("fetch send: {e}"))?;
+
+            let status = resp.status().as_u16();
+            let resp_headers: HashMap<String, String> = resp
+                .headers()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect();
+
+            // Detect SSE responses.
+            let is_sse = resp_headers
+                .get("content-type")
+                .map(|ct| ct.contains("text/event-stream") || ct.contains("text/x-sse"))
+                .unwrap_or(false);
+
+            let body_text = if is_sse {
+                let sse_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                let mut body_buf = String::new();
+                loop {
+                    let remaining = sse_deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() { break; }
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(15).min(remaining),
+                        resp.chunk(),
+                    ).await {
+                        Ok(Ok(Some(chunk))) => {
+                            body_buf.push_str(&String::from_utf8_lossy(&chunk));
+                            if body_buf.contains("[DONE]") { break; }
+                        }
+                        Ok(Ok(None)) => break,
+                        _ => break,
+                    }
+                }
+                body_buf
+            } else {
+                resp.text().await.map_err(|e| format!("fetch body: {e}"))?
+            };
+
+            Ok::<_, String>((status, resp_headers, body_text, is_sse))
+        })
+    }).await
+        .map_err(|e| deno_core::error::generic_error(format!("fetch task: {e}")))?
+        .map_err(|e: String| deno_core::error::generic_error(e))?;
+
+    let (status, resp_headers, body_text, is_sse) = result;
 
     // Release budget slot.
     if let Some(ref fb) = budget {
         fb.finish_fetch();
     }
 
-    match result {
-        Ok(resp) => {
-            // Store Set-Cookie headers from the response in the cookie store.
-            if let Some(ref cs) = cookie_store_arc {
-                // HashMap only holds one value; check common casings.
-                for key in &["set-cookie", "Set-Cookie"] {
-                    if let Some(val) = resp.headers.get(*key) {
-                        // May be multiple cookies joined with ", " — split naively
-                        // won't work for cookies with expires containing ",".
-                        // Store as-is; store_set_cookie handles single cookie strings.
-                        cs.store_set_cookie(&url, val);
-                    }
-                }
+    // Store Set-Cookie headers.
+    if let Some(ref cs) = cookie_store_arc {
+        for key in &["set-cookie", "Set-Cookie"] {
+            if let Some(val) = resp_headers.get(*key) {
+                cs.store_set_cookie(&url, val);
             }
-            // Detect SSE responses and parse events into structured array.
-            let is_sse = resp
-                .headers
-                .get("content-type")
-                .map(|ct| ct.contains("text/event-stream"))
-                .unwrap_or(false);
-
-            let json = if is_sse {
-                let events: Vec<String> = resp
-                    .body
-                    .split("\n\n")
-                    .filter(|e| !e.trim().is_empty())
-                    .map(|e| {
-                        e.lines()
-                            .filter(|l| l.starts_with("data: "))
-                            .map(|l| &l[6..])
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                    .filter(|d| !d.is_empty() && d != "[DONE]")
-                    .collect();
-                serde_json::json!({
-                    "status": resp.status,
-                    "body": resp.body,
-                    "headers": resp.headers,
-                    "sse_events": events,
-                })
-            } else {
-                serde_json::json!({
-                    "status": resp.status,
-                    "body": resp.body,
-                    "headers": resp.headers,
-                })
-            };
-            Ok(json.to_string())
         }
-        Err(e) => Err(deno_core::error::generic_error(e.to_string())),
     }
+
+    // Build JSON response.
+    let json = if is_sse {
+        let events: Vec<String> = body_text
+            .split("\n\n")
+            .filter(|e| !e.trim().is_empty())
+            .map(|e| {
+                e.lines()
+                    .filter(|l| l.starts_with("data: "))
+                    .map(|l| &l[6..])
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .filter(|d| !d.is_empty() && d != "[DONE]")
+            .collect();
+        serde_json::json!({
+            "status": status,
+            "body": body_text,
+            "headers": resp_headers,
+            "sse_events": events,
+        })
+    } else {
+        serde_json::json!({
+            "status": status,
+            "body": body_text,
+            "headers": resp_headers,
+        })
+    };
+    Ok(json.to_string())
 }
 
 /// Timer — sync with nested clamping per the HTML spec and abort support.

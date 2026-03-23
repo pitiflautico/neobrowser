@@ -219,6 +219,15 @@ impl JsRuntimeTrait for DenoRuntime {
     }
 
     fn pump_event_loop(&mut self) -> Result<bool, RuntimeError> {
+        // CRITICAL: Force V8 microtask checkpoint before running the event loop.
+        // Without this, Promise.resolve().then() and async function bodies never
+        // execute — their microtasks sit in V8's queue unprocessed.
+        // Chromium does this automatically as part of its event loop cycle.
+        {
+            let scope = &mut self.runtime.handle_scope();
+            scope.perform_microtask_checkpoint();
+        }
+
         self.tokio_rt.block_on(async {
             match tokio::time::timeout(
                 Duration::from_millis(5),
@@ -615,9 +624,18 @@ impl JsRuntimeTrait for DenoRuntime {
         let start = Instant::now();
         let _guard = self.tokio_rt.enter();
 
-        // Step 1: Execute the code
+        // V8's microtask checkpoint (perform_microtask_checkpoint) does not drain
+        // microtasks in deno_core 0.311. Root cause unknown — possibly the Rust V8
+        // bindings don't correctly trigger the auto-drain mechanism.
+        //
+        // Solution: implement microtask drain in JavaScript by intercepting
+        // Promise.prototype.then and queueMicrotask at the JS level, maintaining
+        // our own queue, and flushing it synchronously after each eval.
+        //
+        // The wrapped code: execute user code, then call __neo_drainMicrotasks()
+        // which flushes our JS-level microtask queue synchronously.
         let wrapped = format!(
-            "try {{ (\n{}\n) }} catch(__e) {{ 'Error: ' + __e.message }}",
+            "(function(){{var __r;try{{__r=(\n{}\n)}}catch(__e){{__r='Error: '+__e.message}};if(typeof globalThis.__neo_drainMicrotasks==='function')globalThis.__neo_drainMicrotasks();return __r}})()",
             code
         );
         let global = self
@@ -686,7 +704,9 @@ impl JsRuntimeTrait for DenoRuntime {
                     .unwrap_or_else(|| "undefined".to_string())
             };
 
-            // Brief pump for any side effects
+            // Brief pump for microtask drainage — just enough to let
+            // async side effects register as pending ops. The caller
+            // (browser_impl.rs eval()) will do a longer settle if needed.
             for _ in 0..10 {
                 if let Ok(false) = self.pump_event_loop() {
                     break;

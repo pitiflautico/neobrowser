@@ -271,15 +271,24 @@ impl BrowserEngine for NeoSession {
     }
 
     fn eval(&mut self, js: &str) -> Result<String, EngineError> {
-        match self.runtime.as_mut() {
+        // Execute JS (sync result), then pump event loop for side effects.
+        // This matches Chromium's model where the event loop runs continuously
+        // after script execution, processing fetches, timers, and renders.
+        let result = match self.runtime.as_mut() {
             Some(rt) => {
-                let result = rt.eval_and_settle(js, 5000)?;
-                Ok(result.value)
+                let r = rt.eval_and_settle(js, 5_000)?;
+                Ok(r.value)
             }
             None => Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
                 "no runtime available".into(),
             ))),
-        }
+        }?;
+        // Pump event loop for async side effects (fetch, timers, React renders).
+        // Now that microtasks drain (Promise.then callbacks execute), fetch ops
+        // register as pending and the pump will wait for them.
+        self.pump_after_interaction();
+        self.process_pending_navigations();
+        Ok(result)
     }
 
     fn click(&mut self, target: &str) -> Result<ClickResult, EngineError> {

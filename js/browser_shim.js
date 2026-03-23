@@ -7,9 +7,12 @@ const _shimOps = globalThis.__neo_ops;
 
 // ── React Router SSR turbo-stream interceptor ──
 // React Router 7 SSR streams hydration data via __reactRouterContext.streamController.
-// happy-dom's ReadableStream.getReader().read() hangs so the normal decode path fails.
-// Fix: intercept WHEN __reactRouterContext is created (via defineProperty trap on window),
-// then patch streamController.enqueue/close to accumulate data and decode with turbo-stream.
+// Problem: React Router creates a ReadableStream, pipes it through TextEncoderStream,
+// then turbo-stream calls getReader() on the result. V8's native pipeThrough creates
+// internal pipe promises that block, so getReader() fails on the resulting stream.
+//
+// Chromium fix: intercept the context creation and provide pre-decoded state so
+// React Router skips the streaming decode path entirely.
 (function installReactRouterStreamInterceptor() {
     let _ctx = globalThis.__reactRouterContext;
     const _chunks = [];
@@ -81,6 +84,7 @@ const _shimOps = globalThis.__neo_ops;
             configurable: true, enumerable: true,
         });
     } catch(e) {}
+
 })();
 
 // ═══════════════════════════════════════════════════════════════
@@ -262,12 +266,18 @@ globalThis.close = function() {};
 // 2. HISTORY API — tracked with state management
 // ═══════════════════════════════════════════════════════════════
 
-// Pre-populate with initial entry matching Chrome's format.
-// React Router expects history.state to have {usr, key, idx} fields at bootstrap.
-// Chrome sets: {usr: null, key: "default", idx: 1} — we use idx:0 as the first entry.
+// Chromium History — initial state is null (not pre-populated).
+// React Router does: history.replaceState({...history.state, usr:null, key:"default", idx:0}, "")
+// Spread of null ({...null}) produces {} in JS — this works natively.
+// Chromium uses StructuredClone for state serialization (stores a copy, not a reference).
+// We use structuredClone (available in V8) or JSON fallback to match.
+var __neo_cloneState = (typeof structuredClone === 'function')
+    ? function(s) { return s != null ? structuredClone(s) : null; }
+    : function(s) { return s != null ? JSON.parse(JSON.stringify(s)) : null; };
+
 globalThis.__neo_history = {
     entries: [{
-        state: { usr: null, key: "default", idx: 0 },
+        state: null,  // Chrome: history.state === null on initial load
         title: "",
         url: (globalThis.__neo_location && globalThis.__neo_location.href) || "",
         nav_type: 'initial'
@@ -278,23 +288,27 @@ globalThis.__neo_history = {
 globalThis.history = {
     pushState: function(state, title, url) {
         var h = globalThis.__neo_history;
+        // Clone state per Chromium's StructuredClone semantics
+        var cloned = __neo_cloneState(state);
         // Truncate forward entries
         h.entries.length = h.index + 1;
-        h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
+        h.entries.push({ state: cloned, title: title, url: url, nav_type: 'synthetic' });
         h.index = h.entries.length - 1;
         if (url) __neoUpdateLocation(url);
-        console.log('[NAV-TRACE] pushState: ' + JSON.stringify(state));
+        console.log('[NAV-TRACE] pushState: ' + JSON.stringify(cloned));
     },
     replaceState: function(state, title, url) {
         var h = globalThis.__neo_history;
+        // Clone state per Chromium's StructuredClone semantics
+        var cloned = __neo_cloneState(state);
         if (h.entries.length > 0 && h.index >= 0) {
-            h.entries[h.index] = { state: state, title: title, url: url || h.entries[h.index].url, nav_type: 'synthetic' };
+            h.entries[h.index] = { state: cloned, title: title, url: url || h.entries[h.index].url, nav_type: 'synthetic' };
         } else {
-            h.entries.push({ state: state, title: title, url: url || "", nav_type: 'synthetic' });
+            h.entries.push({ state: cloned, title: title, url: url || "", nav_type: 'synthetic' });
             h.index = 0;
         }
         if (url) __neoUpdateLocation(url);
-        console.log('[NAV-TRACE] replaceState: ' + JSON.stringify(state));
+        console.log('[NAV-TRACE] replaceState: ' + JSON.stringify(cloned));
     },
     back: function() {
         var h = globalThis.__neo_history;
@@ -882,29 +896,88 @@ if (typeof HTMLInputElement !== 'undefined' && HTMLInputElement.prototype && !HT
     });
 }
 
-// document.execCommand (limited — insertText only)
+// document.execCommand — Chromium-accurate implementation.
+// Blink path: execCommand('insertText') → InsertTextCommand → InsertIntoTextNodeCommand
+//   → Text.insertData(offset, text) — NOT createTextNode.
+// This produces 'characterData' MutationObserver records (not 'childList'),
+// which is what ProseMirror's DOMObserver expects.
+// Event sequence (per Chromium source):
+//   1. DOM mutation via Text.insertData()
+//   2. 'input' InputEvent (inputType: 'insertText', bubbles: true)
+//   3. MutationObserver callbacks (microtask)
+// No 'beforeinput' for DOM-source (script) calls — per spec and Blink behavior.
 if (typeof document !== 'undefined' && !document.execCommand) {
     document.execCommand = function(cmd, showUI, value) {
         if (cmd === 'insertText' && document.activeElement) {
             var el = document.activeElement;
-            if (el.value !== undefined) {
+
+            // Input/textarea path — straightforward value mutation
+            if (el.value !== undefined && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
                 var start = el.selectionStart || 0;
                 var end = el.selectionEnd || start;
-                var before = el.value.substring(0, start);
-                var after = el.value.substring(end);
-                el.value = before + value + after;
+                el.value = el.value.substring(0, start) + value + el.value.substring(end);
                 el.selectionStart = el.selectionEnd = start + value.length;
                 el.dispatchEvent(new InputEvent('input', {data: value, inputType: 'insertText', bubbles: true}));
                 return true;
             }
+
+            // ContentEditable path — must match Blink's InsertTextCommand exactly
             if (el.contentEditable === 'true' || el.isContentEditable) {
                 var sel = globalThis.getSelection();
-                if (sel && sel.rangeCount) {
-                    var range = sel.getRangeAt(0);
+                if (!sel || !sel.rangeCount) return false;
+
+                var range = sel.getRangeAt(0);
+
+                // Step 1: Delete selected content if range is not collapsed
+                if (!range.collapsed) {
                     range.deleteContents();
-                    range.insertNode(document.createTextNode(value));
                 }
-                el.dispatchEvent(new InputEvent('input', {data: value, inputType: 'insertText', bubbles: true}));
+
+                // Step 2: Insert text using Blink's exact method
+                var textNode = range.startContainer;
+                var offset = range.startOffset;
+
+                if (textNode.nodeType === 3) {
+                    // Already in a Text node — use insertData (matches Blink's
+                    // InsertIntoTextNodeCommand::DoApply → node_->insertData())
+                    // This fires 'characterData' MutationObserver records.
+                    textNode.insertData(offset, value);
+                } else {
+                    // Not in a text node — create one (matches Blink's
+                    // PositionInsideTextNode → CreateEditingTextNode)
+                    var newText = document.createTextNode(value);
+                    if (textNode.childNodes[offset]) {
+                        textNode.insertBefore(newText, textNode.childNodes[offset]);
+                    } else {
+                        textNode.appendChild(newText);
+                    }
+                    textNode = newText;
+                    offset = 0;
+                }
+
+                // Step 3: Update selection — collapse after inserted text
+                // (matches Blink's SetEndingSelection at end_position)
+                var newOffset = (textNode.nodeType === 3) ? offset + value.length : value.length;
+                try {
+                    var newRange = document.createRange();
+                    newRange.setStart(textNode, newOffset);
+                    newRange.collapse(true);
+                    sel.removeAllRanges();
+                    sel.addRange(newRange);
+                } catch(e) {
+                    // Selection update may fail in happy-dom — non-fatal
+                }
+
+                // Step 4: Fire 'input' on the contenteditable root
+                // (Blink fires on rootEditableElement via DispatchInputEventEditableContentChanged)
+                var editableRoot = el.closest ? el.closest('[contenteditable="true"]') || el : el;
+                editableRoot.dispatchEvent(new InputEvent('input', {
+                    inputType: 'insertText',
+                    data: value,
+                    bubbles: true,
+                    cancelable: false,
+                    composed: true
+                }));
                 return true;
             }
         }

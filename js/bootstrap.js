@@ -4,6 +4,31 @@
 // V2: uses op_fetch/op_console_log + deno_core native WebTimers (not op_neorender_*).
 
 // ═══════════════════════════════════════════════════════════════
+// 0. MICROTASK DRAIN — Chromium-compatible.
+// ═══════════════════════════════════════════════════════════════
+// deno_core 0.311 does NOT drain V8 microtasks between execute_script calls.
+// Chromium does via MicrotasksScope(kRunMicrotasks) around script.Run().
+//
+// Workaround: wrap eval code so __neo_drainMicrotasks() runs AFTER the user
+// code but WITHIN the same script execution. V8 with kAuto DOES drain
+// microtasks when Script::Run returns. So microtasks from the DRAIN script
+// itself will execute. We use this to recursively process pending microtasks
+// that were queued by the user code.
+//
+// The technique: the Rust eval wrapper calls __neo_drainMicrotasks() which
+// repeatedly calls a resolved Promise.then() chain to trigger V8's internal
+// microtask processing. This is a no-op since we're already inside a script
+// execution context — but it forces V8 to notice and process pending
+// microtasks before returning to Rust.
+//
+// NOTE: This is a placeholder. The real fix is upgrading deno_core.
+globalThis.__neo_drainMicrotasks = function() {
+    // No-op for now. V8's kAuto drains microtasks when the wrapping
+    // eval script returns to Rust. Side-effect async work (fetch, timers)
+    // is handled by pump_after_interaction which runs the event loop.
+};
+
+// ═══════════════════════════════════════════════════════════════
 // REACT INTERCEPTION PRIMITIVES — must run BEFORE any page scripts.
 // ═══════════════════════════════════════════════════════════════
 
@@ -538,6 +563,8 @@ class NeoStreamResponse {
 }
 
 // fetch() — streaming: sends request via op_fetch_start, body read lazily.
+// Save original ref so scripts that override fetch() (DataDog, Sentry, etc.)
+// don't break our internal fetch calls (e.g., __chatgpt_send, sentinel).
 globalThis.fetch = async function(input, init) {
     const url = typeof input === 'string' ? input : input?.url || String(input);
     const method = init?.method || (input instanceof Request ? input.method : null) || 'GET';
@@ -1958,6 +1985,10 @@ globalThis.__neorender_export = function() {
 if (typeof __neo_startMutationWatch === 'function') __neo_startMutationWatch();
 
 // Mark bootstrap init time as last activity
+// Save original fetch so monitoring wrappers (DataDog, Sentry) don't break
+// internal API calls. Use __neo_fetch() to bypass instrumentation.
+globalThis.__neo_fetch = globalThis.fetch;
+
 __neo_markActivity('bootstrap-done');
 
 // NOTE: Promise.allSettled is handled via source-level transform in the Rust

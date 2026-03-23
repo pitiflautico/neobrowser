@@ -39,6 +39,7 @@ deno_core::extension!(
         ops::op_fetch_start,
         ops::op_fetch_read_chunk,
         ops::op_fetch_close,
+        ops::op_microtask_tick,
     ],
 );
 
@@ -192,6 +193,14 @@ impl DenoRuntime {
             if let Some(rc) = raw_client {
                 state.put(ops::SharedRquestClient(rc));
             }
+            // Shared fetch runtime — Chromium-style: one network thread for all fetches.
+            // All fetch ops share this single runtime instead of creating one per fetch.
+            let fetch_rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("failed to build shared fetch runtime");
+            state.put(ops::SharedFetchRuntime(std::sync::Arc::new(fetch_rt)));
             state.put(ops::SharedCookieStore(cookie_store));
             state.put(ops::StreamStore::default());
             state.put(ops::ConsoleBuffer::default());

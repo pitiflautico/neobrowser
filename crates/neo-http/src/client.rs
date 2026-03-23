@@ -29,7 +29,12 @@ impl RquestClient {
             .redirect(rquest::redirect::Policy::limited(10))
             .timeout(timeout)
             .connect_timeout(Duration::from_secs(10))
-            // Default pool settings — let rquest manage HTTP/2 multiplexing
+            // Chromium connection pool limits:
+            // - 6 connections per host (HTTP/1.1), HTTP/2 multiplexes over 1 connection
+            // - 256 total sockets (from net/socket/client_socket_pool_manager.cc)
+            // - 90s idle timeout (from net/http/http_stream_pool.h)
+            .pool_max_idle_per_host(6)
+            .pool_idle_timeout(Duration::from_secs(90))
             .build()
             .map_err(|e| HttpError::Network(e.to_string()))?;
         Ok(Self {

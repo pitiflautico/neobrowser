@@ -333,7 +333,7 @@ function solveTurnstile(dx, p) {
 
 globalThis.__chatgpt_sentinel = async function() {
     // 1. Get access token
-    var authResp = await fetch('/api/auth/session');
+    var authResp = await (globalThis.__neo_fetch || fetch)('/api/auth/session');
     var authData = await authResp.json();
     var accessToken = authData.accessToken;
     if (!accessToken) return JSON.stringify({ error: 'no_access_token', keys: Object.keys(authData) });
@@ -345,7 +345,7 @@ globalThis.__chatgpt_sentinel = async function() {
     var vmToken = generateVmToken(config);
 
     // 3. Prepare sentinel — send VM token as 'p'
-    var prepResp = await fetch('/backend-api/sentinel/chat-requirements/prepare', {
+    var prepResp = await (globalThis.__neo_fetch || fetch)('/backend-api/sentinel/chat-requirements/prepare', {
         method: 'POST',
         headers: {
             'Authorization': 'Bearer ' + accessToken,
@@ -455,7 +455,7 @@ globalThis.__chatgpt_send = async function(message, model, conversationId, paren
     if (sentinel.powToken) headers['Openai-Sentinel-Proof-Token'] = sentinel.powToken;
     if (sentinel.turnstileToken) headers['Openai-Sentinel-Turnstile-Token'] = sentinel.turnstileToken;
 
-    var resp = await fetch('/backend-api/conversation', {
+    var resp = await (globalThis.__neo_fetch || fetch)('/backend-api/conversation', {
         method: 'POST',
         headers: headers,
         body: JSON.stringify(body),
