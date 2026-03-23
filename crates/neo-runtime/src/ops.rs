@@ -62,6 +62,270 @@ impl Default for OpsSchedulerConfig {
     }
 }
 
+// ─── Streaming Fetch (G2) ───
+
+/// Store for active streaming HTTP responses.
+///
+/// Keeps `rquest::Response` objects alive between `op_fetch_start` and
+/// subsequent `op_fetch_read_chunk` calls. Each stream gets a unique u32 id.
+pub struct StreamStore {
+    streams: HashMap<u32, ActiveStream>,
+    next_id: u32,
+}
+
+struct ActiveStream {
+    response: Option<rquest::Response>,
+    /// Tracked for future TTL-based cleanup of abandoned streams.
+    #[allow(dead_code)]
+    created_at: std::time::Instant,
+}
+
+impl Default for StreamStore {
+    fn default() -> Self {
+        Self {
+            streams: HashMap::new(),
+            next_id: 1,
+        }
+    }
+}
+
+/// Shared raw rquest client for streaming fetch ops.
+///
+/// Stored separately from `SharedHttpClient` because streaming needs the raw
+/// `rquest::Client` to get an `rquest::Response` without reading the body.
+pub struct SharedRquestClient(pub Arc<rquest::Client>);
+
+/// Start a streaming fetch — sends request, returns headers + stream_id.
+///
+/// The response body stays open for incremental reading via `op_fetch_read_chunk`.
+/// Uses the same URL-skip logic, cookie injection, and header merging as `op_fetch`.
+#[op2(async)]
+#[string]
+pub async fn op_fetch_start(
+    state: Rc<RefCell<OpState>>,
+    #[string] url: String,
+    #[string] method: String,
+    #[string] body: String,
+    #[string] headers_json: String,
+) -> Result<String, deno_core::error::AnyError> {
+    if should_skip_url(&url) {
+        tokio::task::yield_now().await;
+        let stream_id = {
+            let mut s = state.borrow_mut();
+            let store = s.borrow_mut::<StreamStore>();
+            let id = store.next_id;
+            store.next_id += 1;
+            id
+        };
+        return Ok(serde_json::json!({
+            "stream_id": stream_id,
+            "status": 200,
+            "headers": {},
+            "url": url,
+        })
+        .to_string());
+    }
+
+    // Check fetch budget.
+    let (raw_client, timeout_ms, budget) = {
+        let s = state.borrow();
+        let fetch_budget = s.try_borrow::<FetchBudget>().cloned();
+        if let Some(ref fb) = fetch_budget {
+            if fb.is_aborted() {
+                return Err(deno_core::error::generic_error("fetch aborted by watchdog"));
+            }
+            if !fb.start_fetch() {
+                return Err(deno_core::error::generic_error(
+                    "fetch budget exceeded: too many concurrent requests",
+                ));
+            }
+        }
+        let timeout = fetch_budget
+            .as_ref()
+            .map(|fb| fb.per_request_timeout_ms())
+            .unwrap_or(5000);
+        let handle = s
+            .try_borrow::<SharedRquestClient>()
+            .ok_or_else(|| deno_core::error::generic_error("No RquestClient in OpState"))?;
+        (handle.0.clone(), timeout, fetch_budget)
+    };
+
+    let mut headers = parse_headers(&headers_json);
+    let body_opt = if body.is_empty() { None } else { Some(body) };
+
+    // Auto-inject cookies.
+    let cookie_store_arc = {
+        let s = state.borrow();
+        if !headers.contains_key("cookie") && !headers.contains_key("Cookie") {
+            if let Some(store) = s.try_borrow::<SharedCookieStore>() {
+                if let Some(ref cs) = store.0 {
+                    let cookie_header = cs.get_for_request(&url, None, true);
+                    if !cookie_header.is_empty() {
+                        headers.insert("Cookie".to_string(), cookie_header);
+                    }
+                }
+            }
+        }
+        s.try_borrow::<SharedCookieStore>()
+            .and_then(|s| s.0.clone())
+    };
+
+    // Build and send request.
+    let m: rquest::Method = method
+        .parse()
+        .map_err(|e| deno_core::error::generic_error(format!("bad method: {e}")))?;
+    let mut builder = raw_client
+        .request(m, &url)
+        .timeout(std::time::Duration::from_millis(timeout_ms as u64));
+
+    // Apply merged headers (classification defaults + request-specific).
+    let fetch_headers = neo_http::headers::fetch_headers();
+    for (k, v) in &fetch_headers {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    for (k, v) in &headers {
+        builder = builder.header(k.as_str(), v.as_str());
+    }
+    if let Some(b) = body_opt {
+        builder = builder.body(b);
+    }
+
+    let resp = builder
+        .send()
+        .await
+        .map_err(|e| deno_core::error::generic_error(format!("fetch_start send: {e}")))?;
+
+    // Release budget slot (connection established, headers received).
+    if let Some(ref fb) = budget {
+        fb.finish_fetch();
+    }
+
+    let status = resp.status().as_u16();
+    let resp_headers: HashMap<String, String> = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let resp_url = resp.url().to_string();
+
+    // Store Set-Cookie headers.
+    if let Some(ref cs) = cookie_store_arc {
+        for key in &["set-cookie", "Set-Cookie"] {
+            if let Some(val) = resp_headers.get(*key) {
+                cs.store_set_cookie(&url, val);
+            }
+        }
+    }
+
+    // Store response for streaming reads.
+    let stream_id = {
+        let mut s = state.borrow_mut();
+        let store = s.borrow_mut::<StreamStore>();
+        let id = store.next_id;
+        store.next_id += 1;
+        store.streams.insert(
+            id,
+            ActiveStream {
+                response: Some(resp),
+                created_at: std::time::Instant::now(),
+            },
+        );
+        id
+    };
+
+    Ok(serde_json::json!({
+        "stream_id": stream_id,
+        "status": status,
+        "headers": resp_headers,
+        "url": resp_url,
+    })
+    .to_string())
+}
+
+/// Read the next chunk from a streaming fetch response.
+///
+/// Returns `{ "done": false, "data": "base64..." }` for each chunk,
+/// or `{ "done": true }` when the stream is exhausted.
+/// Automatically removes the stream from the store on EOF or error.
+#[op2(async)]
+#[string]
+pub async fn op_fetch_read_chunk(
+    state: Rc<RefCell<OpState>>,
+    #[smi] stream_id: u32,
+) -> Result<String, deno_core::error::AnyError> {
+    // Extract the response from the store — MUST NOT hold borrow across await.
+    let mut resp = {
+        let mut s = state.borrow_mut();
+        let store = s.borrow_mut::<StreamStore>();
+        let stream = store
+            .streams
+            .get_mut(&stream_id)
+            .ok_or_else(|| deno_core::error::generic_error("stream not found"))?;
+        stream
+            .response
+            .take()
+            .ok_or_else(|| deno_core::error::generic_error("stream already reading"))?
+    };
+
+    // Read next chunk with a 30s timeout.
+    let chunk_result =
+        tokio::time::timeout(std::time::Duration::from_secs(30), resp.chunk()).await;
+
+    match chunk_result {
+        Ok(Ok(Some(bytes))) => {
+            // Put response back for next read.
+            {
+                let mut s = state.borrow_mut();
+                let store = s.borrow_mut::<StreamStore>();
+                if let Some(stream) = store.streams.get_mut(&stream_id) {
+                    stream.response = Some(resp);
+                }
+            }
+            // Return chunk as UTF-8 text (most web responses are text).
+            let text = String::from_utf8_lossy(&bytes);
+            Ok(serde_json::json!({
+                "done": false,
+                "data": text,
+            })
+            .to_string())
+        }
+        Ok(Ok(None)) => {
+            // EOF — clean up.
+            let mut s = state.borrow_mut();
+            let store = s.borrow_mut::<StreamStore>();
+            store.streams.remove(&stream_id);
+            Ok(r#"{"done":true}"#.to_string())
+        }
+        Ok(Err(e)) => {
+            // Read error — clean up.
+            let mut s = state.borrow_mut();
+            let store = s.borrow_mut::<StreamStore>();
+            store.streams.remove(&stream_id);
+            Err(deno_core::error::generic_error(format!(
+                "chunk read error: {e}"
+            )))
+        }
+        Err(_) => {
+            // Timeout — clean up.
+            let mut s = state.borrow_mut();
+            let store = s.borrow_mut::<StreamStore>();
+            store.streams.remove(&stream_id);
+            Err(deno_core::error::generic_error("chunk read timeout (30s)"))
+        }
+    }
+}
+
+/// Close a streaming fetch, releasing the response.
+///
+/// Safe to call multiple times or on already-closed streams.
+#[op2(fast)]
+pub fn op_fetch_close(state: Rc<RefCell<OpState>>, #[smi] stream_id: u32) {
+    let mut s = state.borrow_mut();
+    if let Some(store) = s.try_borrow_mut::<StreamStore>() {
+        store.streams.remove(&stream_id);
+    }
+}
+
 /// Fetch a URL. ASYNC op — yields to event loop during I/O.
 ///
 /// Delegates to the `HttpClient` trait object in OpState.

@@ -42,6 +42,21 @@ impl RquestClient {
     }
 }
 
+impl RquestClient {
+    /// Expose the raw rquest client for streaming ops.
+    ///
+    /// Used by neo-runtime's streaming fetch ops which need to hold the
+    /// response open across multiple read_chunk calls.
+    pub fn raw_client(&self) -> Arc<rquest::Client> {
+        Arc::clone(&self.client)
+    }
+
+    /// Get the configured timeout.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
 impl Default for RquestClient {
     fn default() -> Self {
         Self::default_client().expect("failed to build default RquestClient")
@@ -77,7 +92,9 @@ impl HttpClient for RquestClient {
 }
 
 /// Merge classification-based defaults with request-specific headers.
-fn build_headers(req: &HttpRequest) -> Vec<(String, String)> {
+///
+/// Public so streaming fetch ops can build the same header set.
+pub fn build_headers(req: &HttpRequest) -> Vec<(String, String)> {
     let base = match req.context.kind {
         RequestKind::Navigation | RequestKind::FormSubmit => headers::navigation_headers(),
         _ => headers::fetch_headers(),

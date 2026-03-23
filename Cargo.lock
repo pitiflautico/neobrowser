@@ -1502,6 +1502,7 @@ dependencies = [
  "neo-dom",
  "neo-http",
  "neo-types",
+ "rquest",
  "serde",
  "serde_json",
  "tempfile",

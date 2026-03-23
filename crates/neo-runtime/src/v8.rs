@@ -36,6 +36,9 @@ deno_core::extension!(
         ops::op_yield,
         ops::op_sleep_ms,
         ops::op_pow_solve,
+        ops::op_fetch_start,
+        ops::op_fetch_read_chunk,
+        ops::op_fetch_close,
     ],
 );
 
@@ -71,7 +74,7 @@ unsafe impl Send for DenoRuntime {}
 impl DenoRuntime {
     /// Create a new V8 runtime with the given configuration.
     pub fn new(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
-        Self::new_inner(config, None, None, SchedulerConfig::default())
+        Self::new_inner(config, None, None, None, SchedulerConfig::default())
     }
 
     /// Create a new V8 runtime with an HttpClient for op_fetch.
@@ -82,7 +85,7 @@ impl DenoRuntime {
         config: &RuntimeConfig,
         http_client: Arc<dyn HttpClient>,
     ) -> Result<Self, RuntimeError> {
-        Self::new_inner(config, Some(http_client), None, SchedulerConfig::default())
+        Self::new_inner(config, Some(http_client), None, None, SchedulerConfig::default())
     }
 
     /// Create a new V8 runtime with HTTP client and cookie store.
@@ -98,6 +101,27 @@ impl DenoRuntime {
             config,
             Some(http_client),
             Some(cookie_store),
+            None,
+            SchedulerConfig::default(),
+        )
+    }
+
+    /// Create a new V8 runtime with HTTP client, cookie store, and raw rquest
+    /// client for streaming fetch (G2).
+    ///
+    /// The `raw_client` enables `op_fetch_start` / `op_fetch_read_chunk` —
+    /// without it, only the non-streaming `op_fetch` works.
+    pub fn new_with_streaming(
+        config: &RuntimeConfig,
+        http_client: Arc<dyn HttpClient>,
+        cookie_store: Arc<dyn CookieStore>,
+        raw_client: Arc<rquest::Client>,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_inner(
+            config,
+            Some(http_client),
+            Some(cookie_store),
+            Some(raw_client),
             SchedulerConfig::default(),
         )
     }
@@ -108,13 +132,14 @@ impl DenoRuntime {
         http_client: Option<Arc<dyn HttpClient>>,
         scheduler_config: SchedulerConfig,
     ) -> Result<Self, RuntimeError> {
-        Self::new_inner(config, http_client, None, scheduler_config)
+        Self::new_inner(config, http_client, None, None, scheduler_config)
     }
 
     fn new_inner(
         config: &RuntimeConfig,
         http_client: Option<Arc<dyn HttpClient>>,
         cookie_store: Option<Arc<dyn CookieStore>>,
+        raw_client: Option<Arc<rquest::Client>>,
         scheduler_config: SchedulerConfig,
     ) -> Result<Self, RuntimeError> {
         let store = Rc::new(RefCell::new(crate::modules::ScriptStore::default()));
@@ -164,7 +189,11 @@ impl DenoRuntime {
             if let Some(client) = http_client {
                 state.put(ops::SharedHttpClient(client));
             }
+            if let Some(rc) = raw_client {
+                state.put(ops::SharedRquestClient(rc));
+            }
             state.put(ops::SharedCookieStore(cookie_store));
+            state.put(ops::StreamStore::default());
             state.put(ops::ConsoleBuffer::default());
             state.put(ops::StorageState::default());
             state.put(ops::NavigationQueue::default());

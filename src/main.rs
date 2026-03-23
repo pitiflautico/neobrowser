@@ -84,15 +84,19 @@ fn create_engine() -> NeoSession {
         .expect("failed to open cookie store at ~/.neorender/cookies.db");
     let cookie_store_arc: std::sync::Arc<dyn CookieStore> = std::sync::Arc::new(cookie_store);
 
-    // Create V8 runtime with shared HttpClient and cookie store for op_fetch.
+    // Create V8 runtime with shared HttpClient, cookie store, and raw client
+    // for both op_fetch (non-streaming) and op_fetch_start (streaming G2).
+    let rquest_for_v8 = RquestClient::default();
+    let raw_client = rquest_for_v8.raw_client();
     let http_for_v8: std::sync::Arc<dyn neo_http::HttpClient> =
-        std::sync::Arc::new(RquestClient::default());
+        std::sync::Arc::new(rquest_for_v8);
     let rt_config = neo_runtime::RuntimeConfig::default();
     let runtime: Option<Box<dyn neo_runtime::JsRuntime>> =
-        match neo_runtime::v8::DenoRuntime::new_with_cookies(
+        match neo_runtime::v8::DenoRuntime::new_with_streaming(
             &rt_config,
             http_for_v8,
             cookie_store_arc.clone(),
+            raw_client,
         ) {
             Ok(rt) => Some(Box::new(rt)),
             Err(e) => {

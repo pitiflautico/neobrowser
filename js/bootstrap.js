@@ -853,6 +853,33 @@ globalThis.performance.getEntriesByType = globalThis.performance.getEntriesByTyp
 globalThis.performance.getEntriesByName = globalThis.performance.getEntriesByName || function(){ return []; };
 globalThis.performance.timeOrigin = globalThis.performance.timeOrigin || __perfOrigin;
 
+// PerformanceObserver
+if (typeof globalThis.PerformanceObserver === 'undefined') {
+    globalThis.PerformanceObserver = class PerformanceObserver {
+        constructor(cb) {}
+        observe() {}
+        disconnect() {}
+        takeRecords() { return []; }
+        static supportedEntryTypes = [];
+    };
+}
+
+// Worker stub
+if (typeof globalThis.Worker === 'undefined') {
+    globalThis.Worker = class Worker extends EventTarget {
+        constructor() { super(); }
+        postMessage() {}
+        terminate() {}
+    };
+}
+
+// SharedWorker stub
+if (typeof globalThis.SharedWorker === 'undefined') {
+    globalThis.SharedWorker = class SharedWorker extends EventTarget {
+        constructor() { super(); this.port = new MessagePort(); }
+    };
+}
+
 // Crypto
 globalThis.crypto = globalThis.crypto || {
     getRandomValues: (arr) => { for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256); return arr; },
@@ -1401,7 +1428,9 @@ if (!globalThis.crypto?.subtle?.digest || globalThis.crypto?.subtle?.digest?.toS
     globalThis.crypto.subtle = globalThis.crypto.subtle || {};
     // digest: sync internally, returns resolved Promise (API compat) but also works without await
     const _digestSync = function(algo, data) {
-        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer || data);
+        const name = typeof algo === 'string' ? algo : algo?.name || 'SHA-256';
+        if (name === 'SHA-512') return _sha512(bytes).buffer;
         return _sha256(bytes).buffer;
     };
     globalThis.crypto.subtle.digest = function(algo, data) {
@@ -1415,15 +1444,139 @@ if (!globalThis.crypto?.subtle?.digest || globalThis.crypto?.subtle?.digest?.toS
     };
     // Also expose sync version for POW loops
     globalThis.crypto.subtle.digestSync = _digestSync;
-    globalThis.crypto.subtle.importKey = async () => ({});
-    globalThis.crypto.subtle.sign = async () => new ArrayBuffer(32);
-    globalThis.crypto.subtle.verify = async () => true;
-    globalThis.crypto.subtle.generateKey = async () => ({ publicKey: {}, privateKey: {} });
-    globalThis.crypto.subtle.exportKey = async () => new ArrayBuffer(32);
-    globalThis.crypto.subtle.encrypt = async () => new ArrayBuffer(32);
-    globalThis.crypto.subtle.decrypt = async () => new ArrayBuffer(0);
-    globalThis.crypto.subtle.deriveBits = async () => new ArrayBuffer(32);
-    globalThis.crypto.subtle.deriveKey = async () => ({});
+    // ── SHA-512 (pure JS) — needed for HMAC-SHA-512 (ChatGPT) ──
+    const _sha512 = (function() {
+        // 64-bit math via pairs of 32-bit ints [hi, lo]
+        function add64(a,b){var lo=(a[1]>>>0)+(b[1]>>>0),hi=(a[0]>>>0)+(b[0]>>>0)+((lo/0x100000000)>>>0);return[hi>>>0,lo>>>0]}
+        function rotr64(v,n){if(n<32)return[(v[0]>>>n|v[1]<<(32-n))>>>0,(v[1]>>>n|v[0]<<(32-n))>>>0];return[(v[1]>>>(n-32)|v[0]<<(64-n))>>>0,(v[0]>>>(n-32)|v[1]<<(64-n))>>>0]}
+        function shr64(v,n){if(n<32)return[(v[0]>>>n)>>>0,(v[1]>>>n|v[0]<<(32-n))>>>0];return[0,(v[0]>>>(n-32))>>>0]}
+        function xor64(a,b){return[(a[0]^b[0])>>>0,(a[1]^b[1])>>>0]}
+        function and64(a,b){return[(a[0]&b[0])>>>0,(a[1]&b[1])>>>0]}
+        function not64(a){return[(~a[0])>>>0,(~a[1])>>>0]}
+        const K=[[0x428a2f98,0xd728ae22],[0x71374491,0x23ef65cd],[0xb5c0fbcf,0xec4d3b2f],[0xe9b5dba5,0x8189dbbc],[0x3956c25b,0xf348b538],[0x59f111f1,0xb605d019],[0x923f82a4,0xaf194f9b],[0xab1c5ed5,0xda6d8118],[0xd807aa98,0xa3030242],[0x12835b01,0x45706fbe],[0x243185be,0x4ee4b28c],[0x550c7dc3,0xd5ffb4e2],[0x72be5d74,0xf27b896f],[0x80deb1fe,0x3b1696b1],[0x9bdc06a7,0x25c71235],[0xc19bf174,0xcf692694],[0xe49b69c1,0x9ef14ad2],[0xefbe4786,0x384f25e3],[0x0fc19dc6,0x8b8cd5b5],[0x240ca1cc,0x77ac9c65],[0x2de92c6f,0x592b0275],[0x4a7484aa,0x6ea6e483],[0x5cb0a9dc,0xbd41fbd4],[0x76f988da,0x831153b5],[0x983e5152,0xee66dfab],[0xa831c66d,0x2db43210],[0xb00327c8,0x98fb213f],[0xbf597fc7,0xbeef0ee4],[0xc6e00bf3,0x3da88fc2],[0xd5a79147,0x930aa725],[0x06ca6351,0xe003826f],[0x14292967,0x0a0e6e70],[0x27b70a85,0x46d22ffc],[0x2e1b2138,0x5c26c926],[0x4d2c6dfc,0x5ac42aed],[0x53380d13,0x9d95b3df],[0x650a7354,0x8baf63de],[0x766a0abb,0x3c77b2a8],[0x81c2c92e,0x47edaee6],[0x92722c85,0x1482353b],[0xa2bfe8a1,0x4cf10364],[0xa81a664b,0xbc423001],[0xc24b8b70,0xd0f89791],[0xc76c51a3,0x0654be30],[0xd192e819,0xd6ef5218],[0xd6990624,0x5565a910],[0xf40e3585,0x5771202a],[0x106aa070,0x32bbd1b8],[0x19a4c116,0xb8d2d0c8],[0x1e376c08,0x5141ab53],[0x2748774c,0xdf8eeb99],[0x34b0bcb5,0xe19b48a8],[0x391c0cb3,0xc5c95a63],[0x4ed8aa4a,0xe3418acb],[0x5b9cca4f,0x7763e373],[0x682e6ff3,0xd6b2b8a3],[0x748f82ee,0x5defb2fc],[0x78a5636f,0x43172f60],[0x84c87814,0xa1f0ab72],[0x8cc70208,0x1a6439ec],[0x90befffa,0x23631e28],[0xa4506ceb,0xde82bde9],[0xbef9a3f7,0xb2c67915],[0xc67178f2,0xe372532b],[0xca273ece,0xea26619c],[0xd186b8c7,0x21c0c207],[0xeada7dd6,0xcde0eb1e],[0xf57d4f7f,0xee6ed178],[0x06f067aa,0x72176fba],[0x0a637dc5,0xa2c898a6],[0x113f9804,0xbef90dae],[0x1b710b35,0x131c471b],[0x28db77f5,0x23047d84],[0x32caab7b,0x40c72493],[0x3c9ebe0a,0x15c9bebc],[0x431d67c4,0x9c100d4c],[0x4cc5d4be,0xcb3e42b6],[0x597f299c,0xfc657e2a],[0x5fcb6fab,0x3ad6faec],[0x6c44198c,0x4a475817]];
+        const H0=[[0x6a09e667,0xf3bcc908],[0xbb67ae85,0x84caa73b],[0x3c6ef372,0xfe94f82b],[0xa54ff53a,0x5f1d36f1],[0x510e527f,0xade682d1],[0x9b05688c,0x2b3e6c1f],[0x1f83d9ab,0xfb41bd6b],[0x5be0cd19,0x137e2179]];
+        return function(msg){
+            var bytes=typeof msg==='string'?new TextEncoder().encode(msg):new Uint8Array(msg);
+            var len=bytes.length,bitLen=len*8;
+            var padLen=Math.ceil((len+17)/128)*128;
+            var padded=new Uint8Array(padLen);padded.set(bytes);padded[len]=0x80;
+            var dv=new DataView(padded.buffer);dv.setUint32(padLen-4,bitLen,false);
+            var h=H0.map(function(x){return x.slice()});
+            for(var off=0;off<padLen;off+=128){
+                var w=[];
+                for(var i=0;i<16;i++)w[i]=[dv.getUint32(off+i*8,false),dv.getUint32(off+i*8+4,false)];
+                for(var i=16;i<80;i++){
+                    var s0=xor64(xor64(rotr64(w[i-15],1),rotr64(w[i-15],8)),shr64(w[i-15],7));
+                    var s1=xor64(xor64(rotr64(w[i-2],19),rotr64(w[i-2],61)),shr64(w[i-2],6));
+                    w[i]=add64(add64(add64(w[i-16],s0),w[i-7]),s1);
+                }
+                var a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],hh=h[7];
+                for(var i=0;i<80;i++){
+                    var S1=xor64(xor64(rotr64(e,14),rotr64(e,18)),rotr64(e,41));
+                    var ch=xor64(and64(e,f),and64(not64(e),g));
+                    var t1=add64(add64(add64(add64(hh,S1),ch),K[i]),w[i]);
+                    var S0=xor64(xor64(rotr64(a,28),rotr64(a,34)),rotr64(a,39));
+                    var maj=xor64(xor64(and64(a,b),and64(a,c)),and64(b,c));
+                    var t2=add64(S0,maj);
+                    hh=g;g=f;f=e;e=add64(d,t1);d=c;c=b;b=a;a=add64(t1,t2);
+                }
+                for(var i=0;i<8;i++)h[i]=add64(h[i],[a,b,c,d,e,f,g,hh][i]);
+            }
+            var result=new Uint8Array(64);var rv=new DataView(result.buffer);
+            for(var i=0;i<8;i++){rv.setUint32(i*8,h[i][0],false);rv.setUint32(i*8+4,h[i][1],false)}
+            return result;
+        };
+    })();
+
+    // ── HMAC (SHA-256/SHA-512) ──
+    function _hmac(hashFn, blockSize, keyBytes, msgBytes) {
+        var key = new Uint8Array(keyBytes);
+        if (key.length > blockSize) key = hashFn(key);
+        var padded = new Uint8Array(blockSize);
+        padded.set(key);
+        var ipad = new Uint8Array(blockSize), opad = new Uint8Array(blockSize);
+        for (var i = 0; i < blockSize; i++) { ipad[i] = padded[i] ^ 0x36; opad[i] = padded[i] ^ 0x5c; }
+        var inner = new Uint8Array(blockSize + msgBytes.length);
+        inner.set(ipad); inner.set(new Uint8Array(msgBytes), blockSize);
+        var innerHash = hashFn(inner);
+        var outer = new Uint8Array(blockSize + innerHash.length);
+        outer.set(opad); outer.set(innerHash, blockSize);
+        return hashFn(outer);
+    }
+
+    // ── CryptoKey model ──
+    class NeoCryptoKey {
+        constructor(type, extractable, algorithm, usages, raw) {
+            this.type = type;
+            this.extractable = extractable;
+            this.algorithm = algorithm;
+            this.usages = usages;
+            this._raw = raw; // Uint8Array
+        }
+    }
+
+    // ── crypto.subtle methods (real HMAC-SHA-256/512) ──
+    function _getHash(algo) {
+        var name = typeof algo === 'string' ? algo : algo?.hash?.name || algo?.hash || algo?.name || 'SHA-256';
+        if (name === 'SHA-256' || name === 'SHA-256') return { fn: _sha256, size: 32, block: 64, name: 'SHA-256' };
+        if (name === 'SHA-512') return { fn: _sha512, size: 64, block: 128, name: 'SHA-512' };
+        return { fn: _sha256, size: 32, block: 64, name: 'SHA-256' };
+    }
+
+    globalThis.crypto.subtle.generateKey = async function(algo, extractable, usages) {
+        var h = _getHash(algo);
+        var raw = new Uint8Array(h.block);
+        crypto.getRandomValues(raw);
+        return new NeoCryptoKey('secret', extractable, { name: algo?.name || 'HMAC', hash: { name: h.name } }, usages, raw);
+    };
+
+    globalThis.crypto.subtle.importKey = async function(format, keyData, algo, extractable, usages) {
+        var raw;
+        if (format === 'raw') {
+            raw = new Uint8Array(keyData instanceof ArrayBuffer ? keyData : keyData.buffer || keyData);
+        } else if (format === 'jwk') {
+            // JWK: decode k field (base64url)
+            var k = keyData.k || '';
+            var b64 = k.replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4) b64 += '=';
+            raw = new Uint8Array(atob(b64).split('').map(function(c) { return c.charCodeAt(0); }));
+        } else {
+            raw = new Uint8Array(64);
+        }
+        return new NeoCryptoKey('secret', extractable, { name: algo?.name || 'HMAC', hash: { name: _getHash(algo).name } }, usages, raw);
+    };
+
+    globalThis.crypto.subtle.exportKey = async function(format, key) {
+        if (!(key instanceof NeoCryptoKey)) return new ArrayBuffer(0);
+        if (format === 'raw') return key._raw.buffer.slice(0);
+        if (format === 'jwk') {
+            var b64 = btoa(String.fromCharCode.apply(null, key._raw)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+            return { kty: 'oct', k: b64, alg: 'HS' + (_getHash(key.algorithm).size * 8), ext: key.extractable, key_ops: key.usages };
+        }
+        return key._raw.buffer.slice(0);
+    };
+
+    globalThis.crypto.subtle.sign = async function(algo, key, data) {
+        // Prefer key's stored algorithm (has hash info), fall back to algo param
+        var h = _getHash(key?.algorithm?.hash || algo?.hash || key?.algorithm || algo);
+        var raw = (key instanceof NeoCryptoKey) ? key._raw : new Uint8Array(h.block);
+        var msg = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer || data);
+        return _hmac(h.fn, h.block, raw, msg).buffer;
+    };
+
+    globalThis.crypto.subtle.verify = async function(algo, key, signature, data) {
+        // sign() already reads from key.algorithm, just delegate
+        var signed = await globalThis.crypto.subtle.sign(algo, key, data);
+        var a = new Uint8Array(signed), b = new Uint8Array(signature instanceof ArrayBuffer ? signature : signature.buffer || signature);
+        if (a.length !== b.length) return false;
+        for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+        return true;
+    };
+
+    globalThis.crypto.subtle.encrypt = async function() { return new ArrayBuffer(32); };
+    globalThis.crypto.subtle.decrypt = async function() { return new ArrayBuffer(0); };
+    globalThis.crypto.subtle.deriveBits = async function() { return new ArrayBuffer(32); };
+    globalThis.crypto.subtle.deriveKey = async function() { return new NeoCryptoKey('secret', true, {name:'HMAC'}, ['sign'], new Uint8Array(64)); };
 }
 
 // ═══════════════════════════════════════════════════════════════

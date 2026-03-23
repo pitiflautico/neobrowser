@@ -1439,3 +1439,95 @@ if (!globalThis.SubmitEvent) {
         return result;
     };
 })();
+
+// ═══════════════════════════════════════════════════════════════
+// LAYOUT STUBS — plausible non-zero values without layout engine
+// ═══════════════════════════════════════════════════════════════
+//
+// Many SPAs use getBoundingClientRect, offsetWidth, scrollHeight etc.
+// for responsive logic, virtualized lists, lazy loading, visibility checks.
+// Without values, this logic fails silently. We provide heuristic sizing.
+
+(function installLayoutStubs() {
+    const VP_W = 1920, VP_H = 1080;
+    const BLOCK_TAGS = new Set([
+        'div','p','section','article','main','header','footer','nav',
+        'form','ul','ol','li','h1','h2','h3','h4','h5','h6',
+        'table','tr','tbody','thead','tfoot','body','html',
+        'details','summary','dialog','aside','figure','figcaption'
+    ]);
+
+    // getBoundingClientRect — heuristic based on tag and content
+    const _origGBCR = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function() {
+        const tag = (this.tagName || '').toLowerCase();
+        const isBlock = BLOCK_TAGS.has(tag);
+        const textLen = (this.textContent || '').length;
+        const childCount = this.children?.length || 0;
+
+        let w, h;
+        if (tag === 'body' || tag === 'html') {
+            w = VP_W; h = VP_H;
+        } else if (isBlock) {
+            w = VP_W;
+            h = Math.max(20, Math.min(childCount * 30 + textLen * 0.3, 2000));
+        } else {
+            w = Math.min(Math.max(textLen * 8, 20), VP_W);
+            h = 20;
+        }
+
+        return {
+            top: 0, left: 0, right: w, bottom: h,
+            width: w, height: h, x: 0, y: 0,
+            toJSON() { return { top:0, left:0, right:w, bottom:h, width:w, height:h, x:0, y:0 }; }
+        };
+    };
+
+    // offset* properties
+    function defineLayoutProp(proto, prop, fallback) {
+        // Override even if happy-dom already defines a getter (it returns 0)
+        Object.defineProperty(proto, prop, {
+            get() {
+                const rect = this.getBoundingClientRect();
+                return fallback(rect);
+            },
+            configurable: true,
+        });
+    }
+
+    defineLayoutProp(HTMLElement.prototype, 'offsetWidth', r => r.width);
+    defineLayoutProp(HTMLElement.prototype, 'offsetHeight', r => r.height);
+    defineLayoutProp(HTMLElement.prototype, 'offsetTop', r => r.top);
+    defineLayoutProp(HTMLElement.prototype, 'offsetLeft', r => r.left);
+    defineLayoutProp(HTMLElement.prototype, 'clientWidth', r => r.width);
+    defineLayoutProp(HTMLElement.prototype, 'clientHeight', r => r.height);
+    defineLayoutProp(HTMLElement.prototype, 'scrollWidth', r => r.width);
+    defineLayoutProp(HTMLElement.prototype, 'scrollHeight', r => Math.max(r.height, r.width));
+    defineLayoutProp(HTMLElement.prototype, 'scrollTop', () => 0);
+    defineLayoutProp(HTMLElement.prototype, 'scrollLeft', () => 0);
+
+    // window.innerWidth/Height
+    if (!globalThis.innerWidth) {
+        Object.defineProperty(globalThis, 'innerWidth', { value: VP_W, writable: true });
+        Object.defineProperty(globalThis, 'innerHeight', { value: VP_H, writable: true });
+        Object.defineProperty(globalThis, 'outerWidth', { value: VP_W, writable: true });
+        Object.defineProperty(globalThis, 'outerHeight', { value: VP_H, writable: true });
+    }
+
+    // screen
+    globalThis.screen = globalThis.screen || {
+        width: VP_W, height: VP_H,
+        availWidth: VP_W, availHeight: VP_H,
+        colorDepth: 24, pixelDepth: 24,
+        orientation: { type: 'landscape-primary', angle: 0 },
+    };
+
+    // window.devicePixelRatio
+    if (!globalThis.devicePixelRatio) globalThis.devicePixelRatio = 2;
+
+    // scrollTo / scrollBy / scroll — no-ops
+    if (!globalThis.scrollTo) globalThis.scrollTo = function() {};
+    if (!globalThis.scrollBy) globalThis.scrollBy = function() {};
+    if (!globalThis.scroll) globalThis.scroll = function() {};
+    if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = function() {};
+})();

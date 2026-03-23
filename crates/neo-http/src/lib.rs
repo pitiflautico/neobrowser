@@ -124,7 +124,7 @@ pub trait HttpCache: Send + Sync {
 pub use cache::DiskCache;
 pub use classify::{classify_url, is_heavy_script, should_skip};
 pub use classify_request::{classify_request, ClassificationOverrides, RequestCategory};
-pub use client::RquestClient;
+pub use client::{build_headers, RquestClient};
 pub use cookies::{ChromeCookieImporter, SqliteCookieStore};
 pub use mock::{InMemoryCookieStore, InMemoryWebStorage, MockHttpClient, NoopCache};
 pub use storage::SqliteWebStorage;

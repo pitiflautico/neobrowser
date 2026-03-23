@@ -9,6 +9,7 @@ neo-http = { path = "../neo-http" }
 neo-dom = { path = "../neo-dom" }
 deno_core = "0.311"
 tokio = { workspace = true }
+rquest = "=5.1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
