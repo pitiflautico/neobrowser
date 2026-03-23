@@ -28,6 +28,8 @@ impl RquestClient {
             .cookie_store(true)
             .redirect(rquest::redirect::Policy::limited(10))
             .timeout(timeout)
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(0) // disable connection pooling to avoid HTTP/2 stream contention
             .build()
             .map_err(|e| HttpError::Network(e.to_string()))?;
         Ok(Self {
