@@ -75,7 +75,7 @@ impl Default for OpsSchedulerConfig {
 
 /// Store for active streaming HTTP responses.
 ///
-/// Keeps `rquest::Response` objects alive between `op_fetch_start` and
+/// Keeps `wreq::Response` objects alive between `op_fetch_start` and
 /// subsequent `op_fetch_read_chunk` calls. Each stream gets a unique u32 id.
 pub struct StreamStore {
     streams: HashMap<u32, ActiveStream>,
@@ -83,7 +83,7 @@ pub struct StreamStore {
 }
 
 struct ActiveStream {
-    response: Option<rquest::Response>,
+    response: Option<wreq::Response>,
     /// Tracked for future TTL-based cleanup of abandoned streams.
     #[allow(dead_code)]
     created_at: std::time::Instant,
@@ -98,11 +98,11 @@ impl Default for StreamStore {
     }
 }
 
-/// Shared raw rquest client for streaming fetch ops.
+/// Shared raw wreq client for streaming fetch ops.
 ///
 /// Stored separately from `SharedHttpClient` because streaming needs the raw
-/// `rquest::Client` to get an `rquest::Response` without reading the body.
-pub struct SharedRquestClient(pub Arc<rquest::Client>);
+/// `wreq::Client` to get an `wreq::Response` without reading the body.
+pub struct SharedRquestClient(pub Arc<wreq::Client>);
 
 /// Start a streaming fetch — sends request, returns headers + stream_id.
 ///
@@ -180,7 +180,7 @@ pub async fn op_fetch_start(
     };
 
     // Build and send request.
-    let m: rquest::Method = method
+    let m: wreq::Method = method
         .parse()
         .map_err(|e| deno_core::error::generic_error(format!("bad method: {e}")))?;
     let mut builder = raw_client
@@ -215,7 +215,7 @@ pub async fn op_fetch_start(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
-    let resp_url = resp.url().to_string();
+    let resp_url = resp.uri().to_string();
 
     // Store Set-Cookie headers.
     if let Some(ref cs) = cookie_store_arc {
@@ -439,7 +439,7 @@ pub async fn op_fetch(
     // This is safe because spawn_blocking runs on a dedicated blocking thread pool,
     // not inside the current_thread runtime's async executor.
     let result = tokio::task::spawn_blocking(move || {
-        let m: rquest::Method = method
+        let m: wreq::Method = method
             .parse()
             .map_err(|e| format!("bad method: {e}"))?;
 

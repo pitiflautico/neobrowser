@@ -108,7 +108,7 @@ impl DenoRuntime {
         )
     }
 
-    /// Create a new V8 runtime with HTTP client, cookie store, and raw rquest
+    /// Create a new V8 runtime with HTTP client, cookie store, and raw wreq
     /// client for streaming fetch (G2).
     ///
     /// The `raw_client` enables `op_fetch_start` / `op_fetch_read_chunk` —
@@ -117,7 +117,7 @@ impl DenoRuntime {
         config: &RuntimeConfig,
         http_client: Arc<dyn HttpClient>,
         cookie_store: Arc<dyn CookieStore>,
-        raw_client: Arc<rquest::Client>,
+        raw_client: Arc<wreq::Client>,
     ) -> Result<Self, RuntimeError> {
         Self::new_inner(
             config,
@@ -141,7 +141,7 @@ impl DenoRuntime {
         config: &RuntimeConfig,
         http_client: Option<Arc<dyn HttpClient>>,
         cookie_store: Option<Arc<dyn CookieStore>>,
-        raw_client: Option<Arc<rquest::Client>>,
+        raw_client: Option<Arc<wreq::Client>>,
         scheduler_config: SchedulerConfig,
     ) -> Result<Self, RuntimeError> {
         let store = Rc::new(RefCell::new(crate::modules::ScriptStore::default()));

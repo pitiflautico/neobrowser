@@ -1,4 +1,4 @@
-//! HTTP client backed by rquest with Chrome 136 TLS fingerprint.
+//! HTTP client backed by wreq with Chrome 137 TLS fingerprint.
 
 use crate::classify::should_skip;
 use crate::headers;
@@ -7,26 +7,34 @@ use neo_types::HttpResponse;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// HTTP client using rquest with Chrome 136 TLS emulation.
+/// HTTP client using wreq with Chrome 137 TLS emulation.
 ///
-/// Wraps a connection-pooled `rquest::Client` and executes requests
+/// Wraps a connection-pooled `wreq::Client` and executes requests
 /// on a dedicated tokio runtime thread to avoid async conflicts.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RquestClient {
-    client: Arc<rquest::Client>,
+    client: Arc<wreq::Client>,
     timeout: Duration,
 }
 
+impl std::fmt::Debug for RquestClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RquestClient")
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
+}
+
 impl RquestClient {
-    /// Create a new client with Chrome 136 TLS and the given timeout.
+    /// Create a new client with Chrome 137 TLS and the given timeout.
     ///
-    /// Uses `rquest_util::Emulation::Chrome135` for an authentic TLS fingerprint.
+    /// Uses `wreq_util::Emulation::Chrome139` for an authentic TLS fingerprint.
     pub fn new(timeout_ms: u64) -> Result<Self, HttpError> {
         let timeout = Duration::from_millis(timeout_ms);
-        let client = rquest::Client::builder()
-            .emulation(rquest_util::Emulation::Chrome136)
+        let client = wreq::Client::builder()
+            .emulation(wreq_util::Emulation::Chrome139)
             .cookie_store(true)
-            .redirect(rquest::redirect::Policy::limited(10))
+            .redirect(wreq::redirect::Policy::limited(10))
             .timeout(timeout)
             .connect_timeout(Duration::from_secs(10))
             // Chromium connection pool limits:
@@ -50,11 +58,11 @@ impl RquestClient {
 }
 
 impl RquestClient {
-    /// Expose the raw rquest client for streaming ops.
+    /// Expose the raw wreq client for streaming ops.
     ///
     /// Used by neo-runtime's streaming fetch ops which need to hold the
     /// response open across multiple read_chunk calls.
-    pub fn raw_client(&self) -> Arc<rquest::Client> {
+    pub fn raw_client(&self) -> Arc<wreq::Client> {
         Arc::clone(&self.client)
     }
 
@@ -71,7 +79,7 @@ impl Default for RquestClient {
 }
 
 impl HttpClient for RquestClient {
-    /// Send an HTTP request through Chrome 136 TLS.
+    /// Send an HTTP request through Chrome 137 TLS.
     ///
     /// Telemetry URLs are rejected with `HttpError::Skipped`.
     /// Runs on a dedicated thread with its own tokio runtime.
@@ -119,7 +127,7 @@ pub fn build_headers(req: &HttpRequest) -> Vec<(String, String)> {
 
 /// Execute the HTTP request inside a dedicated tokio runtime.
 fn run_request(
-    client: Arc<rquest::Client>,
+    client: Arc<wreq::Client>,
     method: &str,
     url: &str,
     body: Option<String>,
@@ -134,7 +142,7 @@ fn run_request(
     rt.block_on(async {
         let start = std::time::Instant::now();
         let m = method
-            .parse::<rquest::Method>()
+            .parse::<wreq::Method>()
             .map_err(|e| HttpError::Network(format!("bad method: {e}")))?;
 
         let mut builder = client.request(m, url).timeout(timeout);
@@ -157,7 +165,7 @@ fn run_request(
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
-        let resp_url = resp.url().to_string();
+        let resp_url = resp.uri().to_string();
 
         // Detect SSE (streaming) responses — read chunk by chunk until [DONE]
         // instead of waiting for EOF (which never comes for live streams).

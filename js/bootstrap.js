@@ -245,7 +245,7 @@ if (typeof document !== 'undefined' && !document.startViewTransition) {
 // ═══════════════════════════════════════════════════════════════
 
 globalThis.navigator = __hdWindow.navigator || {
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
     language: 'en-US', languages: ['en-US','en','es'], platform: 'MacIntel',
     cookieEnabled: true, onLine: true, vendor: 'Google Inc.',
     maxTouchPoints: 0, hardwareConcurrency: 8,
@@ -254,6 +254,22 @@ globalThis.navigator = __hdWindow.navigator || {
     serviceWorker: { register: () => Promise.resolve({}), getRegistrations: () => Promise.resolve([]) },
     sendBeacon: () => true,
 };
+// Force Chrome UA — happy-dom sets "HappyDOM/x.y.z" which trips bot detection.
+// Must match the TLS fingerprint emulation (wreq Chrome 139).
+try {
+    Object.defineProperty(globalThis.navigator, 'userAgent', {
+        value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+        writable: false, configurable: true
+    });
+    Object.defineProperty(globalThis.navigator, 'appVersion', {
+        value: '5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+        writable: false, configurable: true
+    });
+    Object.defineProperty(globalThis.navigator, 'vendor', {
+        value: 'Google Inc.',
+        writable: false, configurable: true
+    });
+} catch(e) {}
 
 globalThis.location = __hdWindow.location || {
     href: '', protocol: 'https:', host: '', hostname: '', port: '',

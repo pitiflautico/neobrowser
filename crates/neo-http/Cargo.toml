@@ -5,8 +5,8 @@ edition.workspace = true
 
 [dependencies]
 neo-types = { path = "../neo-types" }
-rquest = { version = "=5.1.0", features = ["cookies", "gzip", "brotli", "zstd", "deflate"] }
-rquest-util = "=2.2.1"
+wreq = { version = "=6.0.0-rc.28", features = ["cookies", "gzip", "brotli", "zstd", "deflate"] }
+wreq-util = "=3.0.0-rc.7"
 rusqlite = { version = "=0.32.1", features = ["bundled"] }
 aes = "0.8"
 cbc = "0.1"

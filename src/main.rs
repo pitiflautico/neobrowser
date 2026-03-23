@@ -86,10 +86,10 @@ fn create_engine() -> NeoSession {
 
     // Create V8 runtime with shared HttpClient, cookie store, and raw client
     // for both op_fetch (non-streaming) and op_fetch_start (streaming G2).
-    let rquest_for_v8 = RquestClient::default();
-    let raw_client = rquest_for_v8.raw_client();
+    let wreq_for_v8 = RquestClient::default();
+    let raw_client = wreq_for_v8.raw_client();
     let http_for_v8: std::sync::Arc<dyn neo_http::HttpClient> =
-        std::sync::Arc::new(rquest_for_v8);
+        std::sync::Arc::new(wreq_for_v8);
     let rt_config = neo_runtime::RuntimeConfig::default();
     let runtime: Option<Box<dyn neo_runtime::JsRuntime>> =
         match neo_runtime::v8::DenoRuntime::new_with_streaming(
