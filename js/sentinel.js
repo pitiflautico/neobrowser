@@ -382,6 +382,24 @@ globalThis.__chatgpt_sentinel = async function() {
         }
     }
 
+    // 6. Finalize sentinel — Chrome always calls this after prepare
+    try {
+        await (globalThis.__neo_fetch || fetch)('/backend-api/sentinel/chat-requirements/finalize', {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + accessToken,
+                'Content-Type': 'application/json',
+                'OAI-Device-Id': deviceId,
+                'Openai-Sentinel-Chat-Requirements-Token': sentinel.prepare_token || '',
+            },
+            body: JSON.stringify({
+                p: vmToken,
+                turnstile_token: turnstileToken || undefined,
+                proof_token: powToken || undefined,
+            }),
+        });
+    } catch(e) { /* non-fatal */ }
+
     return JSON.stringify({
         ok: true,
         accessToken: accessToken,
@@ -455,7 +473,9 @@ globalThis.__chatgpt_send = async function(message, model, conversationId, paren
     if (sentinel.powToken) headers['Openai-Sentinel-Proof-Token'] = sentinel.powToken;
     if (sentinel.turnstileToken) headers['Openai-Sentinel-Turnstile-Token'] = sentinel.turnstileToken;
 
-    var resp = await (globalThis.__neo_fetch || fetch)('/backend-api/conversation', {
+    // Chrome uses /f/conversation (not /conversation) — the /f/ prefix
+    // routes through a fingerprint-validating proxy.
+    var resp = await (globalThis.__neo_fetch || fetch)('/backend-api/f/conversation', {
         method: 'POST',
         headers: headers,
         body: JSON.stringify(body),
