@@ -10,7 +10,7 @@ use crate::scheduler::{FetchBudget, SchedulerConfig, TaskTracker, TimerBudget, T
 use crate::v8_runtime_impl::first_line;
 use crate::{RuntimeConfig, RuntimeError};
 use deno_core::RuntimeOptions;
-use neo_http::HttpClient;
+use neo_http::{CookieStore, HttpClient};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -32,6 +32,7 @@ deno_core::extension!(
         ops::op_navigation_request,
         ops::op_cookie_get,
         ops::op_cookie_set,
+        ops::op_cookie_get_for_url,
         ops::op_yield,
         ops::op_sleep_ms,
     ],
@@ -69,7 +70,7 @@ unsafe impl Send for DenoRuntime {}
 impl DenoRuntime {
     /// Create a new V8 runtime with the given configuration.
     pub fn new(config: &RuntimeConfig) -> Result<Self, RuntimeError> {
-        Self::new_inner(config, None, SchedulerConfig::default())
+        Self::new_inner(config, None, None, SchedulerConfig::default())
     }
 
     /// Create a new V8 runtime with an HttpClient for op_fetch.
@@ -80,7 +81,24 @@ impl DenoRuntime {
         config: &RuntimeConfig,
         http_client: Arc<dyn HttpClient>,
     ) -> Result<Self, RuntimeError> {
-        Self::new_inner(config, Some(http_client), SchedulerConfig::default())
+        Self::new_inner(config, Some(http_client), None, SchedulerConfig::default())
+    }
+
+    /// Create a new V8 runtime with HTTP client and cookie store.
+    ///
+    /// The cookie store is used to auto-inject cookies into fetch requests
+    /// and store Set-Cookie headers from responses.
+    pub fn new_with_cookies(
+        config: &RuntimeConfig,
+        http_client: Arc<dyn HttpClient>,
+        cookie_store: Arc<dyn CookieStore>,
+    ) -> Result<Self, RuntimeError> {
+        Self::new_inner(
+            config,
+            Some(http_client),
+            Some(cookie_store),
+            SchedulerConfig::default(),
+        )
     }
 
     /// Create a new V8 runtime with custom scheduler configuration.
@@ -89,12 +107,13 @@ impl DenoRuntime {
         http_client: Option<Arc<dyn HttpClient>>,
         scheduler_config: SchedulerConfig,
     ) -> Result<Self, RuntimeError> {
-        Self::new_inner(config, http_client, scheduler_config)
+        Self::new_inner(config, http_client, None, scheduler_config)
     }
 
     fn new_inner(
         config: &RuntimeConfig,
         http_client: Option<Arc<dyn HttpClient>>,
+        cookie_store: Option<Arc<dyn CookieStore>>,
         scheduler_config: SchedulerConfig,
     ) -> Result<Self, RuntimeError> {
         let store = Rc::new(RefCell::new(crate::modules::ScriptStore::default()));
@@ -144,6 +163,7 @@ impl DenoRuntime {
             if let Some(client) = http_client {
                 state.put(ops::SharedHttpClient(client));
             }
+            state.put(ops::SharedCookieStore(cookie_store));
             state.put(ops::ConsoleBuffer::default());
             state.put(ops::StorageState::default());
             state.put(ops::NavigationQueue::default());

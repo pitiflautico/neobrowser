@@ -12,6 +12,42 @@ use neo_interact::DomInteractor;
 use neo_trace::file_tracer::FileTracer;
 use neo_trace::noop::NoopTracer;
 
+/// Wrapper that delegates `CookieStore` to an `Arc<dyn CookieStore>`.
+///
+/// Needed because `NeoSession::with_cookie_store` takes `Box<dyn CookieStore>`
+/// but we share the same store with the V8 runtime via `Arc`.
+struct ArcCookieStoreWrapper(Arc<dyn CookieStore>);
+
+impl CookieStore for ArcCookieStoreWrapper {
+    fn get_for_request(&self, url: &str, top_level_url: Option<&str>, is_top_level: bool) -> String {
+        self.0.get_for_request(url, top_level_url, is_top_level)
+    }
+    fn store_set_cookie(&self, url: &str, set_cookie: &str) {
+        self.0.store_set_cookie(url, set_cookie)
+    }
+    fn delete(&self, name: &str, domain: &str, path: &str) {
+        self.0.delete(name, domain, path)
+    }
+    fn evict_expired(&self) {
+        self.0.evict_expired()
+    }
+    fn clear_session(&self) {
+        self.0.clear_session()
+    }
+    fn list_for_domain(&self, domain: &str) -> Vec<neo_types::Cookie> {
+        self.0.list_for_domain(domain)
+    }
+    fn export(&self) -> Vec<neo_types::Cookie> {
+        self.0.export()
+    }
+    fn import(&self, cookies: &[neo_types::Cookie]) {
+        self.0.import(cookies)
+    }
+    fn snapshot(&self) -> Vec<neo_types::Cookie> {
+        self.0.snapshot()
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -43,12 +79,21 @@ fn create_engine() -> NeoSession {
 
     let config = EngineConfig::default(); // execute_js = true by default
 
-    // Create V8 runtime with shared HttpClient for op_fetch.
+    // Create cookie store FIRST so it can be shared with the V8 runtime.
+    let cookie_store = SqliteCookieStore::default_store()
+        .expect("failed to open cookie store at ~/.neorender/cookies.db");
+    let cookie_store_arc: std::sync::Arc<dyn CookieStore> = std::sync::Arc::new(cookie_store);
+
+    // Create V8 runtime with shared HttpClient and cookie store for op_fetch.
     let http_for_v8: std::sync::Arc<dyn neo_http::HttpClient> =
         std::sync::Arc::new(RquestClient::default());
     let rt_config = neo_runtime::RuntimeConfig::default();
     let runtime: Option<Box<dyn neo_runtime::JsRuntime>> =
-        match neo_runtime::v8::DenoRuntime::new_with_http(&rt_config, http_for_v8) {
+        match neo_runtime::v8::DenoRuntime::new_with_cookies(
+            &rt_config,
+            http_for_v8,
+            cookie_store_arc.clone(),
+        ) {
             Ok(rt) => Some(Box::new(rt)),
             Err(e) => {
                 eprintln!("[NeoRender V2] V8 runtime init failed: {e} -- falling back to no-JS");
@@ -56,8 +101,6 @@ fn create_engine() -> NeoSession {
             }
         };
 
-    let cookie_store = SqliteCookieStore::default_store()
-        .expect("failed to open cookie store at ~/.neorender/cookies.db");
     let disk_cache =
         DiskCache::default_cache().expect("failed to open disk cache at ~/.neorender/cache/http/");
 
@@ -71,7 +114,7 @@ fn create_engine() -> NeoSession {
         Box::new(lifecycle_tracer),
         config,
     )
-    .with_cookie_store(Box::new(cookie_store))
+    .with_cookie_store(Box::new(ArcCookieStoreWrapper(cookie_store_arc)))
     .with_http_cache(Box::new(disk_cache))
 }
 

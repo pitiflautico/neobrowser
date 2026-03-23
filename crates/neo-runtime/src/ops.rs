@@ -6,7 +6,7 @@
 use crate::scheduler::{FetchBudget, TaskTracker, TimerBudget, TimerState};
 use deno_core::op2;
 use deno_core::OpState;
-use neo_http::{HttpClient, HttpRequest, RequestContext, RequestKind, WebStorage};
+use neo_http::{CookieStore, HttpClient, HttpRequest, RequestContext, RequestKind, WebStorage};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -14,6 +14,11 @@ use std::sync::{Arc, Mutex};
 
 /// Shared HTTP client stored in OpState for fetch ops.
 pub struct SharedHttpClient(pub Arc<dyn HttpClient>);
+
+/// Shared cookie store for auto-injecting cookies into fetch requests.
+///
+/// Wraps `Option<Arc<dyn CookieStore>>` so it can be absent (no cookie store attached).
+pub struct SharedCookieStore(pub Option<Arc<dyn CookieStore>>);
 
 /// Console log buffer — captures JS console output.
 #[derive(Default, Clone)]
@@ -109,8 +114,26 @@ pub async fn op_fetch(
         (handle.0.clone(), timeout, fetch_budget)
     };
 
-    let headers = parse_headers(&headers_json);
+    let mut headers = parse_headers(&headers_json);
     let body_opt = if body.is_empty() { None } else { Some(body) };
+
+    // Auto-inject cookies from the cookie store if no Cookie header is set.
+    let cookie_store_arc = {
+        let s = state.borrow();
+        if !headers.contains_key("cookie") && !headers.contains_key("Cookie") {
+            if let Some(store) = s.try_borrow::<SharedCookieStore>() {
+                if let Some(ref cs) = store.0 {
+                    let cookie_header = cs.get_for_request(&url, None, true);
+                    if !cookie_header.is_empty() {
+                        headers.insert("Cookie".to_string(), cookie_header);
+                    }
+                }
+            }
+        }
+        // Clone the Arc for post-response Set-Cookie storage.
+        s.try_borrow::<SharedCookieStore>()
+            .and_then(|s| s.0.clone())
+    };
 
     let req = HttpRequest {
         method: method.clone(),
@@ -139,11 +162,52 @@ pub async fn op_fetch(
 
     match result {
         Ok(resp) => {
-            let json = serde_json::json!({
-                "status": resp.status,
-                "body": resp.body,
-                "headers": resp.headers,
-            });
+            // Store Set-Cookie headers from the response in the cookie store.
+            if let Some(ref cs) = cookie_store_arc {
+                // HashMap only holds one value; check common casings.
+                for key in &["set-cookie", "Set-Cookie"] {
+                    if let Some(val) = resp.headers.get(*key) {
+                        // May be multiple cookies joined with ", " — split naively
+                        // won't work for cookies with expires containing ",".
+                        // Store as-is; store_set_cookie handles single cookie strings.
+                        cs.store_set_cookie(&url, val);
+                    }
+                }
+            }
+            // Detect SSE responses and parse events into structured array.
+            let is_sse = resp
+                .headers
+                .get("content-type")
+                .map(|ct| ct.contains("text/event-stream"))
+                .unwrap_or(false);
+
+            let json = if is_sse {
+                let events: Vec<String> = resp
+                    .body
+                    .split("\n\n")
+                    .filter(|e| !e.trim().is_empty())
+                    .map(|e| {
+                        e.lines()
+                            .filter(|l| l.starts_with("data: "))
+                            .map(|l| &l[6..])
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .filter(|d| !d.is_empty() && d != "[DONE]")
+                    .collect();
+                serde_json::json!({
+                    "status": resp.status,
+                    "body": resp.body,
+                    "headers": resp.headers,
+                    "sse_events": events,
+                })
+            } else {
+                serde_json::json!({
+                    "status": resp.status,
+                    "body": resp.body,
+                    "headers": resp.headers,
+                })
+            };
             Ok(json.to_string())
         }
         Err(e) => Err(deno_core::error::generic_error(e.to_string())),
@@ -459,6 +523,22 @@ pub fn op_cookie_set(state: Rc<RefCell<OpState>>, #[string] cookie_str: String) 
     if let Some(cookies) = s.try_borrow::<CookieState>() {
         cookies.set_from_string(&cookie_str);
     }
+}
+
+/// Get cookies for a given URL from the shared cookie store.
+///
+/// Called from JS as a fallback when `__neorender_cookies` is empty.
+/// Returns "name=val; name2=val2" format or empty string.
+#[op2]
+#[string]
+pub fn op_cookie_get_for_url(state: Rc<RefCell<OpState>>, #[string] url: String) -> String {
+    let s = state.borrow();
+    if let Some(store) = s.try_borrow::<SharedCookieStore>() {
+        if let Some(ref cs) = store.0 {
+            return cs.get_for_request(&url, None, true);
+        }
+    }
+    String::new()
 }
 
 /// Minimal async op — tests async op integration.

@@ -214,16 +214,21 @@ globalThis.__neorender_cookies = globalThis.__neorender_cookies || {};
 
 function __getCookiesForUrl(url) {
     try {
+        // Try JS-side cookies first (manually injected via __neorender_cookies).
         const hostname = new URL(url).hostname;
         const parts = [];
         for (const [domain, cookies] of Object.entries(__neorender_cookies)) {
-            // Strip leading dot for matching (RFC 6265: .example.com matches example.com)
             const d = domain.startsWith('.') ? domain.slice(1) : domain;
             if (hostname === d || hostname.endsWith('.' + d) || hostname === domain) {
                 parts.push(cookies);
             }
         }
-        return parts.join('; ');
+        if (parts.length > 0) return parts.join('; ');
+        // Fallback: read from Rust SQLite cookie store via op.
+        if (typeof ops?.op_cookie_get_for_url === 'function') {
+            return ops.op_cookie_get_for_url(url);
+        }
+        return '';
     } catch { return ''; }
 }
 
@@ -245,6 +250,7 @@ class NeoResponse {
         this.redirected = init.redirected || false;
         this.type = 'basic';
         this._stream = null; // lazy
+        this._sseEvents = init._sseEvents || null; // parsed SSE events from Rust
     }
 
     get bodyUsed() { return this._bodyUsed; }
@@ -253,13 +259,30 @@ class NeoResponse {
     get body() {
         if (!this._stream) {
             neo_trace('[FETCH] response.body accessed for ' + this._url);
-            const bytes = this._body;
-            this._stream = new ReadableStream({
-                start(controller) {
-                    if (bytes && bytes.length > 0) controller.enqueue(bytes);
-                    controller.close();
-                }
-            });
+            const sseEvents = this._sseEvents;
+            if (sseEvents && sseEvents.length > 0) {
+                // SSE: deliver each event as a separate chunk for streaming consumers.
+                // ChatGPT's code does fetch().then(r => r.body.getReader()) and reads
+                // chunks incrementally, expecting each SSE event as a separate chunk.
+                const encoder = new TextEncoder();
+                neo_trace('[FETCH] SSE body: delivering ' + sseEvents.length + ' events as chunks');
+                this._stream = new ReadableStream({
+                    start(controller) {
+                        for (const evt of sseEvents) {
+                            controller.enqueue(encoder.encode('data: ' + evt + '\n\n'));
+                        }
+                        controller.close();
+                    }
+                });
+            } else {
+                const bytes = this._body;
+                this._stream = new ReadableStream({
+                    start(controller) {
+                        if (bytes && bytes.length > 0) controller.enqueue(bytes);
+                        controller.close();
+                    }
+                });
+            }
         }
         return this._stream;
     }
@@ -294,7 +317,7 @@ class NeoResponse {
         if (this._bodyUsed) throw new TypeError('cannot clone consumed response');
         return new NeoResponse(
             new Uint8Array(this._body),
-            { status: this.status, statusText: this.statusText, headers: this._rawHeaders, url: this._url, _text: this._bodyText, redirected: this.redirected }
+            { status: this.status, statusText: this.statusText, headers: this._rawHeaders, url: this._url, _text: this._bodyText, redirected: this.redirected, _sseEvents: this._sseEvents }
         );
     }
 }
@@ -369,6 +392,7 @@ globalThis.fetch = function(input, init) {
                 headers: result.headers || {},
                 url: fullUrl,
                 _text: bodyText,
+                _sseEvents: result.sse_events || null,
             });
             // Wrap body consumption methods for tracing
             const origText = resp.text.bind(resp);
@@ -1333,6 +1357,72 @@ if (!globalThis.crypto?.subtle?.digest || globalThis.crypto?.subtle?.digest?.toS
     globalThis.crypto.subtle.deriveBits = async () => new ArrayBuffer(32);
     globalThis.crypto.subtle.deriveKey = async () => ({});
 }
+
+// ═══════════════════════════════════════════════════════════════
+// 7c. EVENTSOURCE — SSE polyfill using fetch() with SSE parsing
+// ═══════════════════════════════════════════════════════════════
+
+// EventSource polyfill — ChatGPT and other SPAs use EventSource or
+// fetch+ReadableStream for Server-Sent Events. This uses our fetch()
+// which now returns structured sse_events from Rust-side parsing.
+globalThis.EventSource = globalThis.EventSource || class EventSource extends EventTarget {
+    constructor(url, options) {
+        super();
+        this.url = url;
+        this.readyState = 0; // CONNECTING
+        this.withCredentials = options?.withCredentials || false;
+        this.onopen = null;
+        this.onmessage = null;
+        this.onerror = null;
+        this._connect();
+    }
+
+    _connect() {
+        this.readyState = 1; // OPEN
+        const openEvt = new Event('open');
+        this.dispatchEvent(openEvt);
+        if (this.onopen) this.onopen(openEvt);
+
+        fetch(this.url, {
+            headers: { 'Accept': 'text/event-stream', 'Cache-Control': 'no-cache' }
+        }).then(resp => {
+            const body = resp._bodyText || '';
+            // Parse SSE events from raw body
+            const rawEvents = body.split('\n\n');
+            for (const raw of rawEvents) {
+                if (!raw.trim()) continue;
+                const lines = raw.split('\n');
+                let data = '', eventType = 'message', id = '';
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) data += (data ? '\n' : '') + line.slice(6);
+                    else if (line.startsWith('data:')) data += (data ? '\n' : '') + line.slice(5);
+                    else if (line.startsWith('event: ')) eventType = line.slice(7);
+                    else if (line.startsWith('event:')) eventType = line.slice(6);
+                    else if (line.startsWith('id: ')) id = line.slice(4);
+                    else if (line.startsWith('id:')) id = line.slice(3);
+                }
+                if (!data || data === '[DONE]') continue;
+                const evt = new MessageEvent(eventType, { data, lastEventId: id });
+                this.dispatchEvent(evt);
+                if (eventType === 'message' && this.onmessage) this.onmessage(evt);
+                // For named events, also fire onmessage as fallback
+                if (eventType !== 'message' && this.onmessage) this.onmessage(evt);
+            }
+            this.readyState = 2; // CLOSED
+        }).catch(err => {
+            this.readyState = 2;
+            const errEvt = new Event('error');
+            this.dispatchEvent(errEvt);
+            if (this.onerror) this.onerror(errEvt);
+        });
+    }
+
+    close() { this.readyState = 2; }
+
+    static get CONNECTING() { return 0; }
+    static get OPEN() { return 1; }
+    static get CLOSED() { return 2; }
+};
 
 // ═══════════════════════════════════════════════════════════════
 // 8. CANVAS 2D STUB — for Lottie, charts, avatars
