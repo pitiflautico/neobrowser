@@ -5,6 +5,16 @@
 // Use __neo_ops saved by bootstrap.js (Deno is deleted for sandbox security).
 const _shimOps = globalThis.__neo_ops;
 
+// ── encodeURIComponent safety wrapper ──
+// React Router passes route params to encodeURIComponent(). In our engine,
+// some params (conversation IDs from turbo-stream decode) arrive as objects
+// instead of strings. This wrapper auto-coerces to prevent crashes.
+const _origEncodeURI = globalThis.encodeURIComponent;
+globalThis.encodeURIComponent = function(v) {
+    if (typeof v === 'object' && v !== null) return _origEncodeURI(String(v));
+    return _origEncodeURI(v);
+};
+
 // ── React Router SSR turbo-stream interceptor ──
 // React Router 7 SSR streams hydration data via __reactRouterContext.streamController.
 // happy-dom's ReadableStream.getReader().read() hangs so the normal decode path fails.
