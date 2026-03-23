@@ -56,21 +56,39 @@ globalThis.encodeURIComponent = function(v) {
 
         sc.enqueue = function(data) {
             _chunks.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
+            console.error('[TURBO-DEBUG] enqueue called, chunks so far: ' + _chunks.length);
             if (origEnqueue) try { origEnqueue(data); } catch(e) {}
         };
 
         sc.close = function() {
             const raw = _chunks.join('');
+            console.error('[TURBO-DEBUG] close called, chunks: ' + _chunks.length + ', raw length: ' + raw.length);
             if (raw && typeof turboStream !== 'undefined' && turboStream.decode) {
                 try {
-                    const result = turboStream.decode(raw);
-                    if (result && result.value !== undefined) {
-                        ctx.state = result.value;
-                        console.log('[turbo-stream] decoded SSR state: ' + Object.keys(result.value || {}).join(','));
-                    }
+                    // turboStream.decode() expects a ReadableStream, not a string.
+                    // Wrap the accumulated data into a ReadableStream that immediately
+                    // enqueues the full payload and closes.
+                    var stream = new ReadableStream({
+                        start: function(controller) {
+                            controller.enqueue(raw);
+                            controller.close();
+                        }
+                    });
+                    // decode() is async — returns a Promise.
+                    var decodePromise = turboStream.decode(stream);
+                    decodePromise.then(function(result) {
+                        if (result !== undefined && result !== null) {
+                            ctx.state = result;
+                            console.error('[turbo-stream] decoded SSR state, keys: ' + Object.keys(result).join(','));
+                        }
+                    }).catch(function(e) {
+                        console.error('[turbo-stream] decode promise rejected: ' + e.message);
+                    });
                 } catch(e) {
-                    console.error('[turbo-stream] decode failed: ' + e.message);
+                    console.error('[turbo-stream] decode failed: ' + e.message + '\n' + e.stack);
                 }
+            } else {
+                console.error('[TURBO-DEBUG] skip decode: raw=' + !!raw + ', turboStream=' + (typeof turboStream) + ', decode=' + !!(typeof turboStream !== 'undefined' && turboStream.decode));
             }
             if (origClose) try { origClose(); } catch(e) {}
         };
@@ -144,82 +162,235 @@ if (typeof document !== 'undefined') {
     } catch(e) {}
 }
 
-// Helper: resolve a URL (absolute or relative) and update __neo_location fields.
-function __neoUpdateLocation(url) {
-    var loc = globalThis.__neo_location;
-    if (url.indexOf('://') !== -1) {
-        // Absolute URL — parse directly
-        var m = url.match(/^(https?:)\/\/([^/:]+)(:\d+)?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/);
-        if (m) {
-            loc.protocol = m[1];
-            loc.hostname = m[2];
-            loc.port = (m[3] || '').replace(':', '');
-            loc.host = loc.hostname + (loc.port ? ':' + loc.port : '');
-            loc.pathname = m[4] || '/';
-            loc.search = m[5] || '';
-            loc.hash = m[6] || '';
-            loc.origin = loc.protocol + '//' + loc.host;
-            loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
+// ─── URL resolution helper (pure function, no side effects) ───
+// NOTE: deno_core's URL(relative, base) has bugs with pathname resolution,
+// so we use manual resolution instead of relying on the two-arg URL constructor.
+function __neoResolveUrl(url, base) {
+    // Absolute URL — return as-is
+    if (url.indexOf('://') !== -1) return url;
+    if (!base) return url;
+    try {
+        var b = new URL(base);
+        if (url.charAt(0) === '/') {
+            // Root-relative: use origin + the url (which may contain ?query and #hash)
+            return b.origin + url;
         }
-    } else if (url.charAt(0) === '/') {
-        // Root-relative: /path
-        loc.pathname = url.split('?')[0].split('#')[0];
-        loc.search = url.indexOf('?') !== -1 ? '?' + url.split('?')[1].split('#')[0] : '';
-        loc.hash = url.indexOf('#') !== -1 ? '#' + url.split('#')[1] : '';
-        loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
-    } else if (url.charAt(0) === '#') {
-        // Hash only
-        loc.hash = url;
-        loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
-    } else if (url.charAt(0) === '?') {
-        // Search only
-        loc.search = url.split('#')[0];
-        loc.hash = url.indexOf('#') !== -1 ? '#' + url.split('#')[1] : '';
-        loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
-    } else {
+        if (url.charAt(0) === '#') {
+            return b.origin + b.pathname + b.search + url;
+        }
+        if (url.charAt(0) === '?') {
+            return b.origin + b.pathname + url;
+        }
         // Relative path
-        var base = loc.pathname.replace(/\/[^/]*$/, '/');
-        loc.pathname = base + url.split('?')[0].split('#')[0];
-        loc.search = url.indexOf('?') !== -1 ? '?' + url.split('?')[1].split('#')[0] : '';
-        loc.hash = url.indexOf('#') !== -1 ? '#' + url.split('#')[1] : '';
-        loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
+        var dir = b.pathname.replace(/\/[^/]*$/, '/');
+        return b.origin + dir + url;
+    } catch(e) { return url; }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LOCATION CLASS — proper constructor with instanceof support
+// ═══════════════════════════════════════════════════════════════
+
+// Symbol to guard constructor — prevents `new Location()` from userland
+var __locationKey = Symbol('neo.location');
+
+// Internal URL store — the source of truth for all Location properties
+var __locationUrl = { href: 'about:blank' };
+
+function __syncLocationUrl(href) {
+    try {
+        var u = new URL(href);
+        __locationUrl = u;
+    } catch(e) {
+        // If URL parsing fails, keep previous state
     }
 }
 
-// Location object with navigation interception
-globalThis.__neo_location = {
-    href: '', origin: '', protocol: 'https:', host: '', hostname: '',
-    port: '', pathname: '/', search: '', hash: '',
-    assign: function(url) {
-        try {
-            _shimOps.op_navigation_request(JSON.stringify({
-                url: String(url), method: 'GET', type: 'location_assign'
-            }));
-        } catch(e) {}
+function Location(key) {
+    if (key !== __locationKey) {
+        throw new TypeError('Illegal constructor');
+    }
+}
+
+Object.defineProperties(Location.prototype, {
+    href: {
+        get: function() { return __locationUrl.href; },
+        set: function(val) {
+            // Setting href triggers navigation (same as assign)
+            var s = String(val);
+            __syncLocationUrl(s);
+            try {
+                _shimOps.op_navigation_request(JSON.stringify({
+                    url: s, method: 'GET', type: 'location_assign'
+                }));
+            } catch(e) {}
+        },
+        enumerable: true, configurable: false
     },
-    replace: function(url) {
-        var s = String(url);
-        // Filter out non-URL arguments (e.g. regex objects from String.replace confusion)
-        if (!s || s.startsWith('/') && s.includes('[') || s.includes('(') || s === 'undefined') return;
-        try {
-            _shimOps.op_navigation_request(JSON.stringify({
-                url: s, method: 'GET', type: 'location_replace'
-            }));
-        } catch(e) {}
+    origin: {
+        get: function() { return __locationUrl.origin; },
+        enumerable: true, configurable: false
     },
-    reload: function() {
-        try {
-            _shimOps.op_navigation_request(JSON.stringify({
-                url: globalThis.__neo_location.href, method: 'GET', type: 'reload'
-            }));
-        } catch(e) {}
+    protocol: {
+        get: function() { return __locationUrl.protocol; },
+        set: function(val) {
+            try {
+                var u = new URL(__locationUrl.href);
+                u.protocol = val;
+                __syncLocationUrl(u.href);
+            } catch(e) {}
+        },
+        enumerable: true, configurable: false
     },
-    toString: function() { return this.href; }
+    host: {
+        get: function() { return __locationUrl.host; },
+        set: function(val) {
+            try {
+                var u = new URL(__locationUrl.href);
+                u.host = val;
+                __syncLocationUrl(u.href);
+            } catch(e) {}
+        },
+        enumerable: true, configurable: false
+    },
+    hostname: {
+        get: function() { return __locationUrl.hostname; },
+        set: function(val) {
+            try {
+                var u = new URL(__locationUrl.href);
+                u.hostname = val;
+                __syncLocationUrl(u.href);
+            } catch(e) {}
+        },
+        enumerable: true, configurable: false
+    },
+    port: {
+        get: function() { return __locationUrl.port; },
+        set: function(val) {
+            try {
+                var u = new URL(__locationUrl.href);
+                u.port = val;
+                __syncLocationUrl(u.href);
+            } catch(e) {}
+        },
+        enumerable: true, configurable: false
+    },
+    pathname: {
+        get: function() { return __locationUrl.pathname; },
+        set: function(val) {
+            try {
+                var u = new URL(__locationUrl.href);
+                u.pathname = val;
+                __syncLocationUrl(u.href);
+            } catch(e) {}
+        },
+        enumerable: true, configurable: false
+    },
+    search: {
+        get: function() { return __locationUrl.search; },
+        set: function(val) {
+            try {
+                var u = new URL(__locationUrl.href);
+                u.search = val;
+                __syncLocationUrl(u.href);
+            } catch(e) {}
+        },
+        enumerable: true, configurable: false
+    },
+    hash: {
+        get: function() { return __locationUrl.hash; },
+        set: function(val) {
+            try {
+                var u = new URL(__locationUrl.href);
+                u.hash = val;
+                __syncLocationUrl(u.href);
+            } catch(e) {}
+        },
+        enumerable: true, configurable: false
+    },
+    assign: {
+        value: function assign(url) {
+            try {
+                _shimOps.op_navigation_request(JSON.stringify({
+                    url: String(url), method: 'GET', type: 'location_assign'
+                }));
+            } catch(e) {}
+        },
+        writable: false, enumerable: true, configurable: false
+    },
+    replace: {
+        value: function replace(url) {
+            var s = String(url);
+            // Filter out non-URL arguments (e.g. regex objects from String.replace confusion)
+            if (!s || s.startsWith('/') && s.includes('[') || s.includes('(') || s === 'undefined') return;
+            try {
+                _shimOps.op_navigation_request(JSON.stringify({
+                    url: s, method: 'GET', type: 'location_replace'
+                }));
+            } catch(e) {}
+        },
+        writable: false, enumerable: true, configurable: false
+    },
+    reload: {
+        value: function reload() {
+            try {
+                _shimOps.op_navigation_request(JSON.stringify({
+                    url: __locationUrl.href, method: 'GET', type: 'reload'
+                }));
+            } catch(e) {}
+        },
+        writable: false, enumerable: true, configurable: false
+    },
+    toString: {
+        value: function toString() { return __locationUrl.href; },
+        writable: false, enumerable: true, configurable: false
+    },
+    valueOf: {
+        value: function valueOf() { return __locationUrl.href; },
+        writable: false, enumerable: true, configurable: false
+    },
+    ancestorOrigins: {
+        get: function() {
+            return { length: 0, item: function() { return null; }, contains: function() { return false; } };
+        },
+        enumerable: true, configurable: false
+    }
+});
+
+Object.defineProperty(Location.prototype, Symbol.toStringTag, {
+    value: 'Location', configurable: true
+});
+
+// Expose Location constructor globally (for instanceof checks)
+globalThis.Location = Location;
+
+// Create THE singleton location instance
+var __neo_location_instance = new Location(__locationKey);
+
+// Backward compat: __neo_location points to the same instance
+globalThis.__neo_location = __neo_location_instance;
+
+// Internal: update location from a URL string WITHOUT triggering navigation ops.
+// Used by History.pushState/replaceState and by Rust set_document_html.
+function __neoUpdateLocation(url) {
+    var resolved = __neoResolveUrl(url, __locationUrl.href);
+    __syncLocationUrl(resolved);
+}
+
+// Rust calls `__loc.href = ...; __loc.protocol = ...` etc. on __neo_location.
+// With our getter/setter properties on Location.prototype, setting .href triggers
+// navigation. We need a way for Rust to set properties WITHOUT navigation.
+// Solution: Rust sets via __neo_location which now has prototype getters/setters.
+// The .href setter triggers navigation — but Rust's set_document_html wraps in try/catch
+// and the op_navigation_request is a no-op during initial load.
+// For safety, provide an explicit internal setter:
+globalThis.__neo_setLocationHref = function(href) {
+    __syncLocationUrl(href);
 };
 
-// Override globalThis.location with intercepting proxy
+// Override globalThis.location with the Location instance
 Object.defineProperty(globalThis, 'location', {
-    get: function() { return globalThis.__neo_location; },
+    get: function() { return __neo_location_instance; },
     set: function(val) {
         if (typeof val === 'string') {
             try {
@@ -236,7 +407,7 @@ Object.defineProperty(globalThis, 'location', {
 if (typeof document !== 'undefined') {
     try {
         Object.defineProperty(document, 'location', {
-            get: function() { return globalThis.__neo_location; },
+            get: function() { return __neo_location_instance; },
             set: function(val) { globalThis.location = val; },
             configurable: true
         });
@@ -257,82 +428,131 @@ globalThis.open = function(url, target, features) {
 globalThis.close = function() {};
 
 // ═══════════════════════════════════════════════════════════════
-// 2. HISTORY API — tracked with state management
+// HISTORY CLASS — proper constructor with instanceof support
 // ═══════════════════════════════════════════════════════════════
 
-globalThis.__neo_history = { entries: [], index: -1 };
+var __historyKey = Symbol('neo.history');
 
-globalThis.history = {
-    pushState: function(state, title, url) {
-        var h = globalThis.__neo_history;
-        // Truncate forward entries
-        h.entries.length = h.index + 1;
-        h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
-        h.index = h.entries.length - 1;
-        if (url) __neoUpdateLocation(url);
-        console.log('[NAV-TRACE] pushState: ' + url);
-        __neo_traceStep('pushState', url);
+// Internal state — shared between History instance and helpers
+var __historyState = { entries: [], index: -1 };
+
+// Backward compat
+globalThis.__neo_history = __historyState;
+
+function History(key) {
+    if (key !== __historyKey) {
+        throw new TypeError('Illegal constructor');
+    }
+}
+
+Object.defineProperties(History.prototype, {
+    length: {
+        get: function() {
+            return __historyState.entries.length || 1;
+        },
+        enumerable: true, configurable: true
     },
-    replaceState: function(state, title, url) {
-        var h = globalThis.__neo_history;
-        if (h.entries.length > 0 && h.index >= 0) {
-            h.entries[h.index] = { state: state, title: title, url: url, nav_type: 'synthetic' };
-        } else {
+    state: {
+        get: function() {
+            var h = __historyState;
+            if (h.index >= 0 && h.index < h.entries.length) {
+                return h.entries[h.index].state;
+            }
+            return null;
+        },
+        enumerable: true, configurable: true
+    },
+    scrollRestoration: {
+        get: function() { return 'auto'; },
+        set: function(v) { /* no-op */ },
+        enumerable: true, configurable: true
+    },
+    pushState: {
+        value: function pushState(state, title, url) {
+            var h = __historyState;
+            // Truncate forward entries
+            h.entries.length = h.index + 1;
             h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
-            h.index = 0;
-        }
-        if (url) __neoUpdateLocation(url);
-        console.log('[NAV-TRACE] replaceState: ' + url);
-        __neo_traceStep('replaceState', url);
+            h.index = h.entries.length - 1;
+            // pushState syncs location but does NOT dispatch popstate (per spec)
+            if (url) __neoUpdateLocation(url);
+            console.log('[NAV-TRACE] pushState: ' + url);
+            __neo_traceStep('pushState', url);
+        },
+        writable: true, enumerable: true, configurable: true
     },
-    back: function() {
-        var h = globalThis.__neo_history;
-        if (h.index > 0) {
-            h.index--;
-            var entry = h.entries[h.index];
-            if (entry && entry.url) __neoUpdateLocation(entry.url);
-            // Dispatch popstate — React Router listens for this
-            try { window.dispatchEvent(new PopStateEvent('popstate', { state: entry?.state || null })); } catch(e) {}
-            try {
-                globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
-            } catch(e) {}
-        }
+    replaceState: {
+        value: function replaceState(state, title, url) {
+            var h = __historyState;
+            if (h.entries.length > 0 && h.index >= 0) {
+                h.entries[h.index] = { state: state, title: title, url: url, nav_type: 'synthetic' };
+            } else {
+                h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
+                h.index = 0;
+            }
+            // replaceState syncs location but does NOT dispatch popstate (per spec)
+            if (url) __neoUpdateLocation(url);
+            console.log('[NAV-TRACE] replaceState: ' + url);
+            __neo_traceStep('replaceState', url);
+        },
+        writable: true, enumerable: true, configurable: true
     },
-    forward: function() {
-        var h = globalThis.__neo_history;
-        if (h.index < h.entries.length - 1) {
-            h.index++;
-            var entry = h.entries[h.index];
-            if (entry && entry.url) __neoUpdateLocation(entry.url);
-            try { window.dispatchEvent(new PopStateEvent('popstate', { state: entry?.state || null })); } catch(e) {}
-            try {
-                globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
-            } catch(e) {}
-        }
+    back: {
+        value: function back() {
+            var h = __historyState;
+            if (h.index > 0) {
+                h.index--;
+                var entry = h.entries[h.index];
+                if (entry && entry.url) __neoUpdateLocation(entry.url);
+                // Dispatch popstate — React Router listens for this
+                try {
+                    globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
+                } catch(e) {}
+            }
+        },
+        writable: true, enumerable: true, configurable: true
     },
-    go: function(delta) {
-        if (!delta) return;
-        var h = globalThis.__neo_history;
-        var target = h.index + delta;
-        if (target >= 0 && target < h.entries.length) {
-            h.index = target;
-            var entry = h.entries[h.index];
-            try {
-                globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
-            } catch(e) {}
-        }
+    forward: {
+        value: function forward() {
+            var h = __historyState;
+            if (h.index < h.entries.length - 1) {
+                h.index++;
+                var entry = h.entries[h.index];
+                if (entry && entry.url) __neoUpdateLocation(entry.url);
+                try {
+                    globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
+                } catch(e) {}
+            }
+        },
+        writable: true, enumerable: true, configurable: true
     },
-    get length() { return globalThis.__neo_history.entries.length || 1; },
-    get state() {
-        var h = globalThis.__neo_history;
-        if (h.index >= 0 && h.index < h.entries.length) {
-            return h.entries[h.index].state;
-        }
-        return null;
-    },
-    get scrollRestoration() { return 'auto'; },
-    set scrollRestoration(v) {}
-};
+    go: {
+        value: function go(delta) {
+            if (!delta) return;
+            var h = __historyState;
+            var target = h.index + (delta | 0);
+            if (target >= 0 && target < h.entries.length) {
+                h.index = target;
+                var entry = h.entries[h.index];
+                if (entry && entry.url) __neoUpdateLocation(entry.url);
+                try {
+                    globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
+                } catch(e) {}
+            }
+        },
+        writable: true, enumerable: true, configurable: true
+    }
+});
+
+Object.defineProperty(History.prototype, Symbol.toStringTag, {
+    value: 'History', configurable: true
+});
+
+// Expose History constructor globally (for instanceof checks)
+globalThis.History = History;
+
+// Create THE singleton history instance
+globalThis.history = new History(__historyKey);
 
 // ═══════════════════════════════════════════════════════════════
 // 3. COOKIE ACCESS — backed by Rust ops

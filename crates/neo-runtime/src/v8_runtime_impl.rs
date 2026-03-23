@@ -826,23 +826,27 @@ impl JsRuntimeTrait for DenoRuntime {
 
         }
 
-        // Set location properties directly on __neo_location to avoid
-        // triggering navigation interception from the browser shim.
+        // Set location via internal helper to avoid triggering navigation ops.
+        // __neo_setLocationHref updates the internal URL store directly.
         let loc_js = format!(
             "try {{\
-                const __u = new URL('{}');\
-                const __loc = globalThis.__neo_location || globalThis.location;\
-                __loc.href = __u.href;\
-                __loc.protocol = __u.protocol;\
-                __loc.host = __u.host;\
-                __loc.hostname = __u.hostname;\
-                __loc.port = __u.port;\
-                __loc.pathname = __u.pathname;\
-                __loc.search = __u.search;\
-                __loc.hash = __u.hash;\
-                __loc.origin = __u.origin;\
+                if (typeof globalThis.__neo_setLocationHref === 'function') {{\
+                    globalThis.__neo_setLocationHref('{}');\
+                }} else {{\
+                    const __u = new URL('{}');\
+                    const __loc = globalThis.__neo_location || globalThis.location;\
+                    __loc.href = __u.href;\
+                    __loc.protocol = __u.protocol;\
+                    __loc.host = __u.host;\
+                    __loc.hostname = __u.hostname;\
+                    __loc.port = __u.port;\
+                    __loc.pathname = __u.pathname;\
+                    __loc.search = __u.search;\
+                    __loc.hash = __u.hash;\
+                    __loc.origin = __u.origin;\
+                }}\
              }} catch(e) {{}}",
-            escaped_url
+            escaped_url, escaped_url
         );
         self.runtime
             .execute_script("<set_location>", loc_js)
