@@ -1,44 +1,9 @@
-// NeoRender V2 Browser Shim — intercepts browser behaviors that happy-dom can't handle.
+// NeoRender V2 Browser Shim — intercepts browser behaviors that linkedom can't handle.
 // Loaded AFTER bootstrap.js. Overrides basic stubs with navigation-aware versions.
 // Hooks into Rust ops: op_navigation_request, op_cookie_get, op_cookie_set.
 
 // Use __neo_ops saved by bootstrap.js (Deno is deleted for sandbox security).
 const _shimOps = globalThis.__neo_ops;
-
-// (Turbo-stream state decoder consolidated into streamController interceptor below)
-
-// ═══════════════════════════════════════════════════════════════
-// INTERACTION TRACE — causal pipeline debugging
-// ═══════════════════════════════════════════════════════════════
-
-globalThis.__neo_interaction_trace = [];
-globalThis.__neo_traceStep = function(step, data) {
-    globalThis.__neo_interaction_trace.push({
-        step: step,
-        ts: Date.now(),
-        data: typeof data === 'string' ? data : JSON.stringify(data)?.substring(0, 200)
-    });
-};
-
-// Query trace
-globalThis.__neo_getTrace = function() {
-    return JSON.stringify(globalThis.__neo_interaction_trace.slice(-30));
-};
-
-// Clear trace
-globalThis.__neo_clearTrace = function() {
-    globalThis.__neo_interaction_trace = [];
-};
-
-// ── encodeURIComponent safety wrapper ──
-// React Router passes route params to encodeURIComponent(). In our engine,
-// some params (conversation IDs from turbo-stream decode) arrive as objects
-// instead of strings. This wrapper auto-coerces to prevent crashes.
-const _origEncodeURI = globalThis.encodeURIComponent;
-globalThis.encodeURIComponent = function(v) {
-    if (typeof v === 'object' && v !== null) return _origEncodeURI(String(v));
-    return _origEncodeURI(v);
-};
 
 // ── React Router SSR turbo-stream interceptor ──
 // React Router 7 SSR streams hydration data via __reactRouterContext.streamController.
@@ -49,159 +14,45 @@ globalThis.encodeURIComponent = function(v) {
     let _ctx = globalThis.__reactRouterContext;
     const _chunks = [];
 
-    // ── React Router single-fetch devalue unflatten ──
-    // React Router 7 SSR encodes state as a flat array with `_N` index references.
-    // Negative indices are special values. This function resolves references into
-    // a nested object tree.
-    function unflatten(flat) {
-        if (!Array.isArray(flat) || flat.length === 0) return flat;
-        var hydrated = new Array(flat.length);
-        var filled = new Array(flat.length);
-
-        function hydrate(idx) {
-            if (idx < 0) {
-                // Negative indices = special values in React Router's devalue:
-                // -1 = undefined, -2 = NaN, -3 = Infinity, -4 = -Infinity, -5 = null, -6 = -0
-                if (idx === -1) return undefined;
-                if (idx === -5) return null;
-                if (idx === -2) return NaN;
-                if (idx === -3) return Infinity;
-                if (idx === -4) return -Infinity;
-                if (idx === -6) return -0;
-                return undefined;
-            }
-            if (filled[idx]) return hydrated[idx];
-            filled[idx] = true;
-            var val = flat[idx];
-            if (val === null || val === undefined || typeof val !== 'object') {
-                hydrated[idx] = val;
-                return val;
-            }
-            if (Array.isArray(val)) {
-                var arr = [];
-                hydrated[idx] = arr; // pre-fill to handle cycles
-                for (var i = 0; i < val.length; i++) {
-                    arr.push(typeof val[i] === 'number' ? hydrate(val[i]) : val[i]);
-                }
-                return arr;
-            }
-            // Object with _N: idx references
-            var keys = Object.keys(val);
-            var isRef = keys.length > 0 && keys.every(function(k) { return k.charAt(0) === '_'; });
-            if (isRef) {
-                var obj = {};
-                hydrated[idx] = obj;
-                for (var j = 0; j < keys.length; j++) {
-                    var k = keys[j];
-                    var keyIdx = parseInt(k.substring(1), 10);
-                    var valIdx = val[k];
-                    var realKey = typeof flat[keyIdx] === 'string' ? flat[keyIdx] : String(keyIdx);
-                    obj[realKey] = typeof valIdx === 'number' ? hydrate(valIdx) : valIdx;
-                }
-                return obj;
-            }
-            hydrated[idx] = val;
-            return val;
-        }
-
-        return hydrate(0);
-    }
-
-    function doPatchController(sc, ctx) {
-        var origEnqueue = sc.enqueue ? sc.enqueue.bind(sc) : null;
-        var origClose = sc.close ? sc.close.bind(sc) : null;
+    function patchController(ctx) {
+        if (!ctx || !ctx.streamController || ctx.__neo_patched) return;
+        ctx.__neo_patched = true;
+        const sc = ctx.streamController;
+        const origEnqueue = sc.enqueue?.bind(sc);
+        const origClose = sc.close?.bind(sc);
 
         sc.enqueue = function(data) {
             _chunks.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
-            // Do NOT forward to origEnqueue — the original stream's reader may hang.
+            if (origEnqueue) try { origEnqueue(data); } catch(e) {}
         };
 
         sc.close = function() {
-            var raw = _chunks.join('');
-            if (raw) {
+            const raw = _chunks.join('');
+            if (raw && typeof turboStream !== 'undefined' && turboStream.decode) {
                 try {
-                    // Strategy 1: Synchronous JSON parse + unflatten.
-                    // The first line of the turbo-stream data is a JSON array containing
-                    // React Router's flat-reference encoding. Parse and unflatten it
-                    // synchronously so ctx.state is available immediately.
-                    var firstLine = raw.split('\n')[0];
-                    var flat = JSON.parse(firstLine);
-                    var state = unflatten(flat);
-                    if (state && typeof state === 'object') {
-                        ctx.state = state;
-                        console.log('[turbo-stream] sync decoded SSR state, keys: ' + Object.keys(state).join(','));
+                    const result = turboStream.decode(raw);
+                    if (result && result.value !== undefined) {
+                        ctx.state = result.value;
+                        console.log('[turbo-stream] decoded SSR state: ' + Object.keys(result.value || {}).join(','));
                     }
                 } catch(e) {
-                    console.error('[turbo-stream] sync decode failed: ' + e.message);
-                    // Fallback: async decode via turboStream.decode()
-                    if (typeof turboStream !== 'undefined' && turboStream.decode) {
-                        try {
-                            var stream = new ReadableStream({
-                                start: function(controller) {
-                                    controller.enqueue(raw);
-                                    controller.close();
-                                }
-                            });
-                            turboStream.decode(stream).then(function(result) {
-                                if (result && Array.isArray(result)) {
-                                    var state2 = unflatten(result);
-                                    if (state2 && typeof state2 === 'object') ctx.state = state2;
-                                } else if (result !== undefined && result !== null) {
-                                    ctx.state = result;
-                                }
-                            }).catch(function(e2) {
-                                console.error('[turbo-stream] async decode also failed: ' + e2.message);
-                            });
-                        } catch(e2) {}
-                    }
+                    console.error('[turbo-stream] decode failed: ' + e.message);
                 }
             }
-            // Do NOT call origClose — suppress the original broken stream.
+            if (origClose) try { origClose(); } catch(e) {}
         };
     }
 
-    function installTrapOnContext(ctx) {
-        if (!ctx || typeof ctx !== 'object' || ctx.__neo_sc_trapped) return;
-        // If streamController already exists, patch it immediately.
-        if (ctx.streamController) {
-            if (!ctx.__neo_patched) {
-                ctx.__neo_patched = true;
-                doPatchController(ctx.streamController, ctx);
-            }
-            return;
-        }
-        // streamController doesn't exist yet — trap its assignment.
-        ctx.__neo_sc_trapped = true;
-        var _sc = undefined;
-        try {
-            Object.defineProperty(ctx, 'streamController', {
-                get: function() { return _sc; },
-                set: function(val) {
-                    _sc = val;
-                    if (val && !ctx.__neo_patched) {
-                        ctx.__neo_patched = true;
-                        try { doPatchController(val, ctx); } catch(e) {
-                            console.error('[turbo-stream] doPatchController threw: ' + e.message);
-                        }
-                    }
-                },
-                configurable: true, enumerable: true,
-            });
-        } catch(e) {
-            console.error('[turbo-stream] defineProperty on ctx.streamController failed: ' + e.message);
-        }
-    }
-
     // Patch if already exists
-    if (_ctx) installTrapOnContext(_ctx);
+    if (_ctx) patchController(_ctx);
 
-    // Trap future assignment of __reactRouterContext on globalThis
+    // Trap future assignment via defineProperty
     try {
         Object.defineProperty(globalThis, '__reactRouterContext', {
-            get: function() { return _ctx; },
-            set: function(val) {
+            get() { return _ctx; },
+            set(val) {
                 _ctx = val;
-                if (val && typeof val === 'object') installTrapOnContext(val);
+                if (val && typeof val === 'object') patchController(val);
             },
             configurable: true, enumerable: true,
         });
@@ -239,13 +90,13 @@ function __neoFormSubmit() {
     } catch(e) {}
 }
 
-// Intercept form.submit() — happy-dom's form elements may have a different
+// Intercept form.submit() — linkedom's form elements may have a different
 // prototype chain than globalThis.HTMLFormElement, so we patch both the
 // exported prototype AND the actual prototype from a real form element.
 if (typeof HTMLFormElement !== 'undefined' && HTMLFormElement.prototype) {
     HTMLFormElement.prototype.submit = __neoFormSubmit;
 }
-// Also patch the actual prototype chain used by happy-dom's form elements.
+// Also patch the actual prototype chain used by linkedom's form elements.
 if (typeof document !== 'undefined') {
     try {
         var __testForm = document.createElement('form');
@@ -260,235 +111,82 @@ if (typeof document !== 'undefined') {
     } catch(e) {}
 }
 
-// ─── URL resolution helper (pure function, no side effects) ───
-// NOTE: deno_core's URL(relative, base) has bugs with pathname resolution,
-// so we use manual resolution instead of relying on the two-arg URL constructor.
-function __neoResolveUrl(url, base) {
-    // Absolute URL — return as-is
-    if (url.indexOf('://') !== -1) return url;
-    if (!base) return url;
-    try {
-        var b = new URL(base);
-        if (url.charAt(0) === '/') {
-            // Root-relative: use origin + the url (which may contain ?query and #hash)
-            return b.origin + url;
-        }
-        if (url.charAt(0) === '#') {
-            return b.origin + b.pathname + b.search + url;
-        }
-        if (url.charAt(0) === '?') {
-            return b.origin + b.pathname + url;
-        }
-        // Relative path
-        var dir = b.pathname.replace(/\/[^/]*$/, '/');
-        return b.origin + dir + url;
-    } catch(e) { return url; }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// LOCATION CLASS — proper constructor with instanceof support
-// ═══════════════════════════════════════════════════════════════
-
-// Symbol to guard constructor — prevents `new Location()` from userland
-var __locationKey = Symbol('neo.location');
-
-// Internal URL store — the source of truth for all Location properties
-var __locationUrl = { href: 'about:blank' };
-
-function __syncLocationUrl(href) {
-    try {
-        var u = new URL(href);
-        __locationUrl = u;
-    } catch(e) {
-        // If URL parsing fails, keep previous state
-    }
-}
-
-function Location(key) {
-    if (key !== __locationKey) {
-        throw new TypeError('Illegal constructor');
-    }
-}
-
-Object.defineProperties(Location.prototype, {
-    href: {
-        get: function() { return __locationUrl.href; },
-        set: function(val) {
-            // Setting href triggers navigation (same as assign)
-            var s = String(val);
-            __syncLocationUrl(s);
-            try {
-                _shimOps.op_navigation_request(JSON.stringify({
-                    url: s, method: 'GET', type: 'location_assign'
-                }));
-            } catch(e) {}
-        },
-        enumerable: true, configurable: false
-    },
-    origin: {
-        get: function() { return __locationUrl.origin; },
-        enumerable: true, configurable: false
-    },
-    protocol: {
-        get: function() { return __locationUrl.protocol; },
-        set: function(val) {
-            try {
-                var u = new URL(__locationUrl.href);
-                u.protocol = val;
-                __syncLocationUrl(u.href);
-            } catch(e) {}
-        },
-        enumerable: true, configurable: false
-    },
-    host: {
-        get: function() { return __locationUrl.host; },
-        set: function(val) {
-            try {
-                var u = new URL(__locationUrl.href);
-                u.host = val;
-                __syncLocationUrl(u.href);
-            } catch(e) {}
-        },
-        enumerable: true, configurable: false
-    },
-    hostname: {
-        get: function() { return __locationUrl.hostname; },
-        set: function(val) {
-            try {
-                var u = new URL(__locationUrl.href);
-                u.hostname = val;
-                __syncLocationUrl(u.href);
-            } catch(e) {}
-        },
-        enumerable: true, configurable: false
-    },
-    port: {
-        get: function() { return __locationUrl.port; },
-        set: function(val) {
-            try {
-                var u = new URL(__locationUrl.href);
-                u.port = val;
-                __syncLocationUrl(u.href);
-            } catch(e) {}
-        },
-        enumerable: true, configurable: false
-    },
-    pathname: {
-        get: function() { return __locationUrl.pathname; },
-        set: function(val) {
-            try {
-                var u = new URL(__locationUrl.href);
-                u.pathname = val;
-                __syncLocationUrl(u.href);
-            } catch(e) {}
-        },
-        enumerable: true, configurable: false
-    },
-    search: {
-        get: function() { return __locationUrl.search; },
-        set: function(val) {
-            try {
-                var u = new URL(__locationUrl.href);
-                u.search = val;
-                __syncLocationUrl(u.href);
-            } catch(e) {}
-        },
-        enumerable: true, configurable: false
-    },
-    hash: {
-        get: function() { return __locationUrl.hash; },
-        set: function(val) {
-            try {
-                var u = new URL(__locationUrl.href);
-                u.hash = val;
-                __syncLocationUrl(u.href);
-            } catch(e) {}
-        },
-        enumerable: true, configurable: false
-    },
-    assign: {
-        value: function assign(url) {
-            try {
-                _shimOps.op_navigation_request(JSON.stringify({
-                    url: String(url), method: 'GET', type: 'location_assign'
-                }));
-            } catch(e) {}
-        },
-        writable: false, enumerable: true, configurable: false
-    },
-    replace: {
-        value: function replace(url) {
-            var s = String(url);
-            // Filter out non-URL arguments (e.g. regex objects from String.replace confusion)
-            if (!s || s.startsWith('/') && s.includes('[') || s.includes('(') || s === 'undefined') return;
-            try {
-                _shimOps.op_navigation_request(JSON.stringify({
-                    url: s, method: 'GET', type: 'location_replace'
-                }));
-            } catch(e) {}
-        },
-        writable: false, enumerable: true, configurable: false
-    },
-    reload: {
-        value: function reload() {
-            try {
-                _shimOps.op_navigation_request(JSON.stringify({
-                    url: __locationUrl.href, method: 'GET', type: 'reload'
-                }));
-            } catch(e) {}
-        },
-        writable: false, enumerable: true, configurable: false
-    },
-    toString: {
-        value: function toString() { return __locationUrl.href; },
-        writable: false, enumerable: true, configurable: false
-    },
-    valueOf: {
-        value: function valueOf() { return __locationUrl.href; },
-        writable: false, enumerable: true, configurable: false
-    },
-    ancestorOrigins: {
-        get: function() {
-            return { length: 0, item: function() { return null; }, contains: function() { return false; } };
-        },
-        enumerable: true, configurable: false
-    }
-});
-
-Object.defineProperty(Location.prototype, Symbol.toStringTag, {
-    value: 'Location', configurable: true
-});
-
-// Expose Location constructor globally (for instanceof checks)
-globalThis.Location = Location;
-
-// Create THE singleton location instance
-var __neo_location_instance = new Location(__locationKey);
-
-// Backward compat: __neo_location points to the same instance
-globalThis.__neo_location = __neo_location_instance;
-
-// Internal: update location from a URL string WITHOUT triggering navigation ops.
-// Used by History.pushState/replaceState and by Rust set_document_html.
+// Helper: resolve a URL (absolute or relative) and update __neo_location fields.
 function __neoUpdateLocation(url) {
-    var resolved = __neoResolveUrl(url, __locationUrl.href);
-    __syncLocationUrl(resolved);
+    var loc = globalThis.__neo_location;
+    if (url.indexOf('://') !== -1) {
+        // Absolute URL — parse directly
+        var m = url.match(/^(https?:)\/\/([^/:]+)(:\d+)?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/);
+        if (m) {
+            loc.protocol = m[1];
+            loc.hostname = m[2];
+            loc.port = (m[3] || '').replace(':', '');
+            loc.host = loc.hostname + (loc.port ? ':' + loc.port : '');
+            loc.pathname = m[4] || '/';
+            loc.search = m[5] || '';
+            loc.hash = m[6] || '';
+            loc.origin = loc.protocol + '//' + loc.host;
+            loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
+        }
+    } else if (url.charAt(0) === '/') {
+        // Root-relative: /path
+        loc.pathname = url.split('?')[0].split('#')[0];
+        loc.search = url.indexOf('?') !== -1 ? '?' + url.split('?')[1].split('#')[0] : '';
+        loc.hash = url.indexOf('#') !== -1 ? '#' + url.split('#')[1] : '';
+        loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
+    } else if (url.charAt(0) === '#') {
+        // Hash only
+        loc.hash = url;
+        loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
+    } else if (url.charAt(0) === '?') {
+        // Search only
+        loc.search = url.split('#')[0];
+        loc.hash = url.indexOf('#') !== -1 ? '#' + url.split('#')[1] : '';
+        loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
+    } else {
+        // Relative path
+        var base = loc.pathname.replace(/\/[^/]*$/, '/');
+        loc.pathname = base + url.split('?')[0].split('#')[0];
+        loc.search = url.indexOf('?') !== -1 ? '?' + url.split('?')[1].split('#')[0] : '';
+        loc.hash = url.indexOf('#') !== -1 ? '#' + url.split('#')[1] : '';
+        loc.href = loc.origin + loc.pathname + loc.search + loc.hash;
+    }
 }
 
-// Rust calls `__loc.href = ...; __loc.protocol = ...` etc. on __neo_location.
-// With our getter/setter properties on Location.prototype, setting .href triggers
-// navigation. We need a way for Rust to set properties WITHOUT navigation.
-// Solution: Rust sets via __neo_location which now has prototype getters/setters.
-// The .href setter triggers navigation — but Rust's set_document_html wraps in try/catch
-// and the op_navigation_request is a no-op during initial load.
-// For safety, provide an explicit internal setter:
-globalThis.__neo_setLocationHref = function(href) {
-    __syncLocationUrl(href);
+// Location object with navigation interception
+globalThis.__neo_location = {
+    href: '', origin: '', protocol: 'https:', host: '', hostname: '',
+    port: '', pathname: '/', search: '', hash: '',
+    assign: function(url) {
+        try {
+            _shimOps.op_navigation_request(JSON.stringify({
+                url: String(url), method: 'GET', type: 'location_assign'
+            }));
+        } catch(e) {}
+    },
+    replace: function(url) {
+        var s = String(url);
+        // Filter out non-URL arguments (e.g. regex objects from String.replace confusion)
+        if (!s || s.startsWith('/') && s.includes('[') || s.includes('(') || s === 'undefined') return;
+        try {
+            _shimOps.op_navigation_request(JSON.stringify({
+                url: s, method: 'GET', type: 'location_replace'
+            }));
+        } catch(e) {}
+    },
+    reload: function() {
+        try {
+            _shimOps.op_navigation_request(JSON.stringify({
+                url: globalThis.__neo_location.href, method: 'GET', type: 'reload'
+            }));
+        } catch(e) {}
+    },
+    toString: function() { return this.href; }
 };
 
-// Override globalThis.location with the Location instance
+// Override globalThis.location with intercepting proxy
 Object.defineProperty(globalThis, 'location', {
-    get: function() { return __neo_location_instance; },
+    get: function() { return globalThis.__neo_location; },
     set: function(val) {
         if (typeof val === 'string') {
             try {
@@ -505,7 +203,7 @@ Object.defineProperty(globalThis, 'location', {
 if (typeof document !== 'undefined') {
     try {
         Object.defineProperty(document, 'location', {
-            get: function() { return __neo_location_instance; },
+            get: function() { return globalThis.__neo_location; },
             set: function(val) { globalThis.location = val; },
             configurable: true
         });
@@ -526,131 +224,77 @@ globalThis.open = function(url, target, features) {
 globalThis.close = function() {};
 
 // ═══════════════════════════════════════════════════════════════
-// HISTORY CLASS — proper constructor with instanceof support
+// 2. HISTORY API — tracked with state management
 // ═══════════════════════════════════════════════════════════════
 
-var __historyKey = Symbol('neo.history');
+globalThis.__neo_history = { entries: [], index: -1 };
 
-// Internal state — shared between History instance and helpers
-var __historyState = { entries: [], index: -1 };
-
-// Backward compat
-globalThis.__neo_history = __historyState;
-
-function History(key) {
-    if (key !== __historyKey) {
-        throw new TypeError('Illegal constructor');
-    }
-}
-
-Object.defineProperties(History.prototype, {
-    length: {
-        get: function() {
-            return __historyState.entries.length || 1;
-        },
-        enumerable: true, configurable: true
+globalThis.history = {
+    pushState: function(state, title, url) {
+        var h = globalThis.__neo_history;
+        // Truncate forward entries
+        h.entries.length = h.index + 1;
+        h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
+        h.index = h.entries.length - 1;
+        if (url) __neoUpdateLocation(url);
+        console.log('[NAV-TRACE] pushState: ' + url);
     },
-    state: {
-        get: function() {
-            var h = __historyState;
-            if (h.index >= 0 && h.index < h.entries.length) {
-                return h.entries[h.index].state;
-            }
-            return null;
-        },
-        enumerable: true, configurable: true
-    },
-    scrollRestoration: {
-        get: function() { return 'auto'; },
-        set: function(v) { /* no-op */ },
-        enumerable: true, configurable: true
-    },
-    pushState: {
-        value: function pushState(state, title, url) {
-            var h = __historyState;
-            // Truncate forward entries
-            h.entries.length = h.index + 1;
+    replaceState: function(state, title, url) {
+        var h = globalThis.__neo_history;
+        if (h.entries.length > 0 && h.index >= 0) {
+            h.entries[h.index] = { state: state, title: title, url: url, nav_type: 'synthetic' };
+        } else {
             h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
-            h.index = h.entries.length - 1;
-            // pushState syncs location but does NOT dispatch popstate (per spec)
-            if (url) __neoUpdateLocation(url);
-            console.log('[NAV-TRACE] pushState: ' + url);
-            __neo_traceStep('pushState', url);
-        },
-        writable: true, enumerable: true, configurable: true
+            h.index = 0;
+        }
+        if (url) __neoUpdateLocation(url);
+        console.log('[NAV-TRACE] replaceState: ' + url);
     },
-    replaceState: {
-        value: function replaceState(state, title, url) {
-            var h = __historyState;
-            if (h.entries.length > 0 && h.index >= 0) {
-                h.entries[h.index] = { state: state, title: title, url: url, nav_type: 'synthetic' };
-            } else {
-                h.entries.push({ state: state, title: title, url: url, nav_type: 'synthetic' });
-                h.index = 0;
-            }
-            // replaceState syncs location but does NOT dispatch popstate (per spec)
-            if (url) __neoUpdateLocation(url);
-            console.log('[NAV-TRACE] replaceState: ' + url);
-            __neo_traceStep('replaceState', url);
-        },
-        writable: true, enumerable: true, configurable: true
+    back: function() {
+        var h = globalThis.__neo_history;
+        if (h.index > 0) {
+            h.index--;
+            var entry = h.entries[h.index];
+            if (entry && entry.url) __neoUpdateLocation(entry.url);
+            try {
+                globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
+            } catch(e) {}
+        }
     },
-    back: {
-        value: function back() {
-            var h = __historyState;
-            if (h.index > 0) {
-                h.index--;
-                var entry = h.entries[h.index];
-                if (entry && entry.url) __neoUpdateLocation(entry.url);
-                // Dispatch popstate — React Router listens for this
-                try {
-                    globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
-                } catch(e) {}
-            }
-        },
-        writable: true, enumerable: true, configurable: true
+    forward: function() {
+        var h = globalThis.__neo_history;
+        if (h.index < h.entries.length - 1) {
+            h.index++;
+            var entry = h.entries[h.index];
+            if (entry && entry.url) __neoUpdateLocation(entry.url);
+            try {
+                globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
+            } catch(e) {}
+        }
     },
-    forward: {
-        value: function forward() {
-            var h = __historyState;
-            if (h.index < h.entries.length - 1) {
-                h.index++;
-                var entry = h.entries[h.index];
-                if (entry && entry.url) __neoUpdateLocation(entry.url);
-                try {
-                    globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
-                } catch(e) {}
-            }
-        },
-        writable: true, enumerable: true, configurable: true
+    go: function(delta) {
+        if (!delta) return;
+        var h = globalThis.__neo_history;
+        var target = h.index + delta;
+        if (target >= 0 && target < h.entries.length) {
+            h.index = target;
+            var entry = h.entries[h.index];
+            try {
+                globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
+            } catch(e) {}
+        }
     },
-    go: {
-        value: function go(delta) {
-            if (!delta) return;
-            var h = __historyState;
-            var target = h.index + (delta | 0);
-            if (target >= 0 && target < h.entries.length) {
-                h.index = target;
-                var entry = h.entries[h.index];
-                if (entry && entry.url) __neoUpdateLocation(entry.url);
-                try {
-                    globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
-                } catch(e) {}
-            }
-        },
-        writable: true, enumerable: true, configurable: true
-    }
-});
-
-Object.defineProperty(History.prototype, Symbol.toStringTag, {
-    value: 'History', configurable: true
-});
-
-// Expose History constructor globally (for instanceof checks)
-globalThis.History = History;
-
-// Create THE singleton history instance
-globalThis.history = new History(__historyKey);
+    get length() { return globalThis.__neo_history.entries.length || 1; },
+    get state() {
+        var h = globalThis.__neo_history;
+        if (h.index >= 0 && h.index < h.entries.length) {
+            return h.entries[h.index].state;
+        }
+        return null;
+    },
+    get scrollRestoration() { return 'auto'; },
+    set scrollRestoration(v) {}
+};
 
 // ═══════════════════════════════════════════════════════════════
 // 3. COOKIE ACCESS — backed by Rust ops
@@ -771,7 +415,7 @@ globalThis.ResizeObserver = class ResizeObserver {
     disconnect() { this._elements = []; }
 };
 
-// MutationObserver — use happy-dom's if available, otherwise stub
+// MutationObserver — use linkedom's if available, otherwise stub
 if (!globalThis.MutationObserver) {
     globalThis.MutationObserver = class MutationObserver {
         constructor(callback) { this._callback = callback; }
@@ -1193,8 +837,7 @@ if (typeof HTMLInputElement !== 'undefined' && HTMLInputElement.prototype && !HT
 }
 
 // document.execCommand (limited — insertText only)
-if (typeof document !== 'undefined') {
-    // Always override — happy-dom's execCommand is a no-op stub.
+if (typeof document !== 'undefined' && !document.execCommand) {
     document.execCommand = function(cmd, showUI, value) {
         if (cmd === 'insertText' && document.activeElement) {
             var el = document.activeElement;
@@ -1209,21 +852,13 @@ if (typeof document !== 'undefined') {
                 return true;
             }
             if (el.contentEditable === 'true' || el.isContentEditable) {
-                // For contenteditable (ProseMirror, etc):
-                // 1. Insert text into the first <p> or create one
-                var target = el.querySelector('p') || el;
-                if (target.tagName === 'P' && target.getAttribute('data-placeholder')) {
-                    target.removeAttribute('data-placeholder');
+                var sel = globalThis.getSelection();
+                if (sel && sel.rangeCount) {
+                    var range = sel.getRangeAt(0);
+                    range.deleteContents();
+                    range.insertNode(document.createTextNode(value));
                 }
-                // Append text node
-                target.textContent = (target.textContent || '') + value;
-                // 2. Dispatch beforeinput + input (ProseMirror listens for both)
-                el.dispatchEvent(new InputEvent('beforeinput', {
-                    data: value, inputType: 'insertText', bubbles: true, cancelable: true
-                }));
-                el.dispatchEvent(new InputEvent('input', {
-                    data: value, inputType: 'insertText', bubbles: true
-                }));
+                el.dispatchEvent(new InputEvent('input', {data: value, inputType: 'insertText', bubbles: true}));
                 return true;
             }
         }
@@ -1295,7 +930,7 @@ if (typeof HTMLSelectElement !== 'undefined' && HTMLSelectElement.prototype && !
 // 15. IDL ATTRIBUTE SYNCHRONIZATION — React controlled inputs
 // ═══════════════════════════════════════════════════════════════
 // Real browsers separate content attributes (getAttribute/setAttribute) from
-// IDL properties (el.value, el.checked). happy-dom conflates them. React reads
+// IDL properties (el.value, el.checked). linkedom conflates them. React reads
 // IDL properties to determine current state and uses setAttribute for initial
 // render — if they aren't independent, controlled inputs break.
 
@@ -1423,10 +1058,10 @@ if (typeof HTMLSelectElement !== 'undefined' && HTMLSelectElement.prototype && !
     });
 })();
 
-// 15e. input.type — defaults to 'text' per spec (happy-dom may return null instead)
+// 15e. input.type — defaults to 'text' per spec (linkedom returns null instead)
 (function() {
     if (typeof HTMLInputElement === 'undefined' || !HTMLInputElement.prototype) return;
-    // Always override — happy-dom's getter may return null when no type attribute is set
+    // Always override — linkedom's getter returns null when no type attribute is set
     Object.defineProperty(HTMLInputElement.prototype, 'type', {
         get: function() { return this.getAttribute('type') || 'text'; },
         set: function(v) { this.setAttribute('type', v); },
@@ -1450,7 +1085,7 @@ if (typeof Document !== 'undefined' && Document.prototype && !Document.prototype
     };
 }
 
-// ─── Fix read-only toString on prototypes (happy-dom makes some non-writable) ───
+// ─── Fix read-only toString on prototypes (linkedom makes some non-writable) ───
 // Real browsers have toString as writable on all standard prototypes.
 // Some bundled JS (Vite/ChatGPT) assigns custom toString to objects.
 try {
@@ -1511,7 +1146,7 @@ if (!globalThis.Request) {
 // 15. EVENT SYSTEM FIXES — stopImmediatePropagation, composedPath, SubmitEvent, isConnected
 // ═══════════════════════════════════════════════════════════════
 
-// 15a. stopImmediatePropagation — happy-dom doesn't implement the flag check
+// 15a. stopImmediatePropagation — linkedom doesn't implement the flag check
 (function() {
     if (!Event.prototype) return;
     // Only patch once
@@ -1744,11 +1379,6 @@ if (!globalThis.SubmitEvent) {
     // The core: monkeypatch dispatchEvent
     var _origDispatchEvent = EventTarget.prototype.dispatchEvent;
     EventTarget.prototype.dispatchEvent = function(event) {
-        // Interaction trace — only high-signal events
-        if (['click','submit','input','change'].includes(event.type)) {
-            __neo_traceStep('event', {type: event.type, target: (event.target?.tagName || '?') + '#' + (event.target?.id || '')});
-        }
-
         // 1. Call original dispatchEvent (happy-dom's native bubbling)
         var result = _origDispatchEvent.call(this, event);
 
@@ -1786,96 +1416,4 @@ if (!globalThis.SubmitEvent) {
 
         return result;
     };
-})();
-
-// ═══════════════════════════════════════════════════════════════
-// LAYOUT STUBS — plausible non-zero values without layout engine
-// ═══════════════════════════════════════════════════════════════
-//
-// Many SPAs use getBoundingClientRect, offsetWidth, scrollHeight etc.
-// for responsive logic, virtualized lists, lazy loading, visibility checks.
-// Without values, this logic fails silently. We provide heuristic sizing.
-
-(function installLayoutStubs() {
-    const VP_W = 1920, VP_H = 1080;
-    const BLOCK_TAGS = new Set([
-        'div','p','section','article','main','header','footer','nav',
-        'form','ul','ol','li','h1','h2','h3','h4','h5','h6',
-        'table','tr','tbody','thead','tfoot','body','html',
-        'details','summary','dialog','aside','figure','figcaption'
-    ]);
-
-    // getBoundingClientRect — heuristic based on tag and content
-    const _origGBCR = Element.prototype.getBoundingClientRect;
-    Element.prototype.getBoundingClientRect = function() {
-        const tag = (this.tagName || '').toLowerCase();
-        const isBlock = BLOCK_TAGS.has(tag);
-        const textLen = (this.textContent || '').length;
-        const childCount = this.children?.length || 0;
-
-        let w, h;
-        if (tag === 'body' || tag === 'html') {
-            w = VP_W; h = VP_H;
-        } else if (isBlock) {
-            w = VP_W;
-            h = Math.max(20, Math.min(childCount * 30 + textLen * 0.3, 2000));
-        } else {
-            w = Math.min(Math.max(textLen * 8, 20), VP_W);
-            h = 20;
-        }
-
-        return {
-            top: 0, left: 0, right: w, bottom: h,
-            width: w, height: h, x: 0, y: 0,
-            toJSON() { return { top:0, left:0, right:w, bottom:h, width:w, height:h, x:0, y:0 }; }
-        };
-    };
-
-    // offset* properties
-    function defineLayoutProp(proto, prop, fallback) {
-        // Override even if happy-dom already defines a getter (it returns 0)
-        Object.defineProperty(proto, prop, {
-            get() {
-                const rect = this.getBoundingClientRect();
-                return fallback(rect);
-            },
-            configurable: true,
-        });
-    }
-
-    defineLayoutProp(HTMLElement.prototype, 'offsetWidth', r => r.width);
-    defineLayoutProp(HTMLElement.prototype, 'offsetHeight', r => r.height);
-    defineLayoutProp(HTMLElement.prototype, 'offsetTop', r => r.top);
-    defineLayoutProp(HTMLElement.prototype, 'offsetLeft', r => r.left);
-    defineLayoutProp(HTMLElement.prototype, 'clientWidth', r => r.width);
-    defineLayoutProp(HTMLElement.prototype, 'clientHeight', r => r.height);
-    defineLayoutProp(HTMLElement.prototype, 'scrollWidth', r => r.width);
-    defineLayoutProp(HTMLElement.prototype, 'scrollHeight', r => Math.max(r.height, r.width));
-    defineLayoutProp(HTMLElement.prototype, 'scrollTop', () => 0);
-    defineLayoutProp(HTMLElement.prototype, 'scrollLeft', () => 0);
-
-    // window.innerWidth/Height
-    if (!globalThis.innerWidth) {
-        Object.defineProperty(globalThis, 'innerWidth', { value: VP_W, writable: true });
-        Object.defineProperty(globalThis, 'innerHeight', { value: VP_H, writable: true });
-        Object.defineProperty(globalThis, 'outerWidth', { value: VP_W, writable: true });
-        Object.defineProperty(globalThis, 'outerHeight', { value: VP_H, writable: true });
-    }
-
-    // screen
-    globalThis.screen = globalThis.screen || {
-        width: VP_W, height: VP_H,
-        availWidth: VP_W, availHeight: VP_H,
-        colorDepth: 24, pixelDepth: 24,
-        orientation: { type: 'landscape-primary', angle: 0 },
-    };
-
-    // window.devicePixelRatio
-    if (!globalThis.devicePixelRatio) globalThis.devicePixelRatio = 2;
-
-    // scrollTo / scrollBy / scroll — no-ops
-    if (!globalThis.scrollTo) globalThis.scrollTo = function() {};
-    if (!globalThis.scrollBy) globalThis.scrollBy = function() {};
-    if (!globalThis.scroll) globalThis.scroll = function() {};
-    if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = function() {};
 })();
