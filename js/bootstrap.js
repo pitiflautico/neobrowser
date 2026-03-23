@@ -95,6 +95,13 @@ globalThis.document = __hdDocument;
 globalThis.window = globalThis;
 globalThis.self = globalThis;
 
+// CRITICAL: document.defaultView MUST === window for React Router.
+// happy-dom sets it to its own Window object. Override immediately.
+try { Object.defineProperty(__hdDocument, 'defaultView', { value: globalThis, writable: true, configurable: true }); } catch {}
+// Also ensure onpopstate/onhashchange exist on window (React Router checks)
+if (!('onpopstate' in globalThis)) globalThis.onpopstate = null;
+if (!('onhashchange' in globalThis)) globalThis.onhashchange = null;
+
 // Export happy-dom's DOM classes to global scope so page scripts can use them
 const __hdClasses = [
     'Node', 'Element', 'HTMLElement', 'Text', 'Comment', 'DocumentFragment',
