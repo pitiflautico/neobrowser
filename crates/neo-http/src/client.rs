@@ -122,22 +122,68 @@ fn run_request(
             builder = builder.body(b);
         }
 
-        let resp = builder
+        let mut resp = builder
             .send()
             .await
             .map_err(|e| HttpError::Network(e.to_string()))?;
 
         let status = resp.status().as_u16();
-        let resp_headers = resp
+        let resp_headers: std::collections::HashMap<String, String> = resp
             .headers()
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
         let resp_url = resp.url().to_string();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| HttpError::Decode(e.to_string()))?;
+
+        // Detect SSE (streaming) responses — read chunk by chunk until [DONE]
+        // instead of waiting for EOF (which never comes for live streams).
+        let is_sse = resp_headers
+            .get("content-type")
+            .map(|ct| ct.contains("text/event-stream") || ct.contains("text/x-sse"))
+            .unwrap_or(false);
+
+        let text = if is_sse {
+            // Stream SSE: read chunks until [DONE] marker or timeout.
+            // ChatGPT sends "data: [DONE]" as the last SSE event.
+            let sse_deadline = std::time::Instant::now() + Duration::from_secs(60);
+            let mut body = String::new();
+            loop {
+                let remaining = sse_deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    eprintln!("[SSE] deadline reached after {}KB", body.len() / 1024);
+                    break;
+                }
+                match tokio::time::timeout(
+                    Duration::from_secs(15).min(remaining),
+                    resp.chunk(),
+                )
+                .await
+                {
+                    Ok(Ok(Some(chunk))) => {
+                        let s = String::from_utf8_lossy(&chunk);
+                        body.push_str(&s);
+                        if body.contains("[DONE]") {
+                            break;
+                        }
+                    }
+                    Ok(Ok(None)) => break,       // stream ended
+                    Ok(Err(e)) => {
+                        eprintln!("[SSE] chunk error: {e}");
+                        break;
+                    }
+                    Err(_) => {
+                        eprintln!("[SSE] chunk timeout, got {}KB so far", body.len() / 1024);
+                        break;
+                    }
+                }
+            }
+            body
+        } else {
+            resp.text()
+                .await
+                .map_err(|e| HttpError::Decode(e.to_string()))?
+        };
+
         let duration_ms = start.elapsed().as_millis() as u64;
 
         Ok(HttpResponse {
