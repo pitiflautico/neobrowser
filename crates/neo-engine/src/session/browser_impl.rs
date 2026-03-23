@@ -271,9 +271,13 @@ impl BrowserEngine for NeoSession {
     }
 
     fn eval(&mut self, js: &str) -> Result<String, EngineError> {
-        // Execute JS (sync result), then pump event loop for side effects.
-        // This matches Chromium's model where the event loop runs continuously
-        // after script execution, processing fetches, timers, and renders.
+        // Reset callback budget before interactive eval.
+        // Page load may exhaust the 5000-callback budget (React + modules),
+        // which silently kills queueMicrotask and breaks Promise.then.
+        if let Some(rt) = self.runtime.as_mut() {
+            let _ = rt.execute("if(typeof __neo_resetBudget==='function')__neo_resetBudget()");
+        }
+
         let result = match self.runtime.as_mut() {
             Some(rt) => {
                 let r = rt.eval_and_settle(js, 5_000)?;
@@ -283,10 +287,8 @@ impl BrowserEngine for NeoSession {
                 "no runtime available".into(),
             ))),
         }?;
-        // Only pump if there are likely side effects (async eval).
-        // For simple sync reads, skip pump to keep REPL responsive.
-        // TODO: smarter detection of side effects.
-        // self.pump_after_interaction();
+        // Pump event loop for async side effects (fetch, timers, React renders).
+        self.pump_after_interaction();
         self.process_pending_navigations();
         Ok(result)
     }

@@ -62,13 +62,22 @@ impl JsRuntimeTrait for DenoRuntime {
             }
         };
 
-        let scope = &mut self.runtime.handle_scope();
-        let local = deno_core::v8::Local::new(scope, result);
-        if let Some(s) = local.to_string(scope) {
-            Ok(s.to_rust_string_lossy(scope))
-        } else {
-            Ok("undefined".to_string())
+        let val = {
+            let scope = &mut self.runtime.handle_scope();
+            let local = deno_core::v8::Local::new(scope, result);
+            if let Some(s) = local.to_string(scope) {
+                s.to_rust_string_lossy(scope)
+            } else {
+                "undefined".to_string()
+            }
+        };
+        // kExplicit: drain microtasks after every script (Chromium pattern)
+        {
+            let scope = &mut self.runtime.handle_scope();
+            let ctx = scope.get_current_context();
+            ctx.get_microtask_queue().perform_checkpoint(scope);
         }
+        Ok(val)
     }
 
     fn execute(&mut self, code: &str) -> Result<(), RuntimeError> {
@@ -78,7 +87,13 @@ impl JsRuntimeTrait for DenoRuntime {
 
         let wrapped = format!("try {{\n{}\n}} catch(__e) {{ if(typeof console!=='undefined')console.error('[script-error] ' + __e.message + ' @ ' + (__e.stack||'').split('\\n')[1]); }}", code);
         match self.runtime.execute_script("<script>", wrapped.clone()) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                // kExplicit: drain microtasks after every script
+                let scope = &mut self.runtime.handle_scope();
+                let ctx = scope.get_current_context();
+                ctx.get_microtask_queue().perform_checkpoint(scope);
+                Ok(())
+            }
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("erminated") {
@@ -555,16 +570,6 @@ impl JsRuntimeTrait for DenoRuntime {
         let start = Instant::now();
         let _guard = self.tokio_rt.enter();
 
-        // Check microtask policy before eval
-        let policy = self.runtime.v8_isolate().get_microtasks_policy();
-        if policy != deno_core::v8::MicrotasksPolicy::Auto {
-            eprintln!("[MICROTASK-POLICY] WARNING: policy is {:?}, NOT Auto!", policy);
-            // Force back to Auto
-            self.runtime.v8_isolate().set_microtasks_policy(
-                deno_core::v8::MicrotasksPolicy::Auto
-            );
-        }
-
         // Simple try/catch wrapper for eval
         let wrapped = format!(
             "try {{ (\n{}\n) }} catch(__e) {{ 'Error: ' + __e.message }}",
@@ -636,14 +641,57 @@ impl JsRuntimeTrait for DenoRuntime {
                     .unwrap_or_else(|| "undefined".to_string())
             };
 
-            // Brief pump for microtask drainage — just enough to let
-            // async side effects register as pending ops. The caller
-            // (browser_impl.rs eval()) will do a longer settle if needed.
-            for _ in 0..10 {
-                if let Ok(false) = self.pump_event_loop() {
-                    break;
-                }
+            // GPT diagnostic: test Promise::Then from RUST API (not JS).
+            // If Rust-created Promise.then works but JS Promise.then doesn't,
+            // the problem is in the JS path, not V8's microtask queue.
+            {
+                let scope = &mut self.runtime.handle_scope();
+                let ctx = scope.get_current_context();
+
+                // Create a Promise from Rust API
+                let resolver = deno_core::v8::PromiseResolver::new(scope).unwrap();
+                let promise = resolver.get_promise(scope);
+
+                // Create a Rust callback for .then()
+                let cb = deno_core::v8::Function::new(scope, |fscope: &mut deno_core::v8::HandleScope,
+                    _args: deno_core::v8::FunctionCallbackArguments,
+                    _rv: deno_core::v8::ReturnValue| {
+                    // Set a global flag from Rust callback
+                    let key = deno_core::v8::String::new(fscope, "__rust_then_called").unwrap();
+                    let val = deno_core::v8::String::new(fscope, "YES").unwrap();
+                    let global = fscope.get_current_context().global(fscope);
+                    global.set(fscope, key.into(), val.into());
+                }).unwrap();
+
+                // Attach .then() via V8 API
+                promise.then(scope, cb);
+
+                // Resolve the promise
+                let undef = deno_core::v8::undefined(scope);
+                resolver.resolve(scope, undef.into());
+
+                // Checkpoint
+                let queue = ctx.get_microtask_queue();
+                queue.perform_checkpoint(scope);
             }
+
+            // Check if Rust .then() callback executed
+            let rust_then = {
+                let result = self.runtime.execute_script(
+                    "<check-rust-then>",
+                    "String(globalThis.__rust_then_called || 'NO')".to_string(),
+                ).unwrap();
+                let scope = &mut self.runtime.handle_scope();
+                let local = deno_core::v8::Local::new(scope, result);
+                local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
+            };
+            if rust_then != "YES" {
+                eprintln!("[RUST-PROMISE] V8 Promise::Then from Rust: {rust_then} — queue/context issue!");
+            } else {
+                eprintln!("[RUST-PROMISE] V8 Promise::Then from Rust: OK — JS path is the problem");
+            }
+            // Clean up
+            let _ = self.runtime.execute_script("<cleanup>", "delete globalThis.__rust_then_called".to_string());
 
             Ok(EvalSettleResult {
                 value,

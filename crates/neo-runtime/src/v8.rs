@@ -180,6 +180,13 @@ impl DenoRuntime {
             ..Default::default()
         });
 
+        // Chromium uses kScoped, not kAuto. After heavy module evaluation
+        // (React + 388 dynamic imports), kAuto's auto-drain breaks permanently.
+        // kExplicit gives us full control: we checkpoint after every execute_script.
+        runtime.v8_isolate().set_microtasks_policy(
+            deno_core::v8::MicrotasksPolicy::Explicit
+        );
+
         let tracker = TaskTracker::new();
         let timer_budget = TimerBudget::new(scheduler_config.timer_budget);
         let fetch_budget = FetchBudget::default();
