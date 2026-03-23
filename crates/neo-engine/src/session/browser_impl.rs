@@ -287,7 +287,7 @@ impl BrowserEngine for NeoSession {
                 "no runtime available".into(),
             ))),
         }?;
-        // Pump event loop for async side effects (fetch, timers, React renders).
+        // Pump event loop for async side effects (fetch, SSE, React renders).
         self.pump_after_interaction();
         self.process_pending_navigations();
         Ok(result)
