@@ -47,63 +47,83 @@ globalThis.encodeURIComponent = function(v) {
     let _ctx = globalThis.__reactRouterContext;
     const _chunks = [];
 
-    function patchController(ctx) {
-        if (!ctx || !ctx.streamController || ctx.__neo_patched) return;
-        ctx.__neo_patched = true;
-        const sc = ctx.streamController;
+    function doPatchController(sc, ctx) {
         const origEnqueue = sc.enqueue?.bind(sc);
         const origClose = sc.close?.bind(sc);
 
         sc.enqueue = function(data) {
             _chunks.push(typeof data === 'string' ? data : new TextDecoder().decode(data));
-            console.error('[TURBO-DEBUG] enqueue called, chunks so far: ' + _chunks.length);
             if (origEnqueue) try { origEnqueue(data); } catch(e) {}
         };
 
         sc.close = function() {
-            const raw = _chunks.join('');
-            console.error('[TURBO-DEBUG] close called, chunks: ' + _chunks.length + ', raw length: ' + raw.length);
+            var raw = _chunks.join('');
             if (raw && typeof turboStream !== 'undefined' && turboStream.decode) {
                 try {
-                    // turboStream.decode() expects a ReadableStream, not a string.
+                    // turboStream.decode() expects a ReadableStream, not a raw string.
                     // Wrap the accumulated data into a ReadableStream that immediately
-                    // enqueues the full payload and closes.
+                    // enqueues the full payload and closes synchronously.
                     var stream = new ReadableStream({
                         start: function(controller) {
                             controller.enqueue(raw);
                             controller.close();
                         }
                     });
-                    // decode() is async — returns a Promise.
-                    var decodePromise = turboStream.decode(stream);
-                    decodePromise.then(function(result) {
+                    // decode() is async (returns Promise). Microtasks flush between
+                    // inline <script> tags in deno_core, so state will be set before
+                    // the React Router hydration bundle runs.
+                    turboStream.decode(stream).then(function(result) {
                         if (result !== undefined && result !== null) {
                             ctx.state = result;
-                            console.error('[turbo-stream] decoded SSR state, keys: ' + Object.keys(result).join(','));
+                            console.log('[turbo-stream] decoded SSR state, keys: ' + Object.keys(result).join(','));
                         }
                     }).catch(function(e) {
                         console.error('[turbo-stream] decode promise rejected: ' + e.message);
                     });
                 } catch(e) {
-                    console.error('[turbo-stream] decode failed: ' + e.message + '\n' + e.stack);
+                    console.error('[turbo-stream] decode threw: ' + e.message);
                 }
-            } else {
-                console.error('[TURBO-DEBUG] skip decode: raw=' + !!raw + ', turboStream=' + (typeof turboStream) + ', decode=' + !!(typeof turboStream !== 'undefined' && turboStream.decode));
             }
             if (origClose) try { origClose(); } catch(e) {}
         };
     }
 
-    // Patch if already exists
-    if (_ctx) patchController(_ctx);
+    function installTrapOnContext(ctx) {
+        if (!ctx || typeof ctx !== 'object' || ctx.__neo_sc_trapped) return;
+        // If streamController already exists, patch it immediately.
+        if (ctx.streamController) {
+            if (!ctx.__neo_patched) {
+                ctx.__neo_patched = true;
+                doPatchController(ctx.streamController, ctx);
+            }
+            return;
+        }
+        // streamController doesn't exist yet — trap its assignment.
+        ctx.__neo_sc_trapped = true;
+        var _sc = undefined;
+        Object.defineProperty(ctx, 'streamController', {
+            get: function() { return _sc; },
+            set: function(val) {
+                _sc = val;
+                if (val && !ctx.__neo_patched) {
+                    ctx.__neo_patched = true;
+                    doPatchController(val, ctx);
+                }
+            },
+            configurable: true, enumerable: true,
+        });
+    }
 
-    // Trap future assignment via defineProperty
+    // Patch if already exists
+    if (_ctx) installTrapOnContext(_ctx);
+
+    // Trap future assignment of __reactRouterContext on globalThis
     try {
         Object.defineProperty(globalThis, '__reactRouterContext', {
-            get() { return _ctx; },
-            set(val) {
+            get: function() { return _ctx; },
+            set: function(val) {
                 _ctx = val;
-                if (val && typeof val === 'object') patchController(val);
+                if (val && typeof val === 'object') installTrapOnContext(val);
             },
             configurable: true, enumerable: true,
         });
