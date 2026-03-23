@@ -268,6 +268,15 @@ impl DenoRuntime {
                 RuntimeError::Init(format!("turbo-stream: {}", first_line(&e.to_string())))
             })?;
 
+        // ChatGPT sentinel solver (PoW + Turnstile VM).
+        let sentinel_js: &str = include_str!("../../../js/sentinel.js");
+        runtime
+            .execute_script("<neorender:sentinel>", sentinel_js.to_string())
+            .map_err(|e| {
+                eprintln!("[sentinel init] {}", &e.to_string()[..e.to_string().len().min(200)]);
+                RuntimeError::Init(format!("sentinel: {}", first_line(&e.to_string())))
+            })?;
+
         Ok(Self {
             runtime,
             store,

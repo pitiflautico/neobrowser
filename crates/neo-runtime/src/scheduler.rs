@@ -217,9 +217,9 @@ impl FetchBudget {
 }
 
 impl Default for FetchBudget {
-    /// Default: 20 concurrent, 5000ms per-request timeout.
+    /// Default: 20 concurrent, 30000ms per-request timeout.
     fn default() -> Self {
-        Self::new(20, 5000)
+        Self::new(20, 30000)
     }
 }
 
