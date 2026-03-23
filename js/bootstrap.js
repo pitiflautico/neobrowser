@@ -161,8 +161,40 @@ Object.defineProperty(document, 'cookie', {
     configurable: true,
 });
 
-// Sync happy-dom window internals with our globals
-try { document.defaultView = globalThis; } catch {}
+// ── P0 Navigation invariants ──
+// These MUST be correct for React Router and any SPA to navigate.
+
+// 1. document.defaultView === window (React Router checks this)
+try {
+    Object.defineProperty(document, 'defaultView', {
+        value: globalThis, writable: true, configurable: true
+    });
+} catch {}
+
+// 2. popstate + hashchange support on window
+// React Router creates BrowserHistory which calls window.addEventListener('popstate', ...).
+// Without these, the router can't detect back/forward navigation.
+if (!('onpopstate' in globalThis)) {
+    globalThis.onpopstate = null;
+}
+if (!('onhashchange' in globalThis)) {
+    globalThis.onhashchange = null;
+}
+// PopStateEvent constructor
+if (typeof globalThis.PopStateEvent === 'undefined') {
+    globalThis.PopStateEvent = class PopStateEvent extends Event {
+        constructor(type, init) { super(type, init); this.state = init?.state || null; }
+    };
+}
+// HashChangeEvent constructor
+if (typeof globalThis.HashChangeEvent === 'undefined') {
+    globalThis.HashChangeEvent = class HashChangeEvent extends Event {
+        constructor(type, init) { super(type, init); this.oldURL = init?.oldURL || ''; this.newURL = init?.newURL || ''; }
+    };
+}
+// Ensure history.pushState dispatches popstate (for React Router sync)
+// Note: real browsers do NOT dispatch popstate on pushState — only on back/forward.
+// But our history.back/forward shim SHOULD dispatch it.
 
 // ViewTransition API — React 19 uses document.startViewTransition for route changes.
 if (typeof document !== 'undefined' && !document.startViewTransition) {

@@ -266,6 +266,8 @@ globalThis.history = {
             h.index--;
             var entry = h.entries[h.index];
             if (entry && entry.url) __neoUpdateLocation(entry.url);
+            // Dispatch popstate — React Router listens for this
+            try { window.dispatchEvent(new PopStateEvent('popstate', { state: entry?.state || null })); } catch(e) {}
             try {
                 globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
             } catch(e) {}
@@ -277,6 +279,7 @@ globalThis.history = {
             h.index++;
             var entry = h.entries[h.index];
             if (entry && entry.url) __neoUpdateLocation(entry.url);
+            try { window.dispatchEvent(new PopStateEvent('popstate', { state: entry?.state || null })); } catch(e) {}
             try {
                 globalThis.dispatchEvent(new PopStateEvent('popstate', { state: entry ? entry.state : null }));
             } catch(e) {}
