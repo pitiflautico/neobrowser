@@ -14,10 +14,9 @@ const _shimOps = globalThis.__neo_ops;
     let _ctx = globalThis.__reactRouterContext;
     const _chunks = [];
 
-    function patchController(ctx) {
-        if (!ctx || !ctx.streamController || ctx.__neo_patched) return;
+    function patchEnqueueClose(ctx, sc) {
+        if (!sc || ctx.__neo_patched) return;
         ctx.__neo_patched = true;
-        const sc = ctx.streamController;
         const origEnqueue = sc.enqueue?.bind(sc);
         const origClose = sc.close?.bind(sc);
 
@@ -41,10 +40,35 @@ const _shimOps = globalThis.__neo_ops;
             }
             if (origClose) try { origClose(); } catch(e) {}
         };
+        console.log('[neo] streamController patched, enqueue/close intercepted');
+    }
+
+    // Trap streamController assignment on a context object.
+    // The ReadableStream start(controller) callback sets streamController AFTER
+    // the context object is created, so we need to catch that late assignment.
+    function trapStreamController(ctx) {
+        if (!ctx || typeof ctx !== 'object') return;
+        // If streamController already exists, patch immediately
+        if (ctx.streamController) {
+            patchEnqueueClose(ctx, ctx.streamController);
+            return;
+        }
+        // Otherwise trap the future assignment
+        let _sc = undefined;
+        try {
+            Object.defineProperty(ctx, 'streamController', {
+                get() { return _sc; },
+                set(val) {
+                    _sc = val;
+                    if (val) patchEnqueueClose(ctx, val);
+                },
+                configurable: true, enumerable: true,
+            });
+        } catch(e) {}
     }
 
     // Patch if already exists
-    if (_ctx) patchController(_ctx);
+    if (_ctx) trapStreamController(_ctx);
 
     // Trap future assignment via defineProperty
     try {
@@ -52,7 +76,7 @@ const _shimOps = globalThis.__neo_ops;
             get() { return _ctx; },
             set(val) {
                 _ctx = val;
-                if (val && typeof val === 'object') patchController(val);
+                if (val && typeof val === 'object') trapStreamController(val);
             },
             configurable: true, enumerable: true,
         });

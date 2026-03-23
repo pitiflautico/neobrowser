@@ -686,7 +686,7 @@ fn run_interact(args: &[String]) {
     d.jquery = typeof jQuery;
     var els = document.querySelectorAll('*');
     var fibers = 0;
-    for (var i = 0; i < Math.min(els.length, 500); i++) {
+    for (var i = 0; i < els.length; i++) {
         var keys = Object.keys(els[i]);
         for (var j = 0; j < keys.length; j++) {
             if (keys[j].startsWith('__react')) { fibers++; break; }
