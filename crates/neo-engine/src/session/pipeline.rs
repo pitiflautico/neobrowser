@@ -502,7 +502,7 @@ impl NeoSession {
     pub(crate) fn pump_after_interaction(&mut self) {
         if let Some(ref mut rt) = self.runtime {
             let start = std::time::Instant::now();
-            let _ = rt.run_until_interaction_stable(3000);
+            let _ = rt.run_until_interaction_stable(10000);
             eprintln!(
                 "[NeoRender] pump: {}ms",
                 start.elapsed().as_millis()
