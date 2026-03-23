@@ -5,6 +5,29 @@
 // Use __neo_ops saved by bootstrap.js (Deno is deleted for sandbox security).
 const _shimOps = globalThis.__neo_ops;
 
+// ═══════════════════════════════════════════════════════════════
+// INTERACTION TRACE — causal pipeline debugging
+// ═══════════════════════════════════════════════════════════════
+
+globalThis.__neo_interaction_trace = [];
+globalThis.__neo_traceStep = function(step, data) {
+    globalThis.__neo_interaction_trace.push({
+        step: step,
+        ts: Date.now(),
+        data: typeof data === 'string' ? data : JSON.stringify(data)?.substring(0, 200)
+    });
+};
+
+// Query trace
+globalThis.__neo_getTrace = function() {
+    return JSON.stringify(globalThis.__neo_interaction_trace.slice(-30));
+};
+
+// Clear trace
+globalThis.__neo_clearTrace = function() {
+    globalThis.__neo_interaction_trace = [];
+};
+
 // ── encodeURIComponent safety wrapper ──
 // React Router passes route params to encodeURIComponent(). In our engine,
 // some params (conversation IDs from turbo-stream decode) arrive as objects
@@ -248,6 +271,7 @@ globalThis.history = {
         h.index = h.entries.length - 1;
         if (url) __neoUpdateLocation(url);
         console.log('[NAV-TRACE] pushState: ' + url);
+        __neo_traceStep('pushState', url);
     },
     replaceState: function(state, title, url) {
         var h = globalThis.__neo_history;
@@ -259,6 +283,7 @@ globalThis.history = {
         }
         if (url) __neoUpdateLocation(url);
         console.log('[NAV-TRACE] replaceState: ' + url);
+        __neo_traceStep('replaceState', url);
     },
     back: function() {
         var h = globalThis.__neo_history;
@@ -1401,6 +1426,11 @@ if (!globalThis.SubmitEvent) {
     // The core: monkeypatch dispatchEvent
     var _origDispatchEvent = EventTarget.prototype.dispatchEvent;
     EventTarget.prototype.dispatchEvent = function(event) {
+        // Interaction trace — only high-signal events
+        if (['click','submit','input','change'].includes(event.type)) {
+            __neo_traceStep('event', {type: event.type, target: (event.target?.tagName || '?') + '#' + (event.target?.id || '')});
+        }
+
         // 1. Call original dispatchEvent (happy-dom's native bubbling)
         var result = _origDispatchEvent.call(this, event);
 

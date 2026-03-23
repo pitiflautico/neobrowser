@@ -405,6 +405,8 @@ fn run_interact(args: &[String]) {
     eprintln!("  extract text|links|semantic|wom  Extract page content");
     eprintln!("  wait <selector> [ms]       Wait for element (default 5000ms)");
     eprintln!("  eval <js>                  Execute JavaScript");
+    eprintln!("  trace                      Show interaction trace (event→fetch→state pipeline)");
+    eprintln!("  trace clear                Clear interaction trace");
     eprintln!("  diag                       Run full diagnostics (DOM, frameworks, modules)");
     eprintln!("  url                        Show current URL");
     eprintln!("  nav <url>                  Navigate to new URL");
@@ -642,6 +644,31 @@ fn run_interact(args: &[String]) {
                 match engine.fill_form(&fields) {
                     Ok(()) => println!("OK ({} fields filled)", fields.len()),
                     Err(e) => eprintln!("Error: {e}"),
+                }
+            }
+
+            "trace" => {
+                if parts.get(1) == Some(&"clear") {
+                    match engine.eval("__neo_clearTrace()") {
+                        Ok(_) => println!("Trace cleared."),
+                        Err(e) => eprintln!("Error: {e}"),
+                    }
+                } else {
+                    match engine.eval("__neo_getTrace()") {
+                        Ok(raw) => {
+                            match serde_json::from_str::<serde_json::Value>(&raw) {
+                                Ok(val) => {
+                                    println!(
+                                        "{}",
+                                        serde_json::to_string_pretty(&val)
+                                            .unwrap_or_else(|_| raw.clone())
+                                    );
+                                }
+                                Err(_) => println!("{raw}"),
+                            }
+                        }
+                        Err(e) => eprintln!("Error: {e}"),
+                    }
                 }
             }
 

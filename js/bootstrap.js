@@ -392,15 +392,123 @@ class NeoResponse {
 // Make `response instanceof Response` work
 globalThis.Response = NeoResponse;
 
-// fetch() — sync op wrapped in Promise for API compat.
-// The underlying op_fetch is sync (runs HTTP on a dedicated thread).
-globalThis.fetch = function(input, init) {
+// ── NeoStreamResponse — lazy body via streaming ops ──
+// Body is read on demand from Rust via op_fetch_read_chunk.
+// Data arrives as UTF-8 text chunks (String::from_utf8_lossy on Rust side).
+class NeoStreamResponse {
+    constructor(streamId, init) {
+        this._streamId = streamId;
+        this.status = init.status || 200;
+        this.statusText = init.status === 200 ? 'OK' : String(init.status);
+        this.ok = this.status >= 200 && this.status < 300;
+        this.headers = new Headers(init.headers || {});
+        this._rawHeaders = init.headers || {};
+        this._url = init.url || '';
+        this._bodyUsed = false;
+        this._stream = null;
+        this._cachedText = null;
+        this.redirected = false;
+        this.type = 'basic';
+    }
+
+    get url() { return this._url; }
+    get bodyUsed() { return this._bodyUsed; }
+
+    get body() {
+        if (!this._stream) {
+            const sid = this._streamId;
+            neo_trace('[FETCH] response.body stream accessed for ' + this._url);
+            this._stream = new ReadableStream({
+                async pull(controller) {
+                    try {
+                        const chunkJson = await ops.op_fetch_read_chunk(sid);
+                        const chunk = JSON.parse(chunkJson);
+                        if (chunk.done) {
+                            controller.close();
+                            return;
+                        }
+                        if (chunk.error) {
+                            controller.error(new Error(chunk.error));
+                            return;
+                        }
+                        // Data is UTF-8 text from Rust (String::from_utf8_lossy)
+                        const bytes = new TextEncoder().encode(chunk.data);
+                        controller.enqueue(bytes);
+                    } catch(e) {
+                        controller.error(e);
+                    }
+                },
+                cancel() {
+                    try { ops.op_fetch_close(sid); } catch(e) {}
+                }
+            });
+        }
+        return this._stream;
+    }
+
+    async text() {
+        if (this._cachedText !== null) return this._cachedText;
+        this._bodyUsed = true;
+        const reader = this.body.getReader();
+        const chunks = [];
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+        }
+        if (chunks.length === 0) {
+            this._cachedText = '';
+            return '';
+        }
+        if (chunks.length === 1) {
+            this._cachedText = new TextDecoder().decode(chunks[0]);
+            return this._cachedText;
+        }
+        const totalLen = chunks.reduce((a, c) => a + c.length, 0);
+        const merged = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const chunk of chunks) {
+            merged.set(chunk, offset);
+            offset += chunk.length;
+        }
+        this._cachedText = new TextDecoder().decode(merged);
+        return this._cachedText;
+    }
+
+    async json() {
+        const t = await this.text();
+        if (!t || !t.trim()) return null;
+        return JSON.parse(t);
+    }
+
+    async arrayBuffer() {
+        const t = await this.text();
+        return new TextEncoder().encode(t).buffer;
+    }
+
+    async blob() {
+        return new Blob([await this.arrayBuffer()]);
+    }
+
+    clone() {
+        // If body was consumed and cached, return a NeoResponse with the text
+        if (this._cachedText !== null) {
+            const bytes = new TextEncoder().encode(this._cachedText);
+            return new NeoResponse(bytes, {
+                status: this.status, statusText: this.statusText,
+                headers: this._rawHeaders, url: this._url, _text: this._cachedText,
+            });
+        }
+        // Not consumed yet — can't truly clone a stream. Pragmatic: return self.
+        return this;
+    }
+}
+
+// fetch() — streaming: sends request via op_fetch_start, body read lazily.
+globalThis.fetch = async function(input, init) {
     const url = typeof input === 'string' ? input : input?.url || String(input);
-    // Read method/body from Request object if input is Request and init doesn't override
     const method = init?.method || (input instanceof Request ? input.method : null) || 'GET';
     const body = init?.body !== undefined ? init.body : (input instanceof Request ? input.body : null);
-    __pendingFetches++;
-    __neo_markActivity('fetch-start');
 
     let fullUrl = url;
     if (!url.startsWith('http')) {
@@ -422,8 +530,9 @@ globalThis.fetch = function(input, init) {
         error: null,
     };
     __fetchLog.push(fetchEntry);
-    if (__fetchLog.length > 50) __fetchLog.shift(); // cap memory
+    if (__fetchLog.length > 50) __fetchLog.shift();
     console.log('[FETCH-TRACE] #' + fetchId + ' START ' + method + ' ' + fullUrl.substring(0, 80));
+    if (typeof __neo_traceStep === 'function') __neo_traceStep('fetch_start', {url: fullUrl, method: method});
 
     // Auto-inject cookies
     const hdrs = {};
@@ -440,50 +549,48 @@ globalThis.fetch = function(input, init) {
 
     const headersJson = Object.keys(hdrs).length > 0 ? JSON.stringify(hdrs) : '';
 
-    // Async op — yields to event loop during I/O. The Promise resolves
-    // in a FUTURE tick, not the current one. This is critical for React:
-    // click → fetch → .then(setState) must have a yield between them.
-    // In deno_core 0.311, async ops called via ops.X() return a Promise directly.
-    return ops.op_fetch(fullUrl, method.toUpperCase(), body || '', headersJson)
-        .then(resultJson => {
-            __pendingFetches--;
-            __neo_markActivity('fetch-end');
-            fetchEntry.endMs = Date.now();
-            const result = JSON.parse(resultJson);
-            fetchEntry.status = result.status;
-            console.log('[FETCH-TRACE] #' + fetchId + ' END ' + result.status + ' (' + (fetchEntry.endMs - fetchEntry.startMs) + 'ms)');
-            const bodyText = result.body || '';
-            const bodyBytes = new TextEncoder().encode(bodyText);
-            const resp = new NeoResponse(bodyBytes, {
-                status: result.status,
-                statusText: result.statusText || (result.status === 200 ? 'OK' : String(result.status)),
-                headers: result.headers || {},
-                url: fullUrl,
-                _text: bodyText,
-                _sseEvents: result.sse_events || null,
-            });
-            // Wrap body consumption methods for tracing
-            const origText = resp.text.bind(resp);
-            const origJson = resp.json.bind(resp);
-            resp.text = async function() {
-                fetchEntry.bodyConsumed = true;
-                console.log('[FETCH-TRACE] #' + fetchId + ' BODY text() consumed');
-                return origText();
-            };
-            resp.json = async function() {
-                fetchEntry.bodyConsumed = true;
-                console.log('[FETCH-TRACE] #' + fetchId + ' BODY json() consumed');
-                return origJson();
-            };
-            return resp;
-        })
-        .catch(e => {
-            __pendingFetches--;
-            fetchEntry.endMs = Date.now();
-            fetchEntry.error = String(e);
-            console.log('[FETCH-TRACE] #' + fetchId + ' ERROR ' + e);
-            throw new TypeError(`fetch failed: ${e}`);
+    __pendingFetches++;
+    __neo_markActivity('fetch-start');
+
+    try {
+        const resultJson = await ops.op_fetch_start(fullUrl, method.toUpperCase(), body || '', headersJson);
+        const result = JSON.parse(resultJson);
+
+        __pendingFetches--;
+        __neo_markActivity('fetch-end');
+        fetchEntry.endMs = Date.now();
+        fetchEntry.status = result.status;
+        console.log('[FETCH-TRACE] #' + fetchId + ' END status=' + result.status + ' stream=' + result.stream_id + ' (' + (fetchEntry.endMs - fetchEntry.startMs) + 'ms)');
+        if (typeof __neo_traceStep === 'function') __neo_traceStep('fetch_end', {url: fullUrl, status: result.status});
+
+        const resp = new NeoStreamResponse(result.stream_id, {
+            status: result.status,
+            headers: result.headers || {},
+            url: result.url || fullUrl,
         });
+
+        // Wrap body consumption methods for tracing
+        const origText = resp.text.bind(resp);
+        const origJson = resp.json.bind(resp);
+        resp.text = async function() {
+            fetchEntry.bodyConsumed = true;
+            console.log('[FETCH-TRACE] #' + fetchId + ' BODY text() consumed');
+            return origText();
+        };
+        resp.json = async function() {
+            fetchEntry.bodyConsumed = true;
+            console.log('[FETCH-TRACE] #' + fetchId + ' BODY json() consumed');
+            return origJson();
+        };
+
+        return resp;
+    } catch(e) {
+        __pendingFetches--;
+        fetchEntry.endMs = Date.now();
+        fetchEntry.error = String(e);
+        console.log('[FETCH-TRACE] #' + fetchId + ' ERROR ' + e);
+        throw new TypeError('fetch failed: ' + e);
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -664,6 +771,7 @@ globalThis.setTimeout = function(fn, ms, ...args) {
     const extId = __timerNextId++;
     const delay = Math.max(0, ms || 0);
     const depth = __coreTimerDepth();
+    if (typeof __neo_traceStep === 'function') __neo_traceStep('timer', 'setTimeout-' + delay);
     // queueUserTimer(depth, repeat, timeoutMs, callback) -> coreId
     const coreId = __coreQueueTimer(depth, false, delay, function() {
         __timerMap.delete(extId);
@@ -689,6 +797,7 @@ globalThis.setInterval = function(fn, ms, ...args) {
     const extId = __timerNextId++;
     const delay = Math.max(1, ms || 1);  // min 1ms for intervals
     const depth = __coreTimerDepth();
+    if (typeof __neo_traceStep === 'function') __neo_traceStep('timer', 'setInterval-' + delay);
     let ticks = 0;
     // queueUserTimer(depth, repeat=true, timeoutMs, callback) -> coreId
     const coreId = __coreQueueTimer(depth, true, delay, function() {
