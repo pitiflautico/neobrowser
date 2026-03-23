@@ -48,7 +48,8 @@ deno_core::extension!(
 /// V8-backed JavaScript runtime using deno_core.
 pub struct DenoRuntime {
     /// The underlying deno_core runtime.
-    pub(crate) runtime: deno_core::JsRuntime,
+    /// Exposed for diagnostic/testing access to V8 isolate.
+    pub runtime: deno_core::JsRuntime,
     /// Shared script store for module loading.
     pub(crate) store: ScriptStoreHandle,
     /// Shared page origin for module resolution (R7d).

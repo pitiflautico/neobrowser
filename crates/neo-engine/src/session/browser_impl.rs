@@ -283,10 +283,10 @@ impl BrowserEngine for NeoSession {
                 "no runtime available".into(),
             ))),
         }?;
-        // Pump event loop for async side effects (fetch, timers, React renders).
-        // Now that microtasks drain (Promise.then callbacks execute), fetch ops
-        // register as pending and the pump will wait for them.
-        self.pump_after_interaction();
+        // Only pump if there are likely side effects (async eval).
+        // For simple sync reads, skip pump to keep REPL responsive.
+        // TODO: smarter detection of side effects.
+        // self.pump_after_interaction();
         self.process_pending_navigations();
         Ok(result)
     }
