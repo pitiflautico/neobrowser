@@ -3,9 +3,9 @@
 //! Run: cargo test -p neo-runtime --test heavy_module_test -- --nocapture
 
 use deno_core::{
-    JsRuntime as DenoJsRuntime, ModuleLoadResponse, ModuleLoader, ModuleSource,
-    ModuleSourceCode, ModuleSpecifier, ModuleType, PollEventLoopOptions,
-    RequestedModuleType, ResolutionKind, RuntimeOptions,
+    JsRuntime as DenoJsRuntime, ModuleLoadOptions, ModuleLoadResponse, ModuleLoader,
+    ModuleLoadReferrer, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
+    PollEventLoopOptions, ResolutionKind, RuntimeOptions,
 };
 use std::time::Duration;
 
@@ -15,18 +15,18 @@ struct TestLoader {
 
 impl ModuleLoader for TestLoader {
     fn resolve(&self, specifier: &str, referrer: &str, _kind: ResolutionKind,
-    ) -> Result<ModuleSpecifier, deno_core::error::AnyError> {
+    ) -> Result<ModuleSpecifier, deno_error::JsErrorBox> {
         let base = ModuleSpecifier::parse(referrer)
             .unwrap_or_else(|_| ModuleSpecifier::parse("file:///test/").unwrap());
         if specifier.starts_with("file:") || specifier.starts_with("http") {
-            Ok(ModuleSpecifier::parse(specifier)?)
+            ModuleSpecifier::parse(specifier).map_err(deno_error::JsErrorBox::from_err)
         } else {
-            Ok(base.join(specifier)?)
+            base.join(specifier).map_err(deno_error::JsErrorBox::from_err)
         }
     }
 
-    fn load(&self, spec: &ModuleSpecifier, _ref: Option<&ModuleSpecifier>,
-            _dyn_import: bool, _type: RequestedModuleType) -> ModuleLoadResponse {
+    fn load(&self, spec: &ModuleSpecifier, _ref: Option<&ModuleLoadReferrer>,
+            _options: ModuleLoadOptions) -> ModuleLoadResponse {
         let url = spec.to_string();
         match self.modules.get(&url) {
             Some(src) => ModuleLoadResponse::Sync(Ok(ModuleSource::new(
@@ -35,7 +35,7 @@ impl ModuleLoader for TestLoader {
                 spec, None,
             ))),
             None => ModuleLoadResponse::Sync(Err(
-                deno_core::error::generic_error(format!("not found: {url}"))
+                deno_error::JsErrorBox::generic(format!("not found: {url}"))
             )),
         }
     }
@@ -45,16 +45,21 @@ fn eval_string(rt: &mut DenoJsRuntime, code: &str) -> String {
     let result = rt
         .execute_script("<test>", format!("String({})", code))
         .expect("execute_script failed");
-    let scope = &mut rt.handle_scope();
+    let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
     let local = deno_core::v8::Local::new(scope, result);
     local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
 }
 
-fn test_microtask(rt: &mut DenoJsRuntime, label: &str) -> bool {
+fn test_microtask(rt: &mut DenoJsRuntime, tokio_rt: &tokio::runtime::Runtime, label: &str) -> bool {
     let var = format!("__mt_{}", label.replace(['-', ' ', '.'], "_"));
     rt.execute_script("<set>", format!(
         "globalThis.{v}='B';Promise.resolve().then(function(){{globalThis.{v}='A'}})", v = var
     )).unwrap();
+    // deno_core 0.393: execute_script doesn't auto-drain microtasks
+    let _ = tokio_rt.block_on(rt.run_event_loop(PollEventLoopOptions::default()));
     let r = eval_string(rt, &format!("globalThis.{}", var));
     let ok = r == "A";
     println!("[{label:40}] {r} -> {}", if ok { "PASS" } else { "**FAIL**" });
@@ -162,12 +167,12 @@ fn heavy_module_microtask() {
     modules.insert("file:///test/heavy.js".to_string(), heavy);
 
     let mut rt = DenoJsRuntime::new(RuntimeOptions {
-        extensions: vec![neo_runtime::v8::neo_runtime_ext::init_ops()],
+        extensions: vec![neo_runtime::v8::neo_runtime_ext::init()],
         module_loader: Some(std::rc::Rc::new(TestLoader { modules })),
         ..Default::default()
     });
 
-    assert!(test_microtask(&mut rt, "before-heavy-module"));
+    assert!(test_microtask(&mut rt, &tokio_rt, "before-heavy-module"));
 
     // Load module
     let mod_id = tokio_rt.block_on(async {
@@ -213,7 +218,7 @@ fn heavy_module_microtask() {
     let _ = tokio_rt.block_on(receiver);
 
     // Test microtask after heavy module + settle + possible watchdog terminate
-    let ok = test_microtask(&mut rt, "after-heavy-module-settle");
+    let ok = test_microtask(&mut rt, &tokio_rt, "after-heavy-module-settle");
     if !ok {
         println!(">>> FOUND: heavy module + settle with watchdog breaks microtask drain!");
 

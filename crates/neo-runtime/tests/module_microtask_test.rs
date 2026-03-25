@@ -6,9 +6,9 @@
 //! Run: cargo test -p neo-runtime --test module_microtask_test -- --nocapture
 
 use deno_core::{
-    JsRuntime as DenoJsRuntime, ModuleLoadResponse, ModuleLoader, ModuleSource,
-    ModuleSourceCode, ModuleSpecifier, ModuleType, PollEventLoopOptions,
-    RequestedModuleType, ResolutionKind, RuntimeOptions,
+    JsRuntime as DenoJsRuntime, ModuleLoadOptions, ModuleLoadResponse, ModuleLoader,
+    ModuleLoadReferrer, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
+    PollEventLoopOptions, ResolutionKind, RuntimeOptions,
 };
 use std::time::Duration;
 
@@ -23,22 +23,21 @@ impl ModuleLoader for TestModuleLoader {
         specifier: &str,
         referrer: &str,
         _kind: ResolutionKind,
-    ) -> Result<ModuleSpecifier, deno_core::error::AnyError> {
+    ) -> Result<ModuleSpecifier, deno_error::JsErrorBox> {
         if specifier.starts_with("http") || specifier.starts_with("file") {
-            Ok(ModuleSpecifier::parse(specifier)?)
+            ModuleSpecifier::parse(specifier).map_err(deno_error::JsErrorBox::from_err)
         } else {
             let base = ModuleSpecifier::parse(referrer)
                 .unwrap_or_else(|_| ModuleSpecifier::parse("file:///test/").unwrap());
-            Ok(base.join(specifier)?)
+            base.join(specifier).map_err(deno_error::JsErrorBox::from_err)
         }
     }
 
     fn load(
         &self,
         module_specifier: &ModuleSpecifier,
-        _maybe_referrer: Option<&ModuleSpecifier>,
-        _is_dyn_import: bool,
-        _requested_module_type: RequestedModuleType,
+        _maybe_referrer: Option<&ModuleLoadReferrer>,
+        _options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
         let url = module_specifier.to_string();
         if let Some(source) = self.modules.get(&url) {
@@ -49,7 +48,7 @@ impl ModuleLoader for TestModuleLoader {
                 None,
             )))
         } else {
-            ModuleLoadResponse::Sync(Err(deno_core::error::generic_error(
+            ModuleLoadResponse::Sync(Err(deno_error::JsErrorBox::generic(
                 format!("Module not found: {url}"),
             )))
         }
@@ -60,18 +59,23 @@ fn eval_string(rt: &mut DenoJsRuntime, code: &str) -> String {
     let result = rt
         .execute_script("<test>", format!("String({})", code))
         .expect("execute_script failed");
-    let scope = &mut rt.handle_scope();
+    let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
     let local = deno_core::v8::Local::new(scope, result);
     local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
 }
 
-fn test_microtask(rt: &mut DenoJsRuntime, label: &str) -> bool {
+fn test_microtask(rt: &mut DenoJsRuntime, tokio_rt: &tokio::runtime::Runtime, label: &str) -> bool {
     let var = format!("__mt_{}", label.replace("-", "_").replace(" ", "_"));
     let code = format!(
         "globalThis.{v}='B';Promise.resolve().then(function(){{globalThis.{v}='A'}})",
         v = var
     );
     rt.execute_script("<set>", code).unwrap();
+    // deno_core 0.393: explicit pump needed for microtask drain
+    let _ = tokio_rt.block_on(rt.run_event_loop(PollEventLoopOptions::default()));
     let r = eval_string(rt, &format!("globalThis.{}", var));
     let ok = r == "A";
     println!("[{label:30}] read={r} -> {}", if ok { "PASS" } else { "**FAIL**" });
@@ -93,7 +97,7 @@ fn module_t1_baseline() {
         ..Default::default()
     });
 
-    assert!(test_microtask(&mut rt, "before-module"));
+    assert!(test_microtask(&mut rt, &tokio_rt, "before-module"));
 }
 
 /// Test 2: after loading a simple ES module
@@ -133,7 +137,7 @@ fn module_t2_after_simple_module() {
     let loaded = eval_string(&mut rt, "globalThis.__module_loaded");
     println!("[module-loaded] {loaded}");
 
-    let ok = test_microtask(&mut rt, "after-simple-module");
+    let ok = test_microtask(&mut rt, &tokio_rt, "after-simple-module");
     if !ok {
         println!(">>> FOUND: simple ES module loading breaks microtask drain!");
     }
@@ -177,7 +181,7 @@ fn module_t3_module_with_promises() {
     // Wait for mod_evaluate to complete
     let _ = tokio_rt.block_on(receiver);
 
-    let ok = test_microtask(&mut rt, "after-promise-module");
+    let ok = test_microtask(&mut rt, &tokio_rt, "after-promise-module");
     if !ok {
         println!(">>> FOUND: module with Promises breaks microtask drain!");
     }
@@ -242,7 +246,7 @@ fn module_t4_full_pipeline() {
     println!("[pipeline] app_loaded={app_loaded} react_mounted={react_mounted}");
 
     // Step 5: test microtask drain AFTER all this
-    let ok = test_microtask(&mut rt, "after-full-pipeline");
+    let ok = test_microtask(&mut rt, &tokio_rt, "after-full-pipeline");
     if !ok {
         println!(">>> FOUND: full module pipeline breaks microtask drain!");
         println!(">>> The module evaluation + settle cycle leaves V8 broken");
@@ -290,7 +294,7 @@ fn module_t5_with_timers() {
 
     let _ = tokio_rt.block_on(receiver);
 
-    let ok = test_microtask(&mut rt, "after-timers-module");
+    let ok = test_microtask(&mut rt, &tokio_rt, "after-timers-module");
     if !ok {
         println!(">>> FOUND: module with timers + settle breaks microtask drain!");
     }

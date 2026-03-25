@@ -1,5 +1,5 @@
 //! Chrome header sets for navigation and fetch requests.
-//! Must match the TLS emulation version in client.rs (wreq Chrome 139).
+//! Must match the TLS emulation version in client.rs (wreq Chrome 145).
 //! Captured from Chrome 146 real on macOS via httpbin.org/anything.
 
 use std::collections::HashMap;
@@ -7,13 +7,13 @@ use std::collections::HashMap;
 /// Chrome User-Agent string (macOS) — matches TLS emulation.
 pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) \
-     Chrome/139.0.0.0 Safari/537.36";
+     Chrome/145.0.0.0 Safari/537.36";
 
 /// Sec-Ch-Ua value — must match User-Agent version.
 /// Format captured from Chrome 146; adapted to our emulated version.
 /// Chrome 146 uses: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"
 const SEC_CH_UA: &str =
-    r#""Chromium";v="139", "Not-A.Brand";v="24", "Google Chrome";v="139""#;
+    r#""Chromium";v="145", "Not-A.Brand";v="24", "Google Chrome";v="145""#;
 
 /// Full navigation headers matching Chrome on macOS.
 ///

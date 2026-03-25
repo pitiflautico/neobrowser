@@ -28,11 +28,11 @@ impl std::fmt::Debug for RquestClient {
 impl RquestClient {
     /// Create a new client with Chrome 137 TLS and the given timeout.
     ///
-    /// Uses `wreq_util::Emulation::Chrome139` for an authentic TLS fingerprint.
+    /// Uses `wreq_util::Emulation::Chrome145` for an authentic TLS fingerprint.
     pub fn new(timeout_ms: u64) -> Result<Self, HttpError> {
         let timeout = Duration::from_millis(timeout_ms);
         let client = wreq::Client::builder()
-            .emulation(wreq_util::Emulation::Chrome139)
+            .emulation(wreq_util::Emulation::Chrome145)
             .cookie_store(true)
             .redirect(wreq::redirect::Policy::limited(10))
             .timeout(timeout)
@@ -211,9 +211,28 @@ fn run_request(
             }
             body
         } else {
-            resp.text()
-                .await
-                .map_err(|e| HttpError::Decode(e.to_string()))?
+            // Manual brotli decompression: wreq's brotli feature is disabled
+            // because it silently returns 0 bytes for some CDN servers (Azure,
+            // Cloudflare). We decompress brotli ourselves as a workaround.
+            let content_encoding = resp_headers
+                .get("content-encoding")
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            if content_encoding.contains("br") {
+                let raw_bytes = resp.bytes()
+                    .await
+                    .map_err(|e| HttpError::Decode(e.to_string()))?;
+                let mut decompressed = Vec::new();
+                let mut reader = brotli::Decompressor::new(&raw_bytes[..], 4096);
+                match std::io::Read::read_to_end(&mut reader, &mut decompressed) {
+                    Ok(_) => String::from_utf8_lossy(&decompressed).to_string(),
+                    Err(_) => String::from_utf8_lossy(&raw_bytes).to_string(),
+                }
+            } else {
+                resp.text()
+                    .await
+                    .map_err(|e| HttpError::Decode(e.to_string()))?
+            }
         };
 
         let duration_ms = start.elapsed().as_millis() as u64;

@@ -61,24 +61,260 @@ try {
 
 globalThis.onerror = function(msg, url, line, col, error) {
     try { Deno.core.ops.op_console_log('[uncaught] ' + msg + ' @ ' + url + ':' + line + ':' + col + (error?.stack ? ' | ' + error.stack.split('\n')[1] : '')); } catch {}
+    try { if (globalThis.__neo_errors) globalThis.__neo_errors._logException(msg, url, line, col, error); } catch {}
     return true;
 };
 globalThis.onunhandledrejection = function(event) {
     try { var r = event?.reason; Deno.core.ops.op_console_log('[unhandled-rejection] ' + (r?.message || r) + (r?.stack ? ' | ' + r.stack.split('\n')[1] : '')); } catch {}
+    try { if (globalThis.__neo_errors) globalThis.__neo_errors._logRejection(event?.reason || event); } catch {}
     if (event && event.preventDefault) event.preventDefault();
 };
+
+// Hook into deno_core's promise rejection tracking.
+// deno_core does NOT dispatch DOM-style 'unhandledrejection' events to
+// globalThis.onunhandledrejection. Instead it has its own handler API.
+// We bridge the two: deno_core notifies us, we call globalThis.onunhandledrejection.
+try {
+    if (typeof Deno !== 'undefined' && Deno.core && Deno.core.setUnhandledPromiseRejectionHandler) {
+        Deno.core.setUnhandledPromiseRejectionHandler(function(promise, reason) {
+            if (typeof globalThis.onunhandledrejection === 'function') {
+                globalThis.onunhandledrejection({ reason: reason, promise: promise, preventDefault: function(){} });
+            }
+        });
+    }
+} catch(e) {}
+
+// ═══════════════════════════════════════════════════════════════
+// 0b. NODE.JS COMPAT POLYFILLS — Buffer, process, global
+// ═══════════════════════════════════════════════════════════════
+// Many SPA vendor bundles (e.g. factorial) use Node.js Buffer API
+// (often minified as Buffer2). Providing globalThis.Buffer lets
+// `var Buffer2 = require('buffer').Buffer || globalThis.Buffer` resolve.
+
+// Always install our Buffer — deno_core/happy-dom may provide a Buffer
+// without concat/from/alloc which breaks Node.js-compat libraries.
+// Use Object.defineProperty with configurable:false to prevent overwrite
+// by page scripts or other polyfills.
+{
+    var __neoBuffer = {
+        from: function(data, encoding) {
+            if (typeof data === 'string') {
+                return new TextEncoder().encode(data);
+            }
+            if (data instanceof ArrayBuffer) {
+                return new Uint8Array(data);
+            }
+            if (ArrayBuffer.isView(data)) {
+                return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+            }
+            if (Array.isArray(data)) {
+                return new Uint8Array(data);
+            }
+            return new Uint8Array(0);
+        },
+        alloc: function(size) {
+            return new Uint8Array(size);
+        },
+        allocUnsafe: function(size) {
+            return new Uint8Array(size);
+        },
+        concat: function(list, totalLength) {
+            if (!list || list.length === 0) return new Uint8Array(0);
+            if (!totalLength) {
+                totalLength = 0;
+                for (var i = 0; i < list.length; i++) {
+                    totalLength += list[i].length || list[i].byteLength || 0;
+                }
+            }
+            var result = new Uint8Array(totalLength);
+            var offset = 0;
+            for (var i = 0; i < list.length; i++) {
+                var buf = list[i];
+                if (buf instanceof Uint8Array || buf instanceof ArrayBuffer) {
+                    var arr = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
+                    result.set(arr, offset);
+                    offset += arr.length;
+                }
+            }
+            return result;
+        },
+        isBuffer: function(obj) {
+            return obj instanceof Uint8Array;
+        },
+        byteLength: function(str, encoding) {
+            return new TextEncoder().encode(str).length;
+        }
+    };
+    try {
+        Object.defineProperty(globalThis, 'Buffer', {
+            value: __neoBuffer, writable: false, configurable: false, enumerable: true
+        });
+    } catch(e) {
+        // Already non-configurable — patch existing Buffer with missing methods
+        if (globalThis.Buffer && typeof globalThis.Buffer === 'object') {
+            if (!globalThis.Buffer.concat) globalThis.Buffer.concat = __neoBuffer.concat;
+            if (!globalThis.Buffer.from) globalThis.Buffer.from = __neoBuffer.from;
+            if (!globalThis.Buffer.alloc) globalThis.Buffer.alloc = __neoBuffer.alloc;
+            if (!globalThis.Buffer.allocUnsafe) globalThis.Buffer.allocUnsafe = __neoBuffer.allocUnsafe;
+            if (!globalThis.Buffer.isBuffer) globalThis.Buffer.isBuffer = __neoBuffer.isBuffer;
+            if (!globalThis.Buffer.byteLength) globalThis.Buffer.byteLength = __neoBuffer.byteLength;
+        }
+    }
+}
+
+// Node.js libraries check process.env, process.browser, etc.
+// deno_core may pre-define process as non-configurable, so patch-first approach.
+{
+    if (typeof globalThis.process !== 'undefined' && globalThis.process !== null) {
+        // Patch existing process object
+        if (!globalThis.process.env) globalThis.process.env = { NODE_ENV: 'production' };
+        else if (!globalThis.process.env.NODE_ENV) globalThis.process.env.NODE_ENV = 'production';
+        if (!globalThis.process.nextTick) globalThis.process.nextTick = function(fn) { queueMicrotask(fn); };
+        if (!globalThis.process.version) globalThis.process.version = 'v20.0.0';
+        if (!globalThis.process.platform) globalThis.process.platform = 'linux';
+        if (!globalThis.process.cwd) globalThis.process.cwd = function() { return '/'; };
+        if (globalThis.process.browser === undefined) globalThis.process.browser = true;
+    } else {
+        try {
+            Object.defineProperty(globalThis, 'process', {
+                value: {
+                    env: { NODE_ENV: 'production' },
+                    version: 'v20.0.0',
+                    platform: 'linux',
+                    nextTick: function(fn) { queueMicrotask(fn); },
+                    cwd: function() { return '/'; },
+                    browser: true
+                },
+                writable: false, configurable: false, enumerable: true
+            });
+        } catch(e) {}
+    }
+}
+{
+    if (typeof globalThis.global === 'undefined') {
+        try {
+            Object.defineProperty(globalThis, 'global', {
+                value: globalThis, writable: false, configurable: false, enumerable: true
+            });
+        } catch(e) {
+            globalThis.global = globalThis;
+        }
+    }
+}
+
+// Auto-patch Buffer-like functions: when ANY function gets .isBuffer assigned,
+// automatically add .concat/.allocUnsafe/.byteLength if missing.
+// This catches Vite bundled Buffer shims regardless of their minified name.
+// Works via a getter/setter trap on Function.prototype.isBuffer.
+{
+    var __neoBufferConcatImpl = function(list, tl) {
+        if (!list || !list.length) return new Uint8Array(0);
+        if (!tl) { tl = 0; for (var i = 0; i < list.length; i++) tl += (list[i].length || list[i].byteLength || 0); }
+        var r = new Uint8Array(tl), o = 0;
+        for (var i = 0; i < list.length; i++) {
+            var b = list[i];
+            if (b instanceof Uint8Array || b instanceof ArrayBuffer) {
+                var a = b instanceof ArrayBuffer ? new Uint8Array(b) : b;
+                r.set(a, o); o += a.length;
+            }
+        }
+        return r;
+    };
+    var __neoAllocUnsafe = function(s) { return new Uint8Array(s); };
+    var __neoByteLength = function(s) { return new TextEncoder().encode(s).length; };
+
+    // Use a setter on Function.prototype so that `SomeFunc.isBuffer = fn`
+    // triggers auto-patching of concat/allocUnsafe/byteLength on SomeFunc.
+    var __isBufferStore = new WeakMap();
+    var __patchIsBuffer = {
+        get: function() { return __isBufferStore.get(this); },
+        set: function(val) {
+            __isBufferStore.set(this, val);
+            // Auto-patch: if this object doesn't have concat, add it
+            if (!this.concat) {
+                this.concat = __neoBufferConcatImpl;
+            }
+            if (!this.allocUnsafe) this.allocUnsafe = __neoAllocUnsafe;
+            if (!this.byteLength) this.byteLength = __neoByteLength;
+        },
+        configurable: true, enumerable: false
+    };
+    // Install on both Function.prototype (constructors) and Object.prototype (plain objects)
+    try { Object.defineProperty(Function.prototype, 'isBuffer', __patchIsBuffer); } catch(e) {}
+    try { Object.defineProperty(Object.prototype, 'isBuffer', __patchIsBuffer); } catch(e) {}
+}
+
+// Buffer.concat shim for Vite bundles that tree-shake it out.
+// The `buffer` npm shim defines Buffer2 internally. Some bundles strip concat
+// via tree-shaking. We patch the constructor prototype so any Buffer2 inherits concat.
+// Also intercept Object.defineProperty to prevent re-definition of Buffer without concat.
+{
+    var __neoBufferConcat = globalThis.Buffer.concat;
+    var __neoBufferAllocUnsafe = globalThis.Buffer.allocUnsafe;
+    var __neoBufferByteLength = globalThis.Buffer.byteLength;
+    var __origDefProp = Object.defineProperty;
+    Object.defineProperty = function(obj, prop, desc) {
+        var result = __origDefProp.call(Object, obj, prop, desc);
+        // If someone defines a Buffer-like export, ensure it has concat
+        if (prop === 'Buffer' || prop === 'Buffer2') {
+            var val = desc.value || (desc.get ? desc.get() : undefined);
+            if (val && typeof val === 'function' && typeof val.from === 'function' && !val.concat) {
+                val.concat = __neoBufferConcat;
+                if (!val.allocUnsafe) val.allocUnsafe = __neoBufferAllocUnsafe;
+                if (!val.byteLength) val.byteLength = __neoBufferByteLength;
+            }
+        }
+        return result;
+    };
+    // Keep Object.defineProperty's own properties intact
+    Object.defineProperty.toString = function() { return 'function defineProperty() { [native code] }'; };
+}
+
+// Node.js require() polyfill for bundled code that uses require("buffer"), etc.
+// Vite/Rollup bundles may contain inline require() calls for Node.js builtins.
+if (typeof globalThis.require === 'undefined') {
+    var __neoModules = {
+        'buffer': { Buffer: globalThis.Buffer },
+        'process': globalThis.process,
+        'stream': { Readable: class {}, Writable: class {}, Transform: class {}, PassThrough: class {} },
+        'util': { inherits: function(){}, deprecate: function(fn){ return fn; }, promisify: function(fn){ return fn; } },
+        'events': { EventEmitter: class { on(){return this} off(){return this} emit(){return this} addEventListener(){return this} removeEventListener(){return this} removeListener(){return this} addListener(){return this} } },
+        'path': { join: function(){ return Array.prototype.slice.call(arguments).join('/'); }, resolve: function(){ return Array.prototype.slice.call(arguments).join('/'); }, dirname: function(p){ return p; }, basename: function(p){ return p; } },
+        'fs': {},
+        'os': { platform: function(){ return 'linux'; }, tmpdir: function(){ return '/tmp'; } },
+        'crypto': globalThis.crypto || {},
+        'url': { URL: globalThis.URL, URLSearchParams: globalThis.URLSearchParams },
+        'http': {}, 'https': {}, 'net': {}, 'tls': {}, 'zlib': {},
+        'string_decoder': { StringDecoder: class { write(b){ return ''; } end(){ return ''; } } },
+        'querystring': { parse: function(s){ return Object.fromEntries(new URLSearchParams(s)); }, stringify: function(o){ return new URLSearchParams(o).toString(); } }
+    };
+    globalThis.require = function(id) {
+        if (__neoModules[id]) return __neoModules[id];
+        return {};
+    };
+    globalThis.require.resolve = function(id) { return id; };
+}
 
 const { ops } = Deno.core;
 
 // Route console.log through Rust op for capture.
 const _origConsole = globalThis.console || {};
+function __neo_consoleCapture(level, args) {
+    try {
+        if (globalThis.__neo_console) {
+            var stack = null;
+            try { throw new Error(); } catch(e) { stack = e.stack ? e.stack.split('\n').slice(3, 8).join('\n') : null; }
+            globalThis.__neo_console._log(level, args, stack);
+        }
+    } catch(e) {}
+}
 globalThis.console = {
-    log: (...args) => { try { ops.op_console_log(args.map(String).join(' ')); } catch {} },
-    warn: (...args) => { try { ops.op_console_log('[warn] ' + args.map(String).join(' ')); } catch {} },
-    error: (...args) => { try { const msg = args.map(a => { if (a instanceof Error) return a.message + ' @ ' + (a.stack||'').split('\n').slice(0,3).join(' | '); return String(a); }).join(' '); ops.op_console_log('[error] ' + msg); } catch {} },
-    info: (...args) => { try { ops.op_console_log(args.map(String).join(' ')); } catch {} },
-    debug: () => {},
-    trace: () => {},
+    log: (...args) => { __neo_consoleCapture('log', args); try { ops.op_console_log(args.map(String).join(' ')); } catch {} },
+    warn: (...args) => { __neo_consoleCapture('warn', args); try { ops.op_console_log('[warn] ' + args.map(String).join(' ')); } catch {} },
+    error: (...args) => { __neo_consoleCapture('error', args); try { const msg = args.map(a => { if (a instanceof Error) return a.message + ' @ ' + (a.stack||'').split('\n').slice(0,3).join(' | '); return String(a); }).join(' '); ops.op_console_log('[error] ' + msg); } catch {} },
+    info: (...args) => { __neo_consoleCapture('info', args); try { ops.op_console_log(args.map(String).join(' ')); } catch {} },
+    debug: (...args) => { __neo_consoleCapture('debug', args); },
+    trace: (...args) => { __neo_consoleCapture('trace', args); },
     dir: () => {},
     table: () => {},
     group: () => {},
@@ -106,6 +342,18 @@ function neo_trace(msg) {
 
 const __html = globalThis.__neorender_html || '<html><head></head><body></body></html>';
 const __url = globalThis.__neorender_url || 'about:blank';
+
+// Pre-install MutationObserver stub so happy-dom can use it during Window construction.
+// happy-dom v20+ may internally create MO during init and fail with "outside Window context".
+if (typeof globalThis.MutationObserver === 'undefined') {
+    globalThis.MutationObserver = class MutationObserver {
+        constructor(cb) { this._cb = cb; this._observed = []; }
+        observe(target, opts) { this._observed.push({target, opts}); }
+        disconnect() { this._observed = []; }
+        takeRecords() { return []; }
+        _fire(records) { if (this._cb && records.length) try { this._cb(records, this); } catch(e){} }
+    };
+}
 
 // Create happy-dom Window (full browser environment)
 const __hdWindow = new happydom.Window({ url: __url });
@@ -159,6 +407,178 @@ for (const name of __hdClasses) {
     }
 }
 
+// Web Components: expose customElements registry from happy-dom
+// happy-dom has a CustomElementRegistry but it may not fully support
+// lifecycle callbacks or createElement integration. We try happy-dom first,
+// then fall back to a minimal polyfill if needed.
+(function setupWebComponents() {
+    // --- 1. customElements registry ---
+    if (__hdWindow.customElements && !globalThis.customElements) {
+        globalThis.customElements = __hdWindow.customElements;
+    }
+
+    // Polyfill if happy-dom didn't provide one (or it's broken)
+    if (!globalThis.customElements || typeof globalThis.customElements.define !== 'function') {
+        var _registry = new Map();
+        var _whenDefinedWaiters = new Map();
+        globalThis.customElements = {
+            define: function(name, cls, opts) {
+                if (_registry.has(name)) throw new DOMException(
+                    "Failed to execute 'define' on 'CustomElementRegistry': the name \"" + name + "\" has already been used",
+                    'NotSupportedError'
+                );
+                _registry.set(name, { cls: cls, opts: opts });
+                var waiters = _whenDefinedWaiters.get(name);
+                if (waiters) {
+                    waiters.forEach(function(r) { r(cls); });
+                    _whenDefinedWaiters.delete(name);
+                }
+            },
+            get: function(name) {
+                var entry = _registry.get(name);
+                return entry ? entry.cls : undefined;
+            },
+            whenDefined: function(name) {
+                if (_registry.has(name)) return Promise.resolve(_registry.get(name).cls);
+                return new Promise(function(resolve) {
+                    if (!_whenDefinedWaiters.has(name)) _whenDefinedWaiters.set(name, []);
+                    _whenDefinedWaiters.get(name).push(resolve);
+                });
+            },
+            upgrade: function(node) { /* no-op in SSR context */ },
+            getName: function(cls) {
+                for (var entry of _registry) {
+                    if (entry[1].cls === cls) return entry[0];
+                }
+                return null;
+            },
+        };
+    }
+
+    // --- 2. ShadowRoot support ---
+    if (__hdWindow.ShadowRoot && !globalThis.ShadowRoot) {
+        globalThis.ShadowRoot = __hdWindow.ShadowRoot;
+    }
+
+    // Ensure HTMLElement.prototype.attachShadow exists
+    if (typeof HTMLElement !== 'undefined' && HTMLElement.prototype && !HTMLElement.prototype.attachShadow) {
+        HTMLElement.prototype.attachShadow = function(init) {
+            var shadow = document.createDocumentFragment();
+            shadow.mode = (init && init.mode) || 'open';
+            shadow.host = this;
+            Object.defineProperty(shadow, 'innerHTML', {
+                get: function() {
+                    var html = '';
+                    for (var i = 0; i < shadow.childNodes.length; i++) {
+                        var n = shadow.childNodes[i];
+                        html += n.outerHTML || n.textContent || '';
+                    }
+                    return html;
+                },
+                set: function(val) {
+                    while (shadow.firstChild) shadow.removeChild(shadow.firstChild);
+                    if (val) {
+                        var tmp = document.createElement('template');
+                        tmp.innerHTML = val;
+                        shadow.appendChild(tmp.content.cloneNode(true));
+                    }
+                },
+                configurable: true
+            });
+            if (init && init.mode === 'open') {
+                this.shadowRoot = shadow;
+            }
+            return shadow;
+        };
+    }
+
+    // --- 3. Ensure HTMLElement can be subclassed ---
+    if (typeof HTMLElement === 'function') {
+        try {
+            class __WCSubclassTest extends HTMLElement {}
+        } catch(e) {
+            var OrigHTMLElement = HTMLElement;
+            globalThis.HTMLElement = function HTMLElement() {
+                var ctor = customElements.get(
+                    (this.constructor && customElements.getName && customElements.getName(this.constructor)) || ''
+                );
+                if (ctor) {
+                    return Reflect.construct(OrigHTMLElement, [], this.constructor);
+                }
+                return Reflect.construct(OrigHTMLElement, [], new.target || HTMLElement);
+            };
+            globalThis.HTMLElement.prototype = OrigHTMLElement.prototype;
+            Object.setPrototypeOf(globalThis.HTMLElement, OrigHTMLElement);
+        }
+    }
+})();
+
+// Web Components auto-upgrade: when customElements.define() is called,
+// scan DOM for existing elements with that tag and upgrade them.
+(function patchCustomElementsDefine() {
+    var origDefine = customElements.define.bind(customElements);
+    customElements.define = function(name, cls, opts) {
+        origDefine(name, cls, opts);
+        // Auto-upgrade existing elements in DOM
+        try {
+            var existing = document.querySelectorAll(name);
+            for (var i = 0; i < existing.length; i++) {
+                var el = existing[i];
+                if (!(el instanceof cls)) {
+                    // Set prototype chain to the custom element class
+                    Object.setPrototypeOf(el, cls.prototype);
+                    try { cls.call(el); } catch(e) {
+                        // Constructor may use new.target — try Reflect.construct
+                        try { Reflect.construct(HTMLElement, [], cls); } catch(e2) {}
+                    }
+                    // Fire connectedCallback if element is in the DOM
+                    if (el.isConnected !== false && typeof el.connectedCallback === 'function') {
+                        try { el.connectedCallback(); } catch(e) {}
+                    }
+                    // Fire attributeChangedCallback for existing attributes
+                    if (cls.observedAttributes && typeof el.attributeChangedCallback === 'function') {
+                        cls.observedAttributes.forEach(function(attr) {
+                            var val = el.getAttribute(attr);
+                            if (val !== null) {
+                                try { el.attributeChangedCallback(attr, null, val); } catch(e) {}
+                            }
+                        });
+                    }
+                }
+            }
+        } catch(e) {
+            // Non-fatal: upgrade is best-effort
+        }
+    };
+})();
+
+// Watch for attribute changes on custom elements — fire attributeChangedCallback
+// Deferred: MutationObserver may not exist yet at bootstrap time (happy-dom installs it later).
+(function setupCustomElementAttributeObserver() {
+    if (typeof MutationObserver === 'undefined') {
+        // Schedule for later, after happy-dom globals are installed.
+        setTimeout(function() { setupCustomElementAttributeObserver(); }, 0);
+        return;
+    }
+    var _attrObserver = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+            if (m.type === 'attributes') {
+                var el = m.target;
+                if (el.tagName && el.tagName.includes('-') && typeof el.attributeChangedCallback === 'function') {
+                    var cls = customElements.get(el.tagName.toLowerCase());
+                    if (cls && cls.observedAttributes && cls.observedAttributes.includes(m.attributeName)) {
+                        try { el.attributeChangedCallback(m.attributeName, m.oldValue, el.getAttribute(m.attributeName)); } catch(e) {}
+                    }
+                }
+            }
+        });
+    });
+    // Start observing after a tick (after page scripts have run)
+    setTimeout(function() {
+        try { _attrObserver.observe(document.body, { attributes: true, subtree: true, attributeOldValue: true }); } catch(e) {}
+    }, 100);
+})();
+
 // Also provide the parseHTML function for DOMParser and re-navigation
 globalThis.__linkedom_parseHTML = function(html) {
     const w = new happydom.Window({ url: __url });
@@ -179,6 +599,42 @@ globalThis.__linkedom_parseHTML = function(html) {
     }
     if (!document.querySelector) {
         console.error("[happy-dom selftest] querySelector missing");
+    }
+})();
+
+// Web Components self-test
+(function webComponentsSelfTest() {
+    try {
+        class NeoTestEl extends HTMLElement {
+            connectedCallback() { this.textContent = 'neo-wc-ok'; }
+        }
+        customElements.define('neo-test-el', NeoTestEl);
+        var t = document.createElement('neo-test-el');
+        document.body.appendChild(t);
+        // happy-dom may or may not fire connectedCallback — check both cases
+        if (t.textContent === 'neo-wc-ok') {
+            // connectedCallback fired — full support
+        } else {
+            // connectedCallback didn't fire — mark for createElement patch
+            globalThis.__neo_wc_needs_createElement_patch = true;
+            console.warn('[webcomp] connectedCallback not triggered by appendChild — will patch createElement');
+        }
+        document.body.removeChild(t);
+
+        // Test attachShadow
+        var s = document.createElement('div');
+        var sr = s.attachShadow({ mode: 'open' });
+        if (!sr || !s.shadowRoot) {
+            console.warn('[webcomp] attachShadow did not set shadowRoot');
+        }
+
+        // Test customElements.get
+        if (customElements.get('neo-test-el') !== NeoTestEl) {
+            console.warn('[webcomp] customElements.get returned wrong constructor');
+        }
+    } catch(e) {
+        console.warn('[webcomp] Web Components self-test failed:', e.message);
+        globalThis.__neo_wc_needs_createElement_patch = true;
     }
 })();
 
@@ -245,7 +701,7 @@ if (typeof document !== 'undefined' && !document.startViewTransition) {
 // ═══════════════════════════════════════════════════════════════
 
 globalThis.navigator = __hdWindow.navigator || {
-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.6045.105 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
     language: 'en-US', languages: ['en-US','en','es'], platform: 'MacIntel',
     cookieEnabled: true, onLine: true, vendor: 'Google Inc.',
     maxTouchPoints: 0, hardwareConcurrency: 8,
@@ -258,11 +714,11 @@ globalThis.navigator = __hdWindow.navigator || {
 // Must match the TLS fingerprint emulation (wreq Chrome 139).
 try {
     Object.defineProperty(globalThis.navigator, 'userAgent', {
-        value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.6045.105 Safari/537.36',
+        value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
         writable: false, configurable: true
     });
     Object.defineProperty(globalThis.navigator, 'appVersion', {
-        value: '5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.6045.105 Safari/537.36',
+        value: '5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
         writable: false, configurable: true
     });
     Object.defineProperty(globalThis.navigator, 'vendor', {
@@ -283,6 +739,24 @@ globalThis.history = __hdWindow.history || {
     replaceState(s,t,u){ if(u) location.href=u; },
     back(){}, forward(){}, go(){},
 };
+
+// Route change tracking — patched pushState/replaceState set a flag that
+// the Rust settle loop can check to reset its quiet counter on SPA navigations.
+globalThis.__neo_routeChanged = false;
+(function() {
+    var _origPush = history.pushState;
+    history.pushState = function() {
+        globalThis.__neo_routeChanged = true;
+        __neo_markActivity('pushState');
+        return _origPush.apply(this, arguments);
+    };
+    var _origReplace = history.replaceState;
+    history.replaceState = function() {
+        globalThis.__neo_routeChanged = true;
+        __neo_markActivity('replaceState');
+        return _origReplace.apply(this, arguments);
+    };
+})();
 
 globalThis.screen = { width: 1440, height: 900, availWidth: 1440, availHeight: 875, colorDepth: 24, pixelDepth: 24 };
 
@@ -636,6 +1110,17 @@ globalThis.fetch = async function(input, init) {
 
     const headersJson = Object.keys(hdrs).length > 0 ? JSON.stringify(hdrs) : '';
 
+    // Network inspector entry (after hdrs is populated)
+    var netEntry = {
+        id: 0, url: fullUrl, method: upperMethod || method.toUpperCase(),
+        requestHeaders: Object.assign({}, hdrs),
+        requestBody: body ? String(body).slice(0, 1000) : null,
+        status: null, responseHeaders: {}, responseSize: 0,
+        startTime: Date.now(), endTime: null, duration: null,
+        error: null, initiator: 'fetch'
+    };
+    if (typeof __neo_network !== 'undefined') __neo_network._log(netEntry);
+
     __pendingFetches++;
     __neo_markActivity('fetch-start');
 
@@ -656,6 +1141,15 @@ globalThis.fetch = async function(input, init) {
             fetchEntry.status = result.status;
             console.log('[FETCH-TRACE] #' + fetchId + ' END status=' + result.status + ' stream=' + result.stream_id + ' (' + (fetchEntry.endMs - fetchEntry.startMs) + 'ms)');
             if (typeof __neo_traceStep === 'function') __neo_traceStep('fetch_end', {url: fullUrl, status: result.status});
+            // Update network inspector
+            netEntry.status = result.status;
+            netEntry.statusText = '';
+            netEntry.responseHeaders = result.headers || {};
+            netEntry.contentType = (result.headers || {})['content-type'] || '';
+            netEntry.endTime = Date.now();
+            netEntry.duration = netEntry.endTime - netEntry.startTime;
+            netEntry.initiator = 'fetch-stream';
+            if (result.url && result.url !== fullUrl) { netEntry.redirected = true; netEntry.finalUrl = result.url; }
             resp = new NeoStreamResponse(result.stream_id, {
                 status: result.status,
                 headers: result.headers || {},
@@ -673,6 +1167,16 @@ globalThis.fetch = async function(input, init) {
             if (typeof __neo_traceStep === 'function') __neo_traceStep('fetch_end', {url: fullUrl, status: result.status});
             const bodyText = result.body || '';
             const bodyBytes = new TextEncoder().encode(bodyText);
+            // Update network inspector
+            netEntry.status = result.status;
+            netEntry.statusText = result.statusText || (result.status === 200 ? 'OK' : String(result.status));
+            netEntry.responseHeaders = result.headers || {};
+            netEntry.contentType = (result.headers || {})['content-type'] || '';
+            netEntry.responseBody = bodyText.slice(0, 2000);
+            netEntry.responseSize = bodyBytes.length;
+            netEntry.endTime = Date.now();
+            netEntry.duration = netEntry.endTime - netEntry.startTime;
+            if (result.url && result.url !== fullUrl) { netEntry.redirected = true; netEntry.finalUrl = result.url; }
             resp = new NeoResponse(bodyBytes, {
                 status: result.status,
                 statusText: result.statusText || (result.status === 200 ? 'OK' : String(result.status)),
@@ -702,6 +1206,10 @@ globalThis.fetch = async function(input, init) {
         __pendingFetches--;
         fetchEntry.endMs = Date.now();
         fetchEntry.error = String(e);
+        // Update network inspector on error
+        netEntry.error = String(e);
+        netEntry.endTime = Date.now();
+        netEntry.duration = netEntry.endTime - netEntry.startTime;
         console.log('[FETCH-TRACE] #' + fetchId + ' ERROR ' + e);
         throw new TypeError('fetch failed: ' + e);
     }
@@ -825,13 +1333,17 @@ globalThis.__neo_fetchLog = function() { return JSON.stringify(__fetchLog.slice(
 globalThis.__neo_fetchPending = function() { return __fetchLog.filter(function(f) { return !f.endMs && !f.error; }).length; };
 
 // Quiescence query — Rust calls this. Returns JSON with all signals.
+// Uses Math.max of two independent fetch counters as safety belt:
+// - __pendingFetches: simple increment/decrement counter
+// - tracePending: derived from fetch log entries without endMs
+// If either says fetches are pending, report them as pending.
 globalThis.__neo_quiescence = function() {
     const now = Date.now();
     const tracePending = __fetchLog.filter(function(f) { return !f.endMs && !f.error; }).length;
     return JSON.stringify({
         idle_ms: now - __activityTs,
         pending_timers: __timerMap.size,
-        pending_fetches: tracePending,
+        pending_fetches: Math.max(__pendingFetches, tracePending),
         pending_modules: __pendingModules,
         dom_mutations: __domMutations,
         callback_count: __callbackCount,
@@ -874,7 +1386,12 @@ globalThis.queueMicrotask = function(fn) {
     __origQueueMicrotask(function() {
         if (__checkBudget('microtask')) {
             __neo_markActivity('microtask');
-            try { fn(); } catch(e) {}
+            try { fn(); } catch(e) {
+                try { Deno.core.ops.op_console_log('[MICROTASK-ERROR] ' + (e.message || e)); } catch {}
+                if (typeof globalThis.onerror === 'function') {
+                    globalThis.onerror(e.message || String(e), '', 0, 0, e);
+                }
+            }
         }
     });
 };
@@ -891,7 +1408,12 @@ globalThis.setTimeout = function(fn, ms, ...args) {
         __timerMap.delete(extId);
         if (__checkBudget('setTimeout-' + delay)) {
             __neo_markActivity('setTimeout');
-            try { fn(...args); } catch(e) {}
+            try { fn(...args); } catch(e) {
+                try { Deno.core.ops.op_console_log('[TIMER-ERROR] ' + (e.message || e)); } catch {}
+                if (typeof globalThis.onerror === 'function') {
+                    globalThis.onerror(e.message || String(e), '', 0, 0, e);
+                }
+            }
         }
     });
     __timerMap.set(extId, coreId);
@@ -928,7 +1450,12 @@ globalThis.setInterval = function(fn, ms, ...args) {
             return;
         }
         __neo_markActivity('setInterval');
-        try { fn(...args); } catch(e) {}
+        try { fn(...args); } catch(e) {
+            try { Deno.core.ops.op_console_log('[TIMER-ERROR] ' + (e.message || e)); } catch {}
+            if (typeof globalThis.onerror === 'function') {
+                globalThis.onerror(e.message || String(e), '', 0, 0, e);
+            }
+        }
     });
     __timerMap.set(extId, coreId);
     return extId;
@@ -946,30 +1473,77 @@ globalThis.clearInterval = function(id) {
 // ═══════════════════════════════════════════════════════════════
 
 globalThis.XMLHttpRequest = class XMLHttpRequest {
-    constructor() { this.readyState = 0; this.status = 0; this.responseText = ''; this.response = ''; this._headers = {}; this._listeners = {}; }
-    open(method, url) { this._method = method; this._url = url; this.readyState = 1; }
+    static UNSENT = 0; static OPENED = 1; static HEADERS_RECEIVED = 2;
+    static LOADING = 3; static DONE = 4;
+    constructor() {
+        this.readyState = 0; this.status = 0; this.statusText = '';
+        this.responseText = ''; this.response = ''; this.responseType = '';
+        this.responseURL = ''; this.timeout = 0; this.withCredentials = false;
+        this._headers = {}; this._respHeaders = {}; this._listeners = {};
+        this.onload = null; this.onerror = null; this.onreadystatechange = null;
+        this.onprogress = null; this.onloadend = null; this.ontimeout = null;
+        this.upload = { addEventListener: function(){}, removeEventListener: function(){} };
+    }
+    open(method, url, async) { this._method = method; this._url = url; this._async = async !== false; this.readyState = 1; }
     setRequestHeader(name, value) { this._headers[name] = value; }
     addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
     removeEventListener(type, fn) { this._listeners[type] = (this._listeners[type] || []).filter(f => f !== fn); }
-    dispatchEvent(e) { (this._listeners[e.type] || []).forEach(f => { try { f(e); } catch {} }); }
+    dispatchEvent(e) { (this._listeners[e.type] || []).forEach(f => { try { f.call(this, e); } catch(ex){} }); }
+    _fireReadyState() {
+        if (this.onreadystatechange) try { this.onreadystatechange(); } catch(e) {}
+        this.dispatchEvent({ type: 'readystatechange', target: this });
+    }
+    overrideMimeType() {}
     send(body) {
-        fetch(this._url, { method: this._method, body, headers: this._headers })
-            .then(resp => { this.status = resp.status; return resp.text(); })
-            .then(text => {
-                this.responseText = text; this.response = text; this.readyState = 4;
-                const evt = { type: 'load', target: this };
-                this.dispatchEvent(evt); if (this.onload) this.onload(evt);
-                if (this.onreadystatechange) this.onreadystatechange();
+        var self = this;
+        var opts = { method: this._method, headers: this._headers };
+        if (body && this._method !== 'GET' && this._method !== 'HEAD') opts.body = body;
+        if (this.withCredentials) opts.credentials = 'include';
+        fetch(this._url, opts)
+            .then(function(resp) {
+                self.status = resp.status;
+                self.statusText = resp.statusText || '';
+                self.responseURL = resp.url || self._url;
+                // Capture response headers
+                self._respHeaders = {};
+                if (resp.headers && typeof resp.headers.forEach === 'function') {
+                    resp.headers.forEach(function(v, k) { self._respHeaders[k.toLowerCase()] = v; });
+                }
+                self.readyState = 2; self._fireReadyState();
+                return resp.text();
             })
-            .catch(() => {
-                this.readyState = 4;
-                const evt = { type: 'error', target: this };
-                this.dispatchEvent(evt); if (this.onerror) this.onerror(evt);
+            .then(function(text) {
+                self.responseText = text;
+                // Handle responseType
+                if (self.responseType === 'json' || self.responseType === '') {
+                    try { self.response = JSON.parse(text); } catch(e) { self.response = text; }
+                } else if (self.responseType === 'text' || !self.responseType) {
+                    self.response = text;
+                } else {
+                    self.response = text;
+                }
+                self.readyState = 4; self._fireReadyState();
+                var evt = { type: 'load', target: self, lengthComputable: false, loaded: text.length, total: text.length };
+                self.dispatchEvent(evt); if (self.onload) self.onload(evt);
+                var endEvt = { type: 'loadend', target: self };
+                self.dispatchEvent(endEvt); if (self.onloadend) self.onloadend(endEvt);
+            })
+            .catch(function(err) {
+                console.error('[XHR-ERROR] ' + self._method + ' ' + self._url + ' → ' + err.message);
+                self.readyState = 4; self._fireReadyState();
+                var evt = { type: 'error', target: self };
+                self.dispatchEvent(evt); if (self.onerror) self.onerror(evt);
+                var endEvt = { type: 'loadend', target: self };
+                self.dispatchEvent(endEvt); if (self.onloadend) self.onloadend(endEvt);
             });
     }
     abort() { this.readyState = 0; }
-    getResponseHeader() { return null; }
-    getAllResponseHeaders() { return ''; }
+    getResponseHeader(name) { return this._respHeaders[name.toLowerCase()] || null; }
+    getAllResponseHeaders() {
+        var result = '';
+        for (var k in this._respHeaders) { result += k + ': ' + this._respHeaders[k] + '\r\n'; }
+        return result;
+    }
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -1052,16 +1626,111 @@ globalThis.sessionStorage = globalThis.sessionStorage || new (class Storage {
 // CSS / matchMedia / getComputedStyle
 globalThis.CSS = { supports: () => false, escape: (s) => s };
 globalThis.matchMedia = globalThis.matchMedia || ((q) => ({
-    matches: false, media: q, addEventListener(){}, removeEventListener(){}, addListener(){}, removeListener(){}
+    matches: false, media: q, onchange: null,
+    addEventListener(){}, removeEventListener(){}, dispatchEvent(){ return true; },
+    addListener(){}, removeListener(){}
 }));
+var __defaultStyles = {
+    display: 'block', visibility: 'visible', opacity: '1',
+    position: 'static', overflow: 'visible', width: 'auto', height: 'auto',
+    'font-size': '16px', 'line-height': 'normal',
+    color: 'rgb(0, 0, 0)', 'background-color': 'rgba(0, 0, 0, 0)',
+    'box-sizing': 'content-box', margin: '0px', padding: '0px',
+    border: '0px none rgb(0, 0, 0)',
+    // camelCase aliases
+    fontSize: '16px', lineHeight: 'normal', backgroundColor: 'rgba(0, 0, 0, 0)',
+    boxSizing: 'content-box'
+};
 globalThis.getComputedStyle = globalThis.getComputedStyle || ((el) => new Proxy({}, {
-    get: (t,p) => p === 'getPropertyValue' ? () => '' : ''
+    get: (t,p) => {
+        if (p === 'getPropertyValue') return (name) => __defaultStyles[name] || '';
+        if (p === 'length') return 0;
+        if (p === 'item') return () => '';
+        if (p === 'setProperty') return () => {};
+        if (p === 'removeProperty') return () => '';
+        if (typeof p === 'symbol') return undefined;
+        return __defaultStyles[p] || '';
+    }
 }));
+
+// Layout API stubs — return reasonable non-zero values
+// instead of 0 (which makes frameworks think elements are hidden)
+(function patchLayoutAPIs() {
+    var defaultWidth = 1024;
+    var defaultHeight = 768;
+
+    // offsetWidth/offsetHeight/client*/scroll* — return non-zero for visible elements
+    ['offsetWidth', 'offsetHeight', 'clientWidth', 'clientHeight', 'scrollWidth', 'scrollHeight'].forEach(function(prop) {
+        var orig = Object.getOwnPropertyDescriptor(HTMLElement.prototype, prop);
+        if (!orig || orig.get) {
+            Object.defineProperty(HTMLElement.prototype, prop, {
+                get: function() {
+                    if (this.hidden || this.getAttribute('aria-hidden') === 'true') return 0;
+                    var style = this.getAttribute('style') || '';
+                    if (style.includes('display:none') || style.includes('display: none')) return 0;
+                    if (prop.includes('Width')) return defaultWidth;
+                    return defaultHeight;
+                },
+                configurable: true
+            });
+        }
+    });
+
+    // offsetParent — return parent for visible elements, null for hidden
+    if (!Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetParent') ||
+        !Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetParent').get) {
+        Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+            get: function() {
+                if (this.hidden) return null;
+                var style = this.getAttribute('style') || '';
+                if (style.includes('display:none')) return null;
+                return this.parentElement || document.body;
+            },
+            configurable: true
+        });
+    }
+
+    // getBoundingClientRect — return non-zero rect
+    if (typeof HTMLElement.prototype.getBoundingClientRect === 'function') {
+        var origGBCR = HTMLElement.prototype.getBoundingClientRect;
+        HTMLElement.prototype.getBoundingClientRect = function() {
+            var rect = origGBCR.call(this);
+            if (rect.width === 0 && rect.height === 0) {
+                return {
+                    x: 0, y: 0, width: defaultWidth, height: 40,
+                    top: 0, left: 0, bottom: 40, right: defaultWidth,
+                    toJSON: function() { return this; }
+                };
+            }
+            return rect;
+        };
+    }
+
+    // window dimensions
+    Object.defineProperty(window, 'innerWidth', { get: function() { return defaultWidth; }, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { get: function() { return defaultHeight; }, configurable: true });
+    Object.defineProperty(window, 'outerWidth', { get: function() { return defaultWidth; }, configurable: true });
+    Object.defineProperty(window, 'outerHeight', { get: function() { return defaultHeight; }, configurable: true });
+
+    // document.documentElement.clientWidth/clientHeight
+    if (typeof document !== 'undefined' && document.documentElement) {
+        Object.defineProperty(document.documentElement, 'clientWidth', { get: function() { return defaultWidth; }, configurable: true });
+        Object.defineProperty(document.documentElement, 'clientHeight', { get: function() { return defaultHeight; }, configurable: true });
+    }
+})();
 
 // Animation frame
 globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => setTimeout(() => { __neo_markActivity('rAF'); fn(performance.now()); }, 16));
 globalThis.cancelAnimationFrame = globalThis.cancelAnimationFrame || ((id) => clearTimeout(id));
 globalThis.queueMicrotask = globalThis.queueMicrotask || ((fn) => Promise.resolve().then(fn));
+
+// requestIdleCallback / cancelIdleCallback — used by React scheduler and modern SPAs
+if (!globalThis.requestIdleCallback) {
+    globalThis.requestIdleCallback = function(cb, opts) {
+        return setTimeout(function() { cb({ didTimeout: false, timeRemaining: function() { return 50; } }); }, 1);
+    };
+    globalThis.cancelIdleCallback = function(id) { clearTimeout(id); };
+}
 
 // Performance — now() must be relative to page load, NOT Date.now()
 // React scheduler uses performance.now() to calculate deadlines.
@@ -1074,6 +1743,8 @@ globalThis.performance.mark = globalThis.performance.mark || function(){};
 globalThis.performance.measure = globalThis.performance.measure || function(){};
 globalThis.performance.getEntriesByType = globalThis.performance.getEntriesByType || function(){ return []; };
 globalThis.performance.getEntriesByName = globalThis.performance.getEntriesByName || function(){ return []; };
+globalThis.performance.clearMarks = globalThis.performance.clearMarks || function(){};
+globalThis.performance.clearMeasures = globalThis.performance.clearMeasures || function(){};
 globalThis.performance.timeOrigin = globalThis.performance.timeOrigin || __perfOrigin;
 
 // PerformanceObserver
@@ -1201,10 +1872,124 @@ if (typeof globalThis.structuredClone === 'undefined') {
 globalThis.Headers = globalThis.Headers || class extends Map { constructor(init){super();if(init)Object.entries(init).forEach(([k,v])=>this.set(k.toLowerCase(),v));} };
 globalThis.FormData = globalThis.FormData || class { constructor(){this.__d=[];} append(k,v){this.__d.push([k,v]);} get(k){const e=this.__d.find(([n])=>n===k);return e?e[1]:null;} set(k,v){this.__d=this.__d.filter(([n])=>n!==k);this.__d.push([k,v]);} entries(){return this.__d[Symbol.iterator]();} forEach(fn){this.__d.forEach(([k,v])=>fn(v,k));} };
 globalThis.DOMParser = globalThis.DOMParser || class { parseFromString(html) { return __linkedom_parseHTML(html).document; } };
-globalThis.MutationObserver = __hdWindow.MutationObserver || class { constructor(cb){} observe(){} disconnect(){} takeRecords(){return [];} };
-globalThis.IntersectionObserver = class { constructor(cb,opts){} observe(){} unobserve(){} disconnect(){} };
-globalThis.ResizeObserver = class { constructor(cb){} observe(){} unobserve(){} disconnect(){} };
-globalThis.BroadcastChannel = globalThis.BroadcastChannel || class { constructor(){} postMessage(){} addEventListener(){} close(){} };
+// MutationObserver: use happy-dom's if it works, else provide a functional shim.
+try {
+    var _testMO = new (__hdWindow.MutationObserver)(function(){});
+    globalThis.MutationObserver = __hdWindow.MutationObserver;
+} catch(e) {
+    // happy-dom's MO fails outside Window context — use standalone shim.
+    globalThis.MutationObserver = class MutationObserver {
+        constructor(cb) { this._cb = cb; this._observed = []; }
+        observe(target, opts) { this._observed.push({target, opts}); }
+        disconnect() { this._observed = []; }
+        takeRecords() { return []; }
+        // Manual trigger for neorender's quiescence system.
+        _fire(records) { if (this._cb && records.length) try { this._cb(records, this); } catch(e){} }
+    };
+}
+// IntersectionObserver — track instances so we can fire synthetic callbacks after settle
+window.__neo_intersectionObservers = [];
+globalThis.IntersectionObserver = class IntersectionObserver {
+    constructor(cb, opts) {
+        this._callback = cb;
+        this._options = opts || {};
+        this._targets = [];
+        window.__neo_intersectionObservers.push(this);
+    }
+    observe(target) { this._targets.push(target); }
+    unobserve(target) { this._targets = this._targets.filter(function(t) { return t !== target; }); }
+    disconnect() {
+        this._targets = [];
+        window.__neo_intersectionObservers = window.__neo_intersectionObservers.filter(function(o) { return o !== this; }.bind(this));
+    }
+    takeRecords() { return []; }
+};
+
+// Fire all registered IntersectionObserver callbacks once with synthetic entries.
+// Called from Rust after DOM settles to simulate "element is visible" notification.
+globalThis.__neo_fireIntersectionObservers = function() {
+    if (!window.__neo_intersectionObservers) return 0;
+    var count = 0;
+    window.__neo_intersectionObservers.forEach(function(obs) {
+        if (obs._callback && obs._targets.length > 0) {
+            var entries = obs._targets.map(function(el) {
+                return {
+                    target: el,
+                    isIntersecting: true,
+                    intersectionRatio: 1,
+                    boundingClientRect: { x: 0, y: 0, width: 1024, height: 768, top: 0, left: 0, bottom: 768, right: 1024 },
+                    intersectionRect: { x: 0, y: 0, width: 1024, height: 768, top: 0, left: 0, bottom: 768, right: 1024 },
+                    rootBounds: { x: 0, y: 0, width: 1024, height: 768, top: 0, left: 0, bottom: 768, right: 1024 },
+                    time: performance.now()
+                };
+            });
+            try { obs._callback(entries, obs); count++; } catch(e) {}
+        }
+    });
+    return count;
+};
+
+// ResizeObserver — track instances so we can fire synthetic callbacks after settle
+(function() {
+    window.__neo_resizeObservers = [];
+    var OrigRO = __hdWindow.ResizeObserver;
+    if (OrigRO) {
+        globalThis.ResizeObserver = class extends OrigRO {
+            constructor(cb) {
+                super(cb);
+                this._callback = cb;
+                this._targets = [];
+                window.__neo_resizeObservers.push(this);
+            }
+            observe(target, opts) {
+                this._targets.push(target);
+                return super.observe(target, opts);
+            }
+            unobserve(target) {
+                this._targets = this._targets.filter(function(t) { return t !== target; });
+                return super.unobserve(target);
+            }
+            disconnect() {
+                this._targets = [];
+                window.__neo_resizeObservers = window.__neo_resizeObservers.filter(function(o) { return o !== this; }.bind(this));
+                return super.disconnect();
+            }
+        };
+    } else {
+        globalThis.ResizeObserver = class {
+            constructor(cb) { this._callback = cb; this._targets = []; window.__neo_resizeObservers.push(this); }
+            observe(target) { this._targets.push(target); }
+            unobserve(target) { this._targets = this._targets.filter(function(t) { return t !== target; }); }
+            disconnect() {
+                this._targets = [];
+                window.__neo_resizeObservers = window.__neo_resizeObservers.filter(function(o) { return o !== this; }.bind(this));
+            }
+        };
+    }
+})();
+
+// Fire all registered ResizeObserver callbacks once with synthetic entries.
+// Called from Rust after DOM settles to simulate "element appeared" notification.
+globalThis.__neo_fireResizeObservers = function() {
+    if (!window.__neo_resizeObservers) return 0;
+    var count = 0;
+    window.__neo_resizeObservers.forEach(function(obs) {
+        if (obs._callback && obs._targets && obs._targets.length > 0) {
+            var entries = obs._targets.map(function(el) {
+                return {
+                    target: el,
+                    contentRect: { x: 0, y: 0, width: 1024, height: 768, top: 0, left: 0, bottom: 768, right: 1024 },
+                    borderBoxSize: [{ blockSize: 768, inlineSize: 1024 }],
+                    contentBoxSize: [{ blockSize: 768, inlineSize: 1024 }],
+                    devicePixelContentBoxSize: [{ blockSize: 768, inlineSize: 1024 }]
+                };
+            });
+            try { obs._callback(entries, obs); count++; } catch(e) {}
+        }
+    });
+    return count;
+};
+globalThis.BroadcastChannel = globalThis.BroadcastChannel || class BroadcastChannel { constructor(name){ this.name=name; this.onmessage=null; this.onmessageerror=null; } postMessage(){} addEventListener(){} removeEventListener(){} dispatchEvent(){ return true; } close(){} };
 globalThis.Worker = globalThis.Worker || class { constructor(){} postMessage(){} addEventListener(){} terminate(){} };
 
 // Event constructors that some libs check for
@@ -1215,6 +2000,109 @@ globalThis.KeyboardEvent = globalThis.KeyboardEvent || class extends Event { con
 globalThis.FocusEvent = globalThis.FocusEvent || class extends Event { constructor(t,o={}){super(t,o);} };
 globalThis.InputEvent = globalThis.InputEvent || class extends Event { constructor(t,o={}){super(t,o);this.data=o.data||'';} };
 globalThis.PopStateEvent = globalThis.PopStateEvent || class extends Event { constructor(t,o={}){super(t,o);this.state=o.state||null;} };
+
+// PointerEvent — needed by modern UI frameworks (React, Vue pointer event handling)
+if (!globalThis.PointerEvent) {
+    globalThis.PointerEvent = class PointerEvent extends (globalThis.MouseEvent || Event) {
+        constructor(type, init = {}) {
+            super(type, init);
+            this.pointerId = init.pointerId || 0;
+            this.width = init.width || 1;
+            this.height = init.height || 1;
+            this.pressure = init.pressure || 0;
+            this.tangentialPressure = init.tangentialPressure || 0;
+            this.tiltX = init.tiltX || 0;
+            this.tiltY = init.tiltY || 0;
+            this.twist = init.twist || 0;
+            this.pointerType = init.pointerType || 'mouse';
+            this.isPrimary = init.isPrimary !== undefined ? init.isPrimary : true;
+        }
+    };
+}
+
+// ClipboardEvent — for paste handling in editors
+if (!globalThis.ClipboardEvent) {
+    globalThis.ClipboardEvent = class ClipboardEvent extends Event {
+        constructor(type, init = {}) {
+            super(type, init);
+            this.clipboardData = init.clipboardData || null;
+        }
+    };
+}
+
+// ─── Missing polyfills for modern SPAs ───────────────────────────────
+
+// requestSubmit — React 19+, form frameworks
+if (typeof HTMLFormElement !== 'undefined' && !HTMLFormElement.prototype.requestSubmit) {
+    HTMLFormElement.prototype.requestSubmit = function(submitter) {
+        if (submitter) {
+            submitter.click();
+        } else {
+            this.submit();
+        }
+    };
+}
+
+// scrollIntoView — UI frameworks call this for focus management
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = function() {};
+}
+
+// Object.groupBy — ES2024, used by newer frameworks
+if (!Object.groupBy) {
+    Object.groupBy = function(items, fn) {
+        var result = {};
+        var arr = Array.from(items);
+        for (var i = 0; i < arr.length; i++) {
+            var key = fn(arr[i], i);
+            if (!result[key]) result[key] = [];
+            result[key].push(arr[i]);
+        }
+        return result;
+    };
+}
+
+// visualViewport — layout frameworks, mobile-responsive SPAs
+if (!globalThis.visualViewport) {
+    globalThis.visualViewport = {
+        width: 1024, height: 768, offsetLeft: 0, offsetTop: 0,
+        pageLeft: 0, pageTop: 0, scale: 1,
+        addEventListener: function() {}, removeEventListener: function() {},
+        onresize: null, onscroll: null
+    };
+}
+
+// TrustedTypes — CSP-aware frameworks (Angular, lit-html)
+if (!globalThis.trustedTypes) {
+    globalThis.trustedTypes = {
+        createPolicy: function(name, rules) {
+            return {
+                createHTML: rules.createHTML || function(s) { return s; },
+                createScript: rules.createScript || function(s) { return s; },
+                createScriptURL: rules.createScriptURL || function(s) { return s; }
+            };
+        },
+        isHTML: function() { return true; },
+        isScript: function() { return true; },
+        isScriptURL: function() { return true; }
+    };
+}
+
+// document.execCommand — legacy editors (Quill, Draft.js)
+if (typeof document !== 'undefined' && !document.execCommand) {
+    document.execCommand = function() { return false; };
+}
+
+// screen — ensure full shape (colorDepth, orientation, etc.)
+if (!globalThis.screen || !globalThis.screen.orientation) {
+    var _s = globalThis.screen || {};
+    globalThis.screen = {
+        width: _s.width || 1920, height: _s.height || 1080,
+        availWidth: _s.availWidth || 1920, availHeight: _s.availHeight || 1080,
+        colorDepth: _s.colorDepth || 24, pixelDepth: _s.pixelDepth || 24,
+        orientation: { type: 'landscape-primary', angle: 0 }
+    };
+}
 
 // MessageEvent
 globalThis.MessageEvent = globalThis.MessageEvent || class MessageEvent extends Event {
@@ -1291,8 +2179,10 @@ globalThis.postMessage = function(data, origin) {
 // ═══════════════════════════════════════════════════════════════
 
 // ReadableStream — proper implementation supporting controller, async iteration, tee, pipeTo
-if (typeof globalThis.ReadableStream === 'undefined') {
-    globalThis.ReadableStream = class ReadableStream {
+// ALWAYS define NeoReadableStream. happy-dom/V8 may provide a broken ReadableStream
+// whose getReader().read() hangs forever. We force ours at the end of bootstrap.
+{
+    const NeoReadableStream = class ReadableStream {
         constructor(underlyingSource) {
             this._locked = false;
             this._disturbed = false;
@@ -1538,7 +2428,11 @@ if (typeof globalThis.ReadableStream === 'undefined') {
         }
     };
     // Mark our polyfill so the pipeThrough patch below knows to skip it
-    ReadableStream.prototype._neo_polyfill = true;
+    NeoReadableStream.prototype._neo_polyfill = true;
+    // Store for forced install at end of bootstrap
+    globalThis.__NeoReadableStream = NeoReadableStream;
+    // Install now too (may be overwritten by happy-dom, fixed at end)
+    globalThis.ReadableStream = NeoReadableStream;
 }
 
 // TextDecoderStream / TextEncoderStream — used by pipeThrough patterns in modern SPAs
@@ -1796,10 +2690,45 @@ if (!globalThis.crypto?.subtle?.digest || globalThis.crypto?.subtle?.digest?.toS
         return true;
     };
 
-    globalThis.crypto.subtle.encrypt = async function() { return new ArrayBuffer(32); };
-    globalThis.crypto.subtle.decrypt = async function() { return new ArrayBuffer(0); };
-    globalThis.crypto.subtle.deriveBits = async function() { return new ArrayBuffer(32); };
-    globalThis.crypto.subtle.deriveKey = async function() { return new NeoCryptoKey('secret', true, {name:'HMAC'}, ['sign'], new Uint8Array(64)); };
+    globalThis.crypto.subtle.encrypt = async function(algo, key, data) {
+        // Pass-through stub — return data as-is (real AES would need ring crate)
+        if (data instanceof ArrayBuffer) return data;
+        if (data && data.buffer) return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        return new TextEncoder().encode(String(data)).buffer;
+    };
+    globalThis.crypto.subtle.decrypt = async function(algo, key, data) {
+        // Pass-through stub
+        if (data instanceof ArrayBuffer) return data;
+        if (data && data.buffer) return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+        return new TextEncoder().encode(String(data)).buffer;
+    };
+    globalThis.crypto.subtle.deriveBits = async function(algo, key, length) {
+        return new ArrayBuffer((length || 256) / 8);
+    };
+    globalThis.crypto.subtle.deriveKey = async function(algo, baseKey, derivedAlgo, extractable, usages) {
+        return new NeoCryptoKey('secret', extractable !== false, derivedAlgo || {name:'HMAC'}, usages || ['sign'], new Uint8Array(64));
+    };
+    globalThis.crypto.subtle.wrapKey = async function(format, key, wrappingKey, wrapAlgo) {
+        // Stub: export + encrypt (both stubs)
+        var exported = await globalThis.crypto.subtle.exportKey(format, key);
+        return exported instanceof ArrayBuffer ? exported : new ArrayBuffer(0);
+    };
+    globalThis.crypto.subtle.unwrapKey = async function(format, wrappedKey, unwrappingKey, unwrapAlgo, unwrappedKeyAlgo, extractable, usages) {
+        return new NeoCryptoKey('secret', extractable !== false, unwrappedKeyAlgo || {name:'HMAC'}, usages || ['sign'], new Uint8Array(32));
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 7b2. FILE INPUT STUB — accept file paths in headless mode
+// ═══════════════════════════════════════════════════════════════
+if (typeof HTMLInputElement !== 'undefined') {
+    try {
+        Object.defineProperty(HTMLInputElement.prototype, 'files', {
+            get: function() { return this._files || []; },
+            set: function(val) { this._files = val; },
+            configurable: true
+        });
+    } catch(e) {}
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1809,64 +2738,112 @@ if (!globalThis.crypto?.subtle?.digest || globalThis.crypto?.subtle?.digest?.toS
 // EventSource polyfill — ChatGPT and other SPAs use EventSource or
 // fetch+ReadableStream for Server-Sent Events. This uses our fetch()
 // which now returns structured sse_events from Rust-side parsing.
-globalThis.EventSource = globalThis.EventSource || class EventSource extends EventTarget {
-    constructor(url, options) {
-        super();
-        this.url = url;
-        this.readyState = 0; // CONNECTING
-        this.withCredentials = options?.withCredentials || false;
-        this.onopen = null;
-        this.onmessage = null;
-        this.onerror = null;
-        this._connect();
-    }
+{
+    const NeoEventSource = class EventSource extends EventTarget {
+        constructor(url, options) {
+            super();
+            this.url = url;
+            this.readyState = 0; // CONNECTING
+            this.withCredentials = (options && options.withCredentials) || false;
+            this.onopen = null;
+            this.onmessage = null;
+            this.onerror = null;
+            this._aborted = false;
+            this._start();
+        }
 
-    _connect() {
-        this.readyState = 1; // OPEN
-        const openEvt = new Event('open');
-        this.dispatchEvent(openEvt);
-        if (this.onopen) this.onopen(openEvt);
-
-        fetch(this.url, {
-            headers: { 'Accept': 'text/event-stream', 'Cache-Control': 'no-cache' }
-        }).then(resp => {
-            const body = resp._bodyText || '';
-            // Parse SSE events from raw body
-            const rawEvents = body.split('\n\n');
-            for (const raw of rawEvents) {
-                if (!raw.trim()) continue;
-                const lines = raw.split('\n');
-                let data = '', eventType = 'message', id = '';
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) data += (data ? '\n' : '') + line.slice(6);
-                    else if (line.startsWith('data:')) data += (data ? '\n' : '') + line.slice(5);
-                    else if (line.startsWith('event: ')) eventType = line.slice(7);
-                    else if (line.startsWith('event:')) eventType = line.slice(6);
-                    else if (line.startsWith('id: ')) id = line.slice(4);
-                    else if (line.startsWith('id:')) id = line.slice(3);
+        _start() {
+            var self = this;
+            fetch(this.url, {
+                headers: { 'Accept': 'text/event-stream', 'Cache-Control': 'no-cache' }
+            }).then(function(resp) {
+                if (self._aborted) return;
+                if (!resp.ok) {
+                    self.readyState = 2;
+                    var errEvt = new Event('error');
+                    self.dispatchEvent(errEvt);
+                    if (self.onerror) self.onerror(errEvt);
+                    return;
                 }
-                if (!data || data === '[DONE]') continue;
-                const evt = new MessageEvent(eventType, { data, lastEventId: id });
-                this.dispatchEvent(evt);
-                if (eventType === 'message' && this.onmessage) this.onmessage(evt);
-                // For named events, also fire onmessage as fallback
-                if (eventType !== 'message' && this.onmessage) this.onmessage(evt);
+                self.readyState = 1; // OPEN
+                var openEvt = new Event('open');
+                self.dispatchEvent(openEvt);
+                if (self.onopen) self.onopen(openEvt);
+                return self._consume(resp);
+            }).catch(function(e) {
+                if (self._aborted) return;
+                self.readyState = 2;
+                var errEvt = new Event('error');
+                self.dispatchEvent(errEvt);
+                if (self.onerror) self.onerror(errEvt);
+            });
+        }
+
+        async _consume(resp) {
+            var text = await resp.text();
+            if (this._aborted) return;
+
+            var lines = text.split('\n');
+            var buffer = '';
+
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (line === '') {
+                    if (buffer.trim()) this._parseEvent(buffer);
+                    buffer = '';
+                } else {
+                    buffer += line + '\n';
+                }
             }
-            this.readyState = 2; // CLOSED
-        }).catch(err => {
+            if (buffer.trim()) this._parseEvent(buffer);
             this.readyState = 2;
-            const errEvt = new Event('error');
-            this.dispatchEvent(errEvt);
-            if (this.onerror) this.onerror(errEvt);
-        });
-    }
+        }
 
-    close() { this.readyState = 2; }
+        _parseEvent(raw) {
+            if (this._aborted) return;
+            var eventType = 'message';
+            var data = [];
+            var id = null;
 
-    static get CONNECTING() { return 0; }
-    static get OPEN() { return 1; }
-    static get CLOSED() { return 2; }
-};
+            var lines = raw.split('\n');
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                if (line.startsWith('event:')) eventType = line.slice(6).trim();
+                else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+                else if (line.startsWith('id:')) id = line.slice(3).trim();
+            }
+
+            if (data.length === 0) return;
+            var joined = data.join('\n');
+            if (joined === '[DONE]') return;
+
+            try { var evtOrigin = new URL(this.url).origin; }
+            catch(e) { var evtOrigin = ''; }
+
+            var evt = new MessageEvent(eventType, {
+                data: joined,
+                lastEventId: id || '',
+                origin: evtOrigin
+            });
+
+            this.dispatchEvent(evt);
+            if (eventType === 'message' && this.onmessage) this.onmessage(evt);
+            if (eventType !== 'message' && this.onmessage) this.onmessage(evt);
+        }
+
+        close() {
+            this._aborted = true;
+            this.readyState = 2;
+        }
+
+        static get CONNECTING() { return 0; }
+        static get OPEN() { return 1; }
+        static get CLOSED() { return 2; }
+    };
+
+    globalThis.__NeoEventSource = NeoEventSource;
+    globalThis.EventSource = NeoEventSource;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // 8. CANVAS 2D STUB — for Lottie, charts, avatars
@@ -1890,11 +2867,31 @@ const _canvasCtxProto = {
 if (document.createElement) {
     const _origCreate = document.createElement.bind(document);
     document.createElement = function(tag, ...args) {
-        const el = _origCreate(tag, ...args);
-        if (tag.toLowerCase() === 'canvas') {
+        var el = _origCreate(tag, ...args);
+        var lowerTag = tag.toLowerCase();
+        if (lowerTag === 'canvas') {
             el.getContext = () => ({ ..._canvasCtxProto, canvas: el });
             el.toDataURL = () => 'data:image/png;base64,';
             el.toBlob = (cb) => cb && cb(new Blob());
+        }
+        // Web Components: if tag contains a hyphen, look up the custom element registry
+        // and instantiate the registered class (Lit, Stencil, vanilla WC all depend on this)
+        if (lowerTag.indexOf('-') !== -1 && typeof customElements !== 'undefined' && customElements.get) {
+            var Ctor = customElements.get(lowerTag);
+            if (Ctor) {
+                try {
+                    // Try to upgrade the element by calling the constructor's setup
+                    // Set the prototype so instanceof checks work
+                    Object.setPrototypeOf(el, Ctor.prototype);
+                    // Call constructor body (Lit uses this for property initialization)
+                    Ctor.call(el);
+                } catch(e) {
+                    // Constructor may throw if it expects `new` — try connectedCallback directly
+                    try {
+                        Object.setPrototypeOf(el, Ctor.prototype);
+                    } catch(e2) { /* best effort */ }
+                }
+            }
         }
         return el;
     };
@@ -1975,6 +2972,34 @@ globalThis.prompt = function(msg, def) {
 };
 
 // ═══════════════════════════════════════════════════════════════
+// 8d. FORCE NEO POLYFILLS — override anything happy-dom/V8 installed
+// ═══════════════════════════════════════════════════════════════
+// happy-dom's ReadableStream.getReader().read() hangs forever (never resolves).
+// Force our working implementation AFTER all globals have been set up.
+if (globalThis.__NeoReadableStream) {
+    globalThis.ReadableStream = globalThis.__NeoReadableStream;
+    neo_trace('[BOOTSTRAP] Forced NeoReadableStream over happy-dom/V8 ReadableStream');
+}
+if (globalThis.__NeoEventSource) {
+    globalThis.EventSource = globalThis.__NeoEventSource;
+    neo_trace('[BOOTSTRAP] Forced NeoEventSource');
+}
+// Force our XHR polyfill over happy-dom's (which can't make real HTTP requests).
+// Store the current working XHR before happy-dom can overwrite it.
+(function forceXHR() {
+    var NeoXHR = globalThis.XMLHttpRequest;
+    // Verify it's OUR polyfill (has _headers field in prototype)
+    if (NeoXHR && NeoXHR.prototype && '_headers' in new NeoXHR()) {
+        globalThis.__NeoXHR = NeoXHR;
+    }
+    // Force install — use ours since happy-dom's XHR uses #window internally
+    if (globalThis.__NeoXHR) {
+        globalThis.XMLHttpRequest = globalThis.__NeoXHR;
+        neo_trace('[BOOTSTRAP] Forced NeoXHR over happy-dom XMLHttpRequest');
+    }
+})();
+
+// ═══════════════════════════════════════════════════════════════
 // 9. SECURITY BOUNDARY — prevent page JS from escaping sandbox
 // ═══════════════════════════════════════════════════════════════
 
@@ -1999,6 +3024,219 @@ Object.defineProperty(globalThis, 'process', {
 // With seal: works because existing properties remain writable.
 // NO freeze — real browsers never freeze prototypes.
 // Hang protection comes from global callback budget below.
+
+// ═══════════════════════════════════════════════════════════════
+// 9b. DEVTOOLS INSPECTORS — network, console, errors, cookies
+// ═══════════════════════════════════════════════════════════════
+
+// --- Network Inspector ---
+globalThis.__neo_network = {
+    requests: [],
+    _maxEntries: 200,
+    _idCounter: 0,
+
+    _log: function(entry) {
+        entry.id = ++this._idCounter;
+        this.requests.push(entry);
+        if (this.requests.length > this._maxEntries) this.requests.shift();
+    },
+
+    getAll: function() { return this.requests; },
+
+    filter: function(pattern) {
+        return this.requests.filter(function(r) { return r.url && r.url.indexOf(pattern) !== -1; });
+    },
+
+    byStatus: function(status) {
+        return this.requests.filter(function(r) { return r.status === status; });
+    },
+
+    byMethod: function(method) {
+        var m = method.toUpperCase();
+        return this.requests.filter(function(r) { return r.method === m; });
+    },
+
+    failed: function() {
+        return this.requests.filter(function(r) { return r.status >= 400 || r.error; });
+    },
+
+    clear: function() { this.requests = []; this._idCounter = 0; },
+
+    summary: function() {
+        var s = {total: this.requests.length, byMethod: {}, byStatus: {}, errors: 0, totalBytes: 0, avgDuration: 0};
+        var totalDuration = 0;
+        var counted = 0;
+        this.requests.forEach(function(r) {
+            s.byMethod[r.method] = (s.byMethod[r.method] || 0) + 1;
+            var sk = r.status || 'pending';
+            s.byStatus[sk] = (s.byStatus[sk] || 0) + 1;
+            if (r.error) s.errors++;
+            s.totalBytes += r.responseSize || 0;
+            if (r.duration) { totalDuration += r.duration; counted++; }
+        });
+        s.avgDuration = counted > 0 ? Math.round(totalDuration / counted) : 0;
+        return s;
+    }
+};
+
+// --- Console Inspector ---
+globalThis.__neo_console = {
+    messages: [],
+    _maxEntries: 500,
+
+    _log: function(level, args, stack) {
+        var msg;
+        try {
+            msg = Array.prototype.slice.call(args).map(function(a) {
+                if (a === null) return 'null';
+                if (a === undefined) return 'undefined';
+                if (typeof a === 'object') {
+                    try { return JSON.stringify(a).slice(0, 200); } catch(e) { return String(a); }
+                }
+                return String(a);
+            }).join(' ');
+        } catch(e) { msg = '[unserializable]'; }
+        this.messages.push({
+            level: level,
+            message: msg,
+            timestamp: Date.now(),
+            stack: stack || null
+        });
+        if (this.messages.length > this._maxEntries) this.messages.shift();
+    },
+
+    getAll: function() { return this.messages; },
+    errors: function() { return this.messages.filter(function(m) { return m.level === 'error'; }); },
+    warns: function() { return this.messages.filter(function(m) { return m.level === 'warn'; }); },
+    search: function(text) { return this.messages.filter(function(m) { return m.message.indexOf(text) !== -1; }); },
+    clear: function() { this.messages = []; },
+
+    summary: function() {
+        var s = {total: this.messages.length, byLevel: {}};
+        this.messages.forEach(function(m) {
+            s.byLevel[m.level] = (s.byLevel[m.level] || 0) + 1;
+        });
+        return s;
+    }
+};
+
+// --- Error Inspector ---
+globalThis.__neo_errors = {
+    exceptions: [],
+    rejections: [],
+
+    _logException: function(msg, source, line, col, error) {
+        this.exceptions.push({
+            message: String(msg),
+            source: source || null,
+            line: line || null,
+            column: col || null,
+            stack: error && error.stack ? error.stack : null,
+            timestamp: Date.now()
+        });
+        if (this.exceptions.length > 200) this.exceptions.shift();
+    },
+
+    _logRejection: function(reason) {
+        this.rejections.push({
+            message: String(reason && reason.message ? reason.message : reason),
+            stack: reason && reason.stack ? reason.stack : null,
+            timestamp: Date.now()
+        });
+        if (this.rejections.length > 200) this.rejections.shift();
+    },
+
+    getAll: function() {
+        return { exceptions: this.exceptions, rejections: this.rejections };
+    },
+
+    clear: function() { this.exceptions = []; this.rejections = []; },
+
+    summary: function() {
+        return {
+            exceptions: this.exceptions.length,
+            rejections: this.rejections.length,
+            lastException: this.exceptions.length > 0 ? this.exceptions[this.exceptions.length - 1].message : null,
+            lastRejection: this.rejections.length > 0 ? this.rejections[this.rejections.length - 1].message : null
+        };
+    }
+};
+
+// --- Cookie Inspector ---
+globalThis.__neo_cookies = {
+    getAll: function() {
+        try {
+            return document.cookie.split(';').map(function(c) {
+                var parts = c.trim().split('=');
+                return { name: parts[0], value: parts.slice(1).join('=') };
+            }).filter(function(c) { return c.name; });
+        } catch(e) { return []; }
+    },
+
+    get: function(name) {
+        var all = this.getAll();
+        for (var i = 0; i < all.length; i++) {
+            if (all[i].name === name) return all[i];
+        }
+        return null;
+    },
+
+    fromStore: function(domain) {
+        try {
+            if (typeof globalThis.__neo_ops !== 'undefined' && globalThis.__neo_ops.op_cookie_get_for_url) {
+                return globalThis.__neo_ops.op_cookie_get_for_url('https://' + domain + '/');
+            }
+        } catch(e) {}
+        // Fallback: check JS-side cookie store
+        var store = globalThis.__neorender_cookies || {};
+        var result = [];
+        for (var d in store) {
+            if (domain.indexOf(d.replace(/^\./, '')) !== -1 || d.indexOf(domain) !== -1) {
+                for (var k in store[d]) {
+                    result.push({ name: k, value: store[d][k] });
+                }
+            }
+        }
+        return result;
+    },
+
+    summary: function() {
+        var all = this.getAll();
+        return { count: all.length, names: all.map(function(c) { return c.name; }) };
+    }
+};
+
+// --- Devtools Query Entry Point ---
+// Single function to query any panel, called by Rust devtools MCP tool.
+globalThis.__neo_devtools = function(panel, filter) {
+    switch (panel) {
+        case 'network':
+            return JSON.stringify(filter ? __neo_network.filter(filter) : __neo_network.summary());
+        case 'network_all':
+            return JSON.stringify(__neo_network.getAll());
+        case 'network_failed':
+            return JSON.stringify(__neo_network.failed());
+        case 'console':
+            return JSON.stringify(filter ? __neo_console.search(filter) : __neo_console.getAll().slice(-30));
+        case 'console_errors':
+            return JSON.stringify(__neo_console.errors());
+        case 'errors':
+            return JSON.stringify(__neo_errors.summary());
+        case 'errors_all':
+            return JSON.stringify(__neo_errors.getAll());
+        case 'cookies':
+            return JSON.stringify(__neo_cookies.getAll());
+        case 'all':
+            return JSON.stringify({
+                network: __neo_network.summary(),
+                console: __neo_console.summary(),
+                errors: __neo_errors.summary(),
+                cookies: __neo_cookies.summary()
+            });
+        default:
+            return JSON.stringify({error: 'unknown panel: ' + panel});
+    }
+};
 
 // ═══════════════════════════════════════════════════════════════
 // 10. EXPORT — render DOM as HTML for Rust to extract

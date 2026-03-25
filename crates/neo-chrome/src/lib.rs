@@ -5,8 +5,15 @@
 //! This is the fallback, not the primary engine.
 
 pub mod cdp;
+pub mod emulation;
+pub mod fetch_proxy;
+pub mod input;
 pub mod launcher;
 pub mod mock;
+pub mod mouse;
+pub mod observation;
+pub mod navigation;
+pub mod performance;
 pub mod session;
 
 use neo_types::PageResult;

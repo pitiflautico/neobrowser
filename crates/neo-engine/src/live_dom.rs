@@ -356,7 +356,7 @@ const DISPATCHER_JS: &str = r#"
       hash: location.hash,
       domLen: document.body ? document.body.innerHTML.length : 0,
       domCount: document.querySelectorAll('*').length,
-      focusId: (document.activeElement && document.activeElement.id) || ''
+      focusId: (__neo_active && __neo_active.id) || (document.activeElement && document.activeElement.id) || ''
     };
   }
 
@@ -459,9 +459,12 @@ const DISPATCHER_JS: &str = r#"
     }));
   }
 
+  // ── Focus tracking (happy-dom doesn't update activeElement from synthetic events) ──
+  var __neo_active = null;
+
   // ── Focus helper with dirty/change-on-blur (F2e) ───────────────
   function focusElement(target) {
-    var prev = document.activeElement;
+    var prev = __neo_active || document.activeElement;
     if (prev === target) return;
     if (prev && prev !== document.body) {
       if (prev.__neo_dirty) {
@@ -475,18 +478,31 @@ const DISPATCHER_JS: &str = r#"
       target.dispatchEvent(new FocusEvent('focusin', {bubbles:true, relatedTarget:prev}));
       target.dispatchEvent(new FocusEvent('focus', {bubbles:false, relatedTarget:prev}));
     }
+    __neo_active = target;
+    try { if (target && target.focus) target.focus(); } catch(e) {}
   }
 
   // ── Selection helpers (F2d) ────────────────────────────────────
+  // W3C spec: selectionStart/End only valid for text, search, url, tel, password.
+  // Email, number, date etc. throw InvalidStateError.
+  var SEL_TYPES = {text:1, search:1, url:1, tel:1, password:1, textarea:1, '':1};
+  function selSupported(el) {
+    if (el.tagName === 'TEXTAREA') return true;
+    return el.tagName === 'INPUT' && SEL_TYPES[el.type || 'text'];
+  }
   function getSelStart(el) {
-    return typeof el.selectionStart === 'number' ? el.selectionStart : (el.value || '').length;
+    if (!selSupported(el)) return (el.value || '').length;
+    try { return typeof el.selectionStart === 'number' ? el.selectionStart : (el.value || '').length; }
+    catch(e) { return (el.value || '').length; }
   }
   function getSelEnd(el) {
-    return typeof el.selectionEnd === 'number' ? el.selectionEnd : (el.value || '').length;
+    if (!selSupported(el)) return (el.value || '').length;
+    try { return typeof el.selectionEnd === 'number' ? el.selectionEnd : (el.value || '').length; }
+    catch(e) { return (el.value || '').length; }
   }
   function setCaret(el, pos) {
-    el.selectionStart = pos;
-    el.selectionEnd = pos;
+    if (!selSupported(el)) return; // skip for email, number, date, etc.
+    try { el.selectionStart = pos; el.selectionEnd = pos; } catch(e) {}
   }
 
   // ── Native value setter (React compat) ─────────────────────────
@@ -531,11 +547,39 @@ const DISPATCHER_JS: &str = r#"
       el.dispatchEvent(new InputEvent('input', {
         bubbles: true, inputType: 'insertText', data: curDom
       }));
+      // Strategy 1 dispatched — return early to avoid double notification.
+      // React's root delegation should pick this up via the native event.
+      return;
     }
     // Strategy 2: direct prop call as last resort (linkedom may not bubble
-    // to the React root)
+    // to the React root, or _valueTracker absent e.g. uncontrolled inputs).
+    // React 16-19 use __reactProps$<hash> keys; also check __reactFiber$<hash>
+    // to find the fiber and walk to memoizedProps as a deeper fallback.
     var propKey = Object.keys(el).find(function(k) { return k.startsWith('__reactProps'); });
-    if (!propKey) return;
+    if (!propKey) {
+      // React 18/19 fallback: walk fiber to get memoizedProps
+      var fiberKey = Object.keys(el).find(function(k) {
+        return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance');
+      });
+      if (fiberKey) {
+        var fiber = el[fiberKey];
+        if (fiber && fiber.memoizedProps) {
+          var mProps = fiber.memoizedProps;
+          var synEvt = {target: el, currentTarget: el, type: 'change',
+                        nativeEvent: new InputEvent('input', {bubbles:true}),
+                        preventDefault: function(){}, stopPropagation: function(){},
+                        isDefaultPrevented: function(){ return false; },
+                        isPropagationStopped: function(){ return false; }};
+          if (typeof mProps.onChange === 'function') {
+            try { mProps.onChange(synEvt); } catch(e) {}
+          }
+          if (typeof mProps.onInput === 'function') {
+            try { mProps.onInput(synEvt); } catch(e) {}
+          }
+        }
+      }
+      return;
+    }
     var props = el[propKey];
     var syntheticEvt = {target: el, currentTarget: el, type: 'change',
                         nativeEvent: new InputEvent('input', {bubbles:true}),
@@ -556,7 +600,7 @@ const DISPATCHER_JS: &str = r#"
     hint.defaultAction = 'none';
 
     // Focus sequence (F2e: change-on-blur integrated)
-    var prev = document.activeElement;
+    var prev = __neo_active || document.activeElement;
     if (prev && prev !== el && prev.blur) {
       if (prev.__neo_dirty) {
         prev.dispatchEvent(new Event('change', {bubbles:true}));
@@ -571,6 +615,8 @@ const DISPATCHER_JS: &str = r#"
       el.dispatchEvent(new FocusEvent('focus', {bubbles:false, relatedTarget:prev}));
       events.push('focusin','focus');
     }
+    __neo_active = el;
+    try { if (el.focus) el.focus(); } catch(e) {}
     // Pointer + mouse sequence
     el.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true, pointerId:1, pointerType:'mouse'}));
     events.push('pointerdown');
@@ -748,7 +794,10 @@ const DISPATCHER_JS: &str = r#"
 
   function fireTypeText(el, text) {
     // Focus if not already focused
-    if (document.activeElement !== el && el.focus) el.focus();
+    if ((__neo_active || document.activeElement) !== el && el.focus) {
+      el.focus();
+      __neo_active = el;
+    }
 
     // Rich text editor detection — try editor-native input before standard path
     var editorInfo = detectEditor(el);
@@ -832,7 +881,7 @@ const DISPATCHER_JS: &str = r#"
 
   function fireSubmit(form) {
     // Blur active element first (F2e: triggers change if dirty)
-    var active = document.activeElement;
+    var active = __neo_active || document.activeElement;
     if (active && active !== document.body) {
       if (active.__neo_dirty) {
         active.dispatchEvent(new Event('change', {bubbles:true}));
@@ -869,7 +918,7 @@ const DISPATCHER_JS: &str = r#"
         return 0;
       });
       if (focusable.length > 0) {
-        var current = document.activeElement;
+        var current = __neo_active || document.activeElement;
         var idx = focusable.indexOf(current);
         var next = shift ? idx - 1 : idx + 1;
         if (next >= focusable.length) next = 0;
@@ -1028,6 +1077,9 @@ const DISPATCHER_JS: &str = r#"
         case 'type_text': {
           var r = resolve(selector, { interactable: true });
           if (r.error) return JSON.stringify(r);
+          if (r.el.readOnly) {
+            return JSON.stringify({ error: 'not_interactable', reason: 'element is readonly', selector: selector });
+          }
           var valBefore = r.el.value || '';
           r.el._neo_val_before = valBefore;
           fireTypeText(r.el, value);
@@ -1044,10 +1096,48 @@ const DISPATCHER_JS: &str = r#"
           return JSON.stringify(result);
         }
 
+        case 'paste': {
+          var r = resolve(selector, { interactable: true });
+          if (r.error) return JSON.stringify(r);
+          var el = r.el;
+          if ((__neo_active || document.activeElement) !== el && el.focus) { el.focus(); __neo_active = el; }
+          var valBefore = el.value || '';
+          // Build ClipboardEvent with data
+          var clipData = null;
+          try {
+            clipData = new DataTransfer();
+            clipData.setData('text/plain', value);
+          } catch(e) {
+            clipData = { getData: function(t) { return t === 'text/plain' ? value : ''; }, types: ['text/plain'] };
+          }
+          var pasteEvt;
+          try {
+            pasteEvt = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: clipData });
+          } catch(e) {
+            pasteEvt = new Event('paste', { bubbles: true, cancelable: true });
+            pasteEvt.clipboardData = clipData;
+          }
+          el.dispatchEvent(pasteEvt);
+          if (!pasteEvt.defaultPrevented) {
+            // No handler consumed it — insert text like type_text
+            fireTypeText(el, value);
+          }
+          var after = snapshot();
+          var outcomeObj = detectOutcome(before, after, {valueChanged: (el.value || '') !== valBefore});
+          var result = {
+            ok: true,
+            outcome: outcomeObj,
+            mutations: Math.abs(after.domLen - before.domLen),
+            count: r.count
+          };
+          result.trace = buildTrace(el, before, after, ['paste','input'], 'none');
+          return JSON.stringify(result);
+        }
+
         case 'press_key': {
           var r = resolve(selector);
           if (r.error) {
-            var active = document.activeElement;
+            var active = __neo_active || document.activeElement;
             if (!active) return JSON.stringify(r);
             active._neo_val_before = active.value || '';
             var info = firePressKey(active, key);
@@ -1621,6 +1711,28 @@ fn parse_outcome_value(v: &serde_json::Value) -> ActionOutcome {
     }
 }
 
+// ─── InteractionResult ───────────────────────────────────────────────
+
+/// Unified result of any LiveDom interaction (click, type, press_key, submit, paste).
+///
+/// Consolidates the common fields that every interaction returns, so callers
+/// don't need to dig into `LiveDomResult<T>` generics for the interaction metadata.
+#[derive(Debug, Clone)]
+pub struct InteractionResult {
+    /// What happened after the action.
+    pub outcome: ActionOutcome,
+    /// Number of DOM mutations detected (innerHTML length delta).
+    pub mutations: usize,
+    /// Events dispatched during this action (from trace).
+    pub events_dispatched: Vec<String>,
+    /// Wall-clock time for the operation in milliseconds.
+    pub elapsed_ms: u64,
+    /// Navigation URL if the action triggered navigation.
+    pub navigation: Option<String>,
+    /// Non-fatal warnings.
+    pub warnings: Vec<String>,
+}
+
 // ─── LiveDom implementation ──────────────────────────────────────────
 
 /// Bridge between AI intents and the live V8/linkedom DOM.
@@ -1750,6 +1862,70 @@ impl<'a> LiveDom<'a> {
         (outcome, mutations, trace)
     }
 
+    /// Parse a raw JSON response string from the JS dispatcher into an `InteractionResult`.
+    ///
+    /// This is the single parsing entry point — all interaction methods can use it
+    /// instead of duplicating outcome/mutation/trace extraction.
+    pub fn parse_interaction_result(raw: &str) -> Result<InteractionResult, LiveDomError> {
+        let resp: DispatchResponse = serde_json::from_str(raw)
+            .map_err(|e| LiveDomError::Parse(format!("{e}: raw={}", &raw[..raw.len().min(200)])))?;
+
+        if let Some(e) = Self::check_error(&resp) {
+            return Err(e);
+        }
+
+        let (outcome, mutations, trace) = Self::extract_outcome(&resp);
+
+        let events_dispatched = trace
+            .as_ref()
+            .map(|t| t.events_dispatched.clone())
+            .unwrap_or_default();
+
+        let navigation = match &outcome {
+            ActionOutcome::HttpNavigation { url, .. } if !url.is_empty() => Some(url.clone()),
+            ActionOutcome::SpaRouteChange { url } if !url.is_empty() => Some(url.clone()),
+            _ => None,
+        };
+
+        Ok(InteractionResult {
+            outcome,
+            mutations,
+            events_dispatched,
+            elapsed_ms: 0, // caller sets this from Instant
+            navigation,
+            warnings: Vec::new(),
+        })
+    }
+
+    /// Generic dispatcher — all interaction actions go through this.
+    ///
+    /// Handles dispatch + response parsing + error checking in one call,
+    /// eliminating the duplicated pattern across click/type_text/press_key/submit/paste.
+    pub fn dispatch_action(
+        &mut self,
+        action: &str,
+        selector: &str,
+        value: &str,
+        key: &str,
+    ) -> Result<InteractionResult, LiveDomError> {
+        let start = Instant::now();
+        self.ensure_dispatcher()?;
+        let cmd = serde_json::json!({
+            "action": action,
+            "selector": selector,
+            "value": value,
+            "key": key,
+        });
+        let cmd_str = cmd.to_string();
+        let safe = cmd_str.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
+        let js = format!("window.__neo.exec(`{}`)", safe);
+        let raw = self.runtime.eval(&js)?;
+
+        let mut result = Self::parse_interaction_result(&raw)?;
+        result.elapsed_ms = start.elapsed().as_millis() as u64;
+        Ok(result)
+    }
+
     // ─── Public API ──────────────────────────────────────────────────
 
     /// Click an element. Returns the element's text and href.
@@ -1784,6 +1960,23 @@ impl<'a> LiveDom<'a> {
     pub fn type_text(&mut self, selector: &str, text: &str) -> Result<LiveDomResult<()>, LiveDomError> {
         let start = Instant::now();
         let resp = self.dispatch("type_text", selector, text, "")?;
+        if let Some(e) = Self::check_error(&resp) {
+            return Err(e);
+        }
+        let (outcome, mutations, trace) = Self::extract_outcome(&resp);
+        let elapsed = start.elapsed().as_millis() as u64;
+        let mut r = LiveDomResult::new((), outcome, mutations, elapsed);
+        if let Some(t) = trace {
+            r = r.with_trace(t);
+        }
+        Ok(r)
+    }
+
+    /// Paste text into an element. Dispatches a ClipboardEvent('paste') first;
+    /// if no handler prevents default, falls back to typing the text.
+    pub fn paste(&mut self, selector: &str, text: &str) -> Result<LiveDomResult<()>, LiveDomError> {
+        let start = Instant::now();
+        let resp = self.dispatch("paste", selector, text, "")?;
         if let Some(e) = Self::check_error(&resp) {
             return Err(e);
         }
@@ -2475,5 +2668,141 @@ mod tests {
         assert_eq!(r.warnings.len(), 1);
         assert_eq!(r.value, "ok");
         assert_eq!(r.mutations, 5);
+    }
+
+    // ─── parse_interaction_result tests ──────────────────────────────
+
+    #[test]
+    fn test_parse_click_result() {
+        let json = r#"{"ok":true,"text":"Login","href":"","outcome":{"kind":"dom_only_update","mutations":3},"mutations":3,"count":1,"trace":{"events_dispatched":["mousedown","mouseup","click"],"default_action":"none","focus_before":"","focus_after":"","value_before":"","value_after":"","dom_delta":0}}"#;
+        let result = LiveDom::parse_interaction_result(json).unwrap();
+        assert_eq!(result.mutations, 3);
+        assert_eq!(result.outcome, ActionOutcome::DomOnlyUpdate { mutations: 3 });
+        assert_eq!(result.events_dispatched, vec!["mousedown", "mouseup", "click"]);
+        assert!(result.navigation.is_none());
+    }
+
+    #[test]
+    fn test_parse_navigation_result() {
+        let json = r#"{"ok":true,"text":"Go","href":"","outcome":{"kind":"http_navigation","url":"https://example.com/next","method":"GET"},"mutations":0,"count":1}"#;
+        let result = LiveDom::parse_interaction_result(json).unwrap();
+        assert!(result.navigation.is_some());
+        assert_eq!(result.navigation.unwrap(), "https://example.com/next");
+        assert_eq!(result.mutations, 0);
+    }
+
+    #[test]
+    fn test_parse_spa_navigation_result() {
+        let json = r#"{"ok":true,"text":"About","href":"","outcome":{"kind":"spa_route_change","url":"https://example.com/about"},"mutations":500}"#;
+        let result = LiveDom::parse_interaction_result(json).unwrap();
+        assert!(result.navigation.is_some());
+        assert_eq!(result.navigation.unwrap(), "https://example.com/about");
+    }
+
+    #[test]
+    fn test_parse_checkbox_toggle_result() {
+        let json = r#"{"ok":true,"text":"","href":"","outcome":{"kind":"checkbox_toggled","checked":true},"mutations":0,"count":1}"#;
+        let result = LiveDom::parse_interaction_result(json).unwrap();
+        assert_eq!(result.outcome, ActionOutcome::CheckboxToggled { checked: true });
+        assert!(result.navigation.is_none());
+    }
+
+    #[test]
+    fn test_parse_value_changed_result() {
+        let json = r#"{"ok":true,"outcome":{"kind":"value_changed"},"mutations":10,"count":1}"#;
+        let result = LiveDom::parse_interaction_result(json).unwrap();
+        assert_eq!(result.outcome, ActionOutcome::ValueChanged);
+        assert_eq!(result.mutations, 10);
+    }
+
+    #[test]
+    fn test_parse_no_effect_result() {
+        let json = r#"{"ok":true,"outcome":{"kind":"no_effect"},"mutations":0}"#;
+        let result = LiveDom::parse_interaction_result(json).unwrap();
+        assert_eq!(result.outcome, ActionOutcome::NoEffect);
+        assert_eq!(result.mutations, 0);
+    }
+
+    #[test]
+    fn test_parse_validation_blocked_result() {
+        let json = r#"{"ok":true,"outcome":{"kind":"validation_blocked"},"mutations":0}"#;
+        let result = LiveDom::parse_interaction_result(json).unwrap();
+        assert_eq!(result.outcome, ActionOutcome::ValidationBlocked);
+    }
+
+    #[test]
+    fn test_parse_error_not_found() {
+        let json = r#"{"error":"not_found","selector":"button.gone"}"#;
+        let err = LiveDom::parse_interaction_result(json).unwrap_err();
+        assert!(matches!(err, LiveDomError::NotFound(_)));
+    }
+
+    #[test]
+    fn test_parse_error_not_interactable() {
+        let json = r##"{"error":"not_interactable","selector":"#btn","reason":"all matches are disabled"}"##;
+        let err = LiveDom::parse_interaction_result(json).unwrap_err();
+        assert!(matches!(err, LiveDomError::NotInteractable { .. }));
+    }
+
+    #[test]
+    fn test_parse_error_ambiguous() {
+        let json = r#"{"error":"ambiguous","selector":".btn","count":10,"candidates":["button.a","button.b"]}"#;
+        let err = LiveDom::parse_interaction_result(json).unwrap_err();
+        match err {
+            LiveDomError::AmbiguousMatch { count, candidates, .. } => {
+                assert_eq!(count, 10);
+                assert_eq!(candidates.len(), 2);
+            }
+            other => panic!("expected AmbiguousMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_json() {
+        let err = LiveDom::parse_interaction_result("not json at all").unwrap_err();
+        assert!(matches!(err, LiveDomError::Parse(_)));
+    }
+
+    #[test]
+    fn test_parse_legacy_string_outcome() {
+        let json = r#"{"ok":true,"text":"X","href":"","outcome":"dom_mutation","mutations":42}"#;
+        let result = LiveDom::parse_interaction_result(json).unwrap();
+        assert_eq!(result.outcome, ActionOutcome::DomOnlyUpdate { mutations: 0 });
+        assert_eq!(result.mutations, 42);
+    }
+
+    // ─── dispatch_action tests ──────────────────────────────────────
+
+    #[test]
+    fn test_dispatch_action_click() {
+        let mut rt = MockRuntime::new();
+        rt.set_default_eval(
+            r#"{"ok":true,"text":"Login","href":"","outcome":{"kind":"dom_only_update","mutations":5},"mutations":5,"count":1}"#,
+        );
+        let mut dom = LiveDom::new(&mut rt);
+        let result = dom.dispatch_action("click", "button.login", "", "").unwrap();
+        assert_eq!(result.outcome, ActionOutcome::DomOnlyUpdate { mutations: 5 });
+        assert_eq!(result.mutations, 5);
+    }
+
+    #[test]
+    fn test_dispatch_action_type_text() {
+        let mut rt = MockRuntime::new();
+        rt.set_default_eval(
+            r#"{"ok":true,"outcome":{"kind":"value_changed"},"mutations":15,"count":1}"#,
+        );
+        let mut dom = LiveDom::new(&mut rt);
+        let result = dom.dispatch_action("type_text", "#email", "test@example.com", "").unwrap();
+        assert_eq!(result.outcome, ActionOutcome::ValueChanged);
+        assert_eq!(result.mutations, 15);
+    }
+
+    #[test]
+    fn test_dispatch_action_not_found() {
+        let mut rt = MockRuntime::new();
+        rt.set_default_eval(r#"{"error":"not_found","selector":"button.gone"}"#);
+        let mut dom = LiveDom::new(&mut rt);
+        let err = dom.dispatch_action("click", "button.gone", "", "").unwrap_err();
+        assert!(matches!(err, LiveDomError::NotFound(_)));
     }
 }

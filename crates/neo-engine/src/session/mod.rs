@@ -3,11 +3,14 @@
 //! Wires HTTP, DOM, JS runtime, interaction, extraction, and tracing
 //! into the navigation lifecycle.
 
-mod browser_impl;
+pub mod bot_detection;
+pub mod browser_impl;
 mod hydration;
 mod pipeline;
+mod pipeline_phases;
 mod prefetch;
 mod script_exec;
+mod script_parts;
 mod scripts;
 mod stub;
 
@@ -21,6 +24,7 @@ use neo_interact::Interactor;
 use neo_runtime::JsRuntime;
 use neo_trace::Tracer;
 use neo_types::NetworkLogEntry;
+use std::collections::HashSet;
 
 use crate::config::EngineConfig;
 use crate::lifecycle::Lifecycle;
@@ -35,6 +39,31 @@ pub struct HistoryEntry {
     pub title: String,
     /// Timestamp in milliseconds since UNIX epoch.
     pub timestamp: u64,
+}
+
+/// Factory for creating fresh V8 runtimes on cross-origin navigation.
+///
+/// Captures a closure that knows how to build a new `DenoRuntime` with the
+/// same HTTP client, cookie store, and configuration used for the initial one.
+pub struct RuntimeFactory {
+    creator: Box<dyn Fn() -> Result<Box<dyn JsRuntime>, String> + Send>,
+}
+
+impl RuntimeFactory {
+    /// Create a new factory from a closure.
+    pub fn new<F>(f: F) -> Self
+    where
+        F: Fn() -> Result<Box<dyn JsRuntime>, String> + Send + 'static,
+    {
+        Self {
+            creator: Box::new(f),
+        }
+    }
+
+    /// Build a fresh runtime using the captured configuration.
+    pub fn create_runtime(&self) -> Result<Box<dyn JsRuntime>, String> {
+        (self.creator)()
+    }
 }
 
 /// The main browser engine session.
@@ -63,6 +92,14 @@ pub struct NeoSession {
     pub(crate) pipeline_ctx: Option<PipelineContext>,
     /// Monotonically increasing page ID, incremented on every navigate().
     pub(crate) page_id: Arc<AtomicU64>,
+    /// Current page origin for cross-origin isolation (e.g., "https://example.com").
+    pub(crate) current_origin: String,
+    /// Factory for creating fresh V8 runtimes on cross-origin navigation.
+    pub(crate) runtime_factory: Option<RuntimeFactory>,
+    /// Domains detected as Cloudflare-protected (need Chrome transport for API calls).
+    pub(crate) cloudflare_domains: HashSet<String>,
+    /// Accumulated trace events from script execution and module loading.
+    pub(crate) trace_events: Vec<neo_runtime::TraceEvent>,
 }
 
 impl NeoSession {
@@ -98,6 +135,10 @@ impl NeoSession {
             http_cache: None,
             pipeline_ctx: None,
             page_id: Arc::new(AtomicU64::new(0)),
+            current_origin: String::new(),
+            runtime_factory: None,
+            cloudflare_domains: HashSet::new(),
+            trace_events: Vec::new(),
         }
     }
 
@@ -133,6 +174,10 @@ impl NeoSession {
             http_cache: None,
             pipeline_ctx: None,
             page_id: Arc::new(AtomicU64::new(0)),
+            current_origin: String::new(),
+            runtime_factory: None,
+            cloudflare_domains: HashSet::new(),
+            trace_events: Vec::new(),
         }
     }
 
@@ -150,6 +195,15 @@ impl NeoSession {
     /// Attach an HTTP cache for conditional requests and freshness.
     pub fn with_http_cache(mut self, cache: Box<dyn HttpCache>) -> Self {
         self.http_cache = Some(cache);
+        self
+    }
+
+    /// Attach a runtime factory for cross-origin V8 isolation.
+    ///
+    /// When navigating cross-origin, the session will destroy the current
+    /// runtime and create a fresh one using this factory.
+    pub fn with_runtime_factory(mut self, factory: RuntimeFactory) -> Self {
+        self.runtime_factory = Some(factory);
         self
     }
 

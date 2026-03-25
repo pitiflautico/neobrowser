@@ -104,7 +104,7 @@ impl TimerBudget {
 /// timeout, and an abort flag that a watchdog can set to reject new fetches.
 #[derive(Debug, Clone)]
 pub struct FetchBudget {
-    /// Maximum concurrent in-flight fetches (browser standard: 6).
+    /// Maximum concurrent in-flight fetches (default: 200, generous for module-eval CSS bursts).
     max_concurrent: usize,
     /// Timeout per individual fetch request in milliseconds.
     per_request_timeout_ms: u32,
@@ -136,7 +136,8 @@ impl FetchBudget {
         if self.abort_flag.load(Ordering::Acquire) {
             return false;
         }
-        self.in_flight.load(Ordering::Relaxed) < self.max_concurrent
+        let current = self.in_flight.load(Ordering::Relaxed);
+        current < self.max_concurrent
     }
 
     /// Register a new fetch starting. Returns false if over budget or aborted.
@@ -187,6 +188,11 @@ impl FetchBudget {
         self.in_flight.load(Ordering::Relaxed)
     }
 
+    /// Alias for `in_flight()` — currently in-flight fetch count.
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight()
+    }
+
     /// Whether the network is idle (no in-flight fetches).
     pub fn is_network_idle(&self) -> bool {
         self.idle.load(Ordering::Acquire)
@@ -217,9 +223,63 @@ impl FetchBudget {
 }
 
 impl Default for FetchBudget {
-    /// Default: 20 concurrent, 30000ms per-request timeout.
+    /// Default: 200 concurrent, 30000ms per-request timeout.
+    ///
+    /// Raised from 50 to 200 because ES module evaluation can trigger 18+ CSS
+    /// fetches simultaneously (e.g. `fetch('styles.css')` inside modules).
+    /// With only 50 slots, a CSS-heavy page exhausts the budget before app
+    /// fetches even start.  200 gives ample headroom: CSS files are small and
+    /// resolve quickly, so the slots free up fast.
     fn default() -> Self {
-        Self::new(20, 30000)
+        Self::new(200, 30000)
+    }
+}
+
+// ─── Fetch Guard (RAII) ───
+
+/// RAII guard that ensures `finish_fetch()` is called on the `FetchBudget`
+/// when dropped, even on panics or early returns.
+///
+/// Prevents slot leaks in error paths of `op_fetch` and `op_fetch_start`.
+pub struct FetchGuard {
+    budget: FetchBudget,
+    /// Set to true when the caller explicitly defuses the guard
+    /// (e.g. if finish_fetch was already called manually).
+    defused: bool,
+}
+
+impl FetchGuard {
+    /// Try to acquire a fetch slot. Returns `Some(guard)` if `start_fetch()` succeeds,
+    /// `None` if the budget is full or aborted.
+    pub fn acquire(budget: &FetchBudget) -> Option<Self> {
+        if budget.start_fetch() {
+            Some(Self {
+                budget: budget.clone(),
+                defused: false,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Defuse the guard so it does NOT call `finish_fetch()` on drop.
+    /// Use this only if you've already called `finish_fetch()` manually.
+    #[allow(dead_code)]
+    pub fn defuse(&mut self) {
+        self.defused = true;
+    }
+
+    /// Access the underlying budget (e.g. to read `per_request_timeout_ms`).
+    pub fn budget(&self) -> &FetchBudget {
+        &self.budget
+    }
+}
+
+impl Drop for FetchGuard {
+    fn drop(&mut self) {
+        if !self.defused {
+            self.budget.finish_fetch();
+        }
     }
 }
 
@@ -777,5 +837,153 @@ mod tests {
         let back: AbortEvent = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.reason, AbortReason::WatchdogTimeout);
         assert_eq!(back.phase, "settle_loop");
+    }
+
+    // ─── FetchBudget slot management ───
+
+    #[test]
+    fn test_budget_slot_released_after_finish() {
+        let budget = FetchBudget::new(2, 1000);
+        assert!(budget.start_fetch());
+        assert!(budget.start_fetch());
+        assert!(!budget.can_fetch()); // full
+        budget.finish_fetch();
+        assert!(budget.can_fetch()); // 1 slot freed
+    }
+
+    #[test]
+    fn test_budget_leak_detection() {
+        let budget = FetchBudget::new(2, 1000);
+        budget.start_fetch();
+        budget.start_fetch();
+        // Simulate leak: no finish_fetch called
+        // Budget should be full
+        assert!(!budget.can_fetch());
+        // Reset recovers from leaks
+        budget.reset();
+        assert!(budget.can_fetch());
+        assert_eq!(budget.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn test_budget_in_flight_count() {
+        let budget = FetchBudget::new(10, 1000);
+        assert_eq!(budget.in_flight_count(), 0);
+        budget.start_fetch();
+        assert_eq!(budget.in_flight_count(), 1);
+        budget.start_fetch();
+        assert_eq!(budget.in_flight_count(), 2);
+        budget.finish_fetch();
+        assert_eq!(budget.in_flight_count(), 1);
+    }
+
+    // ─── FetchGuard RAII tests ───
+
+    #[test]
+    fn test_fetch_guard_releases_on_drop() {
+        let budget = FetchBudget::new(2, 1000);
+        assert_eq!(budget.in_flight_count(), 0);
+        {
+            let _guard = FetchGuard::acquire(&budget).expect("should acquire");
+            assert_eq!(budget.in_flight_count(), 1);
+        } // guard dropped here
+        assert_eq!(budget.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn test_fetch_guard_releases_on_error_path() {
+        let budget = FetchBudget::new(2, 1000);
+        let result: Result<String, &str> = (|| {
+            let _guard = FetchGuard::acquire(&budget).expect("should acquire");
+            assert_eq!(budget.in_flight_count(), 1);
+            Err("simulated error") // guard dropped on unwind
+        })();
+        assert!(result.is_err());
+        assert_eq!(budget.in_flight_count(), 0); // slot released despite error
+    }
+
+    #[test]
+    fn test_fetch_guard_defuse_prevents_release() {
+        let budget = FetchBudget::new(2, 1000);
+        {
+            let mut guard = FetchGuard::acquire(&budget).expect("should acquire");
+            assert_eq!(budget.in_flight_count(), 1);
+            guard.defuse();
+        }
+        // Defused guard does NOT release the slot
+        assert_eq!(budget.in_flight_count(), 1);
+        // Manual cleanup
+        budget.finish_fetch();
+        assert_eq!(budget.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn test_fetch_guard_acquire_fails_when_full() {
+        let budget = FetchBudget::new(1, 1000);
+        let _guard = FetchGuard::acquire(&budget).expect("should acquire");
+        assert!(FetchGuard::acquire(&budget).is_none()); // budget full
+    }
+
+    #[test]
+    fn test_fetch_budget_default_handles_css_burst() {
+        // Simulates the CSS-heavy module eval scenario: 30 concurrent CSS fetches
+        // should NOT exhaust the default budget (200 slots).
+        let budget = FetchBudget::default();
+        assert_eq!(budget.max_concurrent(), 200);
+        assert_eq!(budget.per_request_timeout_ms(), 30000);
+
+        // Start 30 concurrent fetches (typical CSS burst during module eval).
+        for _ in 0..30 {
+            assert!(budget.start_fetch(), "CSS burst fetch should succeed within budget");
+        }
+        assert_eq!(budget.in_flight_count(), 30);
+        assert!(budget.can_fetch(), "budget should still have room after 30 fetches");
+
+        // Finish all CSS fetches.
+        for _ in 0..30 {
+            budget.finish_fetch();
+        }
+        assert_eq!(budget.in_flight_count(), 0);
+        assert!(budget.is_network_idle());
+
+        // App fetches should now work fine.
+        assert!(budget.start_fetch());
+        assert_eq!(budget.in_flight_count(), 1);
+        budget.finish_fetch();
+    }
+
+    #[test]
+    fn test_fetch_budget_200_slots_exhaustion() {
+        // Verify the budget is actually enforced at 200.
+        let budget = FetchBudget::default();
+        for i in 0..200 {
+            assert!(budget.start_fetch(), "fetch {i} should succeed");
+        }
+        assert!(!budget.can_fetch(), "201st fetch should be rejected");
+        assert!(!budget.start_fetch(), "201st fetch should fail");
+        assert_eq!(budget.in_flight_count(), 200);
+
+        // Free one slot.
+        budget.finish_fetch();
+        assert!(budget.can_fetch());
+        assert!(budget.start_fetch());
+    }
+
+    #[test]
+    fn test_fetch_guard_multiple_concurrent() {
+        let budget = FetchBudget::new(3, 1000);
+        let g1 = FetchGuard::acquire(&budget);
+        let g2 = FetchGuard::acquire(&budget);
+        let g3 = FetchGuard::acquire(&budget);
+        assert!(g1.is_some());
+        assert!(g2.is_some());
+        assert!(g3.is_some());
+        assert_eq!(budget.in_flight_count(), 3);
+        assert!(FetchGuard::acquire(&budget).is_none()); // 4th fails
+        drop(g1);
+        assert_eq!(budget.in_flight_count(), 2);
+        drop(g2);
+        drop(g3);
+        assert_eq!(budget.in_flight_count(), 0);
     }
 }

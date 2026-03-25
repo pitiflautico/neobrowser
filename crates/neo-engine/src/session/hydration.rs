@@ -111,16 +111,19 @@ pub(crate) fn boot_entry_module(
     rt: &mut dyn neo_runtime::JsRuntime,
     errors: &mut Vec<String>,
 ) {
-    if inline_sources.is_empty() {
-        return;
-    }
-
     // Strategy 1: Extract from inline module content (last import() call).
+    // Only runs if we have inline module sources.
     let re = regex_lite::Regex::new(r#"import\("([^"]+)"\)"#).expect("valid regex");
     let mut entry_path = String::new();
     for source in inline_sources {
-        if let Some(caps) = re.captures(source) {
-            entry_path = caps[1].to_string();
+        let mut last_match = None;
+        for caps in re.captures_iter(source) {
+            if let Some(m) = caps.get(1) {
+                last_match = Some(m.as_str().to_string());
+            }
+        }
+        if let Some(m) = last_match {
+            entry_path = m;
         }
     }
 
@@ -130,6 +133,25 @@ pub(crate) fn boot_entry_module(
             let trimmed = val.trim().trim_matches('"').trim_matches('\'');
             if !trimmed.is_empty() && trimmed != "undefined" {
                 entry_path = trimmed.to_string();
+            }
+        }
+    }
+
+    // Strategy 3: Check for a Vite-style entry (last <script type="module"> named app.*.js).
+    if entry_path.is_empty() {
+        eprintln!("[hydration] Strategy 3: searching for Vite entry...");
+        if let Ok(val) = rt.eval(
+            "(function(){ var scripts = document.querySelectorAll('script[type=module][src]'); \
+             for (var i = scripts.length - 1; i >= 0; i--) { \
+               var src = scripts[i].getAttribute('src') || ''; \
+               if (src.match(/\\/app[._]/)) return src; \
+             } return ''; })()"
+        ) {
+            eprintln!("[hydration] Strategy 3 raw val: '{val}'");
+            let trimmed = val.trim().trim_matches('"').trim_matches('\'');
+            if !trimmed.is_empty() && trimmed != "undefined" {
+                entry_path = trimmed.to_string();
+                eprintln!("[hydration] Vite entry found: {entry_path}");
             }
         }
     }
@@ -147,21 +169,34 @@ pub(crate) fn boot_entry_module(
         return;
     };
 
-    // Load entry module directly.
-    if let Err(e) = rt.load_module(&entry_url) {
+    // Boot entry module via dynamic import() + settle.
+    // We can't use load_module() because the URL was already loaded during
+    // the script execution phase and ModuleEvaluator would skip it.
+    // Dynamic import() triggers re-evaluation of the cached module graph.
+    eprintln!("[hydration] Booting entry module: {entry_url}");
+    let import_js = format!(
+        "import('{}').then(function(m){{globalThis.__neo_entry_loaded=true}}).catch(function(e){{console.error('[ENTRY-ERROR] '+e.message)}})",
+        entry_url.replace('\'', "\\'")
+    );
+    if let Err(e) = rt.execute(&import_js) {
+        let msg = e.to_string();
         errors.push(format!(
-            "entry {}: {e}",
+            "entry {}: {msg}",
             entry_url.rsplit('/').next().unwrap_or(&entry_url)
         ));
     }
 
-    // Brief settle to let hydrateRoot fire.
-    if let Err(e) = rt.run_until_settled(500) {
+    // Settle to let the dynamic import resolve and React's createRoot/render fire.
+    // Heavy SPAs (factorial=17MB entry) need generous settle time.
+    if let Err(e) = rt.run_until_settled(15000) {
         let msg = e.to_string();
         if !msg.contains("timeout") {
             errors.push(format!("entry settle: {e}"));
         }
     }
+
+    // Pump event loop once more to process any pending React renders.
+    let _ = rt.pump_event_loop();
 }
 
 /// Resolve an import path against a base origin.
@@ -246,5 +281,225 @@ mod tests {
         let pos_c = result.find("/c.js").unwrap();
         assert!(pos_a < pos_b);
         assert!(pos_b < pos_c);
+    }
+
+    // ─── Additional hydration pipeline tests ───
+
+    #[test]
+    fn test_transform_wraps_in_async_iife() {
+        let code = "console.log('hello');";
+        let result = transform_inline_module(code, "https://example.com");
+        assert!(
+            result.starts_with("(async () =>"),
+            "Should wrap in async IIFE, got: {result}"
+        );
+        assert!(
+            result.ends_with("})();"),
+            "Should close IIFE, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_transform_has_try_catch() {
+        let code = "console.log('hello');";
+        let result = transform_inline_module(code, "https://example.com");
+        assert!(
+            result.contains("try {"),
+            "Should have try/catch wrapper: {result}"
+        );
+        assert!(
+            result.contains("catch(e)"),
+            "Should have catch block: {result}"
+        );
+    }
+
+    #[test]
+    fn test_transform_multiple_imports() {
+        let code = r#"import { a } from "/a.js";
+import { b } from "/b.js";
+console.log(a, b);"#;
+        let result = transform_inline_module(code, "https://example.com");
+        assert!(result.contains(r#"await import("https://example.com/a.js")"#));
+        assert!(result.contains(r#"await import("https://example.com/b.js")"#));
+        assert!(result.contains("console.log(a, b)"));
+    }
+
+    #[test]
+    fn test_transform_full_url_passthrough() {
+        let code = r#"import { x } from "https://cdn.example.com/lib.js";"#;
+        let result = transform_inline_module(code, "https://example.com");
+        assert!(
+            result.contains(r#"await import("https://cdn.example.com/lib.js")"#),
+            "Full URLs should pass through, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_transform_relative_path_not_resolved_without_slash() {
+        // Relative paths like "./foo.js" should pass through as-is
+        // (not prefixed with base, since base is just the origin)
+        let code = r#"import { x } from "./foo.js";"#;
+        let result = transform_inline_module(code, "https://example.com");
+        // "./foo.js" doesn't start with "/" or "http", so resolve_import_path
+        // returns it as-is.
+        assert!(
+            result.contains("./foo.js"),
+            "Relative path should be kept: {result}"
+        );
+    }
+
+    #[test]
+    fn test_transform_promise_allsettled_rewrite() {
+        let code = r#"const results = Promise.allSettled([p1, p2]);"#;
+        let result = transform_inline_module(code, "https://example.com");
+        assert!(
+            !result.contains("Promise.allSettled("),
+            "Promise.allSettled should be rewritten: {result}"
+        );
+        assert!(
+            result.contains("Promise.all"),
+            "Should use Promise.all polyfill: {result}"
+        );
+    }
+
+    #[test]
+    fn test_transform_bare_import_has_try_catch_wrapper() {
+        let code = r#"import "/manifest.js";"#;
+        let result = transform_inline_module(code, "https://example.com");
+        // Bare imports should be wrapped in individual try/catch for resilience
+        assert!(
+            result.contains("try {") && result.contains("[import-error]"),
+            "Bare import should have individual error handling: {result}"
+        );
+    }
+
+    #[test]
+    fn test_transform_star_import_has_fallback() {
+        let code = r#"import * as mod from "/mod.js";"#;
+        let result = transform_inline_module(code, "https://example.com");
+        // Star imports should fall back to empty object on error
+        assert!(
+            result.contains("mod = {}"),
+            "Star import should have empty object fallback: {result}"
+        );
+    }
+
+    #[test]
+    fn test_transform_empty_code() {
+        let result = transform_inline_module("", "https://example.com");
+        assert!(
+            result.starts_with("(async () =>"),
+            "Empty code should still produce valid IIFE: {result}"
+        );
+    }
+
+    #[test]
+    fn test_transform_non_import_code_preserved() {
+        let code = r#"const x = 42;
+document.getElementById('root').textContent = x;"#;
+        let result = transform_inline_module(code, "https://example.com");
+        assert!(result.contains("const x = 42"));
+        assert!(result.contains("getElementById"));
+    }
+
+    // ─── resolve_import_path tests ───
+
+    #[test]
+    fn test_resolve_import_path_full_url() {
+        let result = resolve_import_path("https://cdn.com/lib.js", "https://example.com");
+        assert_eq!(result, "https://cdn.com/lib.js");
+    }
+
+    #[test]
+    fn test_resolve_import_path_absolute() {
+        let result = resolve_import_path("/assets/app.js", "https://example.com");
+        assert_eq!(result, "https://example.com/assets/app.js");
+    }
+
+    #[test]
+    fn test_resolve_import_path_relative() {
+        let result = resolve_import_path("./local.js", "https://example.com");
+        assert_eq!(result, "./local.js", "Relative paths passed through as-is");
+    }
+
+    // ─── boot_entry_module tests ───
+
+    #[test]
+    fn test_boot_entry_module_empty_sources() {
+        use neo_runtime::mock::MockRuntime;
+        let mut rt = MockRuntime::new();
+        rt.set_default_eval(""); // Strategy 2+3 eval returns empty
+        let mut errors = Vec::new();
+        boot_entry_module(&[], "https://example.com", &mut rt, &mut errors);
+        // With empty sources and no app.* in DOM, no entry module should be loaded
+        assert!(errors.is_empty());
+        // Strategy 2+3 will eval but find nothing → no import() call
+        assert!(
+            !rt.eval_calls.iter().any(|c| c.contains("import(")),
+            "Should not call import(), eval_calls: {:?}",
+            rt.eval_calls
+        );
+    }
+
+    #[test]
+    fn test_boot_entry_module_extracts_entry_from_inline() {
+        use neo_runtime::mock::MockRuntime;
+        let mut rt = MockRuntime::new();
+        rt.set_default_eval(""); // __reactRouterManifest fallback returns empty
+        let mut errors = Vec::new();
+        let sources = vec![r#"import("/entry-client.js")"#.to_string()];
+        boot_entry_module(&sources, "https://example.com", &mut rt, &mut errors);
+        // Should have attempted to execute import() for the entry module
+        assert!(
+            rt.eval_calls.iter().any(|c| c.contains("entry-client")),
+            "Should execute import() for entry module, eval_calls: {:?}",
+            rt.eval_calls
+        );
+    }
+
+    #[test]
+    fn test_boot_entry_module_uses_first_import_per_source() {
+        // BUG FOUND: boot_entry_module uses re.captures() which only
+        // returns the FIRST match in each source string, not the last.
+        // If two import() calls are in the SAME source string, only
+        // the first is found. This is probably a bug — the comment says
+        // "last import()" but captures() returns the first.
+        //
+        // With MULTIPLE source strings, the last source's first match wins
+        // (because entry_path is overwritten per source).
+        use neo_runtime::mock::MockRuntime;
+        let mut rt = MockRuntime::new();
+        rt.set_default_eval("");
+        let mut errors = Vec::new();
+        // Two separate sources: should use the match from the LAST source
+        let sources = vec![
+            r#"import("/first.js")"#.to_string(),
+            r#"import("/second.js")"#.to_string(),
+        ];
+        boot_entry_module(&sources, "https://example.com", &mut rt, &mut errors);
+        assert!(
+            rt.eval_calls.iter().any(|c| c.contains("second.js")),
+            "Should use last source's import, calls: {:?}",
+            rt.eval_calls
+        );
+    }
+
+    #[test]
+    fn test_boot_entry_module_single_source_uses_last_match() {
+        // Fixed: captures_iter() finds ALL matches, we take the last one.
+        // Two import() in same source → last one wins (the entry module).
+        use neo_runtime::mock::MockRuntime;
+        let mut rt = MockRuntime::new();
+        rt.set_default_eval("");
+        let mut errors = Vec::new();
+        let sources = vec![
+            r#"import("/first.js"); import("/second.js")"#.to_string(),
+        ];
+        boot_entry_module(&sources, "https://example.com", &mut rt, &mut errors);
+        assert!(
+            rt.eval_calls.iter().any(|c| c.contains("second.js")),
+            "captures_iter() should return last match: {:?}",
+            rt.eval_calls
+        );
     }
 }

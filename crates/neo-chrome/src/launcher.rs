@@ -60,8 +60,7 @@ impl ChromeProcess {
         ];
 
         if headless {
-            args.push("--window-position=-32000,-32000".to_string());
-            args.push("--window-size=1920,1080".to_string());
+            args.push("--headless=new".to_string());
         }
 
         let child = Command::new(&chrome_bin)
@@ -193,7 +192,7 @@ async fn wait_for_devtools(profile_dir: &Path, _port: u16) -> Result<()> {
 }
 
 /// Minimal HTTP GET without pulling in reqwest — uses raw TCP.
-async fn reqwest_lite(url: &str) -> std::result::Result<String, String> {
+pub(crate) async fn reqwest_lite(url: &str) -> std::result::Result<String, String> {
     let parsed: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
     let host = parsed.host_str().ok_or("no host")?;
     let port = parsed.port().unwrap_or(80);

@@ -17,7 +17,7 @@ pub(crate) fn definition() -> ToolDef {
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["wom", "text", "links", "semantic", "tables"],
+                    "enum": ["wom", "text", "links", "semantic", "tables", "metadata"],
                     "description": "What to extract"
                 },
                 "max_chars": {
@@ -75,12 +75,65 @@ pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
             Ok(serde_json::json!({ "semantic": text }))
         }
         "tables" => {
-            // Table extraction delegates to WOM nodes with role hints.
-            let wom = state.engine.extract()?;
-            Ok(serde_json::json!({
-                "tables": [],
-                "node_count": wom.nodes.len(),
-            }))
+            let js = r#"(function(){
+                var tables=[];
+                document.querySelectorAll('table').forEach(function(table,i){
+                    var caption=(table.querySelector('caption')||{}).textContent||'';
+                    var headers=[].slice.call(table.querySelectorAll('th')).map(function(th){return th.textContent.trim()});
+                    var rows=[].slice.call(table.querySelectorAll('tr')).map(function(tr){
+                        return [].slice.call(tr.querySelectorAll('td')).map(function(td){return td.textContent.trim()});
+                    }).filter(function(row){return row.length>0});
+                    tables.push({index:i,caption:caption.trim(),headers:headers,rows:rows,row_count:rows.length,col_count:Math.max(headers.length,rows.length>0?rows[0].length:0)});
+                });
+                return JSON.stringify({tables:tables,count:tables.length});
+            })()"#;
+            let result_str = state.engine.eval(js)?;
+            let data: Value = serde_json::from_str(&result_str).unwrap_or_else(|_| {
+                serde_json::json!({ "tables": [], "count": 0, "raw": result_str })
+            });
+            Ok(data)
+        }
+        "metadata" => {
+            let js = r#"(function(){
+                var m={};
+                m.title=document.title||'';
+                var desc=document.querySelector('meta[name="description"]');
+                m.description=desc?desc.getAttribute('content')||'':'';
+                var canon=document.querySelector('link[rel="canonical"]');
+                m.canonical=canon?canon.getAttribute('href')||'':'';
+                m.language=document.documentElement.lang||'';
+                var cs=document.querySelector('meta[charset]');
+                m.charset=cs?cs.getAttribute('charset')||'':'';
+                if(!m.charset){var cs2=document.querySelector('meta[http-equiv="Content-Type"]');if(cs2){var c=cs2.getAttribute('content')||'';var idx=c.indexOf('charset=');m.charset=idx>=0?c.substring(idx+8).trim():'';}}
+                var fav=document.querySelector('link[rel="icon"],link[rel="shortcut icon"]');
+                m.favicon=fav?fav.getAttribute('href')||'':'';
+                m.og={};
+                ['title','description','image','url','type'].forEach(function(p){
+                    var el=document.querySelector('meta[property="og:'+p+'"]');
+                    m.og[p]=el?el.getAttribute('content')||'':'';
+                });
+                m.twitter={};
+                ['card','title','description','image'].forEach(function(p){
+                    var el=document.querySelector('meta[name="twitter:'+p+'"],meta[property="twitter:'+p+'"]');
+                    m.twitter[p]=el?el.getAttribute('content')||'':'';
+                });
+                m.structured_data=[];
+                document.querySelectorAll('script[type="application/ld+json"]').forEach(function(s){
+                    try{m.structured_data.push(JSON.parse(s.textContent));}catch(e){}
+                });
+                m.alternate=[];
+                document.querySelectorAll('link[rel="alternate"][hreflang]').forEach(function(l){
+                    m.alternate.push({hreflang:l.getAttribute('hreflang')||'',href:l.getAttribute('href')||''});
+                });
+                var robots=document.querySelector('meta[name="robots"]');
+                m.robots=robots?robots.getAttribute('content')||'':'';
+                return JSON.stringify(m);
+            })()"#;
+            let result_str = state.engine.eval(js)?;
+            let data: Value = serde_json::from_str(&result_str).unwrap_or_else(|_| {
+                serde_json::json!({ "error": "failed to parse metadata", "raw": result_str })
+            });
+            Ok(data)
         }
         other => Err(McpError::InvalidParams(format!("unknown kind: {other}"))),
     }

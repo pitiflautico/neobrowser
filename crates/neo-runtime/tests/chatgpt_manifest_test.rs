@@ -9,16 +9,21 @@ fn eval_string(rt: &mut DenoJsRuntime, code: &str) -> String {
     let result = rt
         .execute_script("<test>", format!("String({})", code))
         .expect("execute_script failed");
-    let scope = &mut rt.handle_scope();
+    let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
     let local = deno_core::v8::Local::new(scope, result);
     local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
 }
 
-fn test_microtask(rt: &mut DenoJsRuntime, label: &str) -> bool {
+fn test_microtask(rt: &mut DenoJsRuntime, tokio_rt: &tokio::runtime::Runtime, label: &str) -> bool {
     let var = format!("__mt_{}", label.replace(['-', ' ', '.'], "_"));
     rt.execute_script("<set>", format!(
         "globalThis.{v}='B';Promise.resolve().then(function(){{globalThis.{v}='A'}})", v = var
     )).unwrap();
+    // deno_core 0.393 doesn't auto-drain microtasks after execute_script — pump event loop
+    let _ = tokio_rt.block_on(rt.run_event_loop(PollEventLoopOptions::default()));
     let r = eval_string(rt, &format!("globalThis.{}", var));
     let ok = r == "A";
     println!("[{label:40}] {r} -> {}", if ok { "PASS" } else { "**FAIL**" });
@@ -32,7 +37,7 @@ fn manifest_test() {
     let _guard = tokio_rt.enter();
 
     let mut rt = DenoJsRuntime::new(RuntimeOptions {
-        extensions: vec![neo_runtime::v8::neo_runtime_ext::init_ops()],
+        extensions: vec![neo_runtime::v8::neo_runtime_ext::init()],
         ..Default::default()
     });
 
@@ -49,7 +54,7 @@ fn manifest_test() {
         }
     }
 
-    assert!(test_microtask(&mut rt, "after-bootstrap"));
+    assert!(test_microtask(&mut rt, &tokio_rt, "after-bootstrap"));
 
     // Load the ChatGPT manifest (1.8MB)
     let manifest_path = std::path::Path::new(&std::env::var("HOME").unwrap())
@@ -71,7 +76,7 @@ fn manifest_test() {
         }
     }
 
-    let ok = test_microtask(&mut rt, "after-manifest-exec");
+    let ok = test_microtask(&mut rt, &tokio_rt, "after-manifest-exec");
     if !ok {
         println!(">>> FOUND: ChatGPT manifest execution breaks microtask drain!");
     }
@@ -84,7 +89,7 @@ fn manifest_test() {
         ).await;
     });
 
-    let ok2 = test_microtask(&mut rt, "after-manifest-settle");
+    let ok2 = test_microtask(&mut rt, &tokio_rt, "after-manifest-settle");
     if !ok2 {
         println!(">>> FOUND: ChatGPT manifest + settle breaks microtask drain!");
     }

@@ -1052,6 +1052,36 @@ var happydom = (() => {
   var webSocket = /* @__PURE__ */ Symbol("webSocket");
   var moduleCache = /* @__PURE__ */ Symbol("moduleCache");
 
+  // NeoRender patch: fallback window for classes constructed outside Window context.
+  // Provides minimal properties that happy-dom internals access on this[window].
+  var __neoFallbackWindow = null;
+  function __neoGetFallbackWindow() {
+    if (!__neoFallbackWindow) {
+      __neoFallbackWindow = {
+        TypeError: TypeError,
+        Error: Error,
+        DOMException: typeof DOMException !== 'undefined' ? DOMException : TypeError,
+        Headers: typeof Headers !== 'undefined' ? Headers : class { constructor(){} },
+        Response: typeof Response !== 'undefined' ? Response : class { constructor(){} },
+        ReadableStream: typeof ReadableStream !== 'undefined' ? ReadableStream : class { constructor(){} },
+        PermissionStatus: class { constructor(s){ this.state = s; } },
+        ClipboardItem: typeof ClipboardItem !== 'undefined' ? ClipboardItem : class { constructor(){} },
+        CSSStyleSheet: class { constructor(){} replaceSync(){} },
+        [mutationObservers]: [],
+        [preloads]: new Map(),
+        closed: false,
+        queueMicrotask: typeof queueMicrotask === 'function' ? queueMicrotask : function(fn) { Promise.resolve().then(fn); },
+        document: typeof document !== 'undefined' ? document : { title: '', [preloads]: new Map() },
+        location: { href: 'about:blank', origin: 'null', protocol: 'https:' },
+        navigator: { permissions: { query: function() { return Promise.resolve({ state: 'granted' }); } } },
+        console: typeof console !== 'undefined' ? console : { warn: function(){}, error: function(){} },
+        addEventListener: function(){},
+        removeEventListener: function(){},
+      };
+    }
+    return __neoFallbackWindow;
+  }
+
   // node_modules/happy-dom/lib/cookie/enums/CookieSameSiteEnum.js
   var CookieSameSiteEnum;
   (function(CookieSameSiteEnum2) {
@@ -2469,8 +2499,32 @@ The following traces were recorded:
     static alloc(size) {
       return new Uint8Array(size);
     }
+    static allocUnsafe(size) {
+      return new Uint8Array(size);
+    }
     static isBuffer(obj) {
       return obj instanceof Uint8Array;
+    }
+    static concat(list, totalLength) {
+      if (!list || list.length === 0) return new Uint8Array(0);
+      if (!totalLength) {
+        totalLength = 0;
+        for (var i = 0; i < list.length; i++) totalLength += (list[i].length || list[i].byteLength || 0);
+      }
+      var result = new Uint8Array(totalLength);
+      var offset = 0;
+      for (var i = 0; i < list.length; i++) {
+        var buf = list[i];
+        if (buf instanceof Uint8Array || buf instanceof ArrayBuffer) {
+          var arr = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
+          result.set(arr, offset);
+          offset += arr.length;
+        }
+      }
+      return result;
+    }
+    static byteLength(str) {
+      return new TextEncoder().encode(str).length;
     }
     toString(enc) {
       return new TextDecoder().decode(this);
@@ -16775,10 +16829,7 @@ Content-Type: ${value2.type || "application/octet-stream"}\r
      * @param [init] Init.
      */
     constructor(input, init) {
-      const window2 = this[window];
-      if (!window2) {
-        throw new TypeError(`Failed to construct 'Request': 'Request' was constructed outside a Window context.`);
-      }
+      const window2 = this[window] || (this[window] = __neoGetFallbackWindow());
       if (typeof input !== `string` && !input) {
         throw new window2.TypeError(`Failed to construct 'Request': 1 argument required, only 0 present.`);
       }
@@ -17115,7 +17166,7 @@ Content-Type: ${value2.type || "application/octet-stream"}\r
      */
     constructor(body2, init) {
       if (!this[window]) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
+        this[window] = __neoGetFallbackWindow();
       }
       this.status = init?.status !== void 0 ? init.status : 200;
       this.statusText = init?.statusText || "";
@@ -17866,7 +17917,7 @@ gl5OpEjeliU7Mus0BVS858g=
       }
       const body2 = new this.#window.ReadableStream({
         start: (controller) => {
-          this.#window.queueMicrotask(() => {
+          (this.#window?.queueMicrotask || ((fn) => Promise.resolve().then(fn)))(() => {
             controller.enqueue(buffer2);
             controller.close();
           });
@@ -27755,7 +27806,7 @@ gl5OpEjeliU7Mus0BVS858g=
     constructor(streamOrTracks) {
       super();
       if (!this[window]) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
+        this[window] = __neoGetFallbackWindow();
       }
       if (streamOrTracks !== void 0) {
         this[tracks] = streamOrTracks instanceof _MediaStream ? streamOrTracks[tracks].slice() : streamOrTracks;
@@ -44188,7 +44239,7 @@ this.Function = globalThis.Function;
       if (this.#microtaskQueued) {
         return;
       }
-      this.#window.queueMicrotask(() => {
+      (this.#window?.queueMicrotask || ((fn) => Promise.resolve().then(fn)))(() => {
         if (this.#destroyed) {
           return;
         }
@@ -44241,8 +44292,11 @@ this.Function = globalThis.Function;
      * @param callback Callback.
      */
     constructor(callback) {
+      // NeoRender patch: skip Window context check for MutationObserver.
+      // happy-dom v20 requires this[window] but we construct MO outside Window scope.
+      // Provide a minimal fallback window context if missing.
       if (!this[window]) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
+        this[window] = __neoGetFallbackWindow();
       }
       this.#callback = callback;
     }
@@ -44752,7 +44806,7 @@ this.Function = globalThis.Function;
     constructor() {
       super();
       if (!this[window]) {
-        throw new TypeError(`Failed to construct 'AbortSignal': Illegal constructor`);
+        this[window] = __neoGetFallbackWindow();
       }
     }
     /**
@@ -44992,7 +45046,7 @@ this.Function = globalThis.Function;
     constructor() {
       super();
       if (!this[window]) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
+        this[window] = __neoGetFallbackWindow();
       }
     }
     /**
@@ -45933,10 +45987,7 @@ this.Function = globalThis.Function;
      * @param window Window.
      */
     constructor() {
-      const window2 = this[window];
-      if (!window2) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
-      }
+      const window2 = this[window] || (this[window] = __neoGetFallbackWindow());
       this[ownerDocument] = window2.document;
       this[start] = { node: window2.document, offset: 0 };
       this[end] = { node: window2.document, offset: 0 };
@@ -46675,7 +46726,7 @@ this.Function = globalThis.Function;
         throw new TypeError("Illegal constructor");
       }
       if (!this[window]) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
+        this[window] = __neoGetFallbackWindow();
       }
     }
     /**
@@ -46768,7 +46819,7 @@ this.Function = globalThis.Function;
         throw new TypeError("Illegal constructor");
       }
       if (!this[window]) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
+        this[window] = __neoGetFallbackWindow();
       }
     }
     /**
@@ -47118,7 +47169,7 @@ this.Function = globalThis.Function;
     constructor() {
       super();
       if (!this[window]) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
+        this[window] = __neoGetFallbackWindow();
       }
     }
     /**
@@ -47304,7 +47355,7 @@ this.Function = globalThis.Function;
         throw new TypeError("Illegal constructor");
       }
       if (!this[window]) {
-        throw new TypeError(`Failed to construct '${this.constructor.name}': '${this.constructor.name}' was constructed outside a Window context.`);
+        this[window] = __neoGetFallbackWindow();
       }
     }
     /**

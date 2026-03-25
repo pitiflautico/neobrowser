@@ -4,6 +4,7 @@
 //! ES module support via NeoModuleLoader, and V8 bytecode caching.
 
 use crate::code_cache::V8CodeCache;
+use crate::module_eval::ModuleEvaluator;
 use crate::modules::{ImportMapHandle, ModuleTracker, NeoModuleLoader, ScriptStoreHandle};
 use crate::ops;
 use crate::scheduler::{FetchBudget, SchedulerConfig, TaskTracker, TimerBudget, TimerState};
@@ -66,6 +67,8 @@ pub struct DenoRuntime {
     pub(crate) module_tracker: ModuleTracker,
     /// Tokio runtime for blocking on async ops.
     pub(crate) tokio_rt: tokio::runtime::Runtime,
+    /// Module evaluation state tracker — prevents deno_core "already evaluated" panics.
+    pub(crate) module_evaluator: ModuleEvaluator,
 }
 
 // SAFETY: DenoRuntime is only used from a single thread at a time.
@@ -155,6 +158,7 @@ impl DenoRuntime {
             .map(Rc::new);
 
         let module_tracker = ModuleTracker::new();
+        let trace_buffer = crate::trace_events::TraceBuffer::new();
 
         let loader = NeoModuleLoader {
             store: store.clone(),
@@ -164,7 +168,32 @@ impl DenoRuntime {
             http_client: http_client.clone(),
             on_demand_count: RefCell::new(0),
             module_tracker: module_tracker.clone(),
+            trace_buffer: trace_buffer.clone(),
         };
+
+        // Install panic hook that suppresses web_timeout double-panic aborts.
+        // deno_core 0.311 had a web_timeout.rs:189 UnsafeCell data race bug.
+        // Upgraded to 0.393 which fixes the root cause, but we keep this
+        // hook as defense-in-depth in case of regressions.
+        {
+            use std::sync::Once;
+            static HOOK_INSTALLED: Once = Once::new();
+            HOOK_INSTALLED.call_once(|| {
+                let default_hook = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    let msg = info.to_string();
+                    if msg.contains("web_timeout") || msg.contains("UnsafeCell") {
+                        eprintln!(
+                            "[neo-runtime] SUPPRESSED web_timeout panic (double-panic prevention): {}",
+                            msg.lines().next().unwrap_or(&msg)
+                        );
+                        // Don't call default hook — prevents abort on double panic
+                    } else {
+                        default_hook(info);
+                    }
+                }));
+            });
+        }
 
         // Create tokio runtime BEFORE JsRuntime so that deno_core's WebTimers
         // have access to the tokio reactor from the very first execute_script call.
@@ -175,7 +204,7 @@ impl DenoRuntime {
         let _guard = tokio_rt.enter();
 
         let mut runtime = deno_core::JsRuntime::new(RuntimeOptions {
-            extensions: vec![neo_runtime_ext::init_ops()],
+            extensions: vec![neo_runtime_ext::init()],
             module_loader: Some(Rc::new(loader)),
             ..Default::default()
         });
@@ -212,9 +241,24 @@ impl DenoRuntime {
             state.put(ops::SharedCookieStore(cookie_store));
             state.put(ops::StreamStore::default());
             state.put(ops::ConsoleBuffer::default());
+            state.put(trace_buffer.clone());
             state.put(ops::StorageState::default());
             state.put(ops::NavigationQueue::default());
             state.put(ops::CookieState::default());
+            // Chrome CDP fallback — lazily launches Chrome on first 403 Cloudflare.
+            // Chrome won't start until a request is actually blocked.
+            state.put(crate::chrome_fallback::SharedChromeFallback::new());
+            // Impit fallback — Chrome 142 TLS fingerprint via patched rustls.
+            // Tried before Chrome (lighter: no browser launch, just TLS impersonation).
+            match neo_http::ImpitClient::default_client() {
+                Ok(ic) => {
+                    state.put(ops::SharedImpitClient(std::sync::Arc::new(ic)));
+                    eprintln!("[neo-runtime] impit client initialized (Chrome 142 TLS)");
+                }
+                Err(e) => {
+                    eprintln!("[neo-runtime] impit client init failed: {e} (Cloudflare bypass disabled)");
+                }
+            }
             // Scheduler state — shared with ops via Arc atomics.
             state.put(tracker.clone());
             state.put(timer_budget.clone());
@@ -287,8 +331,8 @@ impl DenoRuntime {
             })?;
 
         // Critical polyfills that must be set AFTER all other init.
-        // deno_core 0.311's V8 Promise doesn't have .finally (removed from snapshot).
-        // Must be set here because happy-dom or other init may reset Promise.prototype.
+        // Earlier deno_core versions removed Promise.prototype.finally from snapshot.
+        // Kept as safety net even after upgrade to 0.393.
         let polyfills = r#"
             if (typeof Promise.prototype.finally !== 'function') {
                 Promise.prototype.finally = function(onFinally) {
@@ -333,6 +377,7 @@ impl DenoRuntime {
             fetch_budget,
             module_tracker,
             tokio_rt,
+            module_evaluator: ModuleEvaluator::new(),
         })
     }
 

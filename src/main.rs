@@ -55,6 +55,7 @@ fn main() {
         Some("mcp") => run_mcp(),
         Some("see") => run_see(&args),
         Some("interact") => run_interact(&args),
+        Some("eval") => run_eval(&args),
         Some("search") => run_search(&args),
         Some("import-cookies") => run_import_cookies(&args),
         Some("--help") | Some("-h") | None => print_help(),
@@ -91,6 +92,14 @@ fn create_engine() -> NeoSession {
     let http_for_v8: std::sync::Arc<dyn neo_http::HttpClient> =
         std::sync::Arc::new(wreq_for_v8);
     let rt_config = neo_runtime::RuntimeConfig::default();
+
+    // Clone Arcs BEFORE moving into the first runtime — the factory needs them
+    // to create fresh runtimes on cross-origin navigation.
+    let http_for_factory = http_for_v8.clone();
+    let cookie_for_factory = cookie_store_arc.clone();
+    let raw_for_factory = raw_client.clone();
+    let config_for_factory = rt_config.clone();
+
     let runtime: Option<Box<dyn neo_runtime::JsRuntime>> =
         match neo_runtime::v8::DenoRuntime::new_with_streaming(
             &rt_config,
@@ -104,6 +113,18 @@ fn create_engine() -> NeoSession {
                 None
             }
         };
+
+    // Runtime factory for cross-origin session isolation.
+    let factory = neo_engine::session::RuntimeFactory::new(move || {
+        neo_runtime::v8::DenoRuntime::new_with_streaming(
+            &config_for_factory,
+            http_for_factory.clone(),
+            cookie_for_factory.clone(),
+            raw_for_factory.clone(),
+        )
+        .map(|rt| Box::new(rt) as Box<dyn neo_runtime::JsRuntime>)
+        .map_err(|e| format!("runtime creation failed: {e}"))
+    });
 
     let disk_cache =
         DiskCache::default_cache().expect("failed to open disk cache at ~/.neorender/cache/http/");
@@ -120,6 +141,7 @@ fn create_engine() -> NeoSession {
     )
     .with_cookie_store(Box::new(ArcCookieStoreWrapper(cookie_store_arc)))
     .with_http_cache(Box::new(disk_cache))
+    .with_runtime_factory(factory)
 }
 
 fn run_mcp() {
@@ -132,8 +154,9 @@ fn run_mcp() {
 }
 
 fn run_see(args: &[String]) {
-    // Parse: neorender see [--cookies <path>] <url>
+    // Parse: neorender see [--cookies <path>] [--trace] <url>
     let mut cookies_path: Option<&str> = None;
+    let mut trace_enabled = false;
     let mut url: Option<&str> = None;
     let mut i = 2;
     while i < args.len() {
@@ -146,6 +169,9 @@ fn run_see(args: &[String]) {
                     std::process::exit(1);
                 }
             }
+            "--trace" => {
+                trace_enabled = true;
+            }
             _ => {
                 url = Some(args[i].as_str());
             }
@@ -156,7 +182,7 @@ fn run_see(args: &[String]) {
     let url = match url {
         Some(u) => u,
         None => {
-            eprintln!("Usage: neorender see [--cookies <path>] <url>");
+            eprintln!("Usage: neorender see [--cookies <path>] [--trace] <url>");
             std::process::exit(1);
         }
     };
@@ -170,6 +196,13 @@ fn run_see(args: &[String]) {
 
     match engine.navigate(url) {
         Ok(result) => {
+            // Print trace to stderr if --trace is set (before JSON output).
+            if trace_enabled {
+                let events = engine.drain_trace_events();
+                let formatted = neo_mcp::tools::trace::format_timeline(&events);
+                eprintln!("{formatted}");
+            }
+
             println!(
                 "{}",
                 serde_json::to_string_pretty(&result)
@@ -177,6 +210,12 @@ fn run_see(args: &[String]) {
             );
         }
         Err(e) => {
+            // Still try to print trace on failure.
+            if trace_enabled {
+                let events = engine.drain_trace_events();
+                let formatted = neo_mcp::tools::trace::format_timeline(&events);
+                eprintln!("{formatted}");
+            }
             eprintln!("Navigation failed: {e}");
             std::process::exit(1);
         }
@@ -283,6 +322,63 @@ fn run_search(args: &[String]) {
     }
 }
 
+fn run_eval(args: &[String]) {
+    // Parse: neorender eval [--cookies <path>] <url> <js_expression>
+    let mut cookies_path: Option<&str> = None;
+    let mut positional: Vec<&str> = Vec::new();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--cookies" => {
+                i += 1;
+                cookies_path = args.get(i).map(|s| s.as_str());
+                if cookies_path.is_none() {
+                    eprintln!("--cookies requires a file path");
+                    std::process::exit(1);
+                }
+            }
+            _ => positional.push(args[i].as_str()),
+        }
+        i += 1;
+    }
+    if positional.len() < 2 {
+        eprintln!("Usage: neorender eval [--cookies <path>] <url> <js_expression>");
+        eprintln!("  Navigate to URL, execute JS, print result, exit.");
+        std::process::exit(1);
+    }
+    let url = positional[0];
+    let js = positional[1..].join(" ");
+
+    let mut engine = create_engine();
+
+    if let Some(path) = cookies_path {
+        import_cookies_file(&mut engine, path);
+    }
+
+    eprintln!("[NeoRender] Navigating to {url}...");
+    match engine.navigate(url) {
+        Ok(result) => {
+            eprintln!(
+                "[NeoRender] Loaded: {} ({}, {}ms)",
+                result.title, result.url, result.render_ms
+            );
+        }
+        Err(e) => {
+            eprintln!("Navigation failed: {e}");
+            std::process::exit(1);
+        }
+    }
+
+    eprintln!("[NeoRender] Evaluating JS...");
+    match engine.eval(&js) {
+        Ok(result) => println!("{result}"),
+        Err(e) => {
+            eprintln!("JS eval failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn run_import_cookies(args: &[String]) {
     // Parse: neorender import-cookies --chrome-profile <name> [--domain <domain>]
     let mut profile: Option<&str> = None;
@@ -364,16 +460,41 @@ fn run_import_cookies(args: &[String]) {
 }
 
 fn run_interact(args: &[String]) {
-    let url = match args.get(2) {
-        Some(u) => u.as_str(),
+    // Parse: neorender interact [--cookies <path>] <url>
+    let mut cookies_path: Option<&str> = None;
+    let mut url: Option<&str> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--cookies" => {
+                i += 1;
+                cookies_path = args.get(i).map(|s| s.as_str());
+                if cookies_path.is_none() {
+                    eprintln!("--cookies requires a file path");
+                    std::process::exit(1);
+                }
+            }
+            _ => {
+                url = Some(args[i].as_str());
+            }
+        }
+        i += 1;
+    }
+    let url = match url {
+        Some(u) => u,
         None => {
-            eprintln!("Usage: neorender interact <url>");
+            eprintln!("Usage: neorender interact [--cookies <path>] <url>");
             eprintln!("  Navigate to URL and enter an interactive REPL.");
             std::process::exit(1);
         }
     };
 
     let mut engine = create_engine();
+
+    // Import cookies if provided
+    if let Some(path) = cookies_path {
+        import_cookies_file(&mut engine, path);
+    }
 
     eprintln!("[NeoRender] Navigating to {url}...");
     match engine.navigate(url) {
@@ -736,9 +857,11 @@ fn print_help() {
     println!();
     println!("Usage:");
     println!("  neorender mcp                            Start MCP server (JSON-RPC over stdio)");
-    println!("  neorender see <url>                      Navigate to URL and print WOM as JSON");
+    println!("  neorender see [--trace] <url>             Navigate to URL and print WOM as JSON");
     println!("  neorender see --cookies <file> <url>     Import cookies from JSON, then navigate");
-    println!("  neorender interact <url>                 Navigate and enter interactive REPL");
+    println!("  neorender see --trace <url>              Navigate and print execution trace to stderr");
+    println!("  neorender interact [--cookies <file>] <url>  Navigate and enter interactive REPL");
+    println!("  neorender eval [--cookies <file>] <url> <js>  Navigate, eval JS, print result, exit");
     println!("  neorender search <query> [--num N] [--deep] [--deep-num N]");
     println!("                                           Search the web via DuckDuckGo");
     println!(

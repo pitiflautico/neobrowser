@@ -9,6 +9,7 @@ pub mod classify_request;
 pub mod client;
 pub mod cookies;
 pub mod headers;
+pub mod impit_client;
 pub mod mock;
 pub mod storage;
 
@@ -126,5 +127,6 @@ pub use classify::{classify_url, is_heavy_script, should_skip};
 pub use classify_request::{classify_request, ClassificationOverrides, RequestCategory};
 pub use client::{build_headers, RquestClient};
 pub use cookies::{ChromeCookieImporter, SqliteCookieStore};
+pub use impit_client::ImpitClient;
 pub use mock::{InMemoryCookieStore, InMemoryWebStorage, MockHttpClient, NoopCache};
 pub use storage::SqliteWebStorage;

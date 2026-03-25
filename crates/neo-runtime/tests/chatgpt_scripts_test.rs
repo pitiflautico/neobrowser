@@ -8,7 +8,7 @@ use std::time::Duration;
 
 fn setup_engine() -> DenoJsRuntime {
     let mut rt = DenoJsRuntime::new(RuntimeOptions {
-        extensions: vec![neo_runtime::v8::neo_runtime_ext::init_ops()],
+        extensions: vec![neo_runtime::v8::neo_runtime_ext::init()],
         ..Default::default()
     });
 
@@ -39,15 +39,21 @@ fn test_microtask(rt: &mut DenoJsRuntime, label: &str) -> bool {
     );
     let result = rt.execute_script("<test>", wrapped).expect("exec failed");
     let r1 = {
-        let scope = &mut rt.handle_scope();
-        let local = deno_core::v8::Local::new(scope, result);
+        let context = rt.main_context();
+        deno_core::v8::scope!(scope, rt.v8_isolate());
+        let context = deno_core::v8::Local::new(scope, context);
+        let scope = &mut deno_core::v8::ContextScope::new(scope, context);
+        let local = deno_core::v8::Local::new(scope,result);
         local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
     };
 
     let result2 = rt.execute_script("<read>", format!("String(globalThis.{})", var)).expect("read failed");
     let r2 = {
-        let scope = &mut rt.handle_scope();
-        let local = deno_core::v8::Local::new(scope, result2);
+        let context = rt.main_context();
+        deno_core::v8::scope!(scope, rt.v8_isolate());
+        let context = deno_core::v8::Local::new(scope, context);
+        let scope = &mut deno_core::v8::ContextScope::new(scope, context);
+        let local = deno_core::v8::Local::new(scope,result2);
         local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
     };
 

@@ -1,12 +1,18 @@
 //! Tool registry — definitions and dispatch for all MCP tools.
 
 pub mod browse;
+pub mod consent;
+pub mod devtools;
 pub mod eval;
 pub mod extract;
 pub mod import_cookies;
 pub mod interact;
+pub mod navigate;
+pub mod page;
+pub mod pipeline;
 pub mod search;
 pub mod trace;
+pub mod view;
 pub mod wait;
 
 use serde_json::Value;
@@ -32,6 +38,11 @@ pub fn list_tools() -> Value {
         search::definition(),
         trace::definition(),
         import_cookies::definition(),
+        navigate::definition(),
+        page::definition(),
+        consent::definition(),
+        pipeline::definition(),
+        devtools::definition(),
     ];
 
     let entries: Vec<Value> = tools
@@ -59,6 +70,11 @@ pub fn call_tool(name: &str, args: Value, state: &mut McpState) -> Result<Value,
         "search" => search::call(args, state),
         "trace" => trace::call(args, state),
         "import_cookies" => import_cookies::call(args),
+        "navigate" => navigate::call(args, state),
+        "page" => page::call(args, state),
+        "cookie_consent" => consent::call(args, state),
+        "pipeline" => pipeline::call(args, state),
+        "devtools" => devtools::call(args, state),
         other => Err(McpError::UnknownTool(other.to_string())),
     }
 }

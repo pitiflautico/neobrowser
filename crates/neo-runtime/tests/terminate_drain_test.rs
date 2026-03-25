@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 fn make_rt() -> DenoJsRuntime {
     DenoJsRuntime::new(RuntimeOptions {
-        extensions: vec![neo_runtime::v8::neo_runtime_ext::init_ops()],
+        extensions: vec![neo_runtime::v8::neo_runtime_ext::init()],
         ..Default::default()
     })
 }
@@ -19,16 +19,20 @@ fn eval_string(rt: &mut DenoJsRuntime, code: &str) -> String {
     let result = rt
         .execute_script("<test>", format!("String({})", code))
         .expect("execute_script failed");
-    let scope = &mut rt.handle_scope();
+    let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
     let local = deno_core::v8::Local::new(scope, result);
     local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
 }
 
-fn test_microtask(rt: &mut DenoJsRuntime, label: &str) -> bool {
+fn test_microtask(rt: &mut DenoJsRuntime, tokio_rt: &tokio::runtime::Runtime, label: &str) -> bool {
     let var = format!("__mt_{}", label.replace(['-', ' '], "_"));
     rt.execute_script("<set>", format!(
         "globalThis.{v}='B';Promise.resolve().then(function(){{globalThis.{v}='A'}})", v = var
     )).unwrap();
+    let _ = tokio_rt.block_on(rt.run_event_loop(PollEventLoopOptions::default()));
     let r = eval_string(rt, &format!("globalThis.{}", var));
     let ok = r == "A";
     println!("[{label:40}] {r} -> {}", if ok { "PASS" } else { "**FAIL**" });
@@ -42,7 +46,7 @@ fn terminate_breaks_microtask_drain() {
         .enable_all().build().unwrap();
 
     let mut rt = make_rt();
-    assert!(test_microtask(&mut rt, "before-terminate"));
+    assert!(test_microtask(&mut rt, &tokio_rt, "before-terminate"));
 
     // Use op_timer (sync sleep) to simulate heavy work.
     // op_timer(1) sleeps 1ms. 500 of these = 500ms > 200ms watchdog.
@@ -91,7 +95,6 @@ fn terminate_breaks_microtask_drain() {
             Duration::from_millis(5000),
             rt.run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             }),
         ).await;
     });
@@ -115,7 +118,7 @@ fn terminate_breaks_microtask_drain() {
     eprintln!("[test] infinite counter reached: {counter}");
 
     // THE KEY TEST
-    let ok = test_microtask(&mut rt, "AFTER-TERMINATE");
+    let ok = test_microtask(&mut rt, &tokio_rt, "AFTER-TERMINATE");
     if !ok {
         println!("\n========================================");
         println!("ROOT CAUSE CONFIRMED!");
@@ -127,14 +130,14 @@ fn terminate_breaks_microtask_drain() {
 
         // Try to fix by explicit checkpoint
         rt.v8_isolate().perform_microtask_checkpoint();
-        let ok2 = test_microtask(&mut rt, "after-explicit-checkpoint");
+        let ok2 = test_microtask(&mut rt, &tokio_rt, "after-explicit-checkpoint");
         if ok2 {
             println!("FIX: perform_microtask_checkpoint() after terminate restores drain!");
         } else {
             println!("perform_microtask_checkpoint also broken after terminate.");
             // Try force policy
             rt.v8_isolate().set_microtasks_policy(deno_core::v8::MicrotasksPolicy::Auto);
-            let ok3 = test_microtask(&mut rt, "after-force-auto-policy");
+            let ok3 = test_microtask(&mut rt, &tokio_rt, "after-force-auto-policy");
             if ok3 {
                 println!("FIX: re-setting MicrotasksPolicy::Auto restores drain!");
             }

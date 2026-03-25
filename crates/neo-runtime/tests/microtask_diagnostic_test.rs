@@ -8,7 +8,7 @@ use std::time::Duration;
 
 fn make_rt() -> DenoJsRuntime {
     DenoJsRuntime::new(RuntimeOptions {
-        extensions: vec![neo_runtime::v8::neo_runtime_ext::init_ops()],
+        extensions: vec![neo_runtime::v8::neo_runtime_ext::init()],
         ..Default::default()
     })
 }
@@ -31,7 +31,10 @@ fn eval_string(rt: &mut DenoJsRuntime, code: &str) -> String {
     let result = rt
         .execute_script("<test>", format!("String({})", code))
         .expect("execute_script failed");
-    let scope = &mut rt.handle_scope();
+    let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
     let local = deno_core::v8::Local::new(scope, result);
     local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
 }
@@ -80,7 +83,6 @@ fn simulate_heavy_spa(rt: &mut DenoJsRuntime, tokio_rt: &tokio::runtime::Runtime
             Duration::from_millis(5000),
             rt.run_event_loop(PollEventLoopOptions {
                 wait_for_inspector: false,
-                pump_v8_message_loop: true,
             }),
         ).await;
     });
@@ -98,7 +100,10 @@ fn diag_1_scope_depth() {
 
     // Check depth BEFORE heavy load
     let depth_before = {
-        let scope = &mut rt.handle_scope();
+        let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
         let ctx = scope.get_current_context();
         let queue = ctx.get_microtask_queue();
         queue.get_microtasks_scope_depth()
@@ -109,7 +114,10 @@ fn diag_1_scope_depth() {
 
     // Check depth AFTER heavy load
     let depth_after = {
-        let scope = &mut rt.handle_scope();
+        let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
         let ctx = scope.get_current_context();
         let queue = ctx.get_microtask_queue();
         queue.get_microtasks_scope_depth()
@@ -118,7 +126,10 @@ fn diag_1_scope_depth() {
 
     // Check if IsRunningMicrotasks
     let is_running = {
-        let scope = &mut rt.handle_scope();
+        let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
         let ctx = scope.get_current_context();
         let queue = ctx.get_microtask_queue();
         queue.is_running_microtasks()
@@ -135,7 +146,10 @@ fn diag_1_scope_depth() {
     if r != "A" {
         // Try checkpoint on the CONTEXT queue (not isolate)
         {
-            let scope = &mut rt.handle_scope();
+            let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
             let ctx = scope.get_current_context();
             let queue = ctx.get_microtask_queue();
             queue.perform_checkpoint(scope);
@@ -166,7 +180,10 @@ fn diag_2_kscoped() {
 
     // Create a MicrotasksScope that drains on drop (Chrome pattern)
     {
-        let scope = &mut rt.handle_scope();
+        let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
         // The MicrotasksScope should drain microtasks when it destructs
         // But we need to check if the Rust V8 bindings expose this
         let ctx = scope.get_current_context();
@@ -197,13 +214,16 @@ fn diag_3_enqueue_check() {
 
     // Use a different approach: enqueue via V8 API directly
     {
-        let scope = &mut rt.handle_scope();
+        let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
         let ctx = scope.get_current_context();
         let queue = ctx.get_microtask_queue();
 
         // Enqueue a function as microtask via the V8 API
         let code = deno_core::v8::String::new(scope, "globalThis.__d3_direct = 'DIRECT'").unwrap();
-        let func = deno_core::v8::Function::new(scope, |fscope: &mut deno_core::v8::HandleScope,
+        let func = deno_core::v8::Function::new(scope, |fscope: &mut deno_core::v8::PinScope,
             _args: deno_core::v8::FunctionCallbackArguments,
             _rv: deno_core::v8::ReturnValue| {
             let code = deno_core::v8::String::new(fscope, "globalThis.__d3_direct = 'DIRECT_CALLED'").unwrap();

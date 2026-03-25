@@ -396,7 +396,7 @@ fn test_history_push_state() {
     );
 
     let length = rt.eval("history.length").unwrap();
-    assert_eq!(length, "1", "history.length should be 1 after one pushState");
+    assert_eq!(length, "2", "history.length should be 2 after one pushState (initial page + pushState)");
 }
 
 /// IntersectionObserver calls back with isIntersecting: true.
@@ -915,4 +915,97 @@ fn test_module_tracker_counts() {
     assert_eq!(tracker.total_requested(), 0);
     assert_eq!(tracker.total_loaded(), 0);
     assert_eq!(tracker.total_failed(), 0);
+}
+
+// ─── FetchBudget reset tests ───
+
+#[test]
+fn test_fetch_budget_reset_clears_abort() {
+    use neo_runtime::scheduler::FetchBudget;
+
+    let budget = FetchBudget::new(6, 5000);
+    budget.abort();
+    assert!(budget.is_aborted());
+    assert!(!budget.can_fetch());
+
+    budget.reset();
+    assert!(!budget.is_aborted());
+    assert!(budget.can_fetch());
+}
+
+#[test]
+fn test_fetch_budget_reset_clears_counters() {
+    use neo_runtime::scheduler::FetchBudget;
+
+    let budget = FetchBudget::new(6, 5000);
+    assert!(budget.start_fetch());
+    assert!(budget.start_fetch());
+    assert_eq!(budget.in_flight(), 2);
+    assert_eq!(budget.total_fetches(), 2);
+
+    budget.reset();
+    assert_eq!(budget.in_flight(), 0);
+    assert_eq!(budget.total_fetches(), 0);
+    assert!(budget.is_network_idle());
+}
+
+// ─── Buffer polyfill tests (V8) ───
+
+#[test]
+#[ignore]
+fn test_buffer_polyfill_exists() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    let has_buffer = rt.eval("typeof globalThis.Buffer").unwrap();
+    assert_eq!(has_buffer, "object");
+
+    let has_from = rt.eval("typeof globalThis.Buffer.from").unwrap();
+    assert_eq!(has_from, "function");
+
+    let has_concat = rt.eval("typeof globalThis.Buffer.concat").unwrap();
+    assert_eq!(has_concat, "function");
+
+    let has_alloc = rt.eval("typeof globalThis.Buffer.alloc").unwrap();
+    assert_eq!(has_alloc, "function");
+
+    let has_is_buffer = rt.eval("typeof globalThis.Buffer.isBuffer").unwrap();
+    assert_eq!(has_is_buffer, "function");
+}
+
+#[test]
+#[ignore]
+fn test_buffer_concat_works() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    let result = rt
+        .eval("Buffer.concat([new Uint8Array([1,2]), new Uint8Array([3,4])]).join(',')")
+        .unwrap();
+    assert_eq!(result, "1,2,3,4");
+}
+
+#[test]
+#[ignore]
+fn test_process_global_exists() {
+    use neo_runtime::v8::DenoRuntime;
+    use neo_runtime::RuntimeConfig;
+
+    let mut rt = DenoRuntime::new(&RuntimeConfig::default()).unwrap();
+    rt.set_document_html("<html><body></body></html>", "https://example.com")
+        .unwrap();
+
+    let env = rt.eval("globalThis.process.env.NODE_ENV").unwrap();
+    assert_eq!(env, "production");
+
+    let global = rt.eval("globalThis.global === globalThis").unwrap();
+    assert_eq!(global, "true");
 }

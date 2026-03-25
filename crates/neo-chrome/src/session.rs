@@ -11,12 +11,12 @@ use serde_json::json;
 
 /// A live Chrome session: process + CDP connection + active page target.
 pub struct ChromeSession {
-    process: ChromeProcess,
-    cdp: CdpClient,
+    pub(crate) process: ChromeProcess,
+    pub(crate) cdp: CdpClient,
     /// CDP target ID for the active page.
-    target_id: String,
+    pub(crate) target_id: String,
     /// CDP flat session ID attached to the page target.
-    page_session_id: String,
+    pub(crate) page_session_id: String,
 }
 
 impl ChromeSession {
@@ -139,7 +139,7 @@ impl ChromeSession {
     // ─── Internal helpers ───
 
     /// Wait for the page to finish loading via a polling loop.
-    async fn wait_for_load(&self, timeout_ms: u64) -> Result<()> {
+    pub(crate) async fn wait_for_load(&self, timeout_ms: u64) -> Result<()> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         loop {
             if std::time::Instant::now() > deadline {

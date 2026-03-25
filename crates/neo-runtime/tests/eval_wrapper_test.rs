@@ -1,16 +1,27 @@
 //! Test that our eval_and_settle IIFE wrapper doesn't block microtask drain.
+//! NOTE: deno_core 0.393 does NOT auto-drain microtasks after execute_script.
+//! We must pump the event loop explicitly.
 
-use deno_core::{JsRuntime as DenoJsRuntime, RuntimeOptions};
+use deno_core::{JsRuntime as DenoJsRuntime, PollEventLoopOptions, RuntimeOptions};
 
-fn bare_runtime() -> DenoJsRuntime {
-    DenoJsRuntime::new(RuntimeOptions::default())
+fn bare_runtime() -> (DenoJsRuntime, tokio::runtime::Runtime) {
+    let tokio_rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _guard = tokio_rt.enter();
+    let rt = DenoJsRuntime::new(RuntimeOptions::default());
+    (rt, tokio_rt)
 }
 
 fn eval_string(rt: &mut DenoJsRuntime, code: &str) -> String {
     let result = rt
         .execute_script("<test>", format!("String({})", code))
         .expect("execute_script failed");
-    let scope = &mut rt.handle_scope();
+    let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
     let local = deno_core::v8::Local::new(scope, result);
     local
         .to_string(scope)
@@ -27,7 +38,10 @@ fn eval_wrapped(rt: &mut DenoJsRuntime, code: &str) -> String {
     let result = rt
         .execute_script("<eval-settle>", wrapped)
         .expect("execute_script failed");
-    let scope = &mut rt.handle_scope();
+    let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
     let local = deno_core::v8::Local::new(scope, result);
     local
         .to_string(scope)
@@ -35,39 +49,34 @@ fn eval_wrapped(rt: &mut DenoJsRuntime, code: &str) -> String {
         .unwrap_or_else(|| "undefined".to_string())
 }
 
-/// Test: does the IIFE wrapper block microtask auto-drain?
+fn pump(rt: &mut DenoJsRuntime, tokio_rt: &tokio::runtime::Runtime) {
+    let _ = tokio_rt.block_on(rt.run_event_loop(PollEventLoopOptions::default()));
+}
+
+/// Test: does the IIFE wrapper block microtask drain after pump?
 #[test]
 fn t_wrapper_microtask_drain() {
-    let mut rt = bare_runtime();
+    let (mut rt, tokio_rt) = bare_runtime();
 
-    // Set up microtask via our IIFE wrapper
     let r1 = eval_wrapped(
         &mut rt,
         "(function(){globalThis.__x='B';Promise.resolve().then(function(){globalThis.__x='A'});return globalThis.__x})()"
     );
     println!("[WRAPPER] eval_wrapped returned: {r1}");
 
-    // Read with bare eval (no wrapper)
+    // Pump event loop to drain microtasks (required in deno_core 0.393)
+    pump(&mut rt, &tokio_rt);
+
     let r2 = eval_string(&mut rt, "globalThis.__x");
     println!("[WRAPPER] bare read after: {r2}");
 
-    // Read with wrapper
-    let r3 = eval_wrapped(&mut rt, "globalThis.__x");
-    println!("[WRAPPER] wrapped read after: {r3}");
-
-    assert_eq!(r2, "A", "Microtask should have drained between execute_script calls");
+    assert_eq!(r2, "A", "Microtask should have drained after event loop pump");
 }
 
 /// Test: does the IIFE wrapper + tokio block_on affect drain?
 #[test]
 fn t_wrapper_with_tokio() {
-    let tokio_rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let _guard = tokio_rt.enter();
-
-    let mut rt = bare_runtime();
+    let (mut rt, tokio_rt) = bare_runtime();
 
     let r1 = eval_wrapped(
         &mut rt,
@@ -75,24 +84,19 @@ fn t_wrapper_with_tokio() {
     );
     println!("[TOKIO] eval_wrapped returned: {r1}");
 
+    pump(&mut rt, &tokio_rt);
+
     let r2 = eval_string(&mut rt, "globalThis.__y");
     println!("[TOKIO] bare read after: {r2}");
 
-    assert_eq!(r2, "A", "Microtask should drain even with tokio entered");
+    assert_eq!(r2, "A", "Microtask should drain after pump with tokio entered");
 }
 
 /// Test: does loading bootstrap.js break the drain?
 #[test]
 fn t_wrapper_with_bootstrap() {
-    let tokio_rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let _guard = tokio_rt.enter();
+    let (mut rt, tokio_rt) = bare_runtime();
 
-    let mut rt = bare_runtime();
-
-    // Load __neo_drainMicrotasks (the minimal version from bootstrap)
     rt.execute_script("<bootstrap-drain>", r#"
         globalThis.__neo_drainMicrotasks = function() {};
     "#.to_string()).unwrap();
@@ -102,6 +106,8 @@ fn t_wrapper_with_bootstrap() {
         "(function(){globalThis.__z='B';Promise.resolve().then(function(){globalThis.__z='A'});return globalThis.__z})()"
     );
     println!("[BOOTSTRAP] eval_wrapped returned: {r1}");
+
+    pump(&mut rt, &tokio_rt);
 
     let r2 = eval_string(&mut rt, "globalThis.__z");
     println!("[BOOTSTRAP] bare read after: {r2}");
@@ -119,11 +125,10 @@ fn t_wrapper_with_neo_runtime() {
     let _guard = tokio_rt.enter();
 
     let mut rt = DenoJsRuntime::new(RuntimeOptions {
-        extensions: vec![neo_runtime::v8::neo_runtime_ext::init_ops()],
+        extensions: vec![neo_runtime::v8::neo_runtime_ext::init()],
         ..Default::default()
     });
 
-    // Minimal bootstrap
     rt.execute_script("<bootstrap>", r#"
         globalThis.__neo_ops = Deno.core.ops;
         globalThis.__neo_drainMicrotasks = function() {};
@@ -134,6 +139,8 @@ fn t_wrapper_with_neo_runtime() {
         "(function(){globalThis.__w='B';Promise.resolve().then(function(){globalThis.__w='A'});return globalThis.__w})()"
     );
     println!("[NEO] eval_wrapped returned: {r1}");
+
+    pump(&mut rt, &tokio_rt);
 
     let r2 = eval_string(&mut rt, "globalThis.__w");
     println!("[NEO] bare read after: {r2}");
@@ -151,11 +158,10 @@ fn t_wrapper_with_full_bootstrap() {
     let _guard = tokio_rt.enter();
 
     let mut rt = DenoJsRuntime::new(RuntimeOptions {
-        extensions: vec![neo_runtime::v8::neo_runtime_ext::init_ops()],
+        extensions: vec![neo_runtime::v8::neo_runtime_ext::init()],
         ..Default::default()
     });
 
-    // Load happy-dom bundle if exists
     let happydom_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap().parent().unwrap()
         .join("js/happydom.bundle.js");
@@ -164,7 +170,6 @@ fn t_wrapper_with_full_bootstrap() {
         let _ = rt.execute_script("<happydom>", happydom);
     }
 
-    // Load bootstrap
     let bootstrap_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap().parent().unwrap()
         .join("js/bootstrap.js");
@@ -179,6 +184,8 @@ fn t_wrapper_with_full_bootstrap() {
     );
     println!("[FULL] eval_wrapped returned: {r1}");
 
+    pump(&mut rt, &tokio_rt);
+
     let r2 = eval_string(&mut rt, "globalThis.__v");
     println!("[FULL] bare read after: {r2}");
 
@@ -186,7 +193,5 @@ fn t_wrapper_with_full_bootstrap() {
         println!("[FULL] PASS — microtasks drain with full bootstrap");
     } else {
         println!("[FULL] FAIL — microtasks DO NOT drain with full bootstrap");
-        println!("[FULL] This means bootstrap.js breaks microtask drain!");
     }
-    // Don't assert — we want to see the result even if it fails
 }

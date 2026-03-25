@@ -56,9 +56,18 @@ pub fn stdio_loop(state: &mut McpState) -> Result<(), McpError> {
             }
         };
 
+        // Notifications have no id — never respond to them (MCP spec).
+        let is_notification = req.id.is_none();
         let id = req.id.clone().unwrap_or(Value::Null);
         match dispatch(state, &req) {
-            Ok(result) => write_result(&mut stdout, id, result)?,
+            Ok(result) => {
+                if !is_notification {
+                    write_result(&mut stdout, id, result)?;
+                }
+            }
+            Err(_) if is_notification => {
+                // Silently ignore errors from notifications (MCP spec).
+            }
             Err(e) => write_error(&mut stdout, id, error_code(&e), &e.to_string())?,
         }
     }
@@ -78,6 +87,8 @@ fn dispatch(state: &mut McpState, req: &JsonRpcRequest) -> Result<Value, McpErro
             require_init(state)?;
             handle_tool_call(state, &req.params)
         }
+        // MCP notifications — acknowledge silently.
+        m if m.starts_with("notifications/") => Ok(Value::Null),
         other => Err(McpError::UnknownMethod(other.to_string())),
     }
 }
@@ -98,6 +109,8 @@ fn handle_initialize(state: &mut McpState) -> Result<Value, McpError> {
 }
 
 /// Handle `tools/call` — route to the correct tool handler.
+///
+/// MCP spec requires tools/call results wrapped in `{ content: [{ type: "text", text: "..." }] }`.
 fn handle_tool_call(state: &mut McpState, params: &Value) -> Result<Value, McpError> {
     let name = params
         .get("name")
@@ -109,7 +122,21 @@ fn handle_tool_call(state: &mut McpState, params: &Value) -> Result<Value, McpEr
         .cloned()
         .unwrap_or(Value::Object(serde_json::Map::new()));
 
-    tools::call_tool(name, args, state)
+    let result = tools::call_tool(name, args, state)?;
+
+    // Wrap in MCP content format.
+    let text = if result.is_string() {
+        result.as_str().unwrap().to_string()
+    } else {
+        serde_json::to_string(&result).unwrap_or_default()
+    };
+
+    Ok(serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": text
+        }]
+    }))
 }
 
 /// Require that `initialize` was called.

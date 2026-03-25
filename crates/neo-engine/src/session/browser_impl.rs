@@ -10,10 +10,22 @@ use neo_interact::{ClickResult, SubmitResult};
 use neo_trace::ExecutionSummary;
 use neo_types::{NetworkLogEntry, PageState, SessionState, TraceEntry};
 
+use super::bot_detection::{detect_bot_challenge_in_body, detect_bot_protection};
 use super::NeoSession;
 use crate::live_dom::LiveDom;
 use crate::pipeline::{PipelineContext, PipelineDecision, PipelinePhase};
 use crate::{BrowserEngine, EngineError, PageResult};
+
+// Re-export for backward compatibility (lib.rs re-exports detect_cloudflare from here).
+pub use super::bot_detection::detect_cloudflare;
+
+/// Extract the origin (scheme + host) from a URL string.
+fn extract_origin(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(u) => format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")),
+        Err(_) => String::new(),
+    }
+}
 
 impl BrowserEngine for NeoSession {
     fn navigate(&mut self, url: &str) -> Result<PageResult, EngineError> {
@@ -24,6 +36,29 @@ impl BrowserEngine for NeoSession {
 
         // Validate URL.
         url::Url::parse(url).map_err(|e| EngineError::InvalidUrl(e.to_string()))?;
+
+        // ── Cross-origin session isolation ──
+        let new_origin = extract_origin(url);
+        if !self.current_origin.is_empty() && self.current_origin != new_origin {
+            // Cross-origin: destroy V8 runtime and create a fresh one.
+            eprintln!(
+                "[session] cross-origin: {} → {} — recreating V8",
+                self.current_origin, new_origin
+            );
+            self.runtime = None; // drop old runtime
+            if let Some(ref factory) = self.runtime_factory {
+                match factory.create_runtime() {
+                    Ok(rt) => self.runtime = Some(rt),
+                    Err(e) => eprintln!("[session] runtime recreation failed: {e}"),
+                }
+            }
+        } else if !self.current_origin.is_empty() {
+            // Same-origin: reset per-page state without destroying the isolate.
+            if let Some(ref mut rt) = self.runtime {
+                rt.reset_page_state();
+            }
+        }
+        self.current_origin = new_origin;
 
         // Pipeline context — tracks decisions across all phases.
         let mut ctx = PipelineContext::new(url);
@@ -160,6 +195,33 @@ impl BrowserEngine for NeoSession {
             for (key, value) in &response.headers {
                 if key.eq_ignore_ascii_case("set-cookie") {
                     store.store_set_cookie(&response.url, value);
+                }
+            }
+        }
+
+        // 3h. Detect bot protection — mark domain for Chrome transport if needed.
+        let protection = detect_bot_protection(&response.headers);
+        if protection.is_protected() {
+            let domain = url::Url::parse(&response.url)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_string()));
+            if let Some(d) = domain {
+                if self.cloudflare_domains.insert(d.clone()) {
+                    eprintln!("[session] Bot protection detected for {d}: {protection:?}");
+                    if protection.needs_chrome_transport() {
+                        eprintln!("[session] → API fetches will use Chrome transport");
+                    }
+                }
+            }
+        }
+        // Also check body for JS-based challenges (Turnstile, reCAPTCHA, etc.)
+        if let Some(body_protection) = detect_bot_challenge_in_body(&response.body) {
+            let domain = url::Url::parse(&response.url)
+                .ok()
+                .and_then(|u| u.host_str().map(|h| h.to_string()));
+            if let Some(d) = domain {
+                if self.cloudflare_domains.insert(d.clone()) {
+                    eprintln!("[session] Bot challenge in body for {d}: {body_protection:?}");
                 }
             }
         }
@@ -423,6 +485,28 @@ impl BrowserEngine for NeoSession {
         }
     }
 
+    fn wait_for_text(&mut self, text: &str, timeout_ms: u32) -> Result<bool, EngineError> {
+        match self.runtime.as_mut() {
+            Some(rt) => {
+                let mut live = LiveDom::new(rt.as_mut());
+                match live.wait_for_text("body", text, timeout_ms) {
+                    Ok(result) => Ok(result.value),
+                    Err(crate::LiveDomError::Timeout { .. }) => Ok(false),
+                    Err(e) => Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
+                        e.to_string(),
+                    ))),
+                }
+            }
+            None => {
+                // Without runtime, check DOM text directly.
+                let dom = self.dom.lock().expect("dom lock poisoned");
+                let wom = self.extractor.extract_wom(dom.as_ref());
+                let page_text: String = wom.nodes.iter().map(|n| n.label.as_str()).collect::<Vec<_>>().join(" ");
+                Ok(page_text.contains(text))
+            }
+        }
+    }
+
     fn extract_text(&mut self) -> Result<String, EngineError> {
         match self.runtime.as_mut() {
             Some(rt) => {
@@ -531,4 +615,21 @@ impl BrowserEngine for NeoSession {
     fn page_id(&self) -> u64 {
         self.page_id.load(Ordering::Relaxed)
     }
+
+    fn is_cloudflare_domain(&self, domain: &str) -> bool {
+        self.cloudflare_domains.contains(domain)
+    }
+
+    fn cloudflare_domains(&self) -> Vec<String> {
+        self.cloudflare_domains.iter().cloned().collect()
+    }
+
+    fn drain_trace_events(&mut self) -> Vec<neo_runtime::TraceEvent> {
+        let mut events = std::mem::take(&mut self.trace_events);
+        if let Some(ref mut rt) = self.runtime {
+            events.extend(rt.drain_trace_events());
+        }
+        events
+    }
 }
+

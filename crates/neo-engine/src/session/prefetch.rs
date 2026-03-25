@@ -14,9 +14,10 @@ use neo_trace::Tracer;
 use super::scripts::ScriptInfo;
 
 /// Pre-fetch budget and limits.
-const TOTAL_BUDGET: Duration = Duration::from_secs(3);
+const TOTAL_BUDGET: Duration = Duration::from_secs(5);
 const PER_MODULE_TIMEOUT_MS: u64 = 1_500;
-const MODULE_CAP: usize = 100;
+const MODULE_CAP: usize = 200;
+const MAX_PREFETCH_DEPTH: usize = 3;
 
 /// Result of a pre-fetch pass.
 #[allow(dead_code)]
@@ -72,8 +73,8 @@ pub(crate) fn prefetch_modules(
         }
     }
 
-    // Depth 0 and 1 (two iterations).
-    for depth in 0..2 {
+    // Crawl imports up to MAX_PREFETCH_DEPTH levels deep.
+    for depth in 0..MAX_PREFETCH_DEPTH {
         if start.elapsed() >= TOTAL_BUDGET || to_scan.is_empty() {
             break;
         }
@@ -131,7 +132,7 @@ pub(crate) fn prefetch_modules(
                     write_module_cache(&url, &source);
                     rt.insert_module(&url, &source);
                     total_fetched += 1;
-                    if depth < 1 {
+                    if depth + 1 < MAX_PREFETCH_DEPTH {
                         next_round.push((url, source));
                     }
                 }

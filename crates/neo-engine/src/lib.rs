@@ -14,10 +14,11 @@ pub mod watchdog;
 
 pub use config::{EngineConfig, ResourceLimits, SecurityConfig};
 pub use lifecycle::Lifecycle;
-pub use live_dom::{ActionOutcome, ActionTrace, FrameInfo, LiveDom, LiveDomError, LiveDomResult};
+pub use live_dom::{ActionOutcome, ActionTrace, FrameInfo, InteractionResult, LiveDom, LiveDomError, LiveDomResult};
 pub use mock::MockBrowserEngine;
 pub use pipeline::{PhaseBudgets, PhaseError, PipelineContext, PipelineDecision, PipelinePhase};
 pub use session::NeoSession;
+pub use session::bot_detection::detect_cloudflare;
 pub use watchdog::{Watchdog, WatchdogAbortReason, WatchdogEvent, WatchdogGuard};
 
 use neo_extract::WomDocument;
@@ -102,6 +103,9 @@ pub trait BrowserEngine {
     /// Wait for an element to appear in the DOM.
     fn wait_for(&mut self, selector: &str, timeout_ms: u32) -> Result<bool, EngineError>;
 
+    /// Wait for visible text content to appear on the page.
+    fn wait_for_text(&mut self, text: &str, timeout_ms: u32) -> Result<bool, EngineError>;
+
     /// Extract page text content.
     fn extract_text(&mut self) -> Result<String, EngineError>;
 
@@ -129,6 +133,26 @@ pub trait BrowserEngine {
     /// Current page ID (monotonically increasing, incremented on each navigate).
     fn page_id(&self) -> u64 {
         0
+    }
+
+    /// Check if a domain was detected as Cloudflare-protected during navigation.
+    /// Used by op_fetch to decide whether to route through Chrome transport.
+    fn is_cloudflare_domain(&self, domain: &str) -> bool {
+        let _ = domain;
+        false
+    }
+
+    /// Get all domains detected as Cloudflare-protected.
+    fn cloudflare_domains(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Drain structured trace events from the JS runtime.
+    ///
+    /// Returns all events collected since the last drain and clears
+    /// the internal buffer. Default: empty (for mock engines).
+    fn drain_trace_events(&mut self) -> Vec<neo_runtime::TraceEvent> {
+        vec![]
     }
 }
 

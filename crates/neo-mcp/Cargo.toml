@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 neo-types = { path = "../neo-types" }
 neo-engine = { path = "../neo-engine" }
+neo-runtime = { path = "../neo-runtime" }
 neo-http = { path = "../neo-http" }
 neo-trace = { path = "../neo-trace" }
 neo-extract = { path = "../neo-extract" }

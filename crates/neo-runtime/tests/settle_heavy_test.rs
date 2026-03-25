@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 fn make_runtime() -> DenoJsRuntime {
     DenoJsRuntime::new(RuntimeOptions {
-        extensions: vec![neo_runtime::v8::neo_runtime_ext::init_ops()],
+        extensions: vec![neo_runtime::v8::neo_runtime_ext::init()],
         ..Default::default()
     })
 }
@@ -17,16 +17,20 @@ fn eval_string(rt: &mut DenoJsRuntime, code: &str) -> String {
     let result = rt
         .execute_script("<test>", format!("String({})", code))
         .expect("execute_script failed");
-    let scope = &mut rt.handle_scope();
+    let context = rt.main_context();
+    deno_core::v8::scope!(scope, rt.v8_isolate());
+    let context = deno_core::v8::Local::new(scope, context);
+    let scope = &mut deno_core::v8::ContextScope::new(scope, context);
     let local = deno_core::v8::Local::new(scope, result);
     local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
 }
 
-fn test_microtask(rt: &mut DenoJsRuntime, label: &str) -> bool {
+fn test_microtask(rt: &mut DenoJsRuntime, tokio_rt: &tokio::runtime::Runtime, label: &str) -> bool {
     let var = format!("__mt_{}", label.replace(['-', ' '], "_"));
     rt.execute_script("<set>", format!(
         "globalThis.{v}='B';Promise.resolve().then(function(){{globalThis.{v}='A'}})", v = var
     )).unwrap();
+    let _ = tokio_rt.block_on(rt.run_event_loop(PollEventLoopOptions::default()));
     let r = eval_string(rt, &format!("globalThis.{}", var));
     let ok = r == "A";
     println!("[{label:40}] {r} -> {}", if ok { "PASS" } else { "**FAIL**" });
@@ -61,14 +65,13 @@ fn run_until_settled_sim(
     let result = tokio_rt.block_on(async {
         loop {
             if Instant::now() >= deadline {
-                return Ok::<_, deno_core::error::AnyError>(());
+                return Ok::<_, deno_core::error::CoreError>(());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             match tokio::time::timeout(
                 Duration::from_millis(50).min(remaining),
                 rt.run_event_loop(PollEventLoopOptions {
                     wait_for_inspector: false,
-                    pump_v8_message_loop: true,
                 }),
             ).await {
                 Ok(Ok(())) => {
@@ -109,19 +112,19 @@ fn heavy_t1_many_pending_ops() {
         .enable_all().build().unwrap();
 
     let mut rt = make_runtime();
-    assert!(test_microtask(&mut rt, "heavy-before"));
+    assert!(test_microtask(&mut rt, &tokio_rt, "heavy-before"));
 
-    // Create many pending async ops
+    // Create many pending promises (JS-only, no internal ops)
     rt.execute_script("<ops>", r#"
         for (var i = 0; i < 50; i++) {
-            Deno.core.ops.op_microtask_tick();
+            Promise.resolve(i).then(function(v) { globalThis['__op_' + v] = true; });
         }
     "#.to_string()).unwrap();
 
     // Settle with watchdog (500ms timeout)
     run_until_settled_sim(&tokio_rt, &mut rt, 500);
 
-    let ok = test_microtask(&mut rt, "heavy-after-settle-500ms");
+    let ok = test_microtask(&mut rt, &tokio_rt, "heavy-after-settle-500ms");
     if !ok {
         println!(">>> FOUND: many pending ops + settle breaks microtask drain!");
     }
@@ -134,7 +137,7 @@ fn heavy_t2_long_running_js() {
         .enable_all().build().unwrap();
 
     let mut rt = make_runtime();
-    assert!(test_microtask(&mut rt, "heavy-t2-before"));
+    assert!(test_microtask(&mut rt, &tokio_rt, "heavy-t2-before"));
 
     // Create long-running JS that will be terminated by watchdog
     rt.execute_script("<long>", r#"
@@ -152,7 +155,7 @@ fn heavy_t2_long_running_js() {
     // Short settle (200ms) — watchdog will terminate if JS is still running
     run_until_settled_sim(&tokio_rt, &mut rt, 200);
 
-    let ok = test_microtask(&mut rt, "heavy-t2-after-long-js");
+    let ok = test_microtask(&mut rt, &tokio_rt, "heavy-t2-after-long-js");
     if !ok {
         println!(">>> FOUND: long-running JS + watchdog terminate breaks microtask drain!");
     }
@@ -181,7 +184,10 @@ fn heavy_t3_actual_deno_runtime() {
         ).unwrap();
         let r = {
             let result = deno_rt.runtime.execute_script("<read>", "String(globalThis.__pre)".to_string()).unwrap();
-            let scope = &mut deno_rt.runtime.handle_scope();
+            let context = deno_rt.runtime.main_context();
+            deno_core::v8::scope!(scope, deno_rt.runtime.v8_isolate());
+            let context = deno_core::v8::Local::new(scope, context);
+            let scope = &mut deno_core::v8::ContextScope::new(scope, context);
             let local = deno_core::v8::Local::new(scope, result);
             local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
         };
@@ -199,7 +205,10 @@ fn heavy_t3_actual_deno_runtime() {
         ).unwrap();
         let r = {
             let result = deno_rt.runtime.execute_script("<read2>", "String(globalThis.__post)".to_string()).unwrap();
-            let scope = &mut deno_rt.runtime.handle_scope();
+            let context = deno_rt.runtime.main_context();
+            deno_core::v8::scope!(scope, deno_rt.runtime.v8_isolate());
+            let context = deno_core::v8::Local::new(scope, context);
+            let scope = &mut deno_core::v8::ContextScope::new(scope, context);
             let local = deno_core::v8::Local::new(scope, result);
             local.to_string(scope).map(|s| s.to_rust_string_lossy(scope)).unwrap_or_default()
         };

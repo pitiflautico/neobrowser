@@ -4,17 +4,23 @@
 //! This is how NeoRender runs React, Vue, Angular — any SPA.
 //! Provides fetch/timer/storage ops, ES module loading, and V8 bytecode caching.
 
+pub mod chrome_fallback;
 pub mod code_cache;
+pub mod event_loop;
 pub mod imports;
 pub mod mock;
+pub mod module_eval;
 pub mod modules;
 pub mod ops;
 pub mod scheduler;
 pub mod trace;
+pub mod trace_events;
 pub mod v8;
 mod v8_runtime_impl;
 
 use std::path::PathBuf;
+
+pub use trace_events::{TraceBuffer, TraceEvent};
 
 /// Errors from the JavaScript runtime.
 #[derive(Debug, thiserror::Error)]
@@ -216,6 +222,20 @@ pub trait JsRuntime: Send {
 
     /// Set the import map for bare specifier resolution.
     fn set_import_map(&mut self, _map: modules::ImportMap) {}
+
+    /// Reset per-page state for same-origin navigation.
+    ///
+    /// Clears the script store, import map, and resets timer/fetch budgets
+    /// without destroying the V8 isolate. This allows module reuse within
+    /// the same origin while cleaning up per-page artifacts.
+    fn reset_page_state(&mut self) {}
+
+    /// Drain all structured trace events collected since last drain.
+    ///
+    /// Returns an empty vec by default (mock runtimes).
+    fn drain_trace_events(&mut self) -> Vec<trace_events::TraceEvent> {
+        vec![]
+    }
 }
 
 /// Configuration for creating a runtime instance.

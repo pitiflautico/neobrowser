@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "neoV2": {
+      "command": "/Volumes/DiscoExterno2/mac_offload/Projects/meta-agente/lab/neorender-v2/target/release/neorender",
+      "args": ["mcp"]
+    }
+  }
+}

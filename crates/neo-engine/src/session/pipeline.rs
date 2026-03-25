@@ -3,14 +3,15 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use neo_dom::DomEngine;
 use neo_http::{HttpRequest, RequestContext, RequestKind};
 use neo_types::{NetworkLogEntry, PageState};
 
 use neo_runtime::neo_trace;
 
+use super::pipeline_phases::{self, DomExportDecision};
 use super::prefetch::prefetch_modules;
 use super::script_exec::{execute_scripts, fetch_external_scripts};
+use super::script_parts::fire_observers;
 use super::scripts::{detect_framework, detect_meta_refresh, extract_import_map, extract_scripts};
 use super::stub::stub_heavy_modules;
 use super::{HistoryEntry, NeoSession};
@@ -61,6 +62,44 @@ impl NeoSession {
         // Settled.
         self.lifecycle
             .transition(PageState::Settled, "scripts executed");
+
+        // Validate hydration — detect if SPA framework actually mounted.
+        if let Some(ref mut rt) = self.runtime {
+            let hydration_js = r#"(function() {
+    var m = { react: false, vue: false, svelte: false, generic: false };
+    var roots = document.querySelectorAll('#root, #__next, #app, #factorialRoot, [data-reactroot]');
+    for (var i = 0; i < roots.length; i++) {
+        var keys = Object.keys(roots[i]);
+        for (var j = 0; j < keys.length; j++) {
+            if (keys[j].startsWith('__reactFiber') || keys[j].startsWith('__reactInternalInstance')) {
+                m.react = true; break;
+            }
+        }
+        if (m.react) break;
+    }
+    if (document.querySelector('[data-v-app]')) m.vue = true;
+    var vueApps = document.querySelectorAll('#app, #__nuxt');
+    for (var i = 0; i < vueApps.length; i++) {
+        if (vueApps[i].__vue_app__ || vueApps[i].__vue__) m.vue = true;
+    }
+    if (document.querySelector('[data-svelte-h]')) m.svelte = true;
+    var mainRoots = document.querySelectorAll('#root, #__next, #app, main, [role="main"]');
+    for (var i = 0; i < mainRoots.length; i++) {
+        if (mainRoots[i].children.length > 0 && mainRoots[i].textContent.trim().length > 10) {
+            m.generic = true; break;
+        }
+    }
+    return JSON.stringify(m);
+})()"#;
+            match rt.eval(hydration_js) {
+                Ok(markers_json) => {
+                    eprintln!("[hydration] markers: {markers_json}");
+                }
+                Err(e) => {
+                    eprintln!("[hydration] check failed: {e}");
+                }
+            }
+        }
 
         // Extract WOM.
         if let Some(ref mut ctx) = self.pipeline_ctx {
@@ -226,7 +265,7 @@ impl NeoSession {
 
         // Execute scripts in document order.
         let t4 = Instant::now();
-        execute_scripts(
+        let trace_events = execute_scripts(
             &scripts,
             &response.url,
             rt.as_mut(),
@@ -235,6 +274,7 @@ impl NeoSession {
             trace_id,
             js_errors,
         );
+        self.trace_events.extend(trace_events);
         eprintln!(
             "[profile] script_exec: {}ms",
             t4.elapsed().as_millis()
@@ -254,180 +294,52 @@ impl NeoSession {
         eprintln!("[profile] settle: {}ms", t5.elapsed().as_millis());
 
         // Extended settle: repeatedly pump event loop until DOM stabilizes.
-        // run_until_settled() returns immediately because TaskTracker doesn't
-        // track V8 internal promises/module evaluations. Instead, pump with
-        // increasing timeouts and check DOM node count for changes.
         let t5a = Instant::now();
-        let settle_budget = std::time::Duration::from_millis(
-            std::env::var("NEORENDER_SETTLE_MS")
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(3000)
-        );
+        let module_count = scripts.iter().filter(|s| s.is_module()).count();
+        let settle_result = pipeline_phases::run_settle_loop(rt.as_mut(), module_count);
 
-        let nodes_before = rt.eval("document.querySelectorAll('*').length")
-            .unwrap_or_else(|_| "0".to_string())
-            .trim().parse::<usize>().unwrap_or(0);
-
-        // Key insight: dynamic import() inside modules creates promises that
-        // need run_event_loop to resolve — NOT pump_event_loop (5ms timeout
-        // is too short). Use run_until_settled with a real timeout, but since
-        // TaskTracker doesn't track module evaluations, we must loop with
-        // DOM change detection.
-        let mut rounds = 0u32;
-        let mut last_node_count = nodes_before;
-        let mut stable_ticks = 0u32;
-
-        while t5a.elapsed() < settle_budget && stable_ticks < 5 {
-            // Run event loop for a real 200ms chunk — enough for module eval + promises
-            let remaining = settle_budget.saturating_sub(t5a.elapsed());
-            let chunk = std::cmp::min(remaining, std::time::Duration::from_millis(1000));
-            if chunk.is_zero() { break; }
-
-            // Use run_until_settled which actually runs the full event loop
-            // (not pump_event_loop which has 5ms internal timeout)
-            let _ = rt.run_until_settled(chunk.as_millis() as u64);
-
-            rounds += 1;
-
-            // Check DOM node count for changes
-            let current_nodes = rt.eval("document.querySelectorAll('*').length")
-                .unwrap_or_else(|_| "0".to_string())
-                .trim().parse::<usize>().unwrap_or(0);
-
-            // Check if DOM is still actively mutating via hydration tracer
-            let last_mutation_age = rt
-                .eval("Date.now() - (window.__neorender_trace && window.__neorender_trace.lastMutationTime || 0)")
-                .unwrap_or_else(|_| "9999".to_string())
-                .trim()
-                .parse::<u64>()
-                .unwrap_or(9999);
-
-            if current_nodes == last_node_count && last_mutation_age >= 100 {
-                stable_ticks += 1;
-            } else {
-                stable_ticks = 0;
-                if current_nodes != last_node_count {
-                    neo_trace!("[SETTLE] DOM changed: {} -> {} nodes (round {})", last_node_count, current_nodes, rounds);
-                } else {
-                    neo_trace!("[SETTLE] mutations still active ({}ms ago, round {})", last_mutation_age, rounds);
-                }
-                last_node_count = current_nodes;
-            }
-        }
-
-        let _nodes_after = last_node_count;
-        let micro_rounds = rounds;
-        let macro_rounds = 0u32;
-
-        // Post-settle: explicitly load entry modules that the app references
-        // but our pipeline didn't execute. This handles Vite/React Router builds
-        // where the manifest defines an entry module that should be loaded.
-        //
-        // This is NOT a framework hack — it's completing the module evaluation
-        // chain that deno_core's event loop doesn't fully process for dynamic imports.
-        let entry_module = rt.eval(
-            "(window.__reactRouterManifest && window.__reactRouterManifest.entry && window.__reactRouterManifest.entry.module) || ''"
-        ).unwrap_or_default().trim().replace(['"', '\''], "");
-
-        if !entry_module.is_empty() && entry_module.starts_with('/') {
-            // Resolve relative to page URL
-            let base = response.url.clone();
-            let full_url = if entry_module.starts_with("http") {
-                entry_module.clone()
-            } else if let Ok(base_url) = url::Url::parse(&base) {
-                base_url.join(&entry_module).map(|u| u.to_string()).unwrap_or(entry_module.clone())
-            } else {
-                let path = if entry_module.starts_with('/') { entry_module.clone() } else { format!("/{}", entry_module) };
-                format!("{}{}", base.trim_end_matches('/'), path)
-            };
-
-            neo_trace!("[SETTLE] loading entry module via eval_and_settle: {full_url}");
-            let import_code = format!("import('{}')", full_url.replace('\'', "\\'"));
-            match rt.eval_and_settle(&import_code, 5000) {
-                Ok(result) => {
-                    neo_trace!(
-                        "[SETTLE] entry module: promise={}, {}ms, timers={}",
-                        result.was_promise,
-                        result.settled_ms,
-                        result.pending_timers
-                    );
-                    let new_nodes = rt.eval("document.querySelectorAll('*').length")
-                        .unwrap_or_default().trim().parse::<usize>().unwrap_or(0);
-                    neo_trace!("[SETTLE] DOM after entry module: {} nodes (was {})", new_nodes, last_node_count);
-                }
-                Err(e) => {
-                    neo_trace!("[SETTLE] entry module failed: {e}");
-                }
-            }
-        }
+        // Post-settle: load entry modules (Vite/React Router).
+        let _entry_loaded = pipeline_phases::try_load_entry_module(rt.as_mut(), &response.url);
 
         // Diagnostics: node count after settle.
         let node_count = rt
             .eval("document.querySelectorAll('*').length")
             .unwrap_or_else(|_| "?".to_string());
         neo_trace!(
-            "[SETTLE] pumped {micro_rounds} microtask rounds, {macro_rounds} macrotask rounds ({}ms)",
+            "[SETTLE] pumped {} microtask rounds, 0 macrotask rounds ({}ms)",
+            settle_result.micro_rounds,
             t5a.elapsed().as_millis()
         );
         neo_trace!("[SETTLE] DOM nodes after settle: {node_count}");
 
-        // Export the JS-mutated DOM and re-parse into html5ever.
-        // Only replace the original parse if V8 produced a RICHER DOM
-        // (hydration succeeded). If V8's DOM is impoverished (failed
-        // hydration, empty __next div), keep the original SSR content.
-        let t6 = Instant::now();
-        match rt.export_html() {
-            Ok(html) if !html.is_empty() => {
-                let original_elements = {
-                    let dom = self.dom.lock().expect("dom lock poisoned");
-                    dom.query_selector_all("*").len()
-                };
-                neo_trace!(
-                    "[DOM_EXPORT] V8: {}B, {} V8 nodes, {} original elements",
-                    html.len(),
-                    node_count,
-                    original_elements
-                );
+        // Fire synthetic observer callbacks after settle — SPAs use
+        // IntersectionObserver for lazy loading and ResizeObserver for layout.
+        let (fired_io, fired_ro) = fire_observers(rt.as_mut());
+        if fired_io != 0 || fired_ro != 0 {
+            neo_trace!("[SETTLE] fired observers: IO={fired_io} RO={fired_ro}");
+            // Brief settle after observer callbacks may trigger DOM mutations
+            let _ = rt.run_until_settled(1000);
+        }
 
-                // Parse V8 export into a temporary DOM to count elements
-                let mut temp_dom = neo_dom::Html5everDom::new();
-                match temp_dom.parse_html(&html, &response.url) {
-                    Ok(()) => {
-                        let v8_elements = temp_dom.query_selector_all("*").len();
-                        // Only replace if V8 DOM has MORE elements than original
-                        // (meaning hydration added content) or at least 80% of
-                        // original (meaning minor DOM changes, not data loss).
-                        let threshold = (original_elements as f64 * 0.8) as usize;
-                        if v8_elements >= threshold.max(1) {
-                            neo_trace!(
-                                "[DOM_EXPORT] accepting V8 DOM ({} >= {} threshold)",
-                                v8_elements,
-                                threshold
-                            );
-                            let mut dom = self.dom.lock().expect("dom lock poisoned");
-                            if let Err(e) = dom.parse_html(&html, &response.url) {
-                                js_errors.push(format!("re-parse: {e}"));
-                            }
-                        } else {
-                            neo_trace!(
-                                "[DOM_EXPORT] REJECTING V8 DOM ({} < {} threshold) — keeping original SSR parse",
-                                v8_elements,
-                                threshold
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        js_errors.push(format!("re-parse probe: {e}"));
-                    }
+        // Export the JS-mutated DOM and re-parse into html5ever.
+        // Only replace the original parse if V8 produced a RICHER DOM.
+        let t6 = Instant::now();
+        let original_elements = {
+            let dom = self.dom.lock().expect("dom lock poisoned");
+            dom.query_selector_all("*").len()
+        };
+        match pipeline_phases::validate_dom_export(rt.as_mut(), original_elements, &response.url) {
+            DomExportDecision::Accept { html, .. } => {
+                let mut dom = self.dom.lock().expect("dom lock poisoned");
+                if let Err(e) = dom.parse_html(&html, &response.url) {
+                    js_errors.push(format!("re-parse: {e}"));
                 }
             }
-            Ok(empty) => {
-                neo_trace!("[DOM_EXPORT] empty HTML returned (len={})", empty.len());
+            DomExportDecision::Reject { .. } | DomExportDecision::Empty => {
+                // Keep original SSR parse.
             }
-            Err(e) => {
-                js_errors.push(format!("export: {e}"));
-                neo_trace!("[DOM_EXPORT] ERROR: {e}");
+            DomExportDecision::Error(e) => {
+                js_errors.push(e);
             }
         }
         eprintln!("[profile] dom_export: {}ms", t6.elapsed().as_millis());

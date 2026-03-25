@@ -7,9 +7,13 @@ edition.workspace = true
 neo-types = { path = "../neo-types" }
 neo-http = { path = "../neo-http" }
 neo-dom = { path = "../neo-dom" }
-deno_core = "0.311"
+neo-chrome = { path = "../neo-chrome" }
+deno_core = "0.393"
+deno_error = "0.7"
+futures = "0.3"
 tokio = { workspace = true }
 wreq = "=6.0.0-rc.28"
+brotli = "7"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

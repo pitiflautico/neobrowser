@@ -5,8 +5,10 @@ edition.workspace = true
 
 [dependencies]
 neo-types = { path = "../neo-types" }
-wreq = { version = "=6.0.0-rc.28", features = ["cookies", "gzip", "brotli", "zstd", "deflate"] }
-wreq-util = "=3.0.0-rc.7"
+wreq = { version = "=6.0.0-rc.28", features = ["cookies", "gzip", "zstd", "deflate"] }
+brotli = "7"
+wreq-util = "=3.0.0-rc.10"
+impit = { git = "https://github.com/apify/impit.git", branch = "master" }
 rusqlite = { version = "=0.32.1", features = ["bundled"] }
 aes = "0.8"
 cbc = "0.1"

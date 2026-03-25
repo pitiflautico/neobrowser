@@ -772,4 +772,309 @@ mod tests {
             "vue"
         );
     }
+
+    // ─── classify_script comprehensive tests ───
+
+    #[test]
+    fn test_classify_empty_type_no_src_is_inline_blocking() {
+        assert_eq!(classify_script("", false, false, false), ScriptKind::InlineBlocking);
+    }
+
+    #[test]
+    fn test_classify_empty_type_with_src_is_external_blocking() {
+        assert_eq!(classify_script("", true, false, false), ScriptKind::ExternalBlocking);
+    }
+
+    #[test]
+    fn test_classify_text_javascript_with_src_is_external_blocking() {
+        assert_eq!(classify_script("text/javascript", true, false, false), ScriptKind::ExternalBlocking);
+    }
+
+    #[test]
+    fn test_classify_application_javascript_with_src_is_external_blocking() {
+        assert_eq!(classify_script("application/javascript", true, false, false), ScriptKind::ExternalBlocking);
+    }
+
+    #[test]
+    fn test_classify_defer_with_src() {
+        assert_eq!(classify_script("", true, true, false), ScriptKind::Defer);
+    }
+
+    #[test]
+    fn test_classify_async_with_src() {
+        assert_eq!(classify_script("", true, false, true), ScriptKind::Async);
+    }
+
+    #[test]
+    fn test_classify_defer_and_async_with_src() {
+        // Per spec, when both defer and async are present, async takes precedence
+        // But our implementation checks defer first for classic scripts
+        let kind = classify_script("", true, true, true);
+        assert_eq!(kind, ScriptKind::Defer, "current impl: defer checked before async");
+    }
+
+    #[test]
+    fn test_classify_module_with_src() {
+        assert_eq!(classify_script("module", true, false, false), ScriptKind::Module);
+    }
+
+    #[test]
+    fn test_classify_module_inline() {
+        assert_eq!(classify_script("module", false, false, false), ScriptKind::InlineModule);
+    }
+
+    #[test]
+    fn test_classify_module_async_with_src() {
+        assert_eq!(classify_script("module", true, false, true), ScriptKind::AsyncModule);
+    }
+
+    #[test]
+    fn test_classify_module_async_inline() {
+        // async module without src — still AsyncModule in current impl
+        assert_eq!(classify_script("module", false, false, true), ScriptKind::AsyncModule);
+    }
+
+    #[test]
+    fn test_classify_module_defer_with_src() {
+        // defer is meaningless for modules (they're always deferred), treated as Module
+        assert_eq!(classify_script("module", true, true, false), ScriptKind::Module);
+    }
+
+    #[test]
+    fn test_classify_importmap() {
+        assert_eq!(classify_script("importmap", false, false, false), ScriptKind::ImportMap);
+        assert_eq!(classify_script("importmap", true, false, false), ScriptKind::ImportMap);
+    }
+
+    #[test]
+    fn test_classify_application_json_ignored() {
+        assert_eq!(classify_script("application/json", false, false, false), ScriptKind::Ignored);
+    }
+
+    #[test]
+    fn test_classify_text_template_ignored() {
+        assert_eq!(classify_script("text/template", false, false, false), ScriptKind::Ignored);
+    }
+
+    #[test]
+    fn test_classify_text_html_ignored() {
+        assert_eq!(classify_script("text/html", false, false, false), ScriptKind::Ignored);
+    }
+
+    #[test]
+    fn test_classify_x_custom_ignored() {
+        assert_eq!(classify_script("text/x-custom", false, false, false), ScriptKind::Ignored);
+    }
+
+    #[test]
+    fn test_classify_case_insensitive() {
+        assert_eq!(classify_script("Module", true, false, false), ScriptKind::Module);
+        assert_eq!(classify_script("APPLICATION/JSON", false, false, false), ScriptKind::Ignored);
+        assert_eq!(classify_script("ImportMap", false, false, false), ScriptKind::ImportMap);
+    }
+
+    // ─── extract_scripts HTML parsing ───
+
+    #[test]
+    fn test_extract_scripts_resolves_relative_urls() {
+        let html = r#"<html><head><script src="./app.js"></script></head><body></body></html>"#;
+        let scripts = extract_scripts(html, "https://example.com/page/index.html");
+        if let Some(ScriptInfo::External { url, .. }) = scripts.first() {
+            assert_eq!(url, "https://example.com/page/app.js");
+        } else {
+            panic!("expected external script");
+        }
+    }
+
+    #[test]
+    fn test_extract_scripts_resolves_absolute_path() {
+        let html = r#"<html><head><script src="/assets/app.js"></script></head><body></body></html>"#;
+        let scripts = extract_scripts(html, "https://example.com/page/");
+        if let Some(ScriptInfo::External { url, .. }) = scripts.first() {
+            assert_eq!(url, "https://example.com/assets/app.js");
+        } else {
+            panic!("expected external script");
+        }
+    }
+
+    #[test]
+    fn test_extract_scripts_protocol_relative() {
+        let html = r#"<html><head><script src="//cdn.example.com/lib.js"></script></head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        if let Some(ScriptInfo::External { url, .. }) = scripts.first() {
+            assert_eq!(url, "https://cdn.example.com/lib.js");
+        } else {
+            panic!("expected external script");
+        }
+    }
+
+    #[test]
+    fn test_extract_scripts_empty_inline_filtered() {
+        let html = r#"<html><head><script>  </script></head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        assert!(scripts.is_empty(), "whitespace-only inline script should be filtered");
+    }
+
+    #[test]
+    fn test_extract_scripts_large_inline_filtered() {
+        // Inline scripts > 20KB are filtered out
+        let big = "var x = 1;\n".repeat(3000); // ~33KB
+        let html = format!(r#"<html><head><script>{}</script></head><body></body></html>"#, big);
+        let scripts = extract_scripts(&html, BASE);
+        assert!(scripts.is_empty(), "large inline script (>20KB) should be filtered");
+    }
+
+    #[test]
+    fn test_extract_scripts_modulepreload() {
+        let html = r#"<html><head>
+            <link rel="modulepreload" href="/chunks/vendor.js">
+        </head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        assert_eq!(scripts.len(), 1);
+        assert!(matches!(scripts[0], ScriptInfo::Preload { .. }));
+        assert_eq!(scripts[0].url().unwrap(), "https://example.com/chunks/vendor.js");
+        assert!(scripts[0].is_module());
+    }
+
+    #[test]
+    fn test_extract_scripts_non_modulepreload_link_ignored() {
+        let html = r#"<html><head>
+            <link rel="stylesheet" href="/style.css">
+            <link rel="preload" href="/font.woff2">
+        </head><body></body></html>"#;
+        let scripts = extract_scripts(html, BASE);
+        assert!(scripts.is_empty());
+    }
+
+    // ─── is_skippable_script ───
+
+    #[test]
+    fn test_skippable_service_worker() {
+        assert!(is_skippable_script("https://example.com/service-worker.js"));
+    }
+
+    #[test]
+    fn test_skippable_onetrust() {
+        assert!(is_skippable_script("https://cdn.cookielaw.org/scripttemplates/otSDKStub.js"));
+    }
+
+    #[test]
+    fn test_skippable_zendesk() {
+        assert!(is_skippable_script("https://static.zdassets.com/ekr/snippet.js?key=zendesk"));
+    }
+
+    #[test]
+    fn test_not_skippable_react() {
+        assert!(!is_skippable_script("https://cdn.example.com/react.production.min.js"));
+    }
+
+    #[test]
+    fn test_not_skippable_vue() {
+        assert!(!is_skippable_script("https://cdn.example.com/vue.global.prod.js"));
+    }
+
+    #[test]
+    fn test_not_skippable_app_bundle() {
+        assert!(!is_skippable_script("https://example.com/assets/app.abc123.js"));
+    }
+
+    // ─── resolve_script_url ───
+
+    #[test]
+    fn test_resolve_script_url_full_http() {
+        assert_eq!(
+            resolve_script_url("https://cdn.example.com/lib.js", "https://example.com/"),
+            "https://cdn.example.com/lib.js"
+        );
+    }
+
+    #[test]
+    fn test_resolve_script_url_protocol_relative() {
+        assert_eq!(
+            resolve_script_url("//cdn.example.com/lib.js", "https://example.com/"),
+            "https://cdn.example.com/lib.js"
+        );
+    }
+
+    #[test]
+    fn test_resolve_script_url_absolute_path() {
+        assert_eq!(
+            resolve_script_url("/assets/app.js", "https://example.com/page/"),
+            "https://example.com/assets/app.js"
+        );
+    }
+
+    #[test]
+    fn test_resolve_script_url_relative_path() {
+        assert_eq!(
+            resolve_script_url("./app.js", "https://example.com/page/index.html"),
+            "https://example.com/page/app.js"
+        );
+    }
+
+    // ─── detect_meta_refresh ───
+
+    #[test]
+    fn test_detect_meta_refresh_present() {
+        let html = r#"<html><head>
+            <meta http-equiv="refresh" content="0;url=https://example.com/new-page">
+        </head><body></body></html>"#;
+        let target = detect_meta_refresh(html, "https://example.com/old-page");
+        assert_eq!(target, Some("https://example.com/new-page".to_string()));
+    }
+
+    #[test]
+    fn test_detect_meta_refresh_absent() {
+        let html = r#"<html><head><title>Test</title></head><body></body></html>"#;
+        assert!(detect_meta_refresh(html, "https://example.com/").is_none());
+    }
+
+    #[test]
+    fn test_detect_meta_refresh_relative_url() {
+        let html = r#"<html><head>
+            <meta http-equiv="refresh" content="5;url=/new-page">
+        </head><body></body></html>"#;
+        let target = detect_meta_refresh(html, "https://example.com/old-page");
+        assert!(target.is_some());
+        assert!(target.unwrap().contains("new-page"));
+    }
+
+    // ─── Script partitioning (document order + groups) ───
+
+    #[test]
+    fn test_script_execution_group_assignment() {
+        let html = r#"<html><head>
+            <script>var a = 1;</script>
+            <script src="/blocking.js"></script>
+            <script defer src="/defer.js"></script>
+            <script async src="/async.js"></script>
+            <script type="module" src="/module.mjs"></script>
+            <script type="module">import './inline-mod.js';</script>
+            <script type="module" async src="/async-mod.mjs"></script>
+            <script type="importmap">{"imports":{}}</script>
+        </head><body></body></html>"#;
+
+        let scripts = extract_scripts(html, BASE);
+
+        // Partition into groups
+        let mut blocking = Vec::new();
+        let mut deferred = Vec::new();
+        let mut async_group = Vec::new();
+        let mut import_maps = Vec::new();
+
+        for s in &scripts {
+            match s.kind() {
+                ScriptKind::InlineBlocking | ScriptKind::ExternalBlocking => blocking.push(s),
+                ScriptKind::Defer | ScriptKind::Module | ScriptKind::InlineModule => deferred.push(s),
+                ScriptKind::Async | ScriptKind::AsyncModule => async_group.push(s),
+                ScriptKind::ImportMap => import_maps.push(s),
+                ScriptKind::Ignored => {}
+            }
+        }
+
+        assert_eq!(blocking.len(), 2, "inline + external blocking");
+        assert_eq!(deferred.len(), 3, "defer + module + inline module");
+        assert_eq!(async_group.len(), 2, "async + async module");
+        assert_eq!(import_maps.len(), 1, "one import map");
+    }
 }

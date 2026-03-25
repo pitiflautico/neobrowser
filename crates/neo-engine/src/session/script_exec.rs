@@ -4,11 +4,13 @@ use std::collections::HashMap;
 
 use neo_http::{HttpClient, HttpError, HttpRequest, RequestContext, RequestKind};
 use neo_runtime::neo_trace;
+use neo_runtime::trace_events::{TraceEvent};
 
 use std::time::Instant;
 
 use super::hydration;
-use super::scripts::{ScriptInfo, ScriptKind};
+use super::script_parts::{ExecutionGroups, FetchBudget, ScriptDedup};
+use super::scripts::ScriptInfo;
 
 /// Fetch external scripts and modulepreloads, inserting into the runtime store.
 ///
@@ -21,9 +23,8 @@ pub(crate) fn fetch_external_scripts(
     http: &dyn HttpClient,
     errors: &mut Vec<String>,
 ) {
-    const FETCH_BUDGET_MS: u64 = 2_000;
-    let budget_start = Instant::now();
-    let mut fetched = 0usize;
+    const FETCH_BUDGET_MS: u64 = 30_000;
+    let mut budget = FetchBudget::new(FETCH_BUDGET_MS);
 
     for script in scripts {
         let url = match script.url() {
@@ -33,10 +34,11 @@ pub(crate) fn fetch_external_scripts(
         if rt.has_module(url) {
             continue;
         }
-        if budget_start.elapsed().as_millis() as u64 > FETCH_BUDGET_MS {
+        if budget.is_exhausted() {
             eprintln!(
-                "[profile] fetch_budget: stopped after {fetched} fetches, {}ms",
-                budget_start.elapsed().as_millis()
+                "[profile] fetch_budget: stopped after {} fetches, {}ms",
+                budget.fetched_count(),
+                budget.elapsed_ms()
             );
             break;
         }
@@ -51,7 +53,7 @@ pub(crate) fn fetch_external_scripts(
                     eprintln!("[profile]   fetched: {name} ({size_kb}KB)");
                 }
                 rt.insert_module(url, &source);
-                fetched += 1;
+                budget.record_fetch();
             }
             Err(e) => {
                 let fetch_ms = ft.elapsed().as_millis();
@@ -86,57 +88,66 @@ pub(crate) fn execute_scripts(
     tracer: &dyn neo_trace::Tracer,
     trace_id: &str,
     errors: &mut Vec<String>,
-) {
+) -> Vec<TraceEvent> {
+    let mut all_trace_events: Vec<TraceEvent> = Vec::new();
     let base = extract_origin(page_url);
     let mut inline_module_sources: Vec<String> = Vec::new();
 
+    // Pre-register Node.js compat modules as stubs so bare imports resolve.
+    // e.g., `import { Buffer } from 'buffer'` → our polyfill.
+    rt.insert_module("buffer", "export const Buffer = globalThis.Buffer; export default globalThis.Buffer;");
+    rt.insert_module("process", "export default globalThis.process; export const env = globalThis.process?.env || {};");
+    rt.insert_module("stream", "export default {}; export const Readable = class {}; export const Writable = class {}; export const Transform = class {};");
+    rt.insert_module("util", "export default {}; export function inherits() {} export function deprecate(fn) { return fn; }");
+    rt.insert_module("events", "export default class EventEmitter { on(){return this} off(){return this} emit(){return this} addListener(){return this} removeListener(){return this} };");
+
     let mut cumulative_ms: u64 = 0;
-    const EXEC_BUDGET_MS: u64 = 2_000;
+    const EXEC_BUDGET_MS: u64 = 60_000;
 
     // Partition scripts into execution groups, preserving document order within each.
-    let mut blocking: Vec<(usize, &ScriptInfo)> = Vec::new();
-    let mut deferred: Vec<(usize, &ScriptInfo)> = Vec::new();
-    let mut async_scripts: Vec<(usize, &ScriptInfo)> = Vec::new();
-
-    for (idx, script) in scripts.iter().enumerate() {
-        match script.kind() {
-            ScriptKind::InlineBlocking | ScriptKind::ExternalBlocking => {
-                blocking.push((idx, script));
-            }
-            ScriptKind::Defer | ScriptKind::Module | ScriptKind::InlineModule => {
-                deferred.push((idx, script));
-            }
-            ScriptKind::Async | ScriptKind::AsyncModule => {
-                async_scripts.push((idx, script));
-            }
-            ScriptKind::ImportMap | ScriptKind::Ignored => {
-                // Not executed as JS.
-            }
-        }
-    }
+    let groups = ExecutionGroups::from_scripts(scripts);
+    let mut dedup = ScriptDedup::new();
 
     // --- Group 1: Blocking scripts ---
-    for &(idx, script) in &blocking {
+    for &(idx, _) in &groups.blocking {
+        let script = &scripts[idx];
         if cumulative_ms > EXEC_BUDGET_MS {
             log_budget_stop(idx, scripts.len(), cumulative_ms, "blocking");
             break;
         }
-        cumulative_ms += execute_single(
-            script, idx, page_url, &base, rt, http, tracer, trace_id,
-            &mut inline_module_sources, errors,
-        );
-    }
-
-    // --- Group 2: Deferred scripts (+ modules) ---
-    for &(idx, script) in &deferred {
-        if cumulative_ms > EXEC_BUDGET_MS {
-            log_budget_stop(idx, scripts.len(), cumulative_ms, "deferred");
-            break;
+        if let Some(url) = script.url() {
+            dedup.mark_executed(url);
         }
         cumulative_ms += execute_single(
             script, idx, page_url, &base, rt, http, tracer, trace_id,
             &mut inline_module_sources, errors,
         );
+        drain_trace_into(rt, &mut all_trace_events, errors);
+    }
+
+    // --- Group 2: Deferred scripts (+ modules) ---
+    for &(idx, _) in &groups.deferred {
+        let script = &scripts[idx];
+        if cumulative_ms > EXEC_BUDGET_MS {
+            log_budget_stop(idx, scripts.len(), cumulative_ms, "deferred");
+            break;
+        }
+        // Dedup: skip module scripts whose URL was already executed as blocking.
+        // The same URL appearing as both <script src="X"> and <script type="module" src="X">
+        // would cause deno_core to panic "Module already evaluated".
+        if script.is_module() {
+            if let Some(url) = script.url() {
+                if dedup.should_skip_module(url) {
+                    neo_trace!("[EXEC] dedup skip module {url} (already ran as blocking)");
+                    continue;
+                }
+            }
+        }
+        cumulative_ms += execute_single(
+            script, idx, page_url, &base, rt, http, tracer, trace_id,
+            &mut inline_module_sources, errors,
+        );
+        drain_trace_into(rt, &mut all_trace_events, errors);
     }
 
     // R7c: Entry module boot — load the entry module that inline IIFE fired.
@@ -152,15 +163,26 @@ pub(crate) fn execute_scripts(
     }
 
     // --- Group 3: Async scripts ---
-    for &(idx, script) in &async_scripts {
+    for &(idx, _) in &groups.async_scripts {
+        let script = &scripts[idx];
         if cumulative_ms > EXEC_BUDGET_MS {
             log_budget_stop(idx, scripts.len(), cumulative_ms, "async");
             break;
+        }
+        // Dedup: skip async module scripts whose URL was already executed as blocking.
+        if script.is_module() {
+            if let Some(url) = script.url() {
+                if dedup.should_skip_module(url) {
+                    neo_trace!("[EXEC] dedup skip async module {url} (already ran as blocking)");
+                    continue;
+                }
+            }
         }
         cumulative_ms += execute_single(
             script, idx, page_url, &base, rt, http, tracer, trace_id,
             &mut inline_module_sources, errors,
         );
+        drain_trace_into(rt, &mut all_trace_events, errors);
     }
 
     // Dispatch load event after all scripts.
@@ -170,6 +192,27 @@ pub(crate) fn execute_scripts(
         "window.dispatchEvent(new Event('load'));",
     )) {
         errors.push(format!("load event dispatch: {e}"));
+    }
+
+    // Final drain to catch any events from the load dispatch.
+    drain_trace_into(rt, &mut all_trace_events, errors);
+
+    all_trace_events
+}
+
+/// Drain trace events from the runtime, adding JsError events to `errors`
+/// and all events to `all_events`.
+fn drain_trace_into(
+    rt: &mut dyn neo_runtime::JsRuntime,
+    all_events: &mut Vec<TraceEvent>,
+    errors: &mut Vec<String>,
+) {
+    let events = rt.drain_trace_events();
+    for event in events {
+        if let TraceEvent::JsError { ref message, ref source, .. } = event {
+            errors.push(format!("[trace] {source}: {message}"));
+        }
+        all_events.push(event);
     }
 }
 
@@ -339,4 +382,282 @@ pub(crate) fn fetch_single_script(
     };
     let resp = http.request(&req)?;
     Ok(resp.body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::script_parts::{ExecutionGroups, ScriptDedup};
+    use super::super::scripts::{ScriptInfo, ScriptKind};
+
+    /// Verify that the dedup logic correctly identifies module scripts
+    /// whose URLs were already executed as blocking scripts.
+    #[test]
+    fn dedup_filters_module_already_executed_as_blocking() {
+        let vendor_url = "https://app.example.com/vendor.j304wec9xx.js";
+
+        let scripts = vec![
+            ScriptInfo::External {
+                url: vendor_url.to_string(),
+                is_module: false,
+                kind: ScriptKind::ExternalBlocking,
+            },
+            ScriptInfo::External {
+                url: vendor_url.to_string(),
+                is_module: true,
+                kind: ScriptKind::Module,
+            },
+            ScriptInfo::External {
+                url: "https://app.example.com/app.abc123.js".to_string(),
+                is_module: true,
+                kind: ScriptKind::Module,
+            },
+        ];
+
+        let groups = ExecutionGroups::from_scripts(&scripts);
+        let mut dedup = ScriptDedup::new();
+
+        // Mark blocking URLs as executed
+        for &(idx, _) in &groups.blocking {
+            if let Some(url) = scripts[idx].url() {
+                dedup.mark_executed(url);
+            }
+        }
+
+        // Apply dedup filter to deferred group
+        let mut to_execute: Vec<&str> = Vec::new();
+        let mut skipped: Vec<&str> = Vec::new();
+
+        for &(idx, _) in &groups.deferred {
+            let script = &scripts[idx];
+            if script.is_module() {
+                if let Some(url) = script.url() {
+                    if dedup.should_skip_module(url) {
+                        skipped.push(url);
+                        continue;
+                    }
+                }
+            }
+            if let Some(url) = script.url() {
+                to_execute.push(url);
+            }
+        }
+
+        assert_eq!(
+            skipped,
+            vec![vendor_url],
+            "vendor.js should be skipped (already ran as blocking)"
+        );
+        assert_eq!(
+            to_execute,
+            vec!["https://app.example.com/app.abc123.js"],
+            "app.js should still execute (not a duplicate)"
+        );
+    }
+
+    /// Verify that non-module deferred scripts are never deduped,
+    /// even if their URL matches a blocking script.
+    #[test]
+    fn dedup_does_not_filter_non_module_deferred() {
+        let url = "https://app.example.com/legacy.js";
+        let mut dedup = ScriptDedup::new();
+        dedup.mark_executed(url);
+
+        let deferred_script = ScriptInfo::External {
+            url: url.to_string(),
+            is_module: false,
+            kind: ScriptKind::Defer,
+        };
+
+        // The dedup check only applies to modules
+        let should_skip = deferred_script.is_module()
+            && deferred_script
+                .url()
+                .map(|u| dedup.should_skip_module(u))
+                .unwrap_or(false);
+
+        assert!(
+            !should_skip,
+            "non-module defer scripts should never be deduped"
+        );
+    }
+
+    /// Verify inline scripts (no URL) are never affected by dedup.
+    #[test]
+    fn dedup_ignores_inline_scripts() {
+        let dedup = ScriptDedup::new();
+
+        let inline = ScriptInfo::Inline {
+            content: "console.log('hello')".to_string(),
+            is_module: true,
+            kind: ScriptKind::InlineModule,
+        };
+
+        // Inline scripts have no URL, so dedup check should not match
+        let should_skip = inline.is_module()
+            && inline
+                .url()
+                .map(|u| dedup.should_skip_module(u))
+                .unwrap_or(false);
+
+        assert!(!should_skip, "inline modules have no URL, never deduped");
+    }
+
+    // ─── Execution group ordering (using ExecutionGroups) ───
+
+    #[test]
+    fn execution_order_blocking_before_deferred() {
+        let scripts = vec![
+            ScriptInfo::External {
+                url: "https://example.com/defer.js".to_string(),
+                is_module: false,
+                kind: ScriptKind::Defer,
+            },
+            ScriptInfo::Inline {
+                content: "var blocking = 1;".to_string(),
+                is_module: false,
+                kind: ScriptKind::InlineBlocking,
+            },
+            ScriptInfo::External {
+                url: "https://example.com/module.mjs".to_string(),
+                is_module: true,
+                kind: ScriptKind::Module,
+            },
+            ScriptInfo::External {
+                url: "https://example.com/blocking.js".to_string(),
+                is_module: false,
+                kind: ScriptKind::ExternalBlocking,
+            },
+        ];
+
+        let groups = ExecutionGroups::from_scripts(&scripts);
+
+        let blocking: Vec<usize> = groups.blocking.iter().map(|(i, _)| *i).collect();
+        let deferred: Vec<usize> = groups.deferred.iter().map(|(i, _)| *i).collect();
+
+        assert_eq!(blocking, vec![1, 3]);
+        assert_eq!(deferred, vec![0, 2]);
+    }
+
+    #[test]
+    fn execution_order_deferred_before_async() {
+        let scripts = vec![
+            ScriptInfo::External {
+                url: "https://example.com/async.js".to_string(),
+                is_module: false,
+                kind: ScriptKind::Async,
+            },
+            ScriptInfo::External {
+                url: "https://example.com/defer.js".to_string(),
+                is_module: false,
+                kind: ScriptKind::Defer,
+            },
+            ScriptInfo::External {
+                url: "https://example.com/async-mod.mjs".to_string(),
+                is_module: true,
+                kind: ScriptKind::AsyncModule,
+            },
+            ScriptInfo::External {
+                url: "https://example.com/module.mjs".to_string(),
+                is_module: true,
+                kind: ScriptKind::Module,
+            },
+        ];
+
+        let groups = ExecutionGroups::from_scripts(&scripts);
+        let deferred: Vec<usize> = groups.deferred.iter().map(|(i, _)| *i).collect();
+        let async_s: Vec<usize> = groups.async_scripts.iter().map(|(i, _)| *i).collect();
+
+        assert_eq!(deferred, vec![1, 3]);
+        assert_eq!(async_s, vec![0, 2]);
+    }
+
+    #[test]
+    fn document_order_preserved_within_groups() {
+        let scripts = vec![
+            ScriptInfo::External {
+                url: "https://example.com/b1.js".to_string(),
+                is_module: false,
+                kind: ScriptKind::ExternalBlocking,
+            },
+            ScriptInfo::Inline {
+                content: "var x = 1;".to_string(),
+                is_module: false,
+                kind: ScriptKind::InlineBlocking,
+            },
+            ScriptInfo::External {
+                url: "https://example.com/b2.js".to_string(),
+                is_module: false,
+                kind: ScriptKind::ExternalBlocking,
+            },
+        ];
+
+        let groups = ExecutionGroups::from_scripts(&scripts);
+        let indices: Vec<usize> = groups.blocking.iter().map(|(i, _)| *i).collect();
+        assert_eq!(indices, vec![0, 1, 2], "document order must be preserved");
+    }
+
+    #[test]
+    fn dedup_also_applies_to_async_group() {
+        let url = "https://example.com/shared.js";
+        let mut dedup = ScriptDedup::new();
+        dedup.mark_executed(url);
+
+        let async_script = ScriptInfo::External {
+            url: url.to_string(),
+            is_module: true,
+            kind: ScriptKind::AsyncModule,
+        };
+
+        let should_skip = async_script.is_module()
+            && async_script
+                .url()
+                .map(|u| dedup.should_skip_module(u))
+                .unwrap_or(false);
+
+        assert!(should_skip, "async module with same URL as blocking should be skipped");
+    }
+
+    #[test]
+    fn importmap_and_ignored_not_in_execution_groups() {
+        let scripts = vec![
+            ScriptInfo::Inline {
+                content: r#"{"imports":{}}"#.to_string(),
+                is_module: false,
+                kind: ScriptKind::ImportMap,
+            },
+            ScriptInfo::Inline {
+                content: r#"{"data": 1}"#.to_string(),
+                is_module: false,
+                kind: ScriptKind::Ignored,
+            },
+        ];
+
+        let groups = ExecutionGroups::from_scripts(&scripts);
+        assert_eq!(groups.total(), 0);
+    }
+
+    #[test]
+    fn preload_kind_is_deferred_module() {
+        let preload = ScriptInfo::Preload {
+            url: "https://example.com/chunk.js".to_string(),
+        };
+
+        assert_eq!(preload.kind(), ScriptKind::Module);
+        assert!(preload.is_module());
+        assert_eq!(preload.url(), Some("https://example.com/chunk.js"));
+    }
+
+    #[test]
+    fn test_extract_origin() {
+        assert_eq!(
+            extract_origin("https://example.com/page/index.html"),
+            "https://example.com"
+        );
+        assert_eq!(
+            extract_origin("https://sub.example.com:8080/page"),
+            "https://sub.example.com:8080"
+        );
+        assert_eq!(extract_origin("not-a-url"), "");
+    }
 }

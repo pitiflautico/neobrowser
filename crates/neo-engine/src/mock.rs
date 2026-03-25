@@ -178,6 +178,11 @@ impl BrowserEngine for MockBrowserEngine {
         Ok(true)
     }
 
+    fn wait_for_text(&mut self, text: &str, _timeout_ms: u32) -> Result<bool, EngineError> {
+        self.actions.push(format!("wait_for_text:{text}"));
+        Ok(true)
+    }
+
     fn extract_text(&mut self) -> Result<String, EngineError> {
         self.actions.push("extract_text".to_string());
         Ok("mock page text".to_string())

@@ -23,8 +23,8 @@ const TELEMETRY_PATTERNS: &[&str] = &[
     "datadoghq.com",
     "datadoghq.eu",
     "browser-intake-datadoghq",
-    // --- Sentry (generic + specific) ---
-    "sentry",
+    // --- Sentry (domain-based only) ---
+    "sentry.io",
     "sentry-cdn.com",
     // --- Amplitude (covered by generic keyword above) ---
     // --- Segment ---
@@ -45,8 +45,8 @@ const TELEMETRY_PATTERNS: &[&str] = &[
     "mixpanel.com",
     "api.mixpanel.com",
     "cdn.mxpnl.com",
-    // --- New Relic (generic keyword covers self-hosted + SaaS) ---
-    "newrelic",
+    // --- New Relic (domain-based only) ---
+    "newrelic.com",
     "nr-data.net",
     // --- Optimizely ---
     "optimizely.com",
@@ -93,16 +93,13 @@ const TELEMETRY_PATTERNS: &[&str] = &[
     // --- LinkedIn tracking ---
     "linkedin.com/li/track",
     // --- Statsig (covered by generic keyword above) ---
-    // --- Generic keyword patterns (from V1 inline checks) ---
-    "telemetry",
-    "analytics",
-    "tracking",
-    "beacon",
-    "amplitude",
-    "hotjar",
-    "fullstory",
-    "launchdarkly",
-    "statsig",
+    // --- Generic keyword patterns (domain-based to avoid false positives) ---
+    "amplitude.com",
+    "hotjar.com",
+    "fullstory.com",
+    "rs.fullstory.com",
+    "launchdarkly.com",
+    "statsig.com",
     // --- Generic tracking path patterns (from V1) ---
     "/log?",
     "/pixel",
@@ -198,11 +195,37 @@ pub fn is_heavy_script(url: &str) -> bool {
     HEAVY_SCRIPT_PATTERNS.iter().any(|p| lower.contains(p))
 }
 
+/// Path-based telemetry patterns — matched against the URL path only
+/// (not filenames). A path must equal the pattern or start with pattern + "/".
+const TELEMETRY_PATH_PATTERNS: &[&str] = &[
+    "/telemetry",
+    "/analytics",
+    "/tracking",
+    "/beacon",
+];
+
 /// Check if a lowercased URL matches known telemetry patterns.
 pub fn is_telemetry_url(lower: &str) -> bool {
-    TELEMETRY_PATTERNS.iter().any(|p| lower.contains(p))
+    // Domain-based substring matching (safe — these are domain fragments)
+    if TELEMETRY_PATTERNS.iter().any(|p| lower.contains(p))
         || CHATGPT_PATTERNS.iter().any(|p| lower.contains(p))
         || GOOGLE_PATTERNS.iter().any(|p| lower.contains(p))
+    {
+        return true;
+    }
+    // Path-based matching: only match exact path segments, not substrings
+    // of filenames like "performance_analytics.js"
+    if let Some(path_start) = lower.find("://").and_then(|i| lower[i + 3..].find('/').map(|j| i + 3 + j)) {
+        let path = &lower[path_start..];
+        // Strip query string for matching
+        let path_no_query = path.split('?').next().unwrap_or(path);
+        for p in TELEMETRY_PATH_PATTERNS {
+            if path_no_query == *p || path_no_query.starts_with(&format!("{p}/")) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn is_telemetry(lower: &str) -> bool {
@@ -267,6 +290,46 @@ mod tests {
         assert!(should_skip("https://www.facebook.com/tr?id=123"));
     }
 
+    // ---- False positive prevention ----
+
+    #[test]
+    fn test_analytics_in_filename_not_skipped() {
+        // JS modules containing "analytics" in filename should NOT be telemetry
+        assert!(!should_skip("https://app.factorialhr.com/performance_analytics.eewhxaothy.js"));
+        assert!(!should_skip("https://cdn.example.com/analytics-dashboard.js"));
+        assert!(!should_skip("https://cdn.example.com/people-analytics.bundle.js"));
+    }
+
+    #[test]
+    fn test_tracking_in_content_path_not_skipped() {
+        // "tracking" in a content path (e.g. order tracking) should NOT be telemetry
+        assert!(!should_skip("https://example.com/order-tracking/12345"));
+        assert!(!should_skip("https://example.com/shipment-tracking"));
+    }
+
+    #[test]
+    fn test_sentry_in_path_not_skipped() {
+        // "sentry" in a content path should NOT be telemetry (only sentry.io domain)
+        assert!(!should_skip("https://example.com/docs/sentry-integration"));
+        assert!(!should_skip("https://example.com/sentry/capture"));
+    }
+
+    #[test]
+    fn test_analytics_domain_still_skipped() {
+        // Actual analytics domains must still be detected
+        assert!(should_skip("https://www.google-analytics.com/collect"));
+        assert!(should_skip("https://analytics.google.com/g/collect"));
+    }
+
+    #[test]
+    fn test_telemetry_path_still_skipped() {
+        // Exact /telemetry path is still telemetry
+        assert!(should_skip("https://example.com/telemetry"));
+        assert!(should_skip("https://example.com/telemetry/v1"));
+        // But telemetry-dashboard is NOT (it's a different path segment)
+        assert!(!should_skip("https://example.com/telemetry-dashboard"));
+    }
+
     #[test]
     fn test_navigation_classified() {
         assert_eq!(
@@ -324,28 +387,29 @@ mod tests {
     // ---- R8d: V1 pattern coverage ----
 
     /// Every skip pattern from V1 ops.rs lines 25-47 must be matched by V2.
+    /// Updated: generic keyword patterns now use domain-based matching to
+    /// avoid false positives on filenames like "performance_analytics.js".
     #[test]
     fn test_v1_patterns_covered() {
         let v1_urls = [
-            // Generic keywords
+            // Path-based patterns (exact path match)
             "https://example.com/telemetry/v1",
-            "https://example.com/analytics.js",
             "https://example.com/tracking/pixel",
             "https://example.com/beacon/fire",
-            "https://example.com/sentry/capture",
-            "https://example.com/newrelic/agent",
-            "https://example.com/amplitude/event",
-            "https://example.com/segment.io/track",
-            "https://example.com/hotjar/hj.js",
+            // Domain-based patterns
+            "https://sentry.io/api/1/capture",
+            "https://newrelic.com/agent/v1",
+            "https://api.amplitude.com/event",
+            "https://api.segment.io/track",
+            "https://static.hotjar.com/hj.js",
             "https://www.googletagmanager.com/gtm.js",
             "https://stats.g.doubleclick.net/dc.js",
             // V1-specific inline patterns
             "https://example.com/apfc/data",
             "https://example.com/rgstr/v1",
-            "https://cdn.example.com/ces/track",
             "https://ab.chatgpt.com/config",
             "https://chatgpt.com/v1/m",
-            "https://example.com/statsig/v1",
+            "https://api.statsig.com/v1",
             "https://example.com/featuregates/check",
             "https://browser-intake-datadoghq.com/v2",
             "https://chatgpt.com/backend-api/oai/log",
