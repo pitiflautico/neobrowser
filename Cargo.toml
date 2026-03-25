@@ -46,7 +46,9 @@ neo-interact = { path = "crates/neo-interact" }
 neo-extract = { path = "crates/neo-extract" }
 neo-trace = { path = "crates/neo-trace" }
 neo-types = { path = "crates/neo-types" }
+neo-chrome = { path = "crates/neo-chrome" }
 serde_json.workspace = true
+tokio.workspace = true
 
 [patch.crates-io]
 h2 = { git = "https://github.com/apify/h2", rev = "7f393a728a8db07cabb1b78d2094772b33943b9a" }

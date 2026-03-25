@@ -2114,6 +2114,7 @@ dependencies = [
 name = "neorender"
 version = "2.0.0-alpha.1"
 dependencies = [
+ "neo-chrome",
  "neo-dom",
  "neo-engine",
  "neo-extract",
@@ -2124,6 +2125,7 @@ dependencies = [
  "neo-trace",
  "neo-types",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

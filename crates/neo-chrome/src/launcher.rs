@@ -5,22 +5,28 @@
 
 use crate::{ChromeError, Result};
 use std::path::{Path, PathBuf};
-use tokio::process::{Child, Command};
+use std::process::{Child, Command};
 
 /// Standard Chrome/Chromium binary locations.
-const CHROME_PATHS: &[&str] = &[
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-];
+/// Standard Chrome/Chromium binary locations (checked in order).
+/// Playwright's bundled Chromium is preferred to avoid conflicts with running Chrome.
+fn chrome_paths() -> Vec<String> {
+    vec![
+        // System Chrome (works with --headless=new and temp profiles)
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".into(),
+        "/Applications/Chromium.app/Contents/MacOS/Chromium".into(),
+        "/usr/bin/chromium".into(),
+        "/usr/bin/chromium-browser".into(),
+        "/usr/bin/google-chrome".into(),
+        "/usr/bin/google-chrome-stable".into(),
+    ]
+}
+const CHROME_PATHS: &[&str] = &[];
 
 /// Find the Chrome binary on this system.
 pub fn find_chrome() -> Result<PathBuf> {
-    for p in CHROME_PATHS {
-        let path = Path::new(p);
+    for p in chrome_paths() {
+        let path = Path::new(&p);
         if path.exists() {
             return Ok(path.to_path_buf());
         }
@@ -63,14 +69,23 @@ impl ChromeProcess {
             args.push("--headless=new".to_string());
         }
 
+        eprintln!("[neo-chrome] Binary: {}", chrome_bin.display());
+        eprintln!("[neo-chrome] Profile: {}", profile.display());
+        eprintln!("[neo-chrome] Port: {port}");
+        eprintln!("[neo-chrome] Args: {:?}", args);
+
+        eprintln!("[neo-chrome] Spawning...");
         let child = Command::new(&chrome_bin)
             .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
+        eprintln!("[neo-chrome] Spawned PID={}", child.id());
 
-        // Wait for DevToolsActivePort file to appear.
+        // Wait for CDP to be ready
+        eprintln!("[neo-chrome] Waiting for CDP on port {port}...");
         wait_for_devtools(&profile, port).await?;
+        eprintln!("[neo-chrome] CDP ready!");
 
         Ok(Self {
             child,
@@ -81,16 +96,15 @@ impl ChromeProcess {
 
     /// Get the WebSocket URL for the browser target.
     pub async fn ws_url(&self) -> Result<String> {
-        let url = format!("http://127.0.0.1:{}/json/version", self.port);
         for _ in 0..20 {
-            if let Ok(resp) = reqwest_lite(&url).await {
+            if let Some(resp) = sync_http_get(self.port, "/json/version") {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
                     if let Some(ws) = json.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
                         return Ok(ws.to_string());
                     }
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
         Err(ChromeError::ConnectionFailed(
             "Could not get WebSocket URL from /json/version".into(),
@@ -99,9 +113,8 @@ impl ChromeProcess {
 
     /// Get the first page target ID.
     pub async fn first_target_id(&self) -> Result<String> {
-        let url = format!("http://127.0.0.1:{}/json/list", self.port);
         for _ in 0..20 {
-            if let Ok(resp) = reqwest_lite(&url).await {
+            if let Some(resp) = sync_http_get(self.port, "/json/list") {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
                     if let Some(arr) = json.as_array() {
                         for target in arr {
@@ -114,21 +127,20 @@ impl ChromeProcess {
                     }
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
         Err(ChromeError::ConnectionFailed("No page target found".into()))
     }
 
     /// Kill the Chrome process.
     pub async fn kill(&mut self) {
-        let _ = self.child.kill().await;
+        let _ = self.child.kill();
     }
 }
 
 impl Drop for ChromeProcess {
     fn drop(&mut self) {
-        // Best-effort kill — can't await in Drop, so use start_kill.
-        let _ = self.child.start_kill();
+        let _ = self.child.kill();
     }
 }
 
@@ -142,22 +154,19 @@ fn resolve_profile_dir(profile: Option<&str>) -> PathBuf {
     if let Ok(p) = std::env::var("NEOCHROME_PROFILE") {
         return PathBuf::from(p);
     }
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"));
-    home.join(".neo-chrome")
+    // Use a fresh temp dir each time to avoid SingletonLock conflicts
+    let dir = std::env::temp_dir().join(format!("neo-chrome-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok();
+    dir
 }
 
 /// Kill any Chrome processes using the same profile directory.
 async fn kill_zombies(profile_dir: &Path) {
     let profile_str = profile_dir.to_string_lossy();
-    // Best-effort: use pkill with user-data-dir match.
     let _ = Command::new("pkill")
         .args(["-f", &format!("--user-data-dir={profile_str}")])
-        .output()
-        .await;
-    // Give processes time to die.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(200));
 }
 
 /// Remove stale SingletonLock that prevents Chrome from launching.
@@ -176,19 +185,55 @@ async fn find_free_port() -> Result<u16> {
     Ok(port)
 }
 
-/// Wait for Chrome's DevToolsActivePort file, indicating CDP is ready.
-async fn wait_for_devtools(profile_dir: &Path, _port: u16) -> Result<()> {
-    let devtools_file = profile_dir.join("DevToolsActivePort");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+/// Wait for Chrome's CDP to be ready. Fully synchronous.
+async fn wait_for_devtools(_profile_dir: &Path, port: u16) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while std::time::Instant::now() < deadline {
-        if devtools_file.exists() {
+        if check_cdp_ready(port) {
             return Ok(());
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    Err(ChromeError::Timeout(
-        "DevToolsActivePort not created within 10s".into(),
-    ))
+    Err(ChromeError::Timeout("Chrome CDP not ready within 15s".into()))
+}
+
+/// Sync HTTP GET to localhost CDP.
+fn sync_http_get(port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(1000)).ok()?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(2000)));
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).to_string();
+    // Extract body after headers
+    if let Some(idx) = text.find("\r\n\r\n") {
+        Some(text[idx + 4..].to_string())
+    } else {
+        Some(text)
+    }
+}
+
+/// Sync check if CDP port is ready.
+fn check_cdp_ready(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)) else {
+        return false;
+    };
+    let req = format!("GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(req.as_bytes()).is_err() { return false; }
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1000)));
+    let mut buf = vec![0u8; 4096];
+    match stream.read(&mut buf) {
+        Ok(n) if n > 0 => {
+            let text = String::from_utf8_lossy(&buf[..n]);
+            text.contains("Browser")
+        }
+        _ => false,
+    }
 }
 
 /// Minimal HTTP GET without pulling in reqwest — uses raw TCP.

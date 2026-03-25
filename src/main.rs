@@ -3,10 +3,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use neo_dom::Html5everDom;
+use neo_dom::{DomEngine, Html5everDom};
 use neo_engine::config::EngineConfig;
 use neo_engine::{BrowserEngine, NeoSession};
-use neo_extract::DefaultExtractor;
+use neo_extract::{DefaultExtractor, Extractor};
 use neo_http::{CookieStore, DiskCache, RquestClient, SqliteCookieStore};
 use neo_interact::DomInteractor;
 use neo_trace::file_tracer::FileTracer;
@@ -194,32 +194,189 @@ fn run_see(args: &[String]) {
         import_cookies_file(&mut engine, path);
     }
 
-    match engine.navigate(url) {
-        Ok(result) => {
-            // Print trace to stderr if --trace is set (before JSON output).
-            if trace_enabled {
-                let events = engine.drain_trace_events();
-                let formatted = neo_mcp::tools::trace::format_timeline(&events);
-                eprintln!("{formatted}");
-            }
-
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&result)
-                    .unwrap_or_else(|e| format!("JSON error: {e}"))
-            );
-        }
+    let result = match engine.navigate(url) {
+        Ok(r) => r,
         Err(e) => {
-            // Still try to print trace on failure.
             if trace_enabled {
                 let events = engine.drain_trace_events();
                 let formatted = neo_mcp::tools::trace::format_timeline(&events);
                 eprintln!("{formatted}");
             }
-            eprintln!("Navigation failed: {e}");
-            std::process::exit(1);
+            // V8 failed — try Chrome fallback
+            eprintln!("[V3] V8 navigation failed ({e}), trying Chrome fallback...");
+            match chrome_fallback_navigate(url) {
+                Some(r) => r,
+                None => {
+                    eprintln!("Navigation failed: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
+    };
+
+    // Check if V8 result is empty (SPA didn't render)
+    let wom_nodes = result.wom.nodes.len();
+    let has_content = wom_nodes > 5;
+
+    let final_result = if has_content {
+        if trace_enabled {
+            let events = engine.drain_trace_events();
+            let formatted = neo_mcp::tools::trace::format_timeline(&events);
+            eprintln!("{formatted}");
+        }
+        eprintln!("[V3] V8 engine: {} WOM nodes — OK", wom_nodes);
+        result
+    } else {
+        eprintln!("[V3] V8 engine: {} WOM nodes — empty, Chrome fallback...", wom_nodes);
+        if trace_enabled {
+            let events = engine.drain_trace_events();
+            let formatted = neo_mcp::tools::trace::format_timeline(&events);
+            eprintln!("{formatted}");
+        }
+        match chrome_fallback_navigate(url) {
+            Some(chrome_result) => chrome_result,
+            None => result, // return V8 result if Chrome also fails
+        }
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&final_result)
+            .unwrap_or_else(|e| format!("JSON error: {e}"))
+    );
+}
+
+/// Chrome fallback: launch headless Chrome, navigate, extract DOM as HTML,
+/// re-parse into html5ever, and generate WOM.
+fn chrome_fallback_navigate(url: &str) -> Option<neo_engine::PageResult> {
+    let start = std::time::Instant::now();
+    let url_owned = url.to_string();
+
+    // Run Chrome in a separate thread with its own tokio runtime
+    // to avoid conflicts with the main V8 runtime's tokio
+    let handle = std::thread::spawn(move || {
+        chrome_fallback_sync(&url_owned, start)
+    });
+
+    handle.join().ok()?
+}
+
+/// Chrome fallback using --dump-dom — simplest possible approach.
+/// Launches Chrome headless, renders the page, dumps the DOM to stdout.
+fn chrome_fallback_sync(url: &str, start: std::time::Instant) -> Option<neo_engine::PageResult> {
+    eprintln!("[V3-Chrome] Launching Chrome --dump-dom...");
+
+    let chrome_bin = neo_chrome::launcher::find_chrome().ok()?;
+    let profile = std::env::temp_dir().join(format!("neo-v3-{}", std::process::id()));
+    std::fs::create_dir_all(&profile).ok()?;
+
+    // Launch with timeout: use `timeout` command on macOS (via gtimeout or coreutils)
+    // Fallback: spawn + thread with kill
+    // Use `timeout` command to ensure Chrome exits
+    // macOS doesn't have `timeout` by default, but `gtimeout` from coreutils works.
+    // Fallback: just use .output() directly — with --virtual-time-budget Chrome should exit.
+    let output = if std::process::Command::new("timeout").arg("--version").output().is_ok()
+        || std::process::Command::new("gtimeout").arg("--version").output().is_ok()
+    {
+        let timeout_cmd = if std::process::Command::new("timeout").arg("--version").output().is_ok() {
+            "timeout"
+        } else {
+            "gtimeout"
+        };
+        std::process::Command::new(timeout_cmd)
+            .arg("20")
+            .arg(&chrome_bin)
+            .args([
+                "--headless=new",
+                "--no-first-run",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--disable-gpu",
+                "--virtual-time-budget=8000",
+                &format!("--user-data-dir={}", profile.display()),
+                "--dump-dom",
+                url,
+            ])
+            .output()
+            .ok()?
+    } else {
+        // No timeout command — use direct .output() and hope --virtual-time-budget works
+        std::process::Command::new(&chrome_bin)
+            .args([
+                "--headless=new",
+                "--no-first-run",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--disable-gpu",
+                "--virtual-time-budget=8000",
+                &format!("--user-data-dir={}", profile.display()),
+                "--dump-dom",
+                url,
+            ])
+            .output()
+            .ok()?
+    };
+    let stdout = output.stdout;
+
+    let html = String::from_utf8_lossy(&stdout).to_string();
+    eprintln!("[V3-Chrome] Got {}KB HTML via --dump-dom ({}ms)", html.len() / 1024, start.elapsed().as_millis());
+
+    if html.is_empty() {
+        eprintln!("[V3-Chrome] Empty HTML");
+        return None;
     }
+
+    // Parse and extract WOM
+    let mut dom = Html5everDom::new();
+    dom.parse_html(&html, url).ok()?;
+
+    let extractor = DefaultExtractor::new();
+    let wom = extractor.extract_wom(&dom);
+    let title = wom.title.clone();
+
+    let render_ms = start.elapsed().as_millis() as u64;
+    eprintln!("[V3-Chrome] {} WOM nodes in {}ms", wom.nodes.len(), render_ms);
+
+    // Cleanup temp profile
+    let _ = std::fs::remove_dir_all(&profile);
+
+    Some(neo_engine::PageResult {
+        url: url.to_string(),
+        title,
+        state: neo_types::PageState::Complete,
+        render_ms,
+        wom,
+        errors: vec![],
+        redirect_chain: vec![],
+        page_id: 0,
+    })
+}
+
+/// Sync HTTP GET to localhost CDP.
+fn sync_cdp_get(port: u16, path: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(1000)).ok()?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(2000)));
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).to_string();
+    text.find("\r\n\r\n").map(|idx| text[idx + 4..].to_string())
+}
+
+fn sync_cdp_post(port: u16, path: &str, body: &str) -> Option<String> {
+    use std::io::{Read, Write};
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(1000)).ok()?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(2000)));
+    let req = format!("PUT {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf).to_string();
+    text.find("\r\n\r\n").map(|idx| text[idx + 4..].to_string())
 }
 
 /// Import cookies from a JSON file into the engine's cookie store.
