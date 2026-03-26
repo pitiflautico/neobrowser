@@ -94,8 +94,41 @@ def import_cookies(domain):
     return []
 
 
+PID_FILE = Path.home() / '.neorender' / 'ghost-pids.json'
+
+def _kill_previous():
+    """Kill Chrome/chromedriver from our previous ghost.py invocation."""
+    try:
+        if PID_FILE.exists():
+            pids = json.loads(PID_FILE.read_text())
+            for pid in pids:
+                try:
+                    os.kill(int(pid), 9)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            PID_FILE.unlink(missing_ok=True)
+            time.sleep(1)
+    except:
+        pass
+
+def _save_pids(driver):
+    """Save our Chrome PIDs for cleanup on next invocation."""
+    pids = []
+    if hasattr(driver, 'browser_pid') and driver.browser_pid:
+        pids.append(driver.browser_pid)
+    if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
+        pids.append(driver.service.process.pid)
+    try:
+        PID_FILE.write_text(json.dumps(pids))
+    except:
+        pass
+
+# Kill any leftover from previous run
+_kill_previous()
+
+
 def create_driver():
-    """Create undetected Chrome driver with persistent profile."""
+    """Create undetected Chrome driver with neomode patches."""
     import undetected_chromedriver as uc
 
     options = uc.ChromeOptions()
@@ -111,19 +144,22 @@ def create_driver():
         # NEOMODE: headless but indistinguishable from real Chrome
         options.headless = True
 
-    # Retry launch (zombie Chrome processes may block ports)
+    # Launch Chrome
     driver = None
     for attempt in range(3):
         try:
             driver = uc.Chrome(options=options, version_main=146)
             break
         except Exception as e:
-            print(f'[ghost] Launch attempt {attempt+1} failed: {e}', file=sys.stderr)
-            os.system("killall -9 'Google Chrome for Testing' 2>/dev/null; killall -9 chromedriver 2>/dev/null")
-            time.sleep(3)
+            print(f'[ghost] Launch attempt {attempt+1} failed, cleaning up...', file=sys.stderr)
+            _kill_previous()  # Only kill OUR processes
+            time.sleep(2)
     if not driver:
         print('[ghost] Could not start Chrome after 3 attempts', file=sys.stderr)
         sys.exit(1)
+
+    # Track PIDs for cleanup on next invocation
+    _save_pids(driver)
 
     # NEOMODE patches: fix the 5 differences between headless and real Chrome
     if not headed:
