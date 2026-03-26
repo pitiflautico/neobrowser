@@ -54,24 +54,59 @@ def _kill_stale():
 
 _kill_stale()
 
+# Launch lock — prevents multiple simultaneous Chrome launches
+_launch_lock = threading.Lock()
+_launch_failed = False  # If True, don't retry until next restart
+
 
 def ensure_browser():
-    """Get or create the singleton Chrome browser."""
-    global driver
+    """Get or create the singleton Chrome browser. Thread-safe, single instance."""
+    global driver, _launch_failed
+
+    # Fast path: already running
     if driver:
         try:
-            _ = driver.title  # alive check
+            _ = driver.title
             return driver
         except:
-            log('Chrome died, recreating...')
+            log('Chrome died, will recreate on next call')
             driver = None
+            _launch_failed = False
 
-    # Use uc patcher for chromedriver + plain selenium for launch
-    # (uc.Chrome hangs on some setups, selenium.Chrome works fine)
+    # Don't retry if already failed this session
+    if _launch_failed:
+        raise RuntimeError('Chrome launch failed earlier. Restart MCP server to retry.')
+
+    # Only one thread can launch
+    if not _launch_lock.acquire(blocking=False):
+        # Another thread is launching — wait for it
+        _launch_lock.acquire()
+        _launch_lock.release()
+        if driver:
+            return driver
+        raise RuntimeError('Chrome launch in progress')
+
+    try:
+        _launch_browser()
+    except Exception as e:
+        _launch_failed = True
+        log(f'Chrome launch FAILED: {e}')
+        raise
+    finally:
+        _launch_lock.release()
+
+    return driver
+
+
+def _launch_browser():
+    """Actually launch Chrome. Called only once, under lock."""
+    global driver
+
     import undetected_chromedriver.patcher as patcher
     from selenium import webdriver
     from selenium.webdriver.chrome.service import Service
 
+    log('Launching Chrome (neomode)...')
     pa = patcher.Patcher(version_main=146)
     pa.auto()
 
@@ -517,7 +552,17 @@ def action_chat_grok(message, wait=True):
     d = ensure_tab('grok')
     if not tabs['grok'].get('ready'):
         d.get('https://grok.com')
-        time.sleep(5)
+        time.sleep(10)
+        # Wait for textarea to appear
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        try:
+            WebDriverWait(d, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'textarea, [contenteditable="true"], [role="textbox"]'))
+            )
+        except:
+            log(f'Grok: textarea not found after 15s. Title: {d.title}')
         tabs['grok']['ready'] = True
         log(f'Grok ready: {d.title}')
 
