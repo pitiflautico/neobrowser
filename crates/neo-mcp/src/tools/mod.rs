@@ -5,6 +5,7 @@ pub mod consent;
 pub mod devtools;
 pub mod eval;
 pub mod extract;
+pub mod ghost;
 pub mod import_cookies;
 pub mod interact;
 pub mod navigate;
@@ -43,6 +44,7 @@ pub fn list_tools() -> Value {
         consent::definition(),
         pipeline::definition(),
         devtools::definition(),
+        ghost::definition(),
     ];
 
     let entries: Vec<Value> = tools
@@ -75,6 +77,7 @@ pub fn call_tool(name: &str, args: Value, state: &mut McpState) -> Result<Value,
         "cookie_consent" => consent::call(args, state),
         "pipeline" => pipeline::call(args, state),
         "devtools" => devtools::call(args, state),
+        "ghost" => ghost::call(args, state),
         other => Err(McpError::UnknownTool(other.to_string())),
     }
 }

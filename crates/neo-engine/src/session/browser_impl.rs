@@ -333,6 +333,10 @@ impl BrowserEngine for NeoSession {
     }
 
     fn eval(&mut self, js: &str) -> Result<String, EngineError> {
+        self.eval_with_timeout(js, 5_000)
+    }
+
+    fn eval_with_timeout(&mut self, js: &str, timeout_ms: u64) -> Result<String, EngineError> {
         // Reset callback budget before interactive eval.
         // Page load may exhaust the 5000-callback budget (React + modules),
         // which silently kills queueMicrotask and breaks Promise.then.
@@ -342,7 +346,7 @@ impl BrowserEngine for NeoSession {
 
         let result = match self.runtime.as_mut() {
             Some(rt) => {
-                let r = rt.eval_and_settle(js, 5_000)?;
+                let r = rt.eval_and_settle(js, timeout_ms)?;
                 Ok(r.value)
             }
             None => Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
@@ -350,7 +354,9 @@ impl BrowserEngine for NeoSession {
             ))),
         }?;
         // Pump event loop for async side effects (fetch, SSE, React renders).
-        self.pump_after_interaction();
+        // Use proportional settle: long evals get proportionally longer settle.
+        let settle_ms = std::cmp::min(timeout_ms * 2, 60_000);
+        self.pump_after_interaction_with_timeout(settle_ms);
         self.process_pending_navigations();
         Ok(result)
     }

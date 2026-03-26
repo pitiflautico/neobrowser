@@ -412,9 +412,15 @@ impl NeoSession {
     /// - Epoch tracking: won't settle mid-React-commit (requires quiet cycle after activity)
     /// - 3s budget, but settles fast if quiet
     pub(crate) fn pump_after_interaction(&mut self) {
+        self.pump_after_interaction_with_timeout(10000);
+    }
+
+    /// Like `pump_after_interaction` but with a configurable timeout.
+    /// Used for long-running evals (e.g. pong: type → send → wait for response).
+    pub(crate) fn pump_after_interaction_with_timeout(&mut self, timeout_ms: u64) {
         if let Some(ref mut rt) = self.runtime {
             let start = std::time::Instant::now();
-            let _ = rt.run_until_interaction_stable(10000);
+            let _ = rt.run_until_interaction_stable(timeout_ms);
             eprintln!(
                 "[NeoRender] pump: {}ms",
                 start.elapsed().as_millis()

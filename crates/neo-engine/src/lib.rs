@@ -82,6 +82,14 @@ pub trait BrowserEngine {
     /// Execute JavaScript and return result.
     fn eval(&mut self, js: &str) -> Result<String, EngineError>;
 
+    /// Execute JavaScript with a custom timeout (ms) for both eval and settle.
+    /// Used for long-running async evals (e.g. waiting for streaming responses).
+    fn eval_with_timeout(&mut self, js: &str, timeout_ms: u64) -> Result<String, EngineError> {
+        // Default: delegate to eval. Overridden in NeoSession.
+        let _ = timeout_ms;
+        self.eval(js)
+    }
+
     /// Click an element.
     fn click(&mut self, target: &str) -> Result<ClickResult, EngineError>;
 

@@ -3,6 +3,13 @@
     "neoV2": {
       "command": "/Volumes/DiscoExterno2/mac_offload/Projects/meta-agente/lab/neorender-v2/target/release/neorender",
       "args": ["mcp"]
+    },
+    "ai-chat": {
+      "command": "node",
+      "args": ["/Volumes/DiscoExterno2/mac_offload/Projects/meta-agente/lab/neorender-v2/tools/ai-chat/server.mjs"],
+      "env": {
+        "NEOBROWSER_PROFILE": "Profile 24"
+      }
     }
   }
 }

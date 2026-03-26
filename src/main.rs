@@ -480,8 +480,9 @@ fn run_search(args: &[String]) {
 }
 
 fn run_eval(args: &[String]) {
-    // Parse: neorender eval [--cookies <path>] <url> <js_expression>
+    // Parse: neorender eval [--cookies <path>] [--timeout <ms>] <url> <js_expression>
     let mut cookies_path: Option<&str> = None;
+    let mut timeout_ms: u64 = 60_000; // Default: 60s for long-running async evals
     let mut positional: Vec<&str> = Vec::new();
     let mut i = 2;
     while i < args.len() {
@@ -494,13 +495,21 @@ fn run_eval(args: &[String]) {
                     std::process::exit(1);
                 }
             }
+            "--timeout" => {
+                i += 1;
+                timeout_ms = args
+                    .get(i)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(60_000);
+            }
             _ => positional.push(args[i].as_str()),
         }
         i += 1;
     }
     if positional.len() < 2 {
-        eprintln!("Usage: neorender eval [--cookies <path>] <url> <js_expression>");
+        eprintln!("Usage: neorender eval [--cookies <path>] [--timeout <ms>] <url> <js_expression>");
         eprintln!("  Navigate to URL, execute JS, print result, exit.");
+        eprintln!("  Default timeout: 60000ms (60s).");
         std::process::exit(1);
     }
     let url = positional[0];
@@ -526,8 +535,8 @@ fn run_eval(args: &[String]) {
         }
     }
 
-    eprintln!("[NeoRender] Evaluating JS...");
-    match engine.eval(&js) {
+    eprintln!("[NeoRender] Evaluating JS (timeout: {timeout_ms}ms)...");
+    match engine.eval_with_timeout(&js, timeout_ms) {
         Ok(result) => println!("{result}"),
         Err(e) => {
             eprintln!("JS eval failed: {e}");
@@ -831,7 +840,8 @@ fn run_interact(args: &[String]) {
                         continue;
                     }
                 };
-                match engine.eval(&js) {
+                // Use 60s timeout for REPL evals (async operations like pong)
+                match engine.eval_with_timeout(&js, 60_000) {
                     Ok(result) => println!("{result}"),
                     Err(e) => eprintln!("Error: {e}"),
                 }
