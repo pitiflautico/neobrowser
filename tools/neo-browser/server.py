@@ -66,19 +66,29 @@ def ensure_browser():
             log('Chrome died, recreating...')
             driver = None
 
-    import undetected_chromedriver as uc
+    # Use uc patcher for chromedriver + plain selenium for launch
+    # (uc.Chrome hangs on some setups, selenium.Chrome works fine)
+    import undetected_chromedriver.patcher as patcher
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
 
-    options = uc.ChromeOptions()
+    pa = patcher.Patcher(version_main=146)
+    pa.auto()
+
+    options = webdriver.ChromeOptions()
     options.add_argument('--window-size=1920,1080')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_argument(f'--user-agent={CHROME_UA}')
-    options.headless = True
+    options.add_argument('--headless=new')
+    options.binary_location = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    options.add_experimental_option('excludeSwitches', ['enable-automation'])
 
-    driver = uc.Chrome(options=options, version_main=146)
+    svc = Service(pa.executable_path)
+    driver = webdriver.Chrome(service=svc, options=options)
 
     # Track PIDs
-    if hasattr(driver, 'browser_pid'): our_pids.add(driver.browser_pid)
     if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
         our_pids.add(driver.service.process.pid)
     try:
