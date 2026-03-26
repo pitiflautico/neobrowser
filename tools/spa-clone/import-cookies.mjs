@@ -79,27 +79,15 @@ function decryptValue(encBuf, aesKey) {
       // Strategy: scan for the first printable ASCII run of sufficient length.
       const str = decrypted.toString('utf8');
 
-      // Strip leading non-printable/garbled bytes from CBC first block
-      // Find first run of clean printable ASCII (skip garbled CBC prefix)
-      let start = 0;
-      for (let i = 0; i < Math.min(str.length, 32); i++) {
-        const code = str.charCodeAt(i);
-        // Printable ASCII or common URL-encoded chars
-        if ((code >= 0x20 && code < 0x7f) || code === 0x09 || code === 0x0a) {
-          // Check if this looks like the start of a real value
-          // Real values start with: alphanumeric, {, [, ", %, /
-          if (/[a-zA-Z0-9{["/%]/.test(str[i])) {
-            start = i;
-            break;
-          }
-        }
+      // Chrome AES-CBC: first 32 bytes are garbled (2 CBC blocks = IV scramble + nonce).
+      // The real cookie value starts at byte 32.
+      if (decrypted.length > 32) {
+        return decrypted.slice(32).toString('utf8').replace(/[\x00-\x08\x0e-\x1f]/g, '');
       }
-
-      const cleaned = str.substring(start);
-      if (cleaned.length > 0) {
-        return cleaned;
-      }
-      return null;
+      // Short values: try to find printable content
+      const raw = decrypted.toString('utf8');
+      const match = raw.match(/[a-zA-Z0-9%{"\[\/].+/);
+      return match ? match[0] : raw;
     } catch {
       return null;
     }
