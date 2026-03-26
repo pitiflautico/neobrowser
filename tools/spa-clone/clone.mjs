@@ -136,16 +136,29 @@ async function extractChromeCookies(domain) {
         continue; // Skip undecryptable cookies
       }
 
-      if (value) {
-        cookies.push({
+      if (value && name) {
+        // Chrome epoch: microseconds since 1601-01-01
+        // Unix epoch: seconds since 1970-01-01
+        // Diff: 11644473600 seconds
+        let expires = -1;
+        if (expiresUtc && expiresUtc !== '0') {
+          const chromeEpoch = parseInt(expiresUtc);
+          if (chromeEpoch > 0) {
+            expires = Math.floor(chromeEpoch / 1000000) - 11644473600;
+          }
+        }
+
+        const cookie = {
           name,
           value,
-          domain: hostKey.startsWith('.') ? hostKey.slice(1) : hostKey,
+          domain: hostKey, // Keep original (with . prefix for subdomain cookies)
           path: cookiePath || '/',
           secure: isSecure === '1',
           httpOnly: isHttponly === '1',
           sameSite: samesite === '1' ? 'Lax' : samesite === '2' ? 'None' : 'Lax',
-        });
+        };
+        if (expires > 0) cookie.expires = expires;
+        cookies.push(cookie);
       }
     }
   } catch (e) {
@@ -172,20 +185,26 @@ async function launchBrowser(targetUrl) {
   if (profileName) {
     try {
       const domain = new URL(targetUrl).hostname.replace(/^www\./, '');
-      // Get cookies for the domain and parent domains
-      const parts = domain.split('.');
-      const domains = [domain];
-      if (parts.length > 2) domains.push(parts.slice(-2).join('.'));
+      console.error(`[spa-clone] Importing cookies for ${domain} from Chrome profile ${profileName}...`);
 
-      let allCookies = [];
-      for (const d of domains) {
-        const cookies = await extractChromeCookies(d);
-        allCookies = allCookies.concat(cookies);
-      }
+      // Use the import-cookies script to extract
+      const { execSync } = await import('child_process');
+      const scriptDir = new URL('.', import.meta.url).pathname;
+      const cookiesJson = execSync(
+        `node "${scriptDir}import-cookies.mjs" "${domain}" --profile "${profileName}" --json`,
+        { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+      );
 
+      const allCookies = JSON.parse(cookiesJson);
       if (allCookies.length > 0) {
-        await context.addCookies(allCookies);
-        console.error(`[spa-clone] Injected ${allCookies.length} cookies into Chromium`);
+        let injected = 0;
+        for (const cookie of allCookies) {
+          try {
+            await context.addCookies([cookie]);
+            injected++;
+          } catch {}
+        }
+        console.error(`[spa-clone] Injected ${injected}/${allCookies.length} cookies`);
       }
     } catch (e) {
       console.error(`[spa-clone] Cookie import failed: ${e.message}`);
@@ -577,25 +596,55 @@ async function pongChatGPT(page) {
 
   console.error(`[pong] Message sent, waiting for response...`);
 
-  // Wait for response to appear
-  await page.waitForTimeout(2000);
+  // Wait for response — detect streaming via the stop button or typing indicator
+  await page.waitForTimeout(3000);
 
-  // Wait for the response to stop streaming (check for stop button disappearing)
-  for (let i = 0; i < 30; i++) {
+  // Wait for streaming to start (stop button appears)
+  let streamStarted = false;
+  for (let i = 0; i < 10; i++) {
+    streamStarted = await page.evaluate(() => {
+      return !!document.querySelector('[data-testid="stop-button"]') ||
+             !!document.querySelector('button[aria-label*="Stop"]') ||
+             !!document.querySelector('[class*="result-streaming"]') ||
+             document.querySelectorAll('[data-message-author-role="assistant"]').length > 0;
+    });
+    if (streamStarted) break;
+    await page.waitForTimeout(1000);
+  }
+
+  if (!streamStarted) {
+    console.error(`[pong] No streaming detected, waiting extra 5s...`);
+    await page.waitForTimeout(5000);
+  }
+
+  // Wait for streaming to finish (stop button disappears)
+  for (let i = 0; i < 60; i++) {
     const isStreaming = await page.evaluate(() => {
       return !!document.querySelector('[data-testid="stop-button"]') ||
-             !!document.querySelector('button[aria-label*="Stop"]');
+             !!document.querySelector('button[aria-label*="Stop"]') ||
+             !!document.querySelector('[class*="result-streaming"]');
     });
-    if (!isStreaming) break;
+    if (!isStreaming && i > 3) break;
     await page.waitForTimeout(1000);
     if (i % 5 === 0) console.error(`[pong] Still streaming... (${i}s)`);
   }
 
-  // Extract the last assistant message
+  // Extract the last assistant message — try multiple selectors
   const response = await page.evaluate(() => {
-    const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
-    const last = messages[messages.length - 1];
-    return last?.innerText || null;
+    // Try data attribute first
+    const byRole = document.querySelectorAll('[data-message-author-role="assistant"]');
+    if (byRole.length > 0) return byRole[byRole.length - 1].innerText;
+    // Try markdown container
+    const markdown = document.querySelectorAll('.markdown');
+    if (markdown.length > 0) return markdown[markdown.length - 1].innerText;
+    // Try any message that's not the user's
+    const allMsgs = document.querySelectorAll('[class*="agent-turn"], [class*="response"]');
+    if (allMsgs.length > 0) return allMsgs[allMsgs.length - 1].innerText;
+    // Last resort — get text after the user message
+    const body = document.body.innerText;
+    const userMsg = body.lastIndexOf('PONG');
+    if (userMsg > -1) return body.substring(userMsg + 50, userMsg + 500).trim();
+    return null;
   });
 
   console.error(`[pong] Response: ${(response || 'none').substring(0, 100)}...`);

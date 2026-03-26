@@ -284,7 +284,7 @@ fn chrome_fallback_sync(url: &str, start: std::time::Instant) -> Option<neo_engi
             "gtimeout"
         };
         std::process::Command::new(timeout_cmd)
-            .arg("20")
+            .arg("15")
             .arg(&chrome_bin)
             .args([
                 "--headless=new",
@@ -292,7 +292,7 @@ fn chrome_fallback_sync(url: &str, start: std::time::Instant) -> Option<neo_engi
                 "--disable-background-networking",
                 "--disable-extensions",
                 "--disable-gpu",
-                "--virtual-time-budget=8000",
+                "--virtual-time-budget=5000",
                 &format!("--user-data-dir={}", profile.display()),
                 "--dump-dom",
                 url,
@@ -308,7 +308,7 @@ fn chrome_fallback_sync(url: &str, start: std::time::Instant) -> Option<neo_engi
                 "--disable-background-networking",
                 "--disable-extensions",
                 "--disable-gpu",
-                "--virtual-time-budget=8000",
+                "--virtual-time-budget=5000",
                 &format!("--user-data-dir={}", profile.display()),
                 "--dump-dom",
                 url,
