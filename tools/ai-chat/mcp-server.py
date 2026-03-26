@@ -22,6 +22,39 @@ our_pids = set()   # PIDs we launched — only kill these
 pending = {}       # platform → {'status': 'waiting'|'streaming'|'done'|'error', 'response': str, 'started': float}
 msg_counter = {}   # platform → int (message count for tracking)
 
+# PID file for tracking our Chrome processes across restarts
+PID_FILE = os.path.expanduser('~/.neorender/ai-chat-pids.json')
+
+def save_pids():
+    """Persist our PIDs so we can clean up after restart."""
+    try:
+        os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+        with open(PID_FILE, 'w') as f:
+            json.dump(list(our_pids), f)
+    except: pass
+
+def load_and_kill_stale_pids():
+    """On startup, kill Chrome processes from previous crashed sessions."""
+    try:
+        if os.path.exists(PID_FILE):
+            with open(PID_FILE) as f:
+                old_pids = json.load(f)
+            killed = 0
+            for pid in old_pids:
+                try:
+                    os.kill(int(pid), 9)
+                    killed += 1
+                except (ProcessLookupError, PermissionError):
+                    pass
+            if killed:
+                log(f'Killed {killed} stale process(es) from previous session')
+                time.sleep(2)
+            os.remove(PID_FILE)
+    except: pass
+
+# Clean up any stale PIDs from previous crash
+load_and_kill_stale_pids()
+
 NEOMODE_PATCHES = '''
 Object.defineProperty(screen, 'width', {get: () => 1920});
 Object.defineProperty(screen, 'height', {get: () => 1080});
@@ -78,6 +111,7 @@ def get_driver(platform):
     driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_PATCHES})
 
     drivers[platform] = driver
+    save_pids()
     log(f'{platform}: Chrome started (neomode, pids={our_pids})')
     return driver
 
