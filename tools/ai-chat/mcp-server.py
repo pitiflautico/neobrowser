@@ -63,11 +63,9 @@ def get_driver(platform):
     options.add_argument(f'--user-agent={CHROME_UA}')
     options.headless = True
 
-    # Dedicated user-data-dir per platform — isolates from other Chrome-based tools
-    profile_dir = os.path.expanduser(f'~/.neorender/ai-chat-profiles/{platform}')
-    os.makedirs(profile_dir, exist_ok=True)
-
-    driver = uc.Chrome(options=options, version_main=146, user_data_dir=profile_dir)
+    # No user_data_dir — avoids SingletonLock issues on crash/restart.
+    # Cookies imported via import_cookies() on first navigation.
+    driver = uc.Chrome(options=options, version_main=146)
 
     # Track the PIDs we own
     if hasattr(driver, 'browser_pid'):
