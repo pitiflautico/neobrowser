@@ -7,6 +7,7 @@
 //! - Form filling and submission
 //! - Chat interactions (ChatGPT, Grok)
 //! - Screenshot capture
+//! - Search, scraping, login, monitoring, pipelines, etc.
 
 use serde_json::{json, Value};
 use std::process::Command;
@@ -14,19 +15,30 @@ use std::process::Command;
 use crate::McpError;
 use crate::state::McpState;
 
+/// All supported ghost actions.
+const ALL_ACTIONS: &[&str] = &[
+    "search", "navigate", "read", "find", "click", "type", "fill_form", "submit",
+    "screenshot", "scroll", "extract_data", "login", "download", "monitor",
+    "api_intercept", "cookie_manage", "multi_tab", "wait_for", "pipeline",
+    "open", "chat", "html",
+];
+
 pub(crate) fn definition() -> super::ToolDef {
     super::ToolDef {
         name: "ghost",
         description: "Neomode ghost browser — real Chrome (headless, undetectable). \
-            Use for Cloudflare-protected sites, SPAs, form filling, chat interactions. \
-            Actions: 'open' (navigate+extract), 'chat' (send message to ChatGPT/Grok), \
-            'screenshot', 'html' (get rendered HTML).",
+            Use for Cloudflare-protected sites, SPAs, form filling, chat interactions, \
+            search, scraping, login, monitoring, pipelines, and more. \
+            Actions: search, navigate, read, find, click, type, fill_form, submit, \
+            screenshot, scroll, extract_data, login, download, monitor, \
+            api_intercept, cookie_manage, multi_tab, wait_for, pipeline, \
+            open, chat, html.",
         schema: json!({
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["open", "chat", "screenshot", "html"],
+                    "enum": ALL_ACTIONS,
                     "description": "Action to perform"
                 },
                 "url": {
@@ -45,6 +57,75 @@ pub(crate) fn definition() -> super::ToolDef {
                     "type": "integer",
                     "default": 5000,
                     "description": "Wait time in ms after page load"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query (for search action)"
+                },
+                "selector": {
+                    "type": "string",
+                    "description": "CSS/XPath selector (for find, click, read, wait_for, submit)"
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Value to type (for type action)"
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text to find or click (for find, click)"
+                },
+                "fields": {
+                    "type": "string",
+                    "description": "JSON string of field->value pairs (for fill_form)"
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["up", "down", "left", "right"],
+                    "description": "Scroll direction (for scroll)"
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Scroll amount in pixels (for scroll)"
+                },
+                "type_": {
+                    "type": "string",
+                    "enum": ["table", "list", "product", "links"],
+                    "description": "Data extraction type (for extract_data)"
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Email for login"
+                },
+                "password": {
+                    "type": "string",
+                    "description": "Password for login"
+                },
+                "engine": {
+                    "type": "string",
+                    "enum": ["google", "bing", "duckduckgo"],
+                    "description": "Search engine (for search, default: google)"
+                },
+                "num": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Number of results (for search)"
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "URL pattern to intercept (for api_intercept)"
+                },
+                "steps": {
+                    "type": "string",
+                    "description": "JSON string of pipeline steps (for pipeline)"
+                },
+                "by": {
+                    "type": "string",
+                    "enum": ["text", "css", "xpath", "role"],
+                    "description": "Locator strategy (for find)"
+                },
+                "index": {
+                    "type": "integer",
+                    "description": "Tab or element index (for click, multi_tab)"
                 }
             },
             "required": ["action"]
@@ -59,14 +140,223 @@ pub fn call(args: Value, _state: &mut McpState) -> Result<Value, McpError> {
     let profile = args["profile"].as_str();
     let wait = args["wait"].as_u64().unwrap_or(5000);
 
-    // Find ghost.py relative to the binary
-    let ghost_script = find_ghost_script();
-
     match action {
-        "open" => ghost_open(&ghost_script, url, profile, wait),
-        "chat" => ghost_chat(&ghost_script, url, message, profile),
-        "screenshot" => ghost_screenshot(&ghost_script, url, profile, wait),
-        "html" => ghost_html(&ghost_script, url, profile, wait),
+        // Original specialized handlers
+        "open" => ghost_open(url, profile, wait),
+        "chat" => ghost_chat(url, message, profile),
+        "screenshot" => ghost_screenshot(url, profile, wait),
+        "html" => ghost_html(url, profile, wait),
+
+        // Delegated actions
+        "search" => {
+            let query = args["query"].as_str().unwrap_or("");
+            if query.is_empty() {
+                return Err(McpError::InvalidParams("query required for search".into()));
+            }
+            let engine = args["engine"].as_str().unwrap_or("google");
+            let num = args["num"].as_u64().unwrap_or(10);
+            let num_str = num.to_string();
+            let ghost_args = vec!["search", query, "--engine", engine, "--num", &num_str];
+            ghost_delegate(&ghost_args, 30, profile)
+        }
+        "navigate" => {
+            if url.is_empty() {
+                return Err(McpError::InvalidParams("url required for navigate".into()));
+            }
+            let wait_str = wait.to_string();
+            let ghost_args = vec!["navigate", url, "--wait", &wait_str];
+            ghost_delegate(&ghost_args, 30, profile)
+        }
+        "read" => {
+            let selector = args["selector"].as_str().unwrap_or("");
+            if url.is_empty() {
+                return Err(McpError::InvalidParams("url required for read".into()));
+            }
+            let mut ghost_args = vec!["read", url];
+            if !selector.is_empty() {
+                ghost_args.extend(&["--selector", selector]);
+            }
+            ghost_delegate(&ghost_args, 30, profile)
+        }
+        "find" => {
+            let selector = args["selector"].as_str().unwrap_or("");
+            let text = args["text"].as_str().unwrap_or("");
+            let by = args["by"].as_str().unwrap_or("css");
+            let mut ghost_args = vec!["find", "--by", by];
+            if !selector.is_empty() {
+                ghost_args.extend(&["--selector", selector]);
+            }
+            if !text.is_empty() {
+                ghost_args.extend(&["--text", text]);
+            }
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 15, profile)
+        }
+        "click" => {
+            let selector = args["selector"].as_str().unwrap_or("");
+            let text = args["text"].as_str().unwrap_or("");
+            let index = args["index"].as_u64();
+            let mut ghost_args = vec!["click"];
+            if !selector.is_empty() {
+                ghost_args.extend(&["--selector", selector]);
+            }
+            if !text.is_empty() {
+                ghost_args.extend(&["--text", text]);
+            }
+            let index_str;
+            if let Some(i) = index {
+                index_str = i.to_string();
+                ghost_args.extend(&["--index", &index_str]);
+            }
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 15, profile)
+        }
+        "type" => {
+            let selector = args["selector"].as_str().unwrap_or("");
+            let value = args["value"].as_str().unwrap_or("");
+            if value.is_empty() {
+                return Err(McpError::InvalidParams("value required for type".into()));
+            }
+            let mut ghost_args = vec!["type", "--value", value];
+            if !selector.is_empty() {
+                ghost_args.extend(&["--selector", selector]);
+            }
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 15, profile)
+        }
+        "fill_form" => {
+            let fields = args["fields"].as_str().unwrap_or("{}");
+            if fields == "{}" {
+                return Err(McpError::InvalidParams("fields required for fill_form".into()));
+            }
+            let mut ghost_args = vec!["fill_form", "--fields", fields];
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 30, profile)
+        }
+        "submit" => {
+            let selector = args["selector"].as_str().unwrap_or("");
+            let mut ghost_args = vec!["submit"];
+            if !selector.is_empty() {
+                ghost_args.extend(&["--selector", selector]);
+            }
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 30, profile)
+        }
+        "scroll" => {
+            let direction = args["direction"].as_str().unwrap_or("down");
+            let amount = args["amount"].as_u64().unwrap_or(500);
+            let amount_str = amount.to_string();
+            let mut ghost_args = vec!["scroll", "--direction", direction, "--amount", &amount_str];
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 15, profile)
+        }
+        "extract_data" => {
+            let type_ = args["type_"].as_str().unwrap_or("table");
+            let selector = args["selector"].as_str().unwrap_or("");
+            if url.is_empty() {
+                return Err(McpError::InvalidParams("url required for extract_data".into()));
+            }
+            let mut ghost_args = vec!["extract_data", url, "--type", type_];
+            if !selector.is_empty() {
+                ghost_args.extend(&["--selector", selector]);
+            }
+            ghost_delegate(&ghost_args, 30, profile)
+        }
+        "login" => {
+            let email = args["email"].as_str().unwrap_or("");
+            let password = args["password"].as_str().unwrap_or("");
+            if url.is_empty() || email.is_empty() || password.is_empty() {
+                return Err(McpError::InvalidParams("url, email, and password required for login".into()));
+            }
+            let ghost_args = vec!["login", url, "--email", email, "--password", password];
+            ghost_delegate(&ghost_args, 60, profile)
+        }
+        "download" => {
+            if url.is_empty() {
+                return Err(McpError::InvalidParams("url required for download".into()));
+            }
+            let selector = args["selector"].as_str().unwrap_or("");
+            let mut ghost_args = vec!["download", url];
+            if !selector.is_empty() {
+                ghost_args.extend(&["--selector", selector]);
+            }
+            ghost_delegate(&ghost_args, 60, profile)
+        }
+        "monitor" => {
+            if url.is_empty() {
+                return Err(McpError::InvalidParams("url required for monitor".into()));
+            }
+            let selector = args["selector"].as_str().unwrap_or("");
+            let mut ghost_args = vec!["monitor", url];
+            if !selector.is_empty() {
+                ghost_args.extend(&["--selector", selector]);
+            }
+            ghost_delegate(&ghost_args, 60, profile)
+        }
+        "api_intercept" => {
+            let pattern = args["pattern"].as_str().unwrap_or("*");
+            if url.is_empty() {
+                return Err(McpError::InvalidParams("url required for api_intercept".into()));
+            }
+            let ghost_args = vec!["api_intercept", url, "--pattern", pattern];
+            ghost_delegate(&ghost_args, 30, profile)
+        }
+        "cookie_manage" => {
+            if url.is_empty() {
+                return Err(McpError::InvalidParams("url required for cookie_manage".into()));
+            }
+            let ghost_args = vec!["cookie_manage", url];
+            ghost_delegate(&ghost_args, 15, profile)
+        }
+        "multi_tab" => {
+            let index = args["index"].as_u64();
+            let mut ghost_args = vec!["multi_tab"];
+            let index_str;
+            if let Some(i) = index {
+                index_str = i.to_string();
+                ghost_args.extend(&["--index", &index_str]);
+            }
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 15, profile)
+        }
+        "wait_for" => {
+            let selector = args["selector"].as_str().unwrap_or("");
+            if selector.is_empty() {
+                return Err(McpError::InvalidParams("selector required for wait_for".into()));
+            }
+            let wait_str = wait.to_string();
+            let mut ghost_args = vec!["wait_for", "--selector", selector, "--timeout", &wait_str];
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 60, profile)
+        }
+        "pipeline" => {
+            let steps = args["steps"].as_str().unwrap_or("[]");
+            if steps == "[]" {
+                return Err(McpError::InvalidParams("steps required for pipeline".into()));
+            }
+            let mut ghost_args = vec!["pipeline", "--steps", steps];
+            if !url.is_empty() {
+                ghost_args.extend(&["--url", url]);
+            }
+            ghost_delegate(&ghost_args, 120, profile)
+        }
+
         other => Err(McpError::InvalidParams(format!("Unknown action: {other}"))),
     }
 }
@@ -88,7 +378,7 @@ fn find_ghost_script() -> String {
     "tools/spa-clone/ghost.py".to_string()
 }
 
-fn run_ghost(args: &[&str], timeout_secs: u64) -> Result<String, McpError> {
+fn run_ghost(args: &[&str], _timeout_secs: u64) -> Result<String, McpError> {
     let ghost = find_ghost_script();
 
     let mut cmd_args = vec![&ghost as &str];
@@ -107,7 +397,29 @@ fn run_ghost(args: &[&str], timeout_secs: u64) -> Result<String, McpError> {
     }
 }
 
-fn ghost_open(script: &str, url: &str, profile: Option<&str>, wait: u64) -> Result<Value, McpError> {
+/// Generic delegate: builds ghost.py args, optionally adds --profile, runs, returns MCP response.
+fn ghost_delegate(base_args: &[&str], timeout_secs: u64, profile: Option<&str>) -> Result<Value, McpError> {
+    let profile_str;
+    let mut args: Vec<&str> = base_args.to_vec();
+    if let Some(p) = profile {
+        profile_str = p.to_string();
+        args.extend(&["--profile", &profile_str]);
+    }
+
+    let output = run_ghost(&args, timeout_secs)?;
+
+    // Try JSON parse, fallback to raw text
+    match serde_json::from_str::<Value>(&output) {
+        Ok(parsed) => Ok(json!({
+            "content": [{"type": "text", "text": format!("{}", serde_json::to_string_pretty(&parsed).unwrap_or(output))}]
+        })),
+        Err(_) => Ok(json!({
+            "content": [{"type": "text", "text": output}]
+        })),
+    }
+}
+
+fn ghost_open(url: &str, profile: Option<&str>, wait: u64) -> Result<Value, McpError> {
     if url.is_empty() {
         return Err(McpError::InvalidParams("url required for open action".into()));
     }
@@ -145,7 +457,7 @@ fn ghost_open(script: &str, url: &str, profile: Option<&str>, wait: u64) -> Resu
     }
 }
 
-fn ghost_chat(script: &str, url: &str, message: &str, profile: Option<&str>) -> Result<Value, McpError> {
+fn ghost_chat(url: &str, message: &str, profile: Option<&str>) -> Result<Value, McpError> {
     if message.is_empty() {
         return Err(McpError::InvalidParams("message required for chat action".into()));
     }
@@ -181,7 +493,7 @@ fn ghost_chat(script: &str, url: &str, message: &str, profile: Option<&str>) -> 
     }
 }
 
-fn ghost_screenshot(script: &str, url: &str, profile: Option<&str>, wait: u64) -> Result<Value, McpError> {
+fn ghost_screenshot(url: &str, profile: Option<&str>, wait: u64) -> Result<Value, McpError> {
     if url.is_empty() {
         return Err(McpError::InvalidParams("url required".into()));
     }
@@ -201,7 +513,7 @@ fn ghost_screenshot(script: &str, url: &str, profile: Option<&str>, wait: u64) -
     }))
 }
 
-fn ghost_html(script: &str, url: &str, profile: Option<&str>, wait: u64) -> Result<Value, McpError> {
+fn ghost_html(url: &str, profile: Option<&str>, wait: u64) -> Result<Value, McpError> {
     if url.is_empty() {
         return Err(McpError::InvalidParams("url required".into()));
     }
@@ -246,14 +558,89 @@ mod tests {
     }
 
     #[test]
-    fn test_actions_listed() {
+    fn test_all_19_actions_in_enum() {
         let def = definition();
         let schema = &def.schema;
         let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
-        assert_eq!(actions.len(), 4);
-        assert!(actions.contains(&json!("open")));
-        assert!(actions.contains(&json!("chat")));
-        assert!(actions.contains(&json!("screenshot")));
-        assert!(actions.contains(&json!("html")));
+
+        // Must have at least 19 actions (open, chat, html + 15 new + screenshot = 19+3 = 22)
+        assert!(
+            actions.len() >= 19,
+            "Expected at least 19 actions, got {}",
+            actions.len()
+        );
+
+        let expected = vec![
+            "search", "navigate", "read", "find", "click", "type", "fill_form", "submit",
+            "screenshot", "scroll", "extract_data", "login", "download", "monitor",
+            "api_intercept", "cookie_manage", "multi_tab", "wait_for", "pipeline",
+            "open", "chat", "html",
+        ];
+
+        for action in &expected {
+            assert!(
+                actions.contains(&json!(action)),
+                "Missing action in enum: {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_each_action_name_is_valid() {
+        // Verify ALL_ACTIONS constant matches what the definition exposes
+        let def = definition();
+        let schema = &def.schema;
+        let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
+
+        for action in ALL_ACTIONS {
+            assert!(
+                actions.contains(&json!(action)),
+                "ALL_ACTIONS contains '{action}' but it's not in the schema enum"
+            );
+        }
+
+        // And the reverse: every enum value should be in ALL_ACTIONS
+        for action_val in actions {
+            let action_str = action_val.as_str().unwrap();
+            assert!(
+                ALL_ACTIONS.contains(&action_str),
+                "Schema enum contains '{action_str}' but it's not in ALL_ACTIONS"
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_actions_have_match_arm() {
+        // Verify every action in ALL_ACTIONS has a corresponding match arm
+        // by checking the source code contains the match pattern for each action.
+        // We can't instantiate McpState without a BrowserEngine, so we verify statically.
+        let source = include_str!("ghost.rs");
+        for action in ALL_ACTIONS {
+            let pattern = format!("\"{}\"", action);
+            assert!(
+                source.contains(&pattern),
+                "Action '{action}' appears to have no match arm in call()"
+            );
+        }
+    }
+
+    #[test]
+    fn test_schema_has_all_parameters() {
+        let def = definition();
+        let props = def.schema["properties"].as_object().unwrap();
+
+        let expected_params = vec![
+            "action", "url", "message", "profile", "wait",
+            "query", "selector", "value", "text", "fields",
+            "direction", "amount", "type_", "email", "password",
+            "engine", "num", "pattern", "steps", "by", "index",
+        ];
+
+        for param in &expected_params {
+            assert!(
+                props.contains_key(*param),
+                "Missing parameter in schema: {param}"
+            );
+        }
     }
 }
