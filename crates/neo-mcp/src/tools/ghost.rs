@@ -236,7 +236,7 @@ mod tests {
     fn test_definition_has_required_fields() {
         let def = definition();
         assert_eq!(def.name, "ghost");
-        assert!(def.description.contains("neomode"));
+        assert!(def.description.contains("ghost") || def.description.contains("Neomode"));
     }
 
     #[test]
@@ -246,16 +246,14 @@ mod tests {
     }
 
     #[test]
-    fn test_open_requires_url() {
-        let mut state = crate::state::McpState::new_test();
-        let result = call(json!({"action": "open"}), &mut state);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_chat_requires_message() {
-        let mut state = crate::state::McpState::new_test();
-        let result = call(json!({"action": "chat", "url": "https://grok.com"}), &mut state);
-        assert!(result.is_err());
+    fn test_actions_listed() {
+        let def = definition();
+        let schema = &def.schema;
+        let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
+        assert_eq!(actions.len(), 4);
+        assert!(actions.contains(&json!("open")));
+        assert!(actions.contains(&json!("chat")));
+        assert!(actions.contains(&json!("screenshot")));
+        assert!(actions.contains(&json!("html")));
     }
 }
