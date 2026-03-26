@@ -79,22 +79,25 @@ function decryptValue(encBuf, aesKey) {
       // Strategy: scan for the first printable ASCII run of sufficient length.
       const str = decrypted.toString('utf8');
 
-      // Find the longest printable ASCII substring
-      let bestStart = 0, bestLen = 0, curStart = 0, curLen = 0;
-      for (let i = 0; i < str.length; i++) {
+      // Strip leading non-printable/garbled bytes from CBC first block
+      // Find first run of clean printable ASCII (skip garbled CBC prefix)
+      let start = 0;
+      for (let i = 0; i < Math.min(str.length, 32); i++) {
         const code = str.charCodeAt(i);
-        if (code >= 0x20 && code < 0x7f || code > 0x7f && code < 0xfffd) {
-          if (curLen === 0) curStart = i;
-          curLen++;
-        } else {
-          if (curLen > bestLen) { bestStart = curStart; bestLen = curLen; }
-          curLen = 0;
+        // Printable ASCII or common URL-encoded chars
+        if ((code >= 0x20 && code < 0x7f) || code === 0x09 || code === 0x0a) {
+          // Check if this looks like the start of a real value
+          // Real values start with: alphanumeric, {, [, ", %, /
+          if (/[a-zA-Z0-9{["/%]/.test(str[i])) {
+            start = i;
+            break;
+          }
         }
       }
-      if (curLen > bestLen) { bestStart = curStart; bestLen = curLen; }
 
-      if (bestLen > 0) {
-        return str.substring(bestStart, bestStart + bestLen);
+      const cleaned = str.substring(start);
+      if (cleaned.length > 0) {
+        return cleaned;
       }
       return null;
     } catch {
@@ -129,7 +132,7 @@ function extractFromProfile(profileName, searchDomain, aesKey) {
 
   try {
     // Query with BLOB output via hex encoding
-    const query = `SELECT host_key, name, hex(encrypted_value), path, expires_utc, is_secure, is_httponly, samesite, has_expires FROM cookies WHERE host_key LIKE '%${searchDomain}%' ORDER BY LENGTH(encrypted_value) DESC`;
+    const query = `SELECT host_key, name, hex(encrypted_value), path, expires_utc, is_secure, is_httponly, samesite, has_expires FROM cookies WHERE (host_key = '${searchDomain}' OR host_key = '.${searchDomain}' OR host_key LIKE '%.${searchDomain}') ORDER BY LENGTH(encrypted_value) DESC`;
     const result = execSync(`sqlite3 "${tmpDb}" "${query}"`, {
       encoding: 'utf8',
       maxBuffer: 50 * 1024 * 1024,
