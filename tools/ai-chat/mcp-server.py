@@ -13,6 +13,9 @@ MCP tools:
 
 import json, sys, os, time, atexit, signal, threading
 
+def log(msg):
+    print(f'[ai-chat] {msg}', file=sys.stderr, flush=True)
+
 # ── State ──
 drivers = {}       # platform → driver
 pages_ready = {}   # platform → bool (already navigated)
@@ -66,10 +69,6 @@ Object.defineProperty(window, 'innerHeight', {get: () => 968});
 
 CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
 PROFILE = os.environ.get('NEOBROWSER_PROFILE', 'Profile 24')
-
-
-def log(msg):
-    print(f'[ai-chat] {msg}', file=sys.stderr, flush=True)
 
 
 def get_driver(platform):
