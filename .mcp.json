@@ -5,8 +5,8 @@
       "args": ["mcp"]
     },
     "ai-chat": {
-      "command": "node",
-      "args": ["/Volumes/DiscoExterno2/mac_offload/Projects/meta-agente/lab/neorender-v2/tools/ai-chat/server.mjs"],
+      "command": "python3",
+      "args": ["/Volumes/DiscoExterno2/mac_offload/Projects/meta-agente/lab/neorender-v2/tools/ai-chat/mcp-server.py"],
       "env": {
         "NEOBROWSER_PROFILE": "Profile 24"
       }

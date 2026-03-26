@@ -344,18 +344,22 @@ impl BrowserEngine for NeoSession {
             let _ = rt.execute("if(typeof __neo_resetBudget==='function')__neo_resetBudget()");
         }
 
-        let result = match self.runtime.as_mut() {
+        let (result, was_promise) = match self.runtime.as_mut() {
             Some(rt) => {
                 let r = rt.eval_and_settle(js, timeout_ms)?;
-                Ok(r.value)
+                Ok((r.value, r.was_promise))
             }
             None => Err(EngineError::Runtime(neo_runtime::RuntimeError::Eval(
                 "no runtime available".into(),
             ))),
         }?;
-        // Pump event loop for async side effects (fetch, SSE, React renders).
-        // Use proportional settle: long evals get proportionally longer settle.
-        let settle_ms = std::cmp::min(timeout_ms * 2, 60_000);
+        // Pump event loop for async side effects.
+        // Sync evals: short settle (3s). Async (Promise): proportional.
+        let settle_ms = if was_promise {
+            std::cmp::min(timeout_ms, 60_000)
+        } else {
+            3_000
+        };
         self.pump_after_interaction_with_timeout(settle_ms);
         self.process_pending_navigations();
         Ok(result)
