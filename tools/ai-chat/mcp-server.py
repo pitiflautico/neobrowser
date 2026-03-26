@@ -11,12 +11,16 @@ MCP tools:
   status()                 — Show active sessions
 """
 
-import json, sys, os, time, atexit, signal
+import json, sys, os, time, atexit, signal, threading
 
 # ── State ──
 drivers = {}       # platform → driver
 pages_ready = {}   # platform → bool (already navigated)
 our_pids = set()   # PIDs we launched — only kill these
+
+# Async response tracking
+pending = {}       # platform → {'status': 'waiting'|'streaming'|'done'|'error', 'response': str, 'started': float}
+msg_counter = {}   # platform → int (message count for tracking)
 
 NEOMODE_PATCHES = '''
 Object.defineProperty(screen, 'width', {get: () => 1920});
@@ -196,22 +200,24 @@ def send_chatgpt(message):
     except:
         el.send_keys(Keys.RETURN)
 
-    log('Message sent, waiting for response...')
+    log('Message sent')
 
-    # Enable network interception to detect SSE stream completion
+    # Start background thread to detect response
     setup_network_monitor(driver)
+    pending['chatgpt'] = {'status': 'waiting', 'response': None, 'started': time.time()}
+    t = threading.Thread(target=_bg_wait, args=(driver, 'chatgpt'), daemon=True)
+    t.start()
 
-    return wait_for_response(driver, 'chatgpt')
+    return None  # Caller handles async
 
 
 def send_grok(message):
-    """Send message to Grok and wait for response."""
+    """Send message to Grok — non-blocking."""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
 
     driver = ensure_page('grok', 'https://grok.com')
 
-    # Find input
     try:
         el = driver.find_element(By.CSS_SELECTOR, 'textarea, [contenteditable="true"], [role="textbox"]')
     except:
@@ -221,9 +227,37 @@ def send_grok(message):
     time.sleep(0.3)
     el.send_keys(Keys.RETURN)
 
-    log('Message sent, waiting for response...')
+    log('Message sent')
     setup_network_monitor(driver)
-    return wait_for_response(driver, 'grok')
+    pending['grok'] = {'status': 'waiting', 'response': None, 'started': time.time()}
+    t = threading.Thread(target=_bg_wait, args=(driver, 'grok'), daemon=True)
+    t.start()
+
+    return None
+
+
+def _bg_wait(driver, platform):
+    """Background thread: wait for AI response and store it."""
+    try:
+        response = wait_for_response(driver, platform)
+        pending[platform] = {'status': 'done', 'response': response, 'started': pending[platform]['started']}
+        log(f'{platform}: response ready ({len(response)} chars)')
+    except Exception as e:
+        pending[platform] = {'status': 'error', 'response': str(e), 'started': pending[platform].get('started', 0)}
+
+
+def _poll_until_done(platform, timeout=300):
+    """Block until background thread has the response."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if platform in pending:
+            status = pending[platform].get('status')
+            if status == 'done':
+                return pending[platform].get('response', '')
+            elif status == 'error':
+                return f"Error: {pending[platform].get('response', 'unknown')}"
+        time.sleep(0.5)
+    return 'Error: Timeout waiting for response'
 
 
 # ── Network-based SSE stream detection ──
@@ -312,6 +346,8 @@ def wait_for_response(driver, platform, max_wait=300):
         time.sleep(1)
         if is_streaming(driver, platform):
             started = True
+            if platform in pending:
+                pending[platform]['status'] = 'streaming'
             log(f'Streaming started ({i+1}s)')
             break
         # Also check if response appeared instantly (short answers)
@@ -466,31 +502,38 @@ signal.signal(signal.SIGTERM, lambda *a: (cleanup(), sys.exit(0)))
 TOOLS = [
     {
         "name": "gpt",
-        "description": "Send a message to ChatGPT. Conversation persists across calls — same chat thread.",
+        "description": "Send a message to ChatGPT. Returns immediately with send confirmation. Use ai_status to check for response. Conversation persists.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "message": {"type": "string", "description": "Message to send"},
                 "raw": {"type": "boolean", "default": False, "description": "If true, don't add AI-to-AI prefix"},
+                "wait": {"type": "boolean", "default": True, "description": "If true (default), wait for response. If false, return immediately."},
             },
             "required": ["message"]
         }
     },
     {
         "name": "grok",
-        "description": "Send a message to Grok. Conversation persists across calls.",
+        "description": "Send a message to Grok. Returns immediately with send confirmation. Use ai_status to check for response.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "message": {"type": "string", "description": "Message to send"},
+                "wait": {"type": "boolean", "default": True, "description": "Wait for response (default true)"},
             },
             "required": ["message"]
         }
     },
     {
         "name": "ai_status",
-        "description": "Check active AI chat sessions.",
-        "inputSchema": {"type": "object", "properties": {}}
+        "description": "Check AI chat status. Shows if response is ready, streaming, or waiting. If ready, returns the response.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string", "enum": ["chatgpt", "grok", "all"], "default": "all"},
+            }
+        }
     }
 ]
 
@@ -529,32 +572,60 @@ def handle(req):
         if name == 'gpt':
             try:
                 msg = args.get('message', '')
-                if not args.get('raw'):
-                    msg = msg  # No prefix needed, same conversation
-                response = send_chatgpt(msg)
-                respond(id, {"content": [{"type": "text", "text": response}]})
+                wait = args.get('wait', True)
+                send_chatgpt(msg)  # Always non-blocking internally
+
+                if wait:
+                    # Block until response ready (default behavior)
+                    response = _poll_until_done('chatgpt', timeout=300)
+                    respond(id, {"content": [{"type": "text", "text": response}]})
+                else:
+                    respond(id, {"content": [{"type": "text", "text": "Message sent to ChatGPT. Use ai_status to check for response."}]})
             except Exception as e:
                 respond(id, {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True})
 
         elif name == 'grok':
             try:
-                response = send_grok(args.get('message', ''))
-                respond(id, {"content": [{"type": "text", "text": response}]})
+                msg = args.get('message', '')
+                wait = args.get('wait', True)
+                send_grok(msg)
+
+                if wait:
+                    response = _poll_until_done('grok', timeout=300)
+                    respond(id, {"content": [{"type": "text", "text": response}]})
+                else:
+                    respond(id, {"content": [{"type": "text", "text": "Message sent to Grok. Use ai_status to check for response."}]})
             except Exception as e:
                 respond(id, {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True})
 
         elif name == 'ai_status':
-            status = {}
-            for p in ['chatgpt', 'grok']:
-                if p in drivers:
-                    try:
-                        title = drivers[p].title
-                        status[p] = {"active": True, "title": title, "url": drivers[p].current_url}
-                    except:
-                        status[p] = {"active": False, "error": "driver dead"}
+            plat = args.get('platform', 'all')
+            platforms = ['chatgpt', 'grok'] if plat == 'all' else [plat]
+            result = {}
+
+            for p in platforms:
+                if p in pending:
+                    info = pending[p]
+                    elapsed = int(time.time() - info.get('started', time.time()))
+                    result[p] = {
+                        'status': info['status'],
+                        'elapsed': f'{elapsed}s',
+                    }
+                    if info['status'] == 'done':
+                        result[p]['response'] = info['response']
+                    elif info['status'] == 'streaming':
+                        result[p]['preview'] = '(generating...)'
+                elif p in drivers:
+                    result[p] = {'status': 'idle', 'ready': True}
                 else:
-                    status[p] = {"active": False}
-            respond(id, {"content": [{"type": "text", "text": json.dumps(status, indent=2)}]})
+                    result[p] = {'status': 'not started'}
+
+            # If single platform and done, return response directly
+            if plat != 'all' and plat in result and result[plat].get('status') == 'done':
+                resp = result[plat].get('response', '')
+                respond(id, {"content": [{"type": "text", "text": resp}]})
+            else:
+                respond(id, {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]})
 
         else:
             respond_error(id, -32601, f"Unknown tool: {name}")
