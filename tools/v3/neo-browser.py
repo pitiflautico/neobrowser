@@ -495,14 +495,12 @@ def tool_gpt(args):
     # send
     msg = args.get('message', '')
     if not msg: return 'message required'
-    # Focus the textarea
+    # Focus the textarea and type via CDP key events (ProseMirror needs real keys)
     d.js('const el=document.getElementById("prompt-textarea");if(el){el.focus();el.click()}')
     time.sleep(0.3)
-    # Type via CDP Input.insertText (works with ProseMirror/React)
-    d._send('Input.insertText', {'text': msg})
+    d.key(msg)
     time.sleep(0.5)
-    # Click send button
-    d.js('const b=document.querySelector("[data-testid=send-button]");if(b)b.click()')
+    d.enter()
     log('GPT: sent')
     if not args.get('wait', True): return 'Sent.'
     return _chat_wait_response(d, 'gpt', msg,
