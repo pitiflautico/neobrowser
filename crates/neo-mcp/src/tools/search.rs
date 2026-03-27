@@ -155,15 +155,26 @@ pub fn call(args: Value, _state: &mut McpState) -> Result<Value, McpError> {
 
     let elapsed_ms = start.elapsed().as_millis();
 
-    Ok(serde_json::json!({
-        "ok": true,
-        "query": query,
-        "results": results,
-        "count": results.len(),
-        "engine": "duckduckgo",
-        "deep": deep,
-        "elapsed_ms": elapsed_ms,
-    }))
+    // Compact text output — no JSON wrapper, minimal tokens
+    let mut out = String::with_capacity(results.len() * 150);
+    for (i, r) in results.iter().enumerate() {
+        let title = r["title"].as_str().unwrap_or("");
+        let url = r["url"].as_str().unwrap_or("");
+        let snippet = r["snippet"].as_str().unwrap_or("");
+        let domain = url.replace("https://", "").replace("http://", "");
+        let domain = domain.split('/').next().unwrap_or("");
+        out.push_str(&format!("{}. {} ({})\n", i + 1, title, domain));
+        if !snippet.is_empty() {
+            let short = if snippet.len() > 150 { &snippet[..150] } else { snippet };
+            out.push_str(&format!("   {}\n", short));
+        }
+        // Deep content if available
+        if let Some(content) = r["content"].as_str() {
+            let short = if content.len() > 200 { &content[..200] } else { content };
+            out.push_str(&format!("   [page] {}\n", short));
+        }
+    }
+    Ok(serde_json::json!(out))
 }
 
 // ─── HTTP helpers ───
