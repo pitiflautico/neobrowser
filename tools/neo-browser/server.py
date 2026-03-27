@@ -69,9 +69,18 @@ def ensure_browser():
             _ = driver.title
             return driver
         except:
-            log('Chrome died, will recreate on next call')
+            log('Chrome died, killing old processes and recreating...')
+            try: driver.quit()
+            except: pass
+            # Kill our tracked PIDs
+            for pid in list(our_pids):
+                try: os.kill(pid, 9)
+                except: pass
+            our_pids.clear()
             driver = None
+            tabs.clear()
             _launch_failed = False
+            time.sleep(1)
 
     # Don't retry if already failed this session
     if _launch_failed:
