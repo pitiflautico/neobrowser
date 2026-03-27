@@ -65,36 +65,73 @@ def fast(cmd, url, extra=None, timeout=30):
 
 # ── Chrome Neomode (lazy singleton) ──
 
+def _kill_our_pids():
+    """Kill only our tracked Chrome processes."""
+    dead = set()
+    for pid in _chrome_pids:
+        try: os.kill(pid, 9)
+        except: dead.add(pid)
+    _chrome_pids.difference_update(dead)
+
 def chrome():
     global _chrome
     if _chrome:
         try: _ = _chrome.title; return _chrome
         except:
-            log('Chrome died, recreating')
+            log('Chrome died, cleaning up')
+            try: _chrome.quit()
+            except: pass
+            _kill_our_pids()
             _chrome = None; _chrome_tabs.clear()
+            _chrome_pids.clear()
+            time.sleep(2)
 
     with _chrome_lock:
         if _chrome: return _chrome
         import undetected_chromedriver as uc
-        log('Launching Chrome neomode...')
-        options = uc.ChromeOptions()
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument(f'--user-agent={CHROME_UA}')
-        options.headless = True
 
-        _chrome = uc.Chrome(options=options, version_main=146)
-        if hasattr(_chrome, 'service') and hasattr(_chrome.service, 'process'):
-            _chrome_pids.add(_chrome.service.process.pid)
-        if hasattr(_chrome, 'browser_pid'):
-            _chrome_pids.add(_chrome.browser_pid)
-        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-        PID_FILE.write_text(json.dumps(list(_chrome_pids)))
+        # Retry up to 3 times with cleanup
+        for attempt in range(3):
+            try:
+                if attempt > 0:
+                    log(f'Retry {attempt+1}...')
+                    _kill_our_pids()
+                    time.sleep(3)
 
-        _chrome.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
-        _chrome_tabs['main'] = _chrome.current_window_handle
-        log(f'Chrome ready (pids={_chrome_pids})')
+                log('Launching Chrome neomode...')
+                options = uc.ChromeOptions()
+                options.add_argument('--window-size=1920,1080')
+                options.add_argument('--no-sandbox')
+                options.add_argument('--disable-dev-shm-usage')
+                options.add_argument(f'--user-agent={CHROME_UA}')
+                options.headless = True
+
+                _chrome = uc.Chrome(options=options, version_main=146)
+
+                # Track ALL child PIDs
+                if hasattr(_chrome, 'service') and hasattr(_chrome.service, 'process'):
+                    _chrome_pids.add(_chrome.service.process.pid)
+                    # Also track Chrome browser process launched by chromedriver
+                    try:
+                        import psutil
+                        for child in psutil.Process(_chrome.service.process.pid).children(recursive=True):
+                            _chrome_pids.add(child.pid)
+                    except: pass
+                if hasattr(_chrome, 'browser_pid'):
+                    _chrome_pids.add(_chrome.browser_pid)
+
+                PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+                PID_FILE.write_text(json.dumps(list(_chrome_pids)))
+
+                _chrome.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
+                _chrome_tabs['main'] = _chrome.current_window_handle
+                log(f'Chrome ready (pids={_chrome_pids})')
+                return _chrome
+            except Exception as e:
+                log(f'Chrome launch failed: {e}')
+                _chrome = None
+
+        raise RuntimeError('Chrome failed after 3 attempts')
     return _chrome
 
 _imported_domains = set()
@@ -599,14 +636,14 @@ ACTIONS = {
 # ── Cleanup ──
 
 def cleanup():
+    global _chrome
     if _chrome:
         try: _chrome.quit()
         except: pass
-    for pid in _chrome_pids:
-        try: os.kill(pid, 9)
-        except: pass
+        _chrome = None
+    _kill_our_pids()
     PID_FILE.unlink(missing_ok=True)
-    log('Cleanup')
+    log('Cleanup done')
 
 atexit.register(cleanup)
 signal.signal(signal.SIGTERM, lambda *a: (cleanup(), sys.exit(0)))
