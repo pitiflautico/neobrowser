@@ -9,6 +9,7 @@ neo-engine = { path = "../neo-engine" }
 neo-runtime = { path = "../neo-runtime" }
 neo-http = { path = "../neo-http" }
 neo-trace = { path = "../neo-trace" }
+neo-chrome = { path = "../neo-chrome" }
 neo-extract = { path = "../neo-extract" }
 html5ever = "0.38"
 markup5ever_rcdom = "0.38"

@@ -53,10 +53,10 @@ impl ChromeProcess {
         let chrome_bin = find_chrome()?;
         let profile = resolve_profile_dir(profile_dir);
 
-        kill_zombies(&profile).await;
+        kill_zombies_sync(&profile);
         remove_singleton_lock(&profile);
 
-        let port = find_free_port().await?;
+        let port = find_free_port_sync()?;
         let mut args = vec![
             format!("--remote-debugging-port={port}"),
             format!("--user-data-dir={}", profile.display()),
@@ -65,8 +65,15 @@ impl ChromeProcess {
             "--disable-background-networking".to_string(),
         ];
 
+        // NEOMODE: anti-detection flags (always, not just headless)
+        args.push("--disable-blink-features=AutomationControlled".to_string());
+        args.push("--no-sandbox".to_string());
+        args.push("--disable-dev-shm-usage".to_string());
+
         if headless {
             args.push("--headless=new".to_string());
+            // Override UA to remove "HeadlessChrome"
+            args.push("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36".to_string());
         }
 
         eprintln!("[neo-chrome] Binary: {}", chrome_bin.display());
@@ -84,7 +91,7 @@ impl ChromeProcess {
 
         // Wait for CDP to be ready
         eprintln!("[neo-chrome] Waiting for CDP on port {port}...");
-        wait_for_devtools(&profile, port).await?;
+        wait_for_devtools_sync(port)?;
         eprintln!("[neo-chrome] CDP ready!");
 
         Ok(Self {
@@ -95,7 +102,8 @@ impl ChromeProcess {
     }
 
     /// Get the WebSocket URL for the browser target.
-    pub async fn ws_url(&self) -> Result<String> {
+    /// Get WS URL. NOT async — safe to call from any context.
+    pub fn ws_url_sync(&self) -> Result<String> {
         for _ in 0..20 {
             if let Some(resp) = sync_http_get(self.port, "/json/version") {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
@@ -106,13 +114,16 @@ impl ChromeProcess {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        Err(ChromeError::ConnectionFailed(
-            "Could not get WebSocket URL from /json/version".into(),
-        ))
+        Err(ChromeError::ConnectionFailed("Could not get WebSocket URL".into()))
     }
 
-    /// Get the first page target ID.
-    pub async fn first_target_id(&self) -> Result<String> {
+    /// Async wrapper for compatibility
+    pub async fn ws_url(&self) -> Result<String> {
+        self.ws_url_sync()
+    }
+
+    /// Get first page target ID. NOT async.
+    pub fn first_target_id_sync(&self) -> Result<String> {
         for _ in 0..20 {
             if let Some(resp) = sync_http_get(self.port, "/json/list") {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp) {
@@ -130,6 +141,10 @@ impl ChromeProcess {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         Err(ChromeError::ConnectionFailed("No page target found".into()))
+    }
+
+    pub async fn first_target_id(&self) -> Result<String> {
+        self.first_target_id_sync()
     }
 
     /// Kill the Chrome process.
@@ -179,22 +194,25 @@ fn remove_singleton_lock(profile_dir: &Path) {
 
 /// Find a free TCP port by binding to :0.
 async fn find_free_port() -> Result<u16> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    // Use std TCP to avoid tokio I/O driver issues
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
 }
 
-/// Wait for Chrome's CDP to be ready. Fully synchronous.
+/// Wait for Chrome's CDP to be ready.
 async fn wait_for_devtools(_profile_dir: &Path, port: u16) -> Result<()> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while std::time::Instant::now() < deadline {
-        if check_cdp_ready(port) {
-            return Ok(());
+    tokio::task::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
+            if check_cdp_ready(port) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
         }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-    }
-    Err(ChromeError::Timeout("Chrome CDP not ready within 15s".into()))
+        Err(ChromeError::Timeout("Chrome CDP not ready within 15s".into()))
+    }).await.unwrap_or_else(|_| Err(ChromeError::Timeout("spawn_blocking failed".into())))
 }
 
 /// Sync HTTP GET to localhost CDP.
@@ -205,15 +223,52 @@ fn sync_http_get(port: u16, path: &str) -> Option<String> {
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(2000)));
     let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).ok()?;
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf).to_string();
-    // Extract body after headers
+    // Read in chunks — don't use read_to_end (hangs if keep-alive)
+    let mut buf = vec![0u8; 65536];
+    let mut total = Vec::new();
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => total.extend_from_slice(&buf[..n]),
+            Err(_) => break,
+        }
+        // Chrome CDP HTTP response is small (~500 bytes). Break once we have headers + body.
+        if total.windows(4).any(|w| w == b"\r\n\r\n") && total.len() > 200 {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&total).to_string();
     if let Some(idx) = text.find("\r\n\r\n") {
         Some(text[idx + 4..].to_string())
     } else {
         Some(text)
     }
+}
+
+fn kill_zombies_sync(profile_dir: &Path) {
+    let profile_str = profile_dir.to_string_lossy();
+    let _ = Command::new("pkill")
+        .args(["-f", &format!("--user-data-dir={profile_str}")])
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+}
+
+fn find_free_port_sync() -> Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(port)
+}
+
+fn wait_for_devtools_sync(port: u16) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if check_cdp_ready(port) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    Err(ChromeError::Timeout("Chrome CDP not ready within 15s".into()))
 }
 
 /// Sync check if CDP port is ready.

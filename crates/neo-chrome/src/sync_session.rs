@@ -41,16 +41,23 @@ impl SyncChromeSession {
 
         let thread = std::thread::spawn(move || {
             // Own tokio runtime — completely isolated from any other runtime
-            let rt = tokio::runtime::Builder::new_current_thread()
+            // multi_thread needed for tokio_tungstenite WebSocket send/recv loops
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
 
             rt.block_on(async {
                 // Launch Chrome
+                eprintln!("[sync-session] launching Chrome...");
                 let session = match crate::session::ChromeSession::launch(None, headless).await {
-                    Ok(s) => s,
+                    Ok(s) => {
+                        eprintln!("[sync-session] Chrome session created OK");
+                        s
+                    }
                     Err(e) => {
+                        eprintln!("[sync-session] Chrome launch failed: {e}");
                         let _ = resp_tx.send(Response::Error(format!("Launch failed: {e}")));
                         return;
                     }
@@ -172,12 +179,48 @@ impl SyncChromeSession {
 
 /// Neomode patches — 5 JS property overrides that make headless = real Chrome.
 pub const NEOMODE_JS: &str = r#"
+// Screen dimensions (headless defaults to 800x600)
 Object.defineProperty(screen, 'width', {get: () => 1920});
 Object.defineProperty(screen, 'height', {get: () => 1080});
 Object.defineProperty(screen, 'availWidth', {get: () => 1920});
 Object.defineProperty(screen, 'availHeight', {get: () => 1055});
 Object.defineProperty(window, 'outerHeight', {get: () => 1055});
 Object.defineProperty(window, 'innerHeight', {get: () => 968});
+
+// WebDriver detection
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+delete navigator.__proto__.webdriver;
+
+// Chrome runtime
+window.chrome = window.chrome || {};
+window.chrome.runtime = window.chrome.runtime || {connect:()=>{},sendMessage:()=>{}};
+
+// Plugins (headless has 0)
+if (navigator.plugins.length === 0) {
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+            const p = [
+                {name:'Chrome PDF Plugin',filename:'internal-pdf-viewer',description:'PDF'},
+                {name:'Chrome PDF Viewer',filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai',description:''},
+                {name:'Native Client',filename:'internal-nacl-plugin',description:''},
+            ];
+            p.item = (i) => p[i]; p.namedItem = (n) => p.find(x=>x.name===n); p.refresh = ()=>{};
+            return p;
+        }
+    });
+}
+
+// Languages
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en','es']});
+Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+
+// Permissions
+const origQuery = navigator.permissions?.query?.bind(navigator.permissions);
+if (origQuery) {
+    navigator.permissions.query = (p) => p.name === 'notifications'
+        ? Promise.resolve({state: Notification.permission}) : origQuery(p);
+}
 "#;
 
 /// Launch Chrome in neomode (headless + patches).

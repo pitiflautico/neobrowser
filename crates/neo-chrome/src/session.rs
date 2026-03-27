@@ -23,9 +23,14 @@ impl ChromeSession {
     /// Launch Chrome, connect CDP, attach to the first page target.
     pub async fn launch(profile: Option<&str>, headless: bool) -> Result<Self> {
         let process = ChromeProcess::launch(profile, headless).await?;
-        let ws_url = process.ws_url().await?;
+        // Use sync methods to avoid blocking tokio runtime
+        eprintln!("[session] getting ws_url...");
+        let ws_url = process.ws_url_sync()?;
+        eprintln!("[session] ws_url: {ws_url}");
+        eprintln!("[session] connecting CDP WebSocket...");
         let cdp = CdpClient::connect(&ws_url).await?;
-        let target_id = process.first_target_id().await?;
+        eprintln!("[session] CDP connected");
+        let target_id = process.first_target_id_sync()?;
 
         // Attach to the page target to get a session ID.
         let attach_result = cdp
