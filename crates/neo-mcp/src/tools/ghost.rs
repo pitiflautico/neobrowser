@@ -154,10 +154,10 @@ pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
             let search_args = json!({"query": query, "num": args["num"].as_u64().unwrap_or(10)});
             match crate::tools::search::call(search_args, state) {
                 Ok(result) => {
-                    // Check if we got results
-                    let text = result["content"][0]["text"].as_str().unwrap_or("");
+                    // search::call returns json with results
+                    let text = serde_json::to_string(&result).unwrap_or_default();
                     if text.len() > 50 {
-                        return Ok(result);
+                        return Ok(json!({"content": [{"type": "text", "text": text}]}));
                     }
                     // Empty — fall through to ghost
                     eprintln!("[ghost] Rust search empty, trying Chrome...");
@@ -176,13 +176,15 @@ pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
             if url.is_empty() {
                 return Err(McpError::InvalidParams("url required".into()));
             }
-            // Try Rust engine first (fast HTTP fetch + WOM extraction)
+            // Try Rust engine first (fast HTTP + compact view)
             let browse_args = json!({"url": url});
             match crate::tools::browse::call(browse_args, state) {
                 Ok(result) => {
-                    let text = result["content"][0]["text"].as_str().unwrap_or("");
+                    // browse::call returns json!(string) — check the string directly
+                    let text = result.as_str().unwrap_or("");
                     if text.len() > 100 {
-                        return Ok(result);
+                        // Wrap in MCP content format
+                        return Ok(json!({"content": [{"type": "text", "text": text}]}));
                     }
                     eprintln!("[ghost] Rust navigate got {} chars, trying Chrome...", text.len());
                 }
@@ -201,12 +203,11 @@ pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
             // Try Rust extract first
             let extract_args = json!({"format": "text"});
             let browse_args = json!({"url": url});
-            if let Ok(browse_result) = crate::tools::browse::call(browse_args, state) {
-                // Try to extract text from the browsed page
+            if let Ok(_) = crate::tools::browse::call(browse_args, state) {
                 if let Ok(extract_result) = crate::tools::extract::call(extract_args, state) {
-                    let text = extract_result["content"][0]["text"].as_str().unwrap_or("");
+                    let text = serde_json::to_string(&extract_result).unwrap_or_default();
                     if text.len() > 100 {
-                        return Ok(extract_result);
+                        return Ok(json!({"content": [{"type": "text", "text": text}]}));
                     }
                 }
             }
@@ -315,9 +316,9 @@ pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
                     let fmt = if type_ == "links" { "links" } else { "text" };
                     let extract_args = json!({"format": fmt});
                     if let Ok(result) = crate::tools::extract::call(extract_args, state) {
-                        let text = result["content"][0]["text"].as_str().unwrap_or("");
+                        let text = serde_json::to_string(&result).unwrap_or_default();
                         if text.len() > 50 {
-                            return Ok(result);
+                            return Ok(json!({"content": [{"type": "text", "text": text}]}));
                         }
                     }
                 }
