@@ -151,6 +151,146 @@ def save_response(text, platform):
     p.write_text(text)
     return text[:500] + f'...\n[Full: {len(text)} chars → {p}]'
 
+
+# ── AI Sanitizer — compact view for AI agents ──
+
+SANITIZE_JS = '''
+(function() {
+    const r = {title: document.title, url: location.href};
+
+    // Page type detection
+    const u = location.href.toLowerCase();
+    if (u.includes('login') || u.includes('sign_in') || u.includes('signin')) r.type = 'login';
+    else if (u.includes('search') || u.includes('query')) r.type = 'search';
+    else if (u.includes('messaging') || u.includes('messages') || u.includes('inbox')) r.type = 'messaging';
+    else if (document.querySelectorAll('article').length > 1) r.type = 'feed';
+    else if (document.querySelector('article')) r.type = 'article';
+    else r.type = 'page';
+
+    // Auth state
+    const hasAvatar = !!document.querySelector('[class*="avatar"],[class*="profile-photo"],img[alt*="photo"]');
+    const hasLogout = !!document.querySelector('[href*="logout"],[data-test*="logout"]');
+    r.auth = (hasAvatar || hasLogout) ? 'logged-in' : 'anonymous';
+
+    // Headings
+    r.headings = Array.from(document.querySelectorAll('h1,h2,h3')).slice(0,10)
+        .map(h => h.innerText.trim()).filter(t => t.length > 0 && t.length < 200);
+
+    // Main text content (article/main/body, skip nav/header/footer/script)
+    const main = document.querySelector('main,article,[role="main"],#content,.content') || document.body;
+    const clone = main.cloneNode(true);
+    ['script','style','nav','footer','header','aside','svg','noscript'].forEach(t =>
+        clone.querySelectorAll(t).forEach(n => n.remove()));
+    const text = clone.innerText.trim().replace(/\\n{3,}/g, '\\n\\n');
+    r.text = text.substring(0, 3000);
+
+    // Forms
+    r.forms = Array.from(document.querySelectorAll('form')).slice(0,5).map(f => {
+        const fields = Array.from(f.querySelectorAll('input:not([type=hidden]),textarea,select')).map(i => ({
+            type: i.type || i.tagName.toLowerCase(),
+            name: i.name || i.id || '',
+            placeholder: i.placeholder || '',
+            label: (i.labels?.[0]?.innerText || i.getAttribute('aria-label') || '').trim(),
+            value: i.value || '',
+        }));
+        const submit = f.querySelector('[type=submit],button[type=submit],button:not([type])');
+        return {action: f.action, fields, submit: submit?.innerText?.trim() || ''};
+    });
+
+    // Links (top 15 meaningful ones)
+    const seen = new Set();
+    r.links = Array.from(document.querySelectorAll('a[href]'))
+        .filter(a => {
+            const t = a.innerText.trim();
+            const h = a.href;
+            if (!t || t.length > 100 || t.length < 2) return false;
+            if (h.startsWith('javascript:') || h === '#') return false;
+            if (seen.has(t)) return false;
+            seen.add(t);
+            return true;
+        })
+        .slice(0, 15)
+        .map(a => ({text: a.innerText.trim(), href: a.href}));
+
+    // Buttons
+    r.buttons = Array.from(document.querySelectorAll('button,[role="button"]'))
+        .map(b => b.innerText.trim())
+        .filter(t => t.length > 0 && t.length < 50)
+        .slice(0, 10);
+
+    // Images with alt text
+    r.images = Array.from(document.querySelectorAll('img[alt]'))
+        .filter(i => i.alt.trim().length > 2 && i.width > 30)
+        .slice(0, 5)
+        .map(i => i.alt.trim());
+
+    return JSON.stringify(r);
+})()
+'''
+
+def sanitize(d=None):
+    """Execute sanitizer on current Chrome page. Returns compact AI view."""
+    if not d: d = chrome()
+    try:
+        raw = d.execute_script(SANITIZE_JS)
+        data = json.loads(raw)
+
+        lines = []
+        # Header
+        state = f' ({data["auth"]})' if data.get('auth') else ''
+        lines.append(f'[{data.get("type","page")}]{state} {data["title"]}')
+        lines.append(f'url: {data["url"]}')
+        lines.append('')
+
+        # Headings
+        for h in data.get('headings', [])[:5]:
+            lines.append(f'# {h}')
+
+        # Forms
+        for f in data.get('forms', []):
+            if f['fields']:
+                lines.append('')
+                for field in f['fields']:
+                    label = field.get('label') or field.get('placeholder') or field.get('name') or field['type']
+                    val = f' = "{field["value"]}"' if field.get('value') else ''
+                    lines.append(f'  [{field["type"]}] {label}{val}')
+                if f.get('submit'):
+                    lines.append(f'  [submit] {f["submit"]}')
+
+        # Buttons
+        btns = data.get('buttons', [])
+        if btns:
+            lines.append('')
+            lines.append(f'[btn] {" | ".join(btns[:10])}')
+
+        # Links
+        links = data.get('links', [])
+        if links:
+            lines.append('')
+            lines.append(f'[links] {len(links)}')
+            for l in links[:15]:
+                lines.append(f'  {l["text"]} → {l["href"]}')
+
+        # Text content
+        text = data.get('text', '')
+        if text:
+            lines.append('')
+            # Truncate to ~1500 chars for context
+            if len(text) > 1500:
+                text = text[:1500] + '...'
+            lines.append(text)
+
+        return '\n'.join(lines)
+    except Exception as e:
+        # Fallback: just get title + text
+        try:
+            title = d.title
+            text = d.execute_script('return document.body?.innerText?.substring(0,2000)') or ''
+            return f'{title}\n\n{text}'
+        except:
+            return f'Error sanitizing: {e}'
+
+
 # ── Actions ──
 
 def act_browse(a):
@@ -185,8 +325,7 @@ def act_browse(a):
     # Chrome fallback for empty results (SPAs, CF)
     log(f'Fast path empty, Chrome fallback...')
     d = chrome_go(url, int(a.get('wait', 8000))/1000)
-    info = d.execute_script('return {title:document.title,text:document.body?.innerText?.substring(0,3000)||"",elements:document.querySelectorAll("*").length}')
-    return f'{info["title"]} | {url}\n{info["elements"]} elements\n\n{info["text"]}'
+    return sanitize(d)
 
 def act_search(a):
     q = a.get('query','')
@@ -199,23 +338,24 @@ def act_read(a):
     if not url: return 'url required'
     out, ms = fast('see', url)
     if len(out) > 100:
-        log(f'V1 read: {ms}ms')
-        return '\n'.join(l for l in out.split('\n') if l.strip() and not l.startswith('==='))[:3000]
+        log(f'Fast read: {ms}ms')
+        # V2 JSON → extract text only
+        try:
+            data = json.loads(out)
+            title = data.get('title', '')
+            nodes = data.get('wom', {}).get('nodes', [])
+            texts = [n.get('label','') for n in nodes if n.get('label','').strip()]
+            return f'{title}\n\n' + '\n'.join(texts[:50])
+        except:
+            return out[:3000]
     d = chrome_go(url, 3)
-    return d.execute_script('''
-        const s=['main','article','[role="main"]','#content'];
-        let el; for(const q of s){el=document.querySelector(q);if(el)break}
-        if(!el)el=document.body;
-        const c=el.cloneNode(true);
-        ['script','style','nav','footer','header'].forEach(t=>c.querySelectorAll(t).forEach(n=>n.remove()));
-        return c.innerText.trim().substring(0,3000);
-    ''') or ''
+    return sanitize(d)
 
 def act_navigate(a):
     url = a.get('url','')
     if not url: return 'url required'
     d = chrome_go(url, int(a.get('wait',5000))/1000)
-    return json.dumps({'title':d.title,'url':d.current_url,'elements':d.execute_script('return document.querySelectorAll("*").length')})
+    return sanitize(d)
 
 def act_find(a):
     text = a.get('text', a.get('selector',''))
@@ -251,7 +391,9 @@ def act_click(a):
         if(els[{idx}]){{els[{idx}].click();return true}}return false;
     ''')
     time.sleep(2)
-    return json.dumps({'clicked':bool(clicked),'url':d.current_url,'title':d.title})
+    if clicked:
+        return f'Clicked "{text}"\n\n' + sanitize(d)
+    return f'Not found: "{text}"'
 
 def act_type(a):
     sel = a.get('selector', a.get('text',''))
@@ -323,12 +465,16 @@ def act_scroll(a):
     ''')
 
 def act_html(a):
+    """Raw HTML — saved to file, returns sanitized view."""
     url = a.get('url','')
     if url: chrome_go(url, 3)
     html = chrome_eval('return document.documentElement.outerHTML')
-    if len(html) > 10000:
-        return html[:10000] + f'...\n[truncated, {len(html)} total bytes]'
-    return html
+    # Save full HTML to file
+    ts = time.strftime('%Y%m%d-%H%M%S')
+    p = RESPONSE_DIR / f'html-{ts}.html'
+    p.write_text(html)
+    log(f'HTML saved: {len(html)} bytes → {p}')
+    return f'HTML saved ({len(html)} bytes) → {p}\n\n' + sanitize()
 
 def act_wait_for(a):
     sel = a.get('selector', a.get('text',''))
@@ -365,7 +511,7 @@ def act_login(a):
     time.sleep(1)
     d.execute_script('document.querySelector("[type=submit],button[type=submit]")?.click()')
     time.sleep(5)
-    return json.dumps({'title':d.title,'url':d.current_url,'logged_in':'login' not in d.current_url.lower()})
+    return sanitize(d)
 
 def act_extract_data(a):
     type_ = a.get('type_', a.get('type', 'table'))
