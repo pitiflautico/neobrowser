@@ -48,8 +48,15 @@ except: pass
 
 # ── V1 Fast Path ──
 
-def v1(cmd, url, extra=None, timeout=30):
-    args = ['neobrowser', cmd, url] + (extra or [])
+# V2 binary for fast HTTP path (wreq Chrome TLS + html5ever + WOM + tracing)
+V2_BIN = str(Path(__file__).parent.parent.parent / 'target' / 'release' / 'neorender')
+# Fallback to V1 if V2 binary not found
+V1_BIN = 'neobrowser'
+
+def fast(cmd, url, extra=None, timeout=30):
+    """Fast path: V2 binary (Rust HTTP + WOM) or V1 fallback."""
+    bin_path = V2_BIN if Path(V2_BIN).exists() else V1_BIN
+    args = [bin_path, cmd, url] + (extra or [])
     start = time.time()
     try:
         r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
@@ -132,25 +139,48 @@ def save_response(text, platform):
 def act_browse(a):
     url = a.get('url','')
     if not url: return 'url required'
-    out, ms = v1('see', url)
+    # Try V2/V1 fast path first
+    out, ms = fast('see', url)
     if len(out) > 200:
+        # V2 returns JSON — extract compact view
+        try:
+            data = json.loads(out)
+            title = data.get('title', '')
+            nodes = data.get('wom', {}).get('nodes', [])
+            if nodes:
+                lines = [f'{title} | {url}\n']
+                for n in nodes[:50]:
+                    label = n.get('label', '')
+                    tag = n.get('tag', '')
+                    href = n.get('href', '')
+                    if label:
+                        if href:
+                            lines.append(f'  [{tag}] {label} → {href}')
+                        else:
+                            lines.append(f'  [{tag}] {label}')
+                log(f'V2 browse: {ms}ms, {len(nodes)} nodes')
+                return '\n'.join(lines)
+        except json.JSONDecodeError:
+            pass
+        # V1 returns plain text
         log(f'V1 browse: {ms}ms')
         return out
-    log(f'V1 empty, Chrome fallback...')
-    d = chrome_go(url)
-    info = d.execute_script('return {title:document.title,text:document.body?.innerText?.substring(0,2000)||"",elements:document.querySelectorAll("*").length}')
+    # Chrome fallback for empty results (SPAs, CF)
+    log(f'Fast path empty, Chrome fallback...')
+    d = chrome_go(url, int(a.get('wait', 8000))/1000)
+    info = d.execute_script('return {title:document.title,text:document.body?.innerText?.substring(0,3000)||"",elements:document.querySelectorAll("*").length}')
     return f'{info["title"]} | {url}\n{info["elements"]} elements\n\n{info["text"]}'
 
 def act_search(a):
     q = a.get('query','')
     if not q: return 'query required'
-    out = v1('search', q, ['--num', str(a.get('num',10))])[0]
+    out = fast('search', q, ['--num', str(a.get('num',10))])[0]
     return out or 'No results'
 
 def act_read(a):
     url = a.get('url','')
     if not url: return 'url required'
-    out, ms = v1('fetch', url)
+    out, ms = fast('see', url)
     if len(out) > 100:
         log(f'V1 read: {ms}ms')
         return '\n'.join(l for l in out.split('\n') if l.strip() and not l.startswith('==='))[:3000]
