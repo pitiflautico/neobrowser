@@ -98,28 +98,50 @@ def chrome():
                     _kill_our_pids()
                     time.sleep(3)
 
-                log('Launching Chrome neomode...')
-                options = uc.ChromeOptions()
-                options.add_argument('--window-size=1920,1080')
-                options.add_argument('--no-sandbox')
-                options.add_argument('--disable-dev-shm-usage')
-                options.add_argument(f'--user-agent={CHROME_UA}')
-                # Chrome 146 both headless modes hang with uc. Use offscreen instead.
-                options.add_argument('--window-position=-2400,-2400')
+                # GHOST VIRTUAL MODE: launch Chrome ourselves, connect via uc's chromedriver
+                # This bypasses uc.Chrome() which hangs on Chrome 146 headless.
+                # Chrome runs with 1x1 window offscreen = invisible but real browser.
+                log('Launching Chrome ghost virtual...')
+                import tempfile
 
-                _chrome = uc.Chrome(options=options, version_main=146)
+                # Get uc's patched chromedriver (anti-detection)
+                patcher = uc.Patcher(version_main=146)
+                patcher.auto()
 
-                # Track ALL child PIDs
+                # Find free port
+                _s = __import__('socket').socket()
+                _s.bind(('127.0.0.1', 0)); _port = _s.getsockname()[1]; _s.close()
+
+                # Launch Chrome directly with virtual 1x1 window
+                _profile = tempfile.mkdtemp()
+                _proc = subprocess.Popen([
+                    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                    f'--remote-debugging-port={_port}',
+                    f'--user-data-dir={_profile}',
+                    '--window-size=1,1',
+                    '--window-position=-9999,-9999',
+                    '--no-first-run',
+                    '--disable-background-networking',
+                    '--disable-dev-shm-usage',
+                    'about:blank'
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                _chrome_pids.add(_proc.pid)
+                time.sleep(3)
+
+                # Connect via uc's patched chromedriver
+                from selenium.webdriver.chrome.service import Service
+                from selenium import webdriver as wd
+                _opts = wd.ChromeOptions()
+                _opts.debugger_address = f'127.0.0.1:{_port}'
+                _chrome = wd.Chrome(service=Service(patcher.executable_path), options=_opts)
+
+                # Resize to full after connect (sites check viewport)
+                _chrome.set_window_size(1920, 1080)
+                _chrome.set_window_position(-2400, -2400)
+
+                # Track chromedriver PID
                 if hasattr(_chrome, 'service') and hasattr(_chrome.service, 'process'):
                     _chrome_pids.add(_chrome.service.process.pid)
-                    # Also track Chrome browser process launched by chromedriver
-                    try:
-                        import psutil
-                        for child in psutil.Process(_chrome.service.process.pid).children(recursive=True):
-                            _chrome_pids.add(child.pid)
-                    except: pass
-                if hasattr(_chrome, 'browser_pid'):
-                    _chrome_pids.add(_chrome.browser_pid)
 
                 PID_FILE.parent.mkdir(parents=True, exist_ok=True)
                 PID_FILE.write_text(json.dumps(list(_chrome_pids)))
