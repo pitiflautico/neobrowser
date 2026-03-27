@@ -100,12 +100,13 @@ impl ChromeCookieImporter {
         let (sql, params_owned): (String, Vec<String>) = match &self.domain_filter {
             Some(domain) => {
                 let dot_domain = format!(".{domain}");
+                let like_domain = format!("%.{domain}");
                 (
                     "SELECT host_key, name, encrypted_value, path, expires_utc, \
                      is_httponly, is_secure, samesite \
-                     FROM cookies WHERE host_key = ?1 OR host_key = ?2"
+                     FROM cookies WHERE host_key = ?1 OR host_key = ?2 OR host_key LIKE ?3"
                         .to_string(),
-                    vec![domain.clone(), dot_domain],
+                    vec![domain.clone(), dot_domain, like_domain],
                 )
             }
             None => (
