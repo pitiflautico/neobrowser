@@ -104,7 +104,8 @@ def chrome():
                 options.add_argument('--no-sandbox')
                 options.add_argument('--disable-dev-shm-usage')
                 options.add_argument(f'--user-agent={CHROME_UA}')
-                options.add_argument('--headless')  # NOT --headless=new (hangs on Chrome 146)
+                # Chrome 146 both headless modes hang with uc. Use offscreen instead.
+                options.add_argument('--window-position=-2400,-2400')
 
                 _chrome = uc.Chrome(options=options, version_main=146)
 
