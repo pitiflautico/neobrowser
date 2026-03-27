@@ -600,27 +600,106 @@ def chat_gpt(msg, wait=True):
     return 'No response after 120s'
 
 def chat_grok(msg, wait=True):
+    from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
+    from selenium.webdriver.common.action_chains import ActionChains
     d = chrome()
     if 'grok' not in _chrome_tabs:
         d.switch_to.new_window('tab')
         _chrome_tabs['grok'] = d.current_window_handle
+        chrome_import_cookies('grok.com')
+        chrome_import_cookies('x.com')
         d.get('https://grok.com'); time.sleep(8)
         log(f'Grok tab: {d.title}')
     else:
         d.switch_to.window(_chrome_tabs['grok'])
 
-    el = d.find_element('css selector', 'textarea, [contenteditable="true"], [role="textbox"]')
-    el.send_keys(msg); time.sleep(0.3); el.send_keys(Keys.RETURN)
+    # Grok uses ProseMirror editor inside div.query-bar
+    # Click on the input area first, then type
+    try:
+        # Try the ProseMirror paragraph inside query-bar
+        el = d.find_element(By.CSS_SELECTOR, 'div.query-bar p, div.query-bar')
+        el.click()
+        time.sleep(0.3)
+        # Type using ActionChains (works with ProseMirror/contenteditable)
+        ActionChains(d).send_keys(msg).perform()
+        time.sleep(0.3)
+        ActionChains(d).send_keys(Keys.RETURN).perform()
+    except Exception as e:
+        log(f'Grok input error: {e}')
+        # Fallback: try textarea (search bar)
+        try:
+            el = d.find_element(By.CSS_SELECTOR, 'textarea')
+            el.send_keys(msg)
+            el.send_keys(Keys.RETURN)
+        except:
+            return f'Error: Cannot find Grok input. Page: {d.title}'
+
     log('Grok: sent')
     if not wait: return 'Sent.'
 
-    for i in range(60):
+    # Count messages before to detect new response
+    msg_count_before = d.execute_script('''
+        return document.querySelectorAll('[class*="message"], [class*="response"], article, [data-message-id]').length;
+    ''') or 0
+
+    # Wait for response
+    prev_text = ''
+    stable = 0
+    for i in range(120):
         time.sleep(1)
-        if i > 5:
-            resp = d.execute_script('const b=document.querySelectorAll("div[class*=response],div[class*=message-content],article");return b.length>0?b[b.length-1].innerText:null')
-            if resp and len(resp) > 5: return save_response(resp, 'grok')
-    return 'No response after 60s'
+        if i > 3:
+            # Extract last response — try multiple selectors for Grok
+            resp = d.execute_script('''
+                // Grok response blocks
+                const sels = [
+                    'div[class*="message-content"]',
+                    'div[class*="response"]',
+                    'article',
+                    '[data-message-id]',
+                    '.markdown',
+                    'div.prose',
+                ];
+                for (const sel of sels) {
+                    const els = document.querySelectorAll(sel);
+                    if (els.length > 0) {
+                        const last = els[els.length - 1];
+                        const text = last.innerText?.trim();
+                        if (text && text.length > 3) return text;
+                    }
+                }
+                // Fallback: get all substantial text blocks in main content area
+                const main = document.querySelector('main') || document.body;
+                const blocks = main.querySelectorAll('div > p, div > ul, div > ol, div > pre, div > h1, div > h2, div > h3');
+                if (blocks.length > 3) {
+                    // Get text of last few blocks (likely the response)
+                    const texts = [];
+                    for (let i = Math.max(0, blocks.length - 10); i < blocks.length; i++) {
+                        const t = blocks[i].innerText?.trim();
+                        if (t && t.length > 5) texts.push(t);
+                    }
+                    if (texts.length > 0) return texts.join('\\n');
+                }
+                return null;
+            ''')
+            if resp and len(resp) > 5:
+                # Check if response is stable (stopped growing)
+                if resp == prev_text:
+                    stable += 1
+                    if stable >= 2:
+                        log(f'Grok response stable ({i}s, {len(resp)} chars)')
+                        return save_response(resp, 'grok')
+                else:
+                    stable = 0
+                prev_text = resp
+
+        if i % 15 == 0 and i > 0:
+            log(f'Grok: waiting... ({i}s)')
+
+    # Final attempt
+    if prev_text:
+        return save_response(prev_text, 'grok')
+    return 'No response after 120s'
 
 # ── Dispatch ──
 
