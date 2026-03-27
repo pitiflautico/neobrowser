@@ -104,7 +104,7 @@ def chrome():
                 options.add_argument('--no-sandbox')
                 options.add_argument('--disable-dev-shm-usage')
                 options.add_argument(f'--user-agent={CHROME_UA}')
-                options.headless = True
+                options.add_argument('--headless')  # NOT --headless=new (hangs on Chrome 146)
 
                 _chrome = uc.Chrome(options=options, version_main=146)
 
