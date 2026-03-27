@@ -58,6 +58,7 @@ fn main() {
         Some("eval") => run_eval(&args),
         Some("search") => run_search(&args),
         Some("import-cookies") => run_import_cookies(&args),
+        Some("export-cookies") => run_export_cookies(&args),
         Some("--help") | Some("-h") | None => print_help(),
         Some(cmd) => {
             eprintln!("Unknown command: {cmd}");
@@ -417,6 +418,41 @@ fn import_cookies_file(engine: &mut NeoSession, path: &str) {
     };
     engine.import_cookies(&cookies);
     eprintln!("[NeoRender] Imported {} cookies from {path}", cookies.len());
+}
+
+/// Export cookies from Chrome profile as JSON to stdout.
+/// Usage: neorender export-cookies <domain> [--profile "Profile 24"]
+fn run_export_cookies(args: &[String]) {
+    let mut domain = "";
+    let mut profile = "Profile 24";
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--profile" => { i += 1; profile = args.get(i).map(|s| s.as_str()).unwrap_or(profile); }
+            s if !s.starts_with('-') && domain.is_empty() => { domain = s; }
+            _ => {}
+        }
+        i += 1;
+    }
+    if domain.is_empty() {
+        eprintln!("Usage: neorender export-cookies <domain> [--profile \"Profile 24\"]");
+        std::process::exit(1);
+    }
+
+    let importer = neo_http::cookies::chrome::ChromeCookieImporter::new(profile, Some(domain));
+    match importer.import() {
+        Ok(all_cookies) => {
+            let filtered: Vec<_> = all_cookies.into_iter()
+                .filter(|c| c.domain.ends_with(domain) || c.domain == format!(".{domain}"))
+                .collect();
+            eprintln!("[export-cookies] {} cookies for *{}*", filtered.len(), domain);
+            println!("{}", serde_json::to_string_pretty(&filtered).unwrap_or_default());
+        }
+        Err(e) => {
+            eprintln!("[export-cookies] Import failed: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn run_search(args: &[String]) {

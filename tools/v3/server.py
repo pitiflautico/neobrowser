@@ -97,21 +97,37 @@ def chrome():
         log(f'Chrome ready (pids={_chrome_pids})')
     return _chrome
 
+_imported_domains = set()
+
 def chrome_go(url, wait_s=5):
-    d = chrome(); d.get(url); time.sleep(wait_s); return d
+    d = chrome()
+    # Auto-import cookies on first visit to a domain
+    from urllib.parse import urlparse
+    domain = urlparse(url).hostname or ''
+    base_domain = '.'.join(domain.replace('www.','').split('.')[-2:])
+    if base_domain and base_domain not in _imported_domains:
+        chrome_import_cookies(base_domain)
+        _imported_domains.add(base_domain)
+    d.get(url); time.sleep(wait_s)
+    return d
 
 def chrome_eval(js):
     return chrome().execute_script(js)
 
 def chrome_import_cookies(domain):
+    """Import cookies using V2 Rust binary (correct AES decrypt)."""
     d = chrome()
-    script = Path(__file__).parent.parent / 'spa-clone' / 'import-cookies.mjs'
-    if not script.exists(): return
     try:
-        r = subprocess.run(['node', str(script), domain, '--profile', PROFILE, '--json'],
+        r = subprocess.run([V2_BIN, 'export-cookies', domain, '--profile', PROFILE],
                            capture_output=True, text=True, timeout=15)
-        if r.returncode != 0: return
+        if r.returncode != 0:
+            log(f'V2 export-cookies failed: {r.stderr[:100]}')
+            return
         cookies = json.loads(r.stdout)
+        if not cookies:
+            log(f'No cookies for {domain}')
+            return
+        # Navigate to domain first (required for setting cookies)
         d.get(f'https://{domain}'); time.sleep(1)
         ok = 0
         for c in cookies:
@@ -121,6 +137,7 @@ def chrome_import_cookies(domain):
                 if c.get('path'): ck['path'] = c['path']
                 if c.get('secure'): ck['secure'] = c['secure']
                 if c.get('http_only'): ck['httpOnly'] = c['http_only']
+                if c.get('expires'): ck['expiry'] = c['expires']
                 d.add_cookie(ck); ok += 1
             except: pass
         log(f'Cookies: {ok}/{len(cookies)} for {domain}')
