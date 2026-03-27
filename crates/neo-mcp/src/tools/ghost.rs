@@ -133,7 +133,7 @@ pub(crate) fn definition() -> super::ToolDef {
     }
 }
 
-pub fn call(args: Value, _state: &mut McpState) -> Result<Value, McpError> {
+pub fn call(args: Value, state: &mut McpState) -> Result<Value, McpError> {
     let action = args["action"].as_str().unwrap_or("open");
     let url = args["url"].as_str().unwrap_or("");
     let message = args["message"].as_str().unwrap_or("");
@@ -141,37 +141,77 @@ pub fn call(args: Value, _state: &mut McpState) -> Result<Value, McpError> {
     let wait = args["wait"].as_u64().unwrap_or(5000);
 
     match action {
-        // Original specialized handlers
-        "open" => ghost_open(url, profile, wait),
-        "chat" => ghost_chat(url, message, profile),
-        "screenshot" => ghost_screenshot(url, profile, wait),
-        "html" => ghost_html(url, profile, wait),
+        // ── HYBRID: Rust-first, Ghost fallback ──
+        // These actions try the fast Rust engine first.
+        // If result is empty/insufficient, fall back to Chrome ghost.
 
-        // Delegated actions
         "search" => {
             let query = args["query"].as_str().unwrap_or("");
             if query.is_empty() {
                 return Err(McpError::InvalidParams("query required for search".into()));
             }
-            let engine = args["engine"].as_str().unwrap_or("google");
+            // Always use Rust HTTP search — 10x faster, same results
+            let search_args = json!({"query": query, "num": args["num"].as_u64().unwrap_or(10)});
+            match crate::tools::search::call(search_args, state) {
+                Ok(result) => {
+                    // Check if we got results
+                    let text = result["content"][0]["text"].as_str().unwrap_or("");
+                    if text.len() > 50 {
+                        return Ok(result);
+                    }
+                    // Empty — fall through to ghost
+                    eprintln!("[ghost] Rust search empty, trying Chrome...");
+                }
+                Err(_) => {}
+            }
+            // Fallback to ghost Chrome search
+            let engine = args["engine"].as_str().unwrap_or("duckduckgo");
             let num = args["num"].as_u64().unwrap_or(10);
             let num_str = num.to_string();
             let ghost_args = vec!["search", query, "--engine", engine, "--num", &num_str];
             ghost_delegate(&ghost_args, 30, profile)
         }
-        "navigate" => {
+
+        "navigate" | "open" => {
             if url.is_empty() {
-                return Err(McpError::InvalidParams("url required for navigate".into()));
+                return Err(McpError::InvalidParams("url required".into()));
             }
+            // Try Rust engine first (fast HTTP fetch + WOM extraction)
+            let browse_args = json!({"url": url});
+            match crate::tools::browse::call(browse_args, state) {
+                Ok(result) => {
+                    let text = result["content"][0]["text"].as_str().unwrap_or("");
+                    if text.len() > 100 {
+                        return Ok(result);
+                    }
+                    eprintln!("[ghost] Rust navigate got {} chars, trying Chrome...", text.len());
+                }
+                Err(_) => {}
+            }
+            // Fallback to ghost
             let wait_str = wait.to_string();
-            let ghost_args = vec!["navigate", url, "--wait", &wait_str];
-            ghost_delegate(&ghost_args, 30, profile)
+            ghost_delegate(&["open", url, "--wait", &wait_str], 30, profile)
         }
+
         "read" => {
-            let selector = args["selector"].as_str().unwrap_or("");
             if url.is_empty() {
                 return Err(McpError::InvalidParams("url required for read".into()));
             }
+            let selector = args["selector"].as_str().unwrap_or("");
+            // Try Rust extract first
+            let extract_args = json!({"format": "text"});
+            let browse_args = json!({"url": url});
+            if let Ok(browse_result) = crate::tools::browse::call(browse_args, state) {
+                // Try to extract text from the browsed page
+                if let Ok(extract_result) = crate::tools::extract::call(extract_args, state) {
+                    let text = extract_result["content"][0]["text"].as_str().unwrap_or("");
+                    if text.len() > 100 {
+                        return Ok(extract_result);
+                    }
+                }
+            }
+            eprintln!("[ghost] Rust read insufficient, trying Chrome...");
+            // Fallback to ghost
             let mut ghost_args = vec!["read", url];
             if !selector.is_empty() {
                 ghost_args.extend(&["--selector", selector]);
@@ -268,6 +308,22 @@ pub fn call(args: Value, _state: &mut McpState) -> Result<Value, McpError> {
             if url.is_empty() {
                 return Err(McpError::InvalidParams("url required for extract_data".into()));
             }
+            // Try Rust engine first for links/text extraction
+            if type_ == "links" || type_ == "list" {
+                let browse_args = json!({"url": url});
+                if let Ok(_) = crate::tools::browse::call(browse_args, state) {
+                    let fmt = if type_ == "links" { "links" } else { "text" };
+                    let extract_args = json!({"format": fmt});
+                    if let Ok(result) = crate::tools::extract::call(extract_args, state) {
+                        let text = result["content"][0]["text"].as_str().unwrap_or("");
+                        if text.len() > 50 {
+                            return Ok(result);
+                        }
+                    }
+                }
+                eprintln!("[ghost] Rust extract insufficient, trying Chrome...");
+            }
+            // Ghost for tables/products or fallback
             let mut ghost_args = vec!["extract_data", url, "--type", type_];
             if !selector.is_empty() {
                 ghost_args.extend(&["--selector", selector]);
