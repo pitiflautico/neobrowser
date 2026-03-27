@@ -54,8 +54,8 @@ V2_BIN = str(Path(__file__).parent.parent.parent / 'target' / 'release' / 'neore
 V1_BIN = 'neobrowser'
 
 def fast(cmd, url, extra=None, timeout=30):
-    """Fast path: V2 binary (Rust HTTP + WOM) or V1 fallback."""
-    bin_path = V2_BIN if Path(V2_BIN).exists() else V1_BIN
+    """Fast path: V1 (fastest, Chrome auto-fallback) or V2."""
+    bin_path = V1_BIN  # V1 is 3.5x faster than V2 for browse
     args = [bin_path, cmd, url] + (extra or [])
     start = time.time()
     try:
