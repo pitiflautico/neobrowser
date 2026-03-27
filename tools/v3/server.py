@@ -103,8 +103,10 @@ class GhostChrome:
         self._current_url = url
 
     def execute_script(self, js):
+        # Wrap in IIFE so 'return' statements work (CDP Runtime.evaluate != selenium)
+        expr = f'(function(){{{js}}})()'  if 'return ' in js else js
         r = self._send('Runtime.evaluate', {
-            'expression': js,
+            'expression': expr,
             'returnByValue': True,
             'awaitPromise': False,
         })
