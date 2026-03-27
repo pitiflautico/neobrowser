@@ -63,10 +63,116 @@ def fast(cmd, url, extra=None, timeout=30):
         return r.stdout.strip(), int((time.time()-start)*1000)
     except: return '', 30000
 
-# ── Chrome Neomode (lazy singleton) ──
+# ── Ghost Chrome — headless via pure CDP WebSocket (no chromedriver) ──
+
+import asyncio, tempfile
+try:
+    import websockets
+    import websockets.sync.client as ws_sync
+    HAS_WS = True
+except ImportError:
+    HAS_WS = False
+    log('WARNING: websockets not installed, pip install websockets')
+
+
+class GhostChrome:
+    """Headless Chrome controlled via pure CDP WebSocket. No chromedriver."""
+
+    def __init__(self, proc, port, ws, profile_dir):
+        self.proc = proc
+        self.port = port
+        self.ws = ws  # websockets sync client
+        self.profile_dir = profile_dir
+        self._cmd_id = 10
+        self._current_url = ''
+
+    def _send(self, method, params=None):
+        self._cmd_id += 1
+        msg = json.dumps({'id': self._cmd_id, 'method': method, 'params': params or {}})
+        self.ws.send(msg)
+        # Read responses until we get our ID back
+        while True:
+            raw = self.ws.recv(timeout=15)
+            data = json.loads(raw)
+            if data.get('id') == self._cmd_id:
+                return data.get('result', {})
+            # Skip events
+
+    def navigate(self, url):
+        self._send('Page.navigate', {'url': url})
+        self._current_url = url
+
+    def execute_script(self, js):
+        r = self._send('Runtime.evaluate', {
+            'expression': js,
+            'returnByValue': True,
+            'awaitPromise': False,
+        })
+        val = r.get('result', {}).get('value')
+        if val is None:
+            # Try as string
+            val = r.get('result', {}).get('description', '')
+        return val
+
+    def execute_cdp_cmd(self, method, params=None):
+        return self._send(method, params)
+
+    def save_screenshot(self, path):
+        import base64
+        r = self._send('Page.captureScreenshot', {'format': 'png'})
+        data = base64.b64decode(r.get('data', ''))
+        with open(path, 'wb') as f:
+            f.write(data)
+
+    @property
+    def title(self):
+        return self.execute_script('document.title') or ''
+
+    @property
+    def current_url(self):
+        return self.execute_script('location.href') or self._current_url
+
+    def get(self, url):
+        self.navigate(url)
+
+    def set_window_size(self, w, h):
+        self._send('Emulation.setDeviceMetricsOverride', {
+            'width': w, 'height': h, 'deviceScaleFactor': 1, 'mobile': False
+        })
+
+    def set_window_position(self, x, y):
+        pass  # Headless, no window
+
+    def find_element(self, by, value):
+        """Minimal find_element compat for selenium callers."""
+        raise NotImplementedError("Use execute_script for element interaction")
+
+    def add_cookie(self, cookie):
+        params = {'name': cookie['name'], 'value': cookie['value']}
+        if cookie.get('domain'): params['domain'] = cookie['domain']
+        if cookie.get('path'): params['path'] = cookie['path']
+        if cookie.get('secure'): params['secure'] = cookie['secure']
+        if cookie.get('httpOnly'): params['httpOnly'] = cookie['httpOnly']
+        if cookie.get('expiry'): params['expires'] = cookie['expiry']
+        params['url'] = f"https://{cookie.get('domain','').lstrip('.')}"
+        self._send('Network.setCookie', params)
+
+    def quit(self):
+        try: self.ws.close()
+        except: pass
+        try: self.proc.kill()
+        except: pass
+
+    def switch_to_new_tab(self, name):
+        """Create new tab and return its WS URL."""
+        r = self._send('Target.createTarget', {'url': 'about:blank'})
+        target_id = r.get('targetId', '')
+        # Attach to new target
+        r2 = self._send('Target.attachToTarget', {'targetId': target_id, 'flatten': True})
+        return target_id
+
 
 def _kill_our_pids():
-    """Kill only our tracked Chrome processes."""
     dead = set()
     for pid in _chrome_pids:
         try: os.kill(pid, 9)
@@ -74,6 +180,7 @@ def _kill_our_pids():
     _chrome_pids.difference_update(dead)
 
 def chrome():
+    """Launch or return headless Chrome controlled via pure CDP WebSocket."""
     global _chrome
     if _chrome:
         try: _ = _chrome.title; return _chrome
@@ -84,71 +191,72 @@ def chrome():
             _kill_our_pids()
             _chrome = None; _chrome_tabs.clear()
             _chrome_pids.clear()
-            time.sleep(2)
+            time.sleep(1)
 
     with _chrome_lock:
         if _chrome: return _chrome
-        import undetected_chromedriver as uc
 
-        # Retry up to 3 times with cleanup
         for attempt in range(3):
             try:
                 if attempt > 0:
-                    log(f'Retry {attempt+1}...')
-                    _kill_our_pids()
-                    time.sleep(3)
+                    _kill_our_pids(); time.sleep(2)
 
-                # GHOST VIRTUAL MODE: launch Chrome ourselves, connect via uc's chromedriver
-                # This bypasses uc.Chrome() which hangs on Chrome 146 headless.
-                # Chrome runs with 1x1 window offscreen = invisible but real browser.
-                log('Launching Chrome ghost virtual...')
-                import tempfile
+                log('Launching Ghost Chrome (headless + CDP)...')
+                import socket as _socket
 
-                # Get uc's patched chromedriver (anti-detection)
-                patcher = uc.Patcher(version_main=146)
-                patcher.auto()
+                _s = _socket.socket(); _s.bind(('127.0.0.1',0))
+                port = _s.getsockname()[1]; _s.close()
+                profile = tempfile.mkdtemp()
 
-                # Find free port
-                _s = __import__('socket').socket()
-                _s.bind(('127.0.0.1', 0)); _port = _s.getsockname()[1]; _s.close()
-
-                # Launch Chrome directly with virtual 1x1 window
-                _profile = tempfile.mkdtemp()
-                _proc = subprocess.Popen([
+                proc = subprocess.Popen([
                     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-                    f'--remote-debugging-port={_port}',
-                    f'--user-data-dir={_profile}',
-                    '--window-size=1,1',
-                    '--window-position=-9999,-9999',
+                    f'--remote-debugging-port={port}',
+                    f'--user-data-dir={profile}',
+                    '--headless=new',
                     '--no-first-run',
                     '--disable-background-networking',
                     '--disable-dev-shm-usage',
+                    '--window-size=1920,1080',
+                    f'--user-agent={CHROME_UA}',
                     'about:blank'
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                _chrome_pids.add(_proc.pid)
-                time.sleep(3)
+                _chrome_pids.add(proc.pid)
+                time.sleep(2)
 
-                # Connect via uc's patched chromedriver
-                from selenium.webdriver.chrome.service import Service
-                from selenium import webdriver as wd
-                _opts = wd.ChromeOptions()
-                _opts.debugger_address = f'127.0.0.1:{_port}'
-                _chrome = wd.Chrome(service=Service(patcher.executable_path), options=_opts)
+                # Get page WS URL via HTTP
+                def _http_get(path):
+                    s = _socket.socket(); s.settimeout(3)
+                    s.connect(('127.0.0.1', port))
+                    s.send(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n'.encode())
+                    data = b''
+                    while True:
+                        try: chunk = s.recv(4096)
+                        except: break
+                        if not chunk: break
+                        data += chunk
+                        if len(data) > 200: break
+                    s.close()
+                    return data.split(b'\r\n\r\n',1)[1] if b'\r\n\r\n' in data else data
 
-                # Resize to full after connect (sites check viewport)
+                targets = json.loads(_http_get('/json/list'))
+                page_ws = [t['webSocketDebuggerUrl'] for t in targets if t['type']=='page'][0]
+
+                # Connect via WebSocket
+                ws = ws_sync.connect(page_ws)
+                _chrome = GhostChrome(proc, port, ws, profile)
+
+                # Set viewport
                 _chrome.set_window_size(1920, 1080)
-                _chrome.set_window_position(-2400, -2400)
 
-                # Track chromedriver PID
-                if hasattr(_chrome, 'service') and hasattr(_chrome.service, 'process'):
-                    _chrome_pids.add(_chrome.service.process.pid)
+                # Neomode patches
+                _chrome.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
+                _chrome.execute_cdp_cmd('Page.enable')
+                _chrome.execute_cdp_cmd('Network.enable')
 
                 PID_FILE.parent.mkdir(parents=True, exist_ok=True)
                 PID_FILE.write_text(json.dumps(list(_chrome_pids)))
 
-                _chrome.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
-                _chrome_tabs['main'] = _chrome.current_window_handle
-                log(f'Chrome ready (pids={_chrome_pids})')
+                log(f'Ghost Chrome ready (headless, port={port}, pid={proc.pid})')
                 return _chrome
             except Exception as e:
                 log(f'Chrome launch failed: {e}')
@@ -175,7 +283,7 @@ def chrome_eval(js):
     return chrome().execute_script(js)
 
 def chrome_import_cookies(domain):
-    """Import cookies using V2 Rust binary (correct AES decrypt)."""
+    """Import cookies using V2 Rust binary (correct AES decrypt) via CDP Network.setCookie."""
     d = chrome()
     try:
         r = subprocess.run([V2_BIN, 'export-cookies', domain, '--profile', PROFILE],
@@ -187,18 +295,18 @@ def chrome_import_cookies(domain):
         if not cookies:
             log(f'No cookies for {domain}')
             return
-        # Navigate to domain first (required for setting cookies)
-        d.get(f'https://{domain}'); time.sleep(1)
         ok = 0
         for c in cookies:
             try:
-                ck = {'name': c['name'], 'value': c['value']}
-                if c.get('domain'): ck['domain'] = c['domain']
-                if c.get('path'): ck['path'] = c['path']
-                if c.get('secure'): ck['secure'] = c['secure']
-                if c.get('http_only'): ck['httpOnly'] = c['http_only']
-                if c.get('expires'): ck['expiry'] = c['expires']
-                d.add_cookie(ck); ok += 1
+                d.add_cookie({
+                    'name': c['name'], 'value': c['value'],
+                    'domain': c.get('domain', ''),
+                    'path': c.get('path', '/'),
+                    'secure': c.get('secure', False),
+                    'httpOnly': c.get('http_only', False),
+                    'expiry': c.get('expires'),
+                })
+                ok += 1
             except: pass
         log(f'Cookies: {ok}/{len(cookies)} for {domain}')
     except Exception as e:
@@ -591,26 +699,30 @@ def act_extract_data(a):
 # ── Chat (persistent tabs) ──
 
 def chat_gpt(msg, wait=True):
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.keys import Keys
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-
     d = chrome()
     if 'chatgpt' not in _chrome_tabs:
-        d.switch_to.new_window('tab')
-        _chrome_tabs['chatgpt'] = d.current_window_handle
         chrome_import_cookies('chatgpt.com')
         chrome_import_cookies('openai.com')
         d.get('https://chatgpt.com'); time.sleep(8)
-        log(f'ChatGPT tab: {d.title}')
-    else:
-        d.switch_to.window(_chrome_tabs['chatgpt'])
+        _chrome_tabs['chatgpt'] = True
+        log(f'ChatGPT: {d.title}')
 
-    el = WebDriverWait(d, 10).until(EC.presence_of_element_located((By.ID, 'prompt-textarea')))
-    el.click(); time.sleep(0.3); el.send_keys(msg); time.sleep(0.5)
-    try: d.find_element(By.CSS_SELECTOR, '[data-testid="send-button"]').click()
-    except: el.send_keys(Keys.RETURN)
+    # Type message via JS (no selenium needed)
+    d.execute_script(f'''
+        const el = document.getElementById('prompt-textarea');
+        if (el) {{
+            el.focus();
+            el.innerText = {json.dumps(msg)};
+            el.dispatchEvent(new Event('input', {{bubbles:true}}));
+        }}
+    ''')
+    time.sleep(0.5)
+    d.execute_script('''
+        const btn = document.querySelector('[data-testid="send-button"]');
+        if (btn) btn.click();
+        else document.getElementById('prompt-textarea')?.dispatchEvent(
+            new KeyboardEvent('keydown', {key:'Enter',code:'Enter',keyCode:13,bubbles:true}));
+    ''')
     log('GPT: sent')
     if not wait: return 'Sent.'
 
@@ -623,40 +735,34 @@ def chat_gpt(msg, wait=True):
     return 'No response after 120s'
 
 def chat_grok(msg, wait=True):
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.keys import Keys
-    from selenium.webdriver.common.action_chains import ActionChains
     d = chrome()
     if 'grok' not in _chrome_tabs:
-        d.switch_to.new_window('tab')
-        _chrome_tabs['grok'] = d.current_window_handle
-        chrome_import_cookies('grok.com')
         chrome_import_cookies('x.com')
+        chrome_import_cookies('grok.com')
         d.get('https://grok.com'); time.sleep(8)
-        log(f'Grok tab: {d.title}')
-    else:
-        d.switch_to.window(_chrome_tabs['grok'])
+        _chrome_tabs['grok'] = True
+        log(f'Grok: {d.title}')
 
-    # Grok uses ProseMirror editor inside div.query-bar
-    # Click on the input area first, then type
-    try:
-        # Try the ProseMirror paragraph inside query-bar
-        el = d.find_element(By.CSS_SELECTOR, 'div.query-bar p, div.query-bar')
-        el.click()
-        time.sleep(0.3)
-        # Type using ActionChains (works with ProseMirror/contenteditable)
-        ActionChains(d).send_keys(msg).perform()
-        time.sleep(0.3)
-        ActionChains(d).send_keys(Keys.RETURN).perform()
-    except Exception as e:
-        log(f'Grok input error: {e}')
-        # Fallback: try textarea (search bar)
-        try:
-            el = d.find_element(By.CSS_SELECTOR, 'textarea')
-            el.send_keys(msg)
-            el.send_keys(Keys.RETURN)
-        except:
-            return f'Error: Cannot find Grok input. Page: {d.title}'
+    # Type via CDP Input.dispatchKeyEvent (works with ProseMirror)
+    d.execute_script('''
+        const el = document.querySelector('div.query-bar p') || document.querySelector('div.query-bar') || document.querySelector('textarea');
+        if (el) { el.click(); el.focus(); }
+    ''')
+    time.sleep(0.3)
+    # Type each character via CDP
+    for char in msg:
+        d.execute_cdp_cmd('Input.dispatchKeyEvent', {
+            'type': 'keyDown', 'text': char, 'key': char,
+            'code': f'Key{char.upper()}' if char.isalpha() else '',
+            'windowsVirtualKeyCode': ord(char),
+        })
+        d.execute_cdp_cmd('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': char})
+    time.sleep(0.3)
+    # Press Enter
+    d.execute_cdp_cmd('Input.dispatchKeyEvent', {
+        'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13, 'text': '\r'
+    })
+    d.execute_cdp_cmd('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'Enter', 'code': 'Enter'})
 
     log('Grok: sent')
     if not wait: return 'Sent.'
