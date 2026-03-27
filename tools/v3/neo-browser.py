@@ -450,18 +450,31 @@ def _chat_ensure(platform, url, cookies):
         log(f'{platform}: {d.title}')
     return d
 
-def _chat_wait_response(d, platform, user_msg, extract_js, max_wait=120):
+def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wait=120):
+    # Count responses BEFORE sending to detect new one
+    before_count = 0
+    if count_js:
+        before_count = d.js(count_js) or 0
+
     prev = ''; stable = 0
     for i in range(max_wait):
         time.sleep(1)
-        if i > 3:
+
+        # Check if a NEW response appeared (count increased)
+        if count_js and i < 30:
+            current_count = d.js(count_js) or 0
+            if current_count <= before_count and i < 15:
+                continue  # No new response yet, keep waiting
+
+        if i > 2:
             resp = d.js(extract_js)
-            if resp and len(resp) > 3:
+            if resp and len(resp) > 3 and resp != user_msg:
                 if resp == prev:
                     stable += 1
                     if stable >= 2: return save(resp, platform)
                 else: stable = 0
                 prev = resp
+
         if i > 0 and i % 15 == 0: log(f'{platform}: waiting... ({i}s)')
     return save(prev, platform) if prev else 'No response'
 
@@ -482,13 +495,19 @@ def tool_gpt(args):
     # send
     msg = args.get('message', '')
     if not msg: return 'message required'
-    d.js(f'const el=document.getElementById("prompt-textarea");if(el){{el.focus();el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}')
+    # Focus the textarea
+    d.js('const el=document.getElementById("prompt-textarea");if(el){el.focus();el.click()}')
+    time.sleep(0.3)
+    # Type via CDP Input.insertText (works with ProseMirror/React)
+    d._send('Input.insertText', {'text': msg})
     time.sleep(0.5)
+    # Click send button
     d.js('const b=document.querySelector("[data-testid=send-button]");if(b)b.click()')
     log('GPT: sent')
     if not args.get('wait', True): return 'Sent.'
     return _chat_wait_response(d, 'gpt', msg,
-        'const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
+        'const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null',
+        'return document.querySelectorAll("[data-message-author-role=assistant]").length')
 
 def tool_grok(args):
     action = args.get('action', 'send')
