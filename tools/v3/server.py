@@ -831,6 +831,78 @@ def chat_grok(msg, wait=True):
         return save_response(prev_text, 'grok')
     return 'No response after 120s'
 
+# ── Chat read/status (no sending) ──
+
+def chat_read_last(platform):
+    """Read last AI response without sending anything."""
+    d = chrome()
+    if platform not in _chrome_tabs:
+        return f'{platform} not open. Send a message first.'
+
+    if platform == 'chatgpt':
+        resp = d.execute_script('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
+        return save_response(resp, 'gpt') if resp else 'No messages yet'
+    elif platform == 'grok':
+        resp = d.execute_script('''
+            const sels = ['.markdown', 'div.prose', 'article'];
+            for (const sel of sels) {
+                const els = document.querySelectorAll(sel);
+                if (els.length > 0) return els[els.length-1].innerText;
+            }
+            return null;
+        ''')
+        return save_response(resp, 'grok') if resp else 'No messages yet'
+    return 'Unknown platform'
+
+def chat_is_streaming(platform):
+    """Check if AI is currently generating a response."""
+    d = chrome()
+    if platform not in _chrome_tabs:
+        return json.dumps({'streaming': False, 'open': False})
+
+    if platform == 'chatgpt':
+        streaming = d.execute_script('return !!document.querySelector("[data-testid=stop-button]")')
+        return json.dumps({'streaming': bool(streaming), 'open': True})
+    elif platform == 'grok':
+        streaming = d.execute_script('return !!document.querySelector("[class*=streaming],[class*=typing]")')
+        return json.dumps({'streaming': bool(streaming), 'open': True})
+    return json.dumps({'streaming': False, 'open': False})
+
+def chat_history(platform, count=5):
+    """Get last N messages from conversation."""
+    d = chrome()
+    if platform not in _chrome_tabs:
+        return f'{platform} not open.'
+
+    if platform == 'chatgpt':
+        msgs = d.execute_script(f'''
+            const msgs = [];
+            document.querySelectorAll('[data-message-author-role]').forEach(el => {{
+                const role = el.getAttribute('data-message-author-role');
+                const text = el.innerText?.trim()?.substring(0, 300);
+                if (text) msgs.push({{role, text}});
+            }});
+            return JSON.stringify(msgs.slice(-{count}));
+        ''')
+        try:
+            parsed = json.loads(msgs)
+            lines = []
+            for m in parsed:
+                prefix = '> YOU' if m['role'] == 'user' else '> GPT'
+                lines.append(f'{prefix}: {m["text"][:200]}')
+            return '\n'.join(lines) or 'No messages'
+        except:
+            return msgs or 'No messages'
+    elif platform == 'grok':
+        # Grok: extract all text blocks from main
+        text = d.execute_script('''
+            const main = document.querySelector('main') || document.body;
+            return main.innerText?.substring(0, 2000);
+        ''')
+        return text or 'No messages'
+    return 'Unknown platform'
+
+
 # ── Dispatch ──
 
 ACTIONS = {
@@ -872,8 +944,8 @@ TOOLS = [
         "email":{"type":"string"},"password":{"type":"string"},
         "type_":{"type":"string","enum":["table","links"]},
      },"required":["action"]}},
-    {"name":"gpt","description":"ChatGPT. Persistent conversation.","inputSchema":{"type":"object","properties":{"message":{"type":"string"},"raw":{"type":"boolean","default":False},"wait":{"type":"boolean","default":True}},"required":["message"]}},
-    {"name":"grok","description":"Grok. Persistent conversation.","inputSchema":{"type":"object","properties":{"message":{"type":"string"},"wait":{"type":"boolean","default":True}},"required":["message"]}},
+    {"name":"gpt","description":"ChatGPT. Send message or read. Actions: send (default), read_last, is_streaming, history.","inputSchema":{"type":"object","properties":{"message":{"type":"string","description":"Message to send (for send action)"},"action":{"type":"string","enum":["send","read_last","is_streaming","history"],"default":"send"},"raw":{"type":"boolean","default":False},"wait":{"type":"boolean","default":True},"count":{"type":"integer","default":5}}}},
+    {"name":"grok","description":"Grok. Send message or read. Actions: send (default), read_last, is_streaming, history.","inputSchema":{"type":"object","properties":{"message":{"type":"string","description":"Message to send (for send action)"},"action":{"type":"string","enum":["send","read_last","is_streaming","history"],"default":"send"},"wait":{"type":"boolean","default":True},"count":{"type":"integer","default":5}}}},
     {"name":"ai_status","description":"Status of Chrome and chat sessions.","inputSchema":{"type":"object","properties":{}}},
 ]
 
@@ -901,11 +973,23 @@ def handle(req):
                     respond(id, {"content":[{"type":"text","text":text}]})
                 else:
                     respond_err(id, -32602, f'Unknown action: {action}')
-            elif name == 'gpt':
-                resp = chat_gpt(args['message'], args.get('wait', True))
-                respond(id, {"content":[{"type":"text","text":resp}]})
-            elif name == 'grok':
-                resp = chat_grok(args['message'], args.get('wait', True))
+            elif name in ('gpt', 'grok'):
+                platform = 'chatgpt' if name == 'gpt' else 'grok'
+                action = args.get('action', 'send')
+                if action == 'read_last':
+                    resp = chat_read_last(platform)
+                elif action == 'is_streaming':
+                    resp = chat_is_streaming(platform)
+                elif action == 'history':
+                    resp = chat_history(platform, int(args.get('count', 5)))
+                else:  # send
+                    msg = args.get('message', '')
+                    if not msg:
+                        resp = 'message required for send action'
+                    elif name == 'gpt':
+                        resp = chat_gpt(msg, args.get('wait', True))
+                    else:
+                        resp = chat_grok(msg, args.get('wait', True))
                 respond(id, {"content":[{"type":"text","text":resp}]})
             elif name == 'ai_status':
                 respond(id, {"content":[{"type":"text","text":json.dumps({"chrome":_chrome is not None,"tabs":list(_chrome_tabs.keys()),"pids":list(_chrome_pids)})}]})
