@@ -649,37 +649,36 @@ def chat_grok(msg, wait=True):
     for i in range(120):
         time.sleep(1)
         if i > 3:
-            # Extract last response — try multiple selectors for Grok
-            resp = d.execute_script('''
-                // Grok response blocks
-                const sels = [
-                    'div[class*="message-content"]',
-                    'div[class*="response"]',
-                    'article',
-                    '[data-message-id]',
-                    '.markdown',
-                    'div.prose',
-                ];
-                for (const sel of sels) {
-                    const els = document.querySelectorAll(sel);
-                    if (els.length > 0) {
-                        const last = els[els.length - 1];
-                        const text = last.innerText?.trim();
-                        if (text && text.length > 3) return text;
-                    }
-                }
-                // Fallback: get all substantial text blocks in main content area
+            # Extract last Grok response
+            resp = d.execute_script(f'''
+                const userMsg = {json.dumps(msg)};
+                // Strategy: find all text blocks in main area, skip user message,
+                // return everything after it (= Grok's response)
                 const main = document.querySelector('main') || document.body;
-                const blocks = main.querySelectorAll('div > p, div > ul, div > ol, div > pre, div > h1, div > h2, div > h3');
-                if (blocks.length > 3) {
-                    // Get text of last few blocks (likely the response)
-                    const texts = [];
-                    for (let i = Math.max(0, blocks.length - 10); i < blocks.length; i++) {
-                        const t = blocks[i].innerText?.trim();
-                        if (t && t.length > 5) texts.push(t);
-                    }
-                    if (texts.length > 0) return texts.join('\\n');
-                }
+                const allText = main.innerText || '';
+
+                // Find user message position, get everything after it
+                const idx = allText.lastIndexOf(userMsg);
+                if (idx > -1) {{
+                    let after = allText.substring(idx + userMsg.length).trim();
+                    // Remove common Grok UI noise
+                    after = after.replace(/^\\s*\\d+ sources?\\s*/i, '');
+                    after = after.replace(/Recomendaciones? más profunda.*$/s, '');
+                    after = after.replace(/Escriba? lo que quieras.*$/s, '');
+                    after = after.replace(/Pregunta lo que quieras.*$/s, '');
+                    after = after.replace(/Auto\\s*$/s, '');
+                    if (after.length > 5) return after.trim();
+                }}
+
+                // Fallback: try markdown/prose selectors
+                const sels = ['.markdown', 'div.prose', 'article', 'div[class*="message"]'];
+                for (const sel of sels) {{
+                    const els = document.querySelectorAll(sel);
+                    for (let i = els.length - 1; i >= 0; i--) {{
+                        const t = els[i].innerText?.trim();
+                        if (t && t.length > 10 && !t.includes(userMsg)) return t;
+                    }}
+                }}
                 return null;
             ''')
             if resp and len(resp) > 5:
