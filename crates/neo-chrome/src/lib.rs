@@ -15,6 +15,7 @@ pub mod observation;
 pub mod navigation;
 pub mod performance;
 pub mod session;
+pub mod sync_session;
 
 use neo_types::PageResult;
 
