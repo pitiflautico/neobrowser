@@ -241,7 +241,7 @@ def chrome():
 
                 targets = json.loads(http('/json/list'))
                 ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
-                ws = ws_sync.connect(ws_url)
+                ws = ws_sync.connect(ws_url, max_size=10_000_000)
                 _chrome = GhostChrome(proc, port, ws, profile)
                 _chrome._send('Page.enable'); _chrome._send('Network.enable')
                 _chrome._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
