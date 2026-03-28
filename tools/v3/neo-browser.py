@@ -536,18 +536,25 @@ def tool_fill(args):
     ''')
 
 def tool_submit(args):
-    return chrome().js('''
+    d = chrome()
+    r = d.js('''
         let btn=document.querySelector('[type=submit],button[type=submit]');
         if(!btn)btn=document.querySelector('form')?.querySelector('button');
-        if(btn){btn.click();return JSON.stringify({submitted:true})}
+        if(btn){btn.click();return 'clicked'}
         const form=document.querySelector('form');
-        if(form){form.submit();return JSON.stringify({submitted:true,method:'form.submit'})}
-        return JSON.stringify({submitted:false,error:'no form found'});
+        if(form){form.submit();return 'submitted'}
+        return '';
     ''')
+    if not r: return 'No form or submit button found'
+    time.sleep(2)
+    return d.sanitize()
 
 def tool_scroll(args):
+    d = chrome()
     dy = int(args.get('amount', 500)) * (1 if args.get('direction', 'down') == 'down' else -1)
-    return chrome().js(f'window.scrollBy(0,{dy});return JSON.stringify({{scrolled:true,y:window.scrollY,height:document.body.scrollHeight}})')
+    d.js(f'window.scrollBy(0,{dy})')
+    time.sleep(0.5)
+    return d.sanitize()
 
 def tool_screenshot(args):
     url = args.get('url', '')
@@ -562,9 +569,9 @@ def tool_wait(args):
     d = chrome(); start = time.time(); timeout = int(args.get('wait', 10000)) / 1000
     while time.time() - start < timeout:
         found = d.js(f'const q={json.dumps(sel)};if(document.querySelector(q))return true;return Array.from(document.querySelectorAll("*")).some(e=>(e.innerText||"").includes(q))')
-        if found: return json.dumps({'found': True, 'ms': int((time.time()-start)*1000)})
+        if found: return d.sanitize()
         time.sleep(0.5)
-    return json.dumps({'found': False, 'ms': int((time.time()-start)*1000)})
+    return f'Not found after {int(time.time()-start)}s: "{sel}"'
 
 def tool_login(args):
     url, email, pw = args.get('url', ''), args.get('email', ''), args.get('password', '')
