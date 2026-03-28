@@ -23,7 +23,7 @@ Tools:
   STATUS  — Browser and chat session status.
 """
 
-import json, sys, os, time, subprocess, threading, atexit, signal, tempfile
+import json, sys, os, time, subprocess, threading, atexit, signal, tempfile, re, urllib.request, urllib.parse
 from pathlib import Path
 
 def log(msg):
@@ -298,7 +298,25 @@ def tool_browse(args):
 def tool_search(args):
     q = args.get('query', '')
     if not q: return 'query required'
-    return fast('search', q, ['--num', str(args.get('num', 10))])[0] or 'No results'
+    num = int(args.get('num', 10))
+    try:
+        r = urllib.request.urlopen(urllib.request.Request(
+            f'https://html.duckduckgo.com/html/?q={urllib.parse.quote(q)}',
+            headers={'User-Agent': 'Mozilla/5.0'}
+        ), timeout=10)
+        html = r.read().decode()
+        results = []
+        for m in re.finditer(r'<a rel="nofollow" class="result__a" href="([^"]+)"[^>]*>(.*?)</a>', html):
+            raw_url, title = m.group(1), re.sub(r'<[^>]+>', '', m.group(2)).strip()
+            # Extract real URL from DDG redirect
+            uddg = re.search(r'uddg=([^&]+)', raw_url)
+            url = urllib.parse.unquote(uddg.group(1)) if uddg else raw_url
+            if url and title:
+                results.append(f'{title}\n  {url}')
+                if len(results) >= num: break
+        return '\n\n'.join(results) if results else 'No results'
+    except Exception as e:
+        return f'Search error: {e}'
 
 def tool_open(args):
     url = args.get('url', '')
