@@ -381,25 +381,27 @@ def _sync_session(src_profile, dst_profile):
     import shutil, sqlite3
     synced = []
 
-    # 1. Cookies DB — SQLite backup (WAL-safe, no lock conflicts)
+    # 1. Cookies DB — selective sync (exclude Google to prevent session invalidation)
+    # Google detects duplicate sessions from headless Chrome and logs out the real browser.
+    EXCLUDED_DOMAINS = ('.google.com', '.google.es', '.googleapis.com', '.gstatic.com',
+                        '.youtube.com', '.accounts.google.com', '.gmail.com')
     src_cookies = src_profile / 'Cookies'
     dst_cookies = dst_profile / 'Cookies'
     if src_cookies.exists() and src_cookies.stat().st_size > 0:
         try:
             conn_src = sqlite3.connect(f'file:{src_cookies}?mode=ro&nolock=1', uri=True)
             conn_dst = sqlite3.connect(str(dst_cookies))
+            # Copy schema first
             conn_src.backup(conn_dst)
-            # Count cookies to verify
+            # Delete Google cookies from ghost copy to prevent session theft
+            excluded = ' OR '.join(f'host_key LIKE "%{d}"' for d in EXCLUDED_DOMAINS)
+            deleted = conn_dst.execute(f'DELETE FROM cookies WHERE {excluded}').rowcount
             count = conn_dst.execute('SELECT COUNT(*) FROM cookies').fetchone()[0]
+            conn_dst.commit()
             conn_dst.close(); conn_src.close()
-            synced.append(f'Cookies ({count} entries)')
+            synced.append(f'Cookies ({count} kept, {deleted} Google excluded)')
         except Exception as e:
-            # Fallback: file copy (works if Chrome is not running)
-            try:
-                shutil.copy2(str(src_cookies), str(dst_cookies))
-                synced.append('Cookies (file copy)')
-            except Exception as e2:
-                log(f'Cookie sync failed: {e} / {e2}')
+            log(f'Cookie sync failed: {e}')
 
     # 2. Local Storage (SPA auth tokens — X, ChatGPT, LinkedIn, etc.)
     for dirname in ['Local Storage', 'Session Storage']:
