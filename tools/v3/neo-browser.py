@@ -215,11 +215,21 @@ def chrome():
             try:
                 if attempt > 0: _kill_pids(); time.sleep(2)
                 log('Launching Ghost Chrome...')
-                import socket
+                import socket, shutil
+
+                # Persistent profile with synced cookies from real Chrome
+                ghost_dir = Path.home() / '.neorender' / 'ghost-profile'
+                ghost_default = ghost_dir / 'Default'
+                ghost_default.mkdir(parents=True, exist_ok=True)
+
+                # Sync session data from real Chrome profile
+                real_profile = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome' / PROFILE
+                if real_profile.exists():
+                    _sync_session(real_profile, ghost_default)
+
                 s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
-                profile = tempfile.mkdtemp()
                 proc = subprocess.Popen([CHROME_BIN, f'--remote-debugging-port={port}',
-                    f'--user-data-dir={profile}', '--headless=new', '--no-first-run',
+                    f'--user-data-dir={str(ghost_dir)}', '--headless=new', '--no-first-run',
                     '--disable-background-networking', '--disable-dev-shm-usage',
                     '--window-size=1920,1080', f'--user-agent={CHROME_UA}', 'about:blank'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -242,18 +252,58 @@ def chrome():
                 targets = json.loads(http('/json/list'))
                 ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
                 ws = ws_sync.connect(ws_url, max_size=10_000_000)
-                _chrome = GhostChrome(proc, port, ws, profile)
+                _chrome = GhostChrome(proc, port, ws, str(ghost_dir))
                 _chrome._send('Page.enable'); _chrome._send('Network.enable')
                 _chrome._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
                 _chrome._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
 
                 PID_FILE.parent.mkdir(parents=True, exist_ok=True)
                 PID_FILE.write_text(json.dumps(list(_chrome_pids)))
-                log(f'Ghost Chrome ready (port={port}, pid={proc.pid})')
+                log(f'Ghost Chrome ready (port={port}, pid={proc.pid}, profile={PROFILE})')
                 return _chrome
             except Exception as e:
                 log(f'Chrome attempt {attempt+1} failed: {e}'); _chrome = None
         raise RuntimeError('Chrome failed after 3 attempts')
+
+
+def _sync_session(src_profile, dst_profile):
+    """Sync cookies and session data from real Chrome profile to Ghost profile.
+    Both profiles use the same macOS Keychain encryption key, so cookies decrypt fine."""
+    import shutil, sqlite3
+
+    # Files to sync: cookies (auth), Local Storage (tokens), Session Storage
+    for name in ['Cookies', 'Cookies-journal']:
+        src = src_profile / name
+        dst = dst_profile / name
+        if src.exists():
+            try:
+                # Copy via SQLite backup to handle WAL mode safely
+                if name == 'Cookies' and src.stat().st_size > 0:
+                    try:
+                        conn_src = sqlite3.connect(f'file:{src}?mode=ro&nolock=1', uri=True)
+                        conn_dst = sqlite3.connect(str(dst))
+                        conn_src.backup(conn_dst)
+                        conn_dst.close(); conn_src.close()
+                        log(f'Synced {name} (SQLite backup)')
+                        continue
+                    except Exception as e:
+                        log(f'SQLite backup failed for {name}: {e}, falling back to copy')
+                shutil.copy2(str(src), str(dst))
+                log(f'Synced {name} (file copy)')
+            except Exception as e:
+                log(f'Failed to sync {name}: {e}')
+
+    # Sync Local Storage (contains auth tokens for many SPAs)
+    for dirname in ['Local Storage', 'Session Storage']:
+        src_dir = src_profile / dirname
+        dst_dir = dst_profile / dirname
+        if src_dir.exists():
+            try:
+                if dst_dir.exists(): shutil.rmtree(str(dst_dir))
+                shutil.copytree(str(src_dir), str(dst_dir))
+                log(f'Synced {dirname}/')
+            except Exception as e:
+                log(f'Failed to sync {dirname}: {e}')
 
 _imported = set()
 def chrome_go(url, wait_s=5):
