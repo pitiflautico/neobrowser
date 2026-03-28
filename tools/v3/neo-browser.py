@@ -347,36 +347,174 @@ def tool_click(args):
     return f'Clicked "{text}"\n\n{d.sanitize()}' if clicked else f'Not found: "{text}"'
 
 def tool_type(args):
+    """Smart type — finds input by label, placeholder, name, aria-label, or CSS."""
     sel = args.get('selector', args.get('text', ''))
     val = args.get('value', '')
     if not sel or not val: return 'selector and value required'
     d = chrome()
-    d.js(f'''
-        const q={json.dumps(sel)}.toLowerCase();
-        const el=document.querySelector({json.dumps(sel)})||document.querySelector('[placeholder*="'+q+'"]')||
-            document.querySelector('[name*="'+q+'"]')||document.querySelector('[aria-label*="'+q+'"]');
-        if(el){{el.focus();el.value='';el.dispatchEvent(new Event('focus',{{bubbles:true}}))}}
+    found = d.js(f'''
+        const key = {json.dumps(sel)};
+        const kl = key.toLowerCase();
+        // Try CSS selector first
+        let el = document.querySelector(key);
+        // By placeholder
+        if (!el) el = document.querySelector('[placeholder*="'+kl+'" i]');
+        // By name
+        if (!el) el = document.querySelector('[name*="'+kl+'" i]');
+        // By aria-label
+        if (!el) el = document.querySelector('[aria-label*="'+kl+'" i]');
+        // By label text
+        if (!el) {{
+            const labels = document.querySelectorAll('label');
+            for (const lbl of labels) {{
+                if (lbl.innerText.toLowerCase().includes(kl)) {{
+                    el = lbl.htmlFor ? document.getElementById(lbl.htmlFor) : lbl.querySelector('input,textarea');
+                    if (el) break;
+                }}
+            }}
+        }}
+        // By type (email, password, etc.)
+        if (!el) el = document.querySelector('[type="'+key+'"]');
+        if (el) {{
+            el.focus();
+            el.click();
+            // Clear existing value
+            if (el.value) el.value = '';
+            el.dispatchEvent(new Event('focus', {{bubbles:true}}));
+            return JSON.stringify({{found: true, tag: el.tagName, name: el.name||'', placeholder: el.placeholder||''}});
+        }}
+        return JSON.stringify({{found: false}});
     ''')
+    try:
+        info = json.loads(found) if found else {'found': False}
+    except:
+        info = {'found': False}
+
+    if not info.get('found'):
+        return f'Not found: "{sel}"'
+
     d.key(val)
-    return json.dumps({'typed': True, 'value': val})
+    return json.dumps({'typed': True, 'value': val, 'field': info})
 
 def tool_fill(args):
+    """Smart fill — handles inputs, textareas, selects, checkboxes, radios.
+    Finds fields by: name, id, placeholder, label text, aria-label, type."""
     fields = args.get('fields', '{}')
     if isinstance(fields, str): fields = json.loads(fields)
     url = args.get('url', '')
     if url: chrome_go(url, 5)
     return chrome().js(f'''
-        const f={json.dumps(fields)};const filled=[],errors=[];
-        for(const[k,v]of Object.entries(f)){{
-            const el=document.querySelector('[name="'+k+'"]')||document.querySelector('#'+k)||
-                document.querySelector('[placeholder*="'+k+'" i]');
-            if(el){{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;
-                if(s)s.call(el,v);else el.value=v;
-                el.dispatchEvent(new Event('input',{{bubbles:true}}));
-                el.dispatchEvent(new Event('change',{{bubbles:true}}));filled.push(k);
-            }}else errors.push(k);
+        const fields = {json.dumps(fields)};
+        const filled = [], errors = [];
+
+        function findField(key) {{
+            const kl = key.toLowerCase();
+            // 1. By name/id exact
+            let el = document.querySelector('[name="'+key+'"]') || document.querySelector('#'+key);
+            if (el) return el;
+            // 2. By placeholder (case insensitive)
+            el = document.querySelector('[placeholder*="'+kl+'" i]');
+            if (el) return el;
+            // 3. By aria-label
+            el = document.querySelector('[aria-label*="'+kl+'" i]');
+            if (el) return el;
+            // 4. By label text → linked input
+            const labels = document.querySelectorAll('label');
+            for (const lbl of labels) {{
+                if (lbl.innerText.toLowerCase().includes(kl)) {{
+                    if (lbl.htmlFor) return document.getElementById(lbl.htmlFor);
+                    const input = lbl.querySelector('input,textarea,select');
+                    if (input) return input;
+                }}
+            }}
+            // 5. By type (email, password, tel, etc.)
+            el = document.querySelector('[type="'+key+'"]');
+            if (el) return el;
+            // 6. By visible text near input (label-like spans/divs before input)
+            const allInputs = document.querySelectorAll('input,textarea,select');
+            for (const inp of allInputs) {{
+                const prev = inp.previousElementSibling || inp.parentElement;
+                if (prev && prev.innerText && prev.innerText.toLowerCase().includes(kl)) return inp;
+            }}
+            return null;
         }}
-        return JSON.stringify({{filled,errors}});
+
+        function setValue(el, val) {{
+            const tag = el.tagName.toLowerCase();
+            const type = (el.type || '').toLowerCase();
+
+            // SELECT
+            if (tag === 'select') {{
+                const vl = val.toLowerCase();
+                let matched = false;
+                for (const opt of el.options) {{
+                    if (opt.value.toLowerCase() === vl || opt.text.toLowerCase().includes(vl)) {{
+                        el.value = opt.value;
+                        matched = true;
+                        break;
+                    }}
+                }}
+                if (!matched) {{
+                    // Try index if val is a number
+                    const idx = parseInt(val);
+                    if (!isNaN(idx) && idx < el.options.length) {{
+                        el.selectedIndex = idx;
+                        matched = true;
+                    }}
+                }}
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return matched;
+            }}
+
+            // CHECKBOX
+            if (type === 'checkbox') {{
+                const shouldCheck = val === true || val === 'true' || val === '1' || val === 'on';
+                if (el.checked !== shouldCheck) el.click();
+                return true;
+            }}
+
+            // RADIO
+            if (type === 'radio') {{
+                const radios = document.querySelectorAll('[name="'+el.name+'"]');
+                for (const r of radios) {{
+                    const lbl = r.parentElement?.innerText?.toLowerCase() || '';
+                    if (r.value.toLowerCase() === val.toLowerCase() || lbl.includes(val.toLowerCase())) {{
+                        r.click();
+                        return true;
+                    }}
+                }}
+                return false;
+            }}
+
+            // TEXTAREA
+            if (tag === 'textarea') {{
+                el.value = val;
+                el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                return true;
+            }}
+
+            // INPUT (text, email, password, tel, etc.)
+            // Use React-compatible setter if available
+            const nativeSet = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+            if (nativeSet) nativeSet.call(el, val);
+            else el.value = val;
+            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+            return true;
+        }}
+
+        for (const [key, val] of Object.entries(fields)) {{
+            const el = findField(key);
+            if (el) {{
+                if (setValue(el, val)) filled.push(key);
+                else errors.push(key + ' (set failed)');
+            }} else {{
+                errors.push(key + ' (not found)');
+            }}
+        }}
+
+        return JSON.stringify({{filled, errors}});
     ''')
 
 def tool_submit(args):
@@ -625,8 +763,8 @@ TOOLS = [
     {"name": "read", "description": "Extract clean text from page. Tries fast HTTP first, falls back to Chrome.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}}},
     {"name": "find", "description": "Find element by text, CSS selector, XPath, or ARIA role.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "by": {"type": "string", "enum": ["text", "css", "xpath", "role"], "default": "text"}}, "required": ["text"]}},
     {"name": "click", "description": "Click element by text content or CSS selector.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Text or CSS selector of element to click"}}, "required": ["text"]}},
-    {"name": "type", "description": "Type text in input field found by placeholder, name, or CSS selector.", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "Placeholder text, name, or CSS selector"}, "value": {"type": "string", "description": "Text to type"}}, "required": ["selector", "value"]}},
-    {"name": "fill", "description": "Fill multiple form fields at once.", "inputSchema": {"type": "object", "properties": {"fields": {"type": "string", "description": "JSON object: {\"field_name\": \"value\", ...}"}, "url": {"type": "string", "description": "Optional URL to navigate first"}}, "required": ["fields"]}},
+    {"name": "type", "description": "Type text in input. Finds by: label text, placeholder, name, aria-label, type, or CSS selector.", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "Label text, placeholder, name, or CSS selector"}, "value": {"type": "string", "description": "Text to type"}}, "required": ["selector", "value"]}},
+    {"name": "fill", "description": "Smart fill — handles inputs, textareas, selects, checkboxes, radios. Finds by label, placeholder, name, id. Use field labels as keys.", "inputSchema": {"type": "object", "properties": {"fields": {"type": "string", "description": "JSON: {\"Name\": \"John\", \"Email\": \"john@test.com\", \"Project type\": \"AI Agents\", \"Budget\": \"50K\"}"}, "url": {"type": "string", "description": "Optional URL to navigate first"}}, "required": ["fields"]}},
     {"name": "submit", "description": "Submit current form.", "inputSchema": {"type": "object", "properties": {}}},
     {"name": "scroll", "description": "Scroll page.", "inputSchema": {"type": "object", "properties": {"direction": {"type": "string", "enum": ["up", "down"], "default": "down"}, "amount": {"type": "integer", "default": 500}}}},
     {"name": "screenshot", "description": "Capture screenshot of current page.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}}},
