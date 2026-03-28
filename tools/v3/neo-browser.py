@@ -368,11 +368,67 @@ def _sync_session(src_profile, dst_profile):
             except Exception as e:
                 log(f'Failed to sync {dirname}: {e}')
 
+def _resync_cookies():
+    """Re-sync cookies from real Chrome profile into running Ghost Chrome via CDP."""
+    import sqlite3
+    real_cookies = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome' / PROFILE / 'Cookies'
+    if not real_cookies.exists(): return 0
+    d = chrome()
+    try:
+        conn = sqlite3.connect(f'file:{real_cookies}?mode=ro&nolock=1', uri=True)
+        rows = conn.execute(
+            'SELECT host_key, name, path, is_secure, expires_utc, is_httponly FROM cookies'
+        ).fetchall()
+        # We can't read encrypted values directly via SQL, but we CAN
+        # re-sync the cookie DB file and reload the page
+        conn.close()
+    except:
+        pass
+    # Copy fresh cookies DB to ghost profile
+    ghost_cookies = Path.home() / '.neorender' / 'ghost-profile' / 'Default' / 'Cookies'
+    try:
+        conn_src = sqlite3.connect(f'file:{real_cookies}?mode=ro&nolock=1', uri=True)
+        conn_dst = sqlite3.connect(str(ghost_cookies))
+        conn_src.backup(conn_dst)
+        conn_dst.close(); conn_src.close()
+        log('Re-synced cookies from real Chrome')
+        return 1
+    except Exception as e:
+        log(f'Cookie re-sync failed: {e}')
+        return 0
+
+def _is_login_wall(d):
+    """Detect if current page is a login/auth wall."""
+    check = d.js('''
+        const url = location.href.toLowerCase();
+        const text = (document.body?.innerText || '').toLowerCase().substring(0, 2000);
+        const loginUrls = ['login', 'signin', 'sign-in', 'sign_in', 'auth', 'sso', 'oauth', 'accounts'];
+        const loginText = ['sign in', 'log in', 'iniciar sesión', 'inicia sesión', 'create an account', 'join now'];
+        const urlMatch = loginUrls.some(k => url.includes(k));
+        const textMatch = loginText.some(k => text.includes(k));
+        const hasLoginForm = !!document.querySelector('[type=password], [autocomplete=password]');
+        return JSON.stringify({urlMatch, textMatch, hasLoginForm, url: location.href});
+    ''')
+    try:
+        info = json.loads(check)
+        return info.get('hasLoginForm') or (info.get('urlMatch') and info.get('textMatch'))
+    except:
+        return False
+
 def chrome_go(url, wait_s=5):
-    """Navigate the default browsing tab. Chat tabs remain untouched."""
+    """Navigate the default browsing tab. Auto-resync cookies if login wall detected."""
     d = chrome()
     d.switch('default')
     d.go(url); time.sleep(wait_s)
+
+    # Check for login wall → resync cookies and retry
+    if _is_login_wall(d):
+        log(f'Login wall detected, re-syncing cookies...')
+        if _resync_cookies():
+            # Restart Chrome to pick up new cookies from DB
+            d.go(url); time.sleep(wait_s)
+            if _is_login_wall(d):
+                log('Still on login wall after resync')
     return d
 
 def save(text, tag='response'):
