@@ -125,8 +125,15 @@ def run_plugin(plugin_data, user_inputs, tool_dispatch):
         default = spec.get('default', '') if isinstance(spec, dict) else ''
         ctx[key] = user_inputs.get(key, default)
 
+    MAX_STEP = 3000   # max chars per saved step result
+    MAX_OUT  = 50000  # max total output (~50KB, well under 1MB websocket limit)
+
     results = []
     step_data = {}  # save_as storage
+
+    def truncate(text, limit=MAX_STEP):
+        s = str(text) if text else ''
+        return s[:limit] + f'\n... ({len(s)-limit} chars truncated)' if len(s) > limit else s
 
     for i, step in enumerate(plugin_data.get('steps', [])):
         action = step.get('action', '')
@@ -156,7 +163,7 @@ def run_plugin(plugin_data, user_inputs, tool_dispatch):
 
                 if save_as:
                     resolved_save = resolve_template(save_as, loop_ctx)
-                    step_data[resolved_save] = result
+                    step_data[resolved_save] = truncate(result)
         else:
             resolved_args = resolve_obj(step_args, {**ctx, **step_data})
             for r in range(repeat):
@@ -165,12 +172,14 @@ def run_plugin(plugin_data, user_inputs, tool_dispatch):
 
             if save_as:
                 resolved_save = resolve_template(save_as, {**ctx, **step_data})
-                step_data[resolved_save] = result
+                step_data[resolved_save] = truncate(result)
 
     # Format output
     output_spec = plugin_data.get('output', {})
     template = output_spec.get('template', '')
     if template:
-        return resolve_template(template, {**ctx, **step_data})
+        out = resolve_template(template, {**ctx, **step_data})
+    else:
+        out = '\n'.join(results)
 
-    return '\n'.join(results)
+    return out[:MAX_OUT] if len(out) > MAX_OUT else out

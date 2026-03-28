@@ -832,6 +832,9 @@ def handle(req):
             try:
                 result = fn(args)
                 text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+                # Guard: truncate if over 500KB to stay under websocket 1MB limit
+                if len(text) > 500000:
+                    text = text[:500000] + f'\n... (truncated from {len(text)} chars)'
                 respond(id, {"content": [{"type": "text", "text": text}]})
             except Exception as e:
                 respond(id, {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True})
