@@ -204,9 +204,15 @@ def _kill_pids():
 def chrome():
     global _chrome
     if _chrome:
-        try: _ = _chrome.title; return _chrome
+        try:
+            # Verify websocket is alive with a real JS eval, not just property access
+            result = _chrome.js('return document.readyState')
+            if result: return _chrome
+            raise Exception('dead ws')
         except:
-            _chrome.quit(); _kill_pids()
+            try: _chrome.quit()
+            except: pass
+            _kill_pids()
             _chrome = None; _chrome_tabs.clear(); _chrome_pids.clear(); time.sleep(1)
 
     with _chrome_lock:
@@ -379,15 +385,27 @@ def tool_open(args):
 
 SMART_EXTRACTORS = {
     'tweets': '''
-        const tweets = document.querySelectorAll('article[data-testid="tweet"], article[role="article"], [data-testid="tweetText"]');
+        const tweets = document.querySelectorAll('article[data-testid="tweet"], article[role="article"]');
         if (!tweets.length) return 'No tweets found';
         return Array.from(tweets).slice(0, 20).map(t => {
-            const user = t.querySelector('[data-testid="User-Name"], a[role="link"][href*="/"]')?.innerText || '';
-            const text = t.querySelector('[data-testid="tweetText"], [lang]')?.innerText || t.innerText;
+            // Author: extract @handle from profile links
+            const links = Array.from(t.querySelectorAll('a[role="link"][href^="/"]'));
+            let handle = '';
+            for (const a of links) {
+                const href = a.getAttribute('href') || '';
+                const m = href.match(/^\\/([a-zA-Z0-9_]+)$/);
+                if (m && !['home','explore','search','notifications','messages','settings','i'].includes(m[1])) {
+                    handle = '@' + m[1];
+                    break;
+                }
+            }
+            const name = t.querySelector('[data-testid="User-Name"]')?.innerText?.split('\\n')?.[0] || '';
+            const author = handle ? (name ? name + ' ' + handle : handle) : name;
+            const text = t.querySelector('[data-testid="tweetText"], [lang]')?.innerText || '';
             const time = t.querySelector('time')?.getAttribute('datetime') || '';
             const stats = Array.from(t.querySelectorAll('[data-testid$="count"], [aria-label*="like"], [aria-label*="repost"]'))
                 .map(s => s.getAttribute('aria-label') || s.innerText).filter(Boolean).join(' · ');
-            return [user, time, text.substring(0, 500), stats].filter(Boolean).join('\\n');
+            return [author, time, text.substring(0, 500), stats].filter(Boolean).join('\\n');
         }).join('\\n---\\n');
     ''',
     'posts': '''
