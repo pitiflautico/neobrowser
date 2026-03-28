@@ -763,7 +763,13 @@ def _chat_ensure(platform, url, cookies):
     """Ensure chat platform is loaded. Cookies come from Ghost Chrome profile sync."""
     d = chrome()
     if platform not in _chrome_tabs:
+        # Always navigate fresh — ChatGPT/Grok lose their internal WS on tab switch
         d.go(url); time.sleep(8)
+        # For ChatGPT: ensure we're on a fresh chat (not a stale conversation)
+        if platform == 'gpt':
+            current = d.js('return location.href') or ''
+            if '/c/' in current:
+                d.go('https://chatgpt.com'); time.sleep(3)
         _chrome_tabs[platform] = True
         log(f'{platform}: {d.title}')
     return d
