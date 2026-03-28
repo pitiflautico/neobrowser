@@ -862,6 +862,14 @@ def tool_grok(args):
         return null;
     ''')
 
+def tool_js(args):
+    """Execute arbitrary JavaScript on current page. For debugging and advanced use."""
+    code = args.get('code', '')
+    if not code: return 'code required'
+    result = chrome().js(code)
+    if result is None: return 'null'
+    return str(result)[:5000]
+
 def tool_status(args):
     return json.dumps({'chrome': _chrome is not None, 'tabs': list(_chrome_tabs.keys()), 'pids': list(_chrome_pids)}, indent=2)
 
@@ -963,6 +971,7 @@ TOOLS = [
     {"name": "gpt", "description": "ChatGPT. Send message or read. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}, "raw": {"type": "boolean", "default": False}}}},
     {"name": "grok", "description": "Grok. Send message or read. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}}}},
     {"name": "plugin", "description": "Run, list, or create browser plugins (reusable pipelines). Plugins are YAML files in ~/.neorender/plugins/. Actions: run (execute a plugin), list (show available), create (make new).", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["run", "list", "create"], "default": "run"}, "name": {"type": "string", "description": "Plugin name"}, "description": {"type": "string"}, "yaml": {"type": "string", "description": "YAML content for create action"}}, "additionalProperties": True}},
+    {"name": "js", "description": "Execute JavaScript on current page. Returns result as string.", "inputSchema": {"type": "object", "properties": {"code": {"type": "string", "description": "JavaScript code to execute. Use 'return' for values."}}, "required": ["code"]}},
     {"name": "status", "description": "Browser and chat session status.", "inputSchema": {"type": "object", "properties": {}}},
 ]
 
@@ -971,7 +980,7 @@ DISPATCH = {
     'find': tool_find, 'click': tool_click, 'type': tool_type, 'fill': tool_fill,
     'submit': tool_submit, 'scroll': tool_scroll, 'screenshot': tool_screenshot,
     'wait': tool_wait, 'login': tool_login, 'extract': tool_extract,
-    'gpt': tool_gpt, 'grok': tool_grok, 'plugin': tool_plugin, 'status': tool_status,
+    'gpt': tool_gpt, 'grok': tool_grok, 'plugin': tool_plugin, 'js': tool_js, 'status': tool_status,
 }
 
 # ── MCP Protocol ──
