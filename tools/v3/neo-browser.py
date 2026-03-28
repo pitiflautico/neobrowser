@@ -19,6 +19,7 @@ Tools:
   EXTRACT — Extract structured data (tables, links).
   GPT     — Send/read ChatGPT. Actions: send, read_last, is_streaming, history.
   GROK    — Send/read Grok. Actions: send, read_last, is_streaming, history.
+  PLUGIN  — Run/list/create reusable browser pipelines (~/.neorender/plugins/).
   STATUS  — Browser and chat session status.
 """
 
@@ -541,6 +542,70 @@ def tool_grok(args):
 def tool_status(args):
     return json.dumps({'chrome': _chrome is not None, 'tabs': list(_chrome_tabs.keys()), 'pids': list(_chrome_pids)}, indent=2)
 
+# ── Plugins ──
+
+def tool_plugin(args):
+    from plugins import load_plugin, list_plugins, create_plugin, run_plugin
+
+    action = args.get('action', 'run')
+
+    if action == 'list':
+        plugins = list_plugins()
+        if not plugins:
+            return 'No plugins found. Create one in ~/.neorender/plugins/*.yaml'
+        lines = ['# Available Plugins\n']
+        for p in plugins:
+            inputs = ', '.join(p.get('inputs', []))
+            lines.append(f'**{p["name"]}** — {p.get("description", "")}')
+            if inputs:
+                lines.append(f'  Inputs: {inputs}')
+            lines.append(f'  Steps: {p.get("steps", 0)}')
+            lines.append('')
+        return '\n'.join(lines)
+
+    elif action == 'create':
+        name = args.get('name', '')
+        desc = args.get('description', '')
+        yaml_content = args.get('yaml', '')
+        if not name or not yaml_content:
+            return 'name and yaml required for create action'
+        return create_plugin(name, desc, yaml_content)
+
+    elif action == 'run':
+        name = args.get('name', '')
+        if not name:
+            return 'name required. Use action=list to see available plugins.'
+
+        plugin_data, err = load_plugin(name)
+        if err:
+            return err
+
+        # Parse user inputs
+        user_inputs = {}
+        for key in plugin_data.get('inputs', {}):
+            if key in args:
+                val = args[key]
+                # Parse list values
+                if isinstance(val, str) and val.startswith('['):
+                    try: val = json.loads(val)
+                    except: val = [x.strip() for x in val.strip('[]').split(',')]
+                user_inputs[key] = val
+
+        # Execute with tool dispatch
+        def dispatch(tool_name, tool_args):
+            fn = DISPATCH.get(tool_name)
+            if fn:
+                return fn(tool_args)
+            return f'Unknown tool: {tool_name}'
+
+        try:
+            result = run_plugin(plugin_data, user_inputs, dispatch)
+            return save(result, f'plugin-{name}')
+        except Exception as e:
+            return f'Plugin error: {e}'
+
+    return f'Unknown plugin action: {action}. Use: run, list, create'
+
 # ── Cleanup ──
 def cleanup():
     global _chrome
@@ -570,6 +635,7 @@ TOOLS = [
     {"name": "extract", "description": "Extract structured data (tables or links).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "enum": ["table", "links"], "default": "links"}}}},
     {"name": "gpt", "description": "ChatGPT. Send message or read. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}, "raw": {"type": "boolean", "default": False}}}},
     {"name": "grok", "description": "Grok. Send message or read. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}}}},
+    {"name": "plugin", "description": "Run, list, or create browser plugins (reusable pipelines). Plugins are YAML files in ~/.neorender/plugins/. Actions: run (execute a plugin), list (show available), create (make new).", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["run", "list", "create"], "default": "run"}, "name": {"type": "string", "description": "Plugin name"}, "description": {"type": "string"}, "yaml": {"type": "string", "description": "YAML content for create action"}}, "additionalProperties": True}},
     {"name": "status", "description": "Browser and chat session status.", "inputSchema": {"type": "object", "properties": {}}},
 ]
 
@@ -578,7 +644,7 @@ DISPATCH = {
     'find': tool_find, 'click': tool_click, 'type': tool_type, 'fill': tool_fill,
     'submit': tool_submit, 'scroll': tool_scroll, 'screenshot': tool_screenshot,
     'wait': tool_wait, 'login': tool_login, 'extract': tool_extract,
-    'gpt': tool_gpt, 'grok': tool_grok, 'status': tool_status,
+    'gpt': tool_gpt, 'grok': tool_grok, 'plugin': tool_plugin, 'status': tool_status,
 }
 
 # ── MCP Protocol ──
