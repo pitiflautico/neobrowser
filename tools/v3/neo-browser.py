@@ -377,24 +377,91 @@ def tool_open(args):
     d = chrome_go(url, int(args.get('wait', 5000)) / 1000)
     return d.sanitize()
 
+SMART_EXTRACTORS = {
+    'tweets': '''
+        const tweets = document.querySelectorAll('article[data-testid="tweet"], article[role="article"], [data-testid="tweetText"]');
+        if (!tweets.length) return 'No tweets found';
+        return Array.from(tweets).slice(0, 20).map(t => {
+            const user = t.querySelector('[data-testid="User-Name"], a[role="link"][href*="/"]')?.innerText || '';
+            const text = t.querySelector('[data-testid="tweetText"], [lang]')?.innerText || t.innerText;
+            const time = t.querySelector('time')?.getAttribute('datetime') || '';
+            const stats = Array.from(t.querySelectorAll('[data-testid$="count"], [aria-label*="like"], [aria-label*="repost"]'))
+                .map(s => s.getAttribute('aria-label') || s.innerText).filter(Boolean).join(' · ');
+            return [user, time, text.substring(0, 500), stats].filter(Boolean).join('\\n');
+        }).join('\\n---\\n');
+    ''',
+    'posts': '''
+        const posts = document.querySelectorAll('article, [role="article"], .post, .entry, .feed-item, [class*="post"]');
+        if (!posts.length) return 'No posts found';
+        return Array.from(posts).slice(0, 15).map(p => {
+            const title = p.querySelector('h1,h2,h3,h4,[class*="title"]')?.innerText || '';
+            const author = p.querySelector('[class*="author"],[class*="user"],[rel="author"],a[href*="/u/"]')?.innerText || '';
+            const text = p.querySelector('[class*="content"],[class*="body"],p')?.innerText || p.innerText;
+            const time = p.querySelector('time')?.innerText || p.querySelector('[class*="date"],[class*="time"]')?.innerText || '';
+            return [title, author, time, text.substring(0, 500)].filter(Boolean).join('\\n');
+        }).join('\\n---\\n');
+    ''',
+    'comments': '''
+        const comments = document.querySelectorAll('[class*="comment"], [data-testid*="comment"], .reply, [class*="Comment"]');
+        if (!comments.length) return 'No comments found';
+        return Array.from(comments).slice(0, 20).map(c => {
+            const author = c.querySelector('[class*="author"],[class*="user"],a[href*="/u/"]')?.innerText || '';
+            const text = c.querySelector('[class*="body"],[class*="content"],p')?.innerText || c.innerText;
+            const time = c.querySelector('time,[class*="date"]')?.innerText || '';
+            return [author, time, text.substring(0, 300)].filter(Boolean).join('\\n');
+        }).join('\\n---\\n');
+    ''',
+    'products': '''
+        const items = document.querySelectorAll('[class*="product"],[class*="item"],[data-testid*="product"],[class*="card"]');
+        if (!items.length) return 'No products found';
+        return Array.from(items).slice(0, 20).map(p => {
+            const name = p.querySelector('h2,h3,h4,[class*="title"],[class*="name"]')?.innerText || '';
+            const price = p.querySelector('[class*="price"],[data-testid*="price"]')?.innerText || '';
+            const link = p.querySelector('a')?.href || '';
+            return [name, price, link].filter(Boolean).join(' | ');
+        }).join('\\n');
+    ''',
+    'table': '''
+        const tables = document.querySelectorAll('table');
+        if (!tables.length) return 'No tables found';
+        return Array.from(tables).slice(0, 3).map(t =>
+            Array.from(t.querySelectorAll('tr')).slice(0, 50).map(r =>
+                Array.from(r.querySelectorAll('th,td')).map(c => c.innerText.trim()).join(' | ')
+            ).join('\\n')
+        ).join('\\n\\n');
+    ''',
+}
+
 def tool_read(args):
     url = args.get('url', '')
     selector = args.get('selector', '')
+    content_type = args.get('type', '')
     if url:
-        if not selector:
+        if not selector and not content_type:
             out, ms = fast('see', url)
             if len(out) > 100:
                 log(f'V1 read: {ms}ms')
                 return out[:3000]
         chrome_go(url, 3)
     d = chrome()
+
+    # Smart extractor by content type
+    if content_type:
+        js = SMART_EXTRACTORS.get(content_type.lower())
+        if not js:
+            return f'Unknown type: {content_type}. Available: {", ".join(SMART_EXTRACTORS.keys())}'
+        text = d.js(f'(function(){{{js}}})()')
+        return save(text or f'No {content_type} found on page', 'read')
+
+    # CSS selector extraction
     if selector:
         text = d.js(f'''
             const els = document.querySelectorAll({json.dumps(selector)});
-            if (!els.length) return 'No matches for: {selector}';
+            if (!els.length) return 'No matches for selector';
             return Array.from(els).map(el => el.innerText.trim()).filter(t => t.length > 0).join('\\n---\\n');
         ''')
         return save(text or f'No content for: {selector}', 'read')
+
     return d.sanitize()
 
 def tool_find(args):
@@ -852,7 +919,7 @@ TOOLS = [
     {"name": "browse", "description": "Fast HTTP browse (~1s). Returns page content with links and actions. Best for reading web pages.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "URL to browse"}}, "required": ["url"]}},
     {"name": "search", "description": "Web search via DuckDuckGo (~1s).", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "num": {"type": "integer", "default": 10}}, "required": ["query"]}},
     {"name": "open", "description": "Open URL in Ghost Chrome (headless, CF bypass, ~5s). Use for SPAs, Cloudflare sites, or when browse returns empty.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "wait": {"type": "integer", "default": 5000, "description": "Wait ms after load"}}, "required": ["url"]}},
-    {"name": "read", "description": "Extract text from page. With selector: extracts only matching elements. Without: full page sanitized.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "selector": {"type": "string", "description": "CSS selector to extract specific elements (e.g. 'article[data-testid=tweet]', '.post-content', 'table')"}}}},
+    {"name": "read", "description": "Extract text from page. With type: smart extraction (tweets, posts, comments, products, table). With selector: CSS extraction. Without: full page.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "type": {"type": "string", "enum": ["tweets", "posts", "comments", "products", "table"], "description": "Smart content extractor"}, "selector": {"type": "string", "description": "CSS selector fallback"}}}},
     {"name": "find", "description": "Find element by text, CSS selector, XPath, or ARIA role.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "by": {"type": "string", "enum": ["text", "css", "xpath", "role"], "default": "text"}}, "required": ["text"]}},
     {"name": "click", "description": "Click element by text content or CSS selector.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Text or CSS selector of element to click"}}, "required": ["text"]}},
     {"name": "type", "description": "Type text in input. Finds by: label text, placeholder, name, aria-label, type, or CSS selector.", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "Label text, placeholder, name, or CSS selector"}, "value": {"type": "string", "description": "Text to type"}}, "required": ["selector", "value"]}},
@@ -898,6 +965,7 @@ def handle(req):
         if fn:
             try:
                 result = fn(args)
+                if result is None: result = ''
                 text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
                 # Guard: truncate if over 500KB to stay under websocket 1MB limit
                 if len(text) > 500000:
