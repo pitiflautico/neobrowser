@@ -127,13 +127,35 @@ class GhostChrome:
         msg = json.dumps({'id': self._id, 'method': method, 'params': params or {}})
         try:
             self.ws.send(msg)
-            while True:
-                data = json.loads(self.ws.recv(timeout=30))
-                if data.get('id') == self._id:
-                    return data.get('result', {})
-        except Exception as e:
-            log(f'CDP send failed: {e}')
-            raise
+        except Exception:
+            # Reconnect websocket to same Chrome instance
+            try:
+                import socket as _sock
+                def _http(path, port):
+                    s = _sock.socket(); s.settimeout(3); s.connect(('127.0.0.1', port))
+                    s.send(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n'.encode())
+                    d = b''
+                    while True:
+                        try: c = s.recv(4096)
+                        except: break
+                        if not c: break
+                        d += c
+                    s.close()
+                    return d.split(b'\r\n\r\n', 1)[1] if b'\r\n\r\n' in d else d
+                targets = json.loads(_http('/json/list', self.port))
+                ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
+                self.ws = ws_sync.connect(ws_url, max_size=10_000_000)
+                log(f'Reconnected CDP websocket')
+                self._id += 1
+                msg = json.dumps({'id': self._id, 'method': method, 'params': params or {}})
+                self.ws.send(msg)
+            except Exception as e:
+                log(f'CDP reconnect failed: {e}')
+                raise
+        while True:
+            data = json.loads(self.ws.recv(timeout=30))
+            if data.get('id') == self._id:
+                return data.get('result', {})
 
     def js(self, code):
         expr = f'(function(){{{code}}})()' if 'return ' in code else code
