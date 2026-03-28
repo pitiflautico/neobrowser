@@ -856,7 +856,7 @@ def _chat_ensure(platform, url, cookies):
     return d
 
 def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wait=120):
-    # Count responses BEFORE sending to detect new one
+    """Wait for chat response. Tries multiple extraction methods."""
     before_count = 0
     if count_js:
         before_count = d.js(count_js) or 0
@@ -865,14 +865,39 @@ def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wa
     for i in range(max_wait):
         time.sleep(1)
 
-        # Check if a NEW response appeared (count increased)
         if count_js and i < 30:
             current_count = d.js(count_js) or 0
             if current_count <= before_count and i < 15:
-                continue  # No new response yet, keep waiting
+                continue
 
         if i > 2:
+            # Method 1: original selector (works on some versions)
             resp = d.js(extract_js)
+            # Method 2: parse main.innerText (ChatGPT 2025+ doesn't render assistant text in DOM)
+            if not resp or len(resp) < 3:
+                resp = d.js('''
+                    const main = document.querySelector('main');
+                    if (!main) return null;
+                    const text = main.innerText || '';
+                    // Find last "ChatGPT" or "ChatGPT Plus" label — response follows user message
+                    const parts = text.split(/Tú dijiste:|You said:/);
+                    if (parts.length < 2) return null;
+                    // Get the section after last user message
+                    const lastSection = parts[parts.length - 1];
+                    // Extract text between "ChatGPT Plus/ChatGPT" and the footer
+                    const match = lastSection.match(/ChatGPT(?:\\s+Plus)?\\s*\\n([\\s\\S]*?)(?:ChatGPT puede|ChatGPT can|$)/);
+                    if (match && match[1]) {
+                        const clean = match[1].trim();
+                        if (clean.length > 0) return clean;
+                    }
+                    return null;
+                ''')
+            # Method 3: page title often contains the response summary
+            if not resp or len(resp) < 3:
+                title = d.js('return document.title') or ''
+                if title and title != user_msg and len(title) > 3:
+                    resp = f'[title] {title}'
+
             if resp and len(resp) > 3 and resp != user_msg:
                 if resp == prev:
                     stable += 1
