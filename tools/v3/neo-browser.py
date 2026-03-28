@@ -114,44 +114,17 @@ except ImportError:
     log('ERROR: pip install websockets')
     sys.exit(1)
 
-class GhostChrome:
-    def __init__(self, proc, port, ws, profile_dir):
-        self.proc = proc
-        self.port = port
+class CDPTab:
+    """A single Chrome tab connected via CDP WebSocket."""
+    def __init__(self, ws, target_id=None):
         self.ws = ws
-        self.profile_dir = profile_dir
+        self.target_id = target_id
         self._id = 10
 
     def _send(self, method, params=None):
         self._id += 1
         msg = json.dumps({'id': self._id, 'method': method, 'params': params or {}})
-        try:
-            self.ws.send(msg)
-        except Exception:
-            # Reconnect websocket to same Chrome instance
-            try:
-                import socket as _sock
-                def _http(path, port):
-                    s = _sock.socket(); s.settimeout(3); s.connect(('127.0.0.1', port))
-                    s.send(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n'.encode())
-                    d = b''
-                    while True:
-                        try: c = s.recv(4096)
-                        except: break
-                        if not c: break
-                        d += c
-                    s.close()
-                    return d.split(b'\r\n\r\n', 1)[1] if b'\r\n\r\n' in d else d
-                targets = json.loads(_http('/json/list', self.port))
-                ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
-                self.ws = ws_sync.connect(ws_url, max_size=10_000_000)
-                log(f'Reconnected CDP websocket')
-                self._id += 1
-                msg = json.dumps({'id': self._id, 'method': method, 'params': params or {}})
-                self.ws.send(msg)
-            except Exception as e:
-                log(f'CDP reconnect failed: {e}')
-                raise
+        self.ws.send(msg)
         while True:
             data = json.loads(self.ws.recv(timeout=30))
             if data.get('id') == self._id:
@@ -170,12 +143,6 @@ class GhostChrome:
         r = self._send('Page.captureScreenshot', {'format': 'png'})
         with open(path, 'wb') as f: f.write(base64.b64decode(r.get('data', '')))
 
-    def cookie(self, name, value, domain, path='/', secure=False, httpOnly=False, expires=None):
-        p = {'name': name, 'value': value, 'domain': domain, 'path': path,
-             'secure': secure, 'httpOnly': httpOnly, 'url': f"https://{domain.lstrip('.')}"}
-        if expires: p['expires'] = expires
-        self._send('Network.setCookie', p)
-
     def key(self, text):
         for c in text:
             self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'text': c, 'key': c, 'windowsVirtualKeyCode': ord(c)})
@@ -191,9 +158,91 @@ class GhostChrome:
     @property
     def url(self): return self.js('location.href') or ''
 
-    def quit(self):
+    def close(self):
         try: self.ws.close()
         except: pass
+
+
+class GhostChrome:
+    """Chrome process with multi-tab support via CDP."""
+    def __init__(self, proc, port, default_tab, profile_dir):
+        self.proc = proc
+        self.port = port
+        self.profile_dir = profile_dir
+        self._tabs = {'default': default_tab}  # name → CDPTab
+        self._active = 'default'
+
+    @property
+    def tab(self):
+        """Current active tab."""
+        return self._tabs.get(self._active)
+
+    def _cdp_http(self, path):
+        """HTTP request to Chrome DevTools protocol."""
+        import socket as _sock
+        s = _sock.socket(); s.settimeout(5); s.connect(('127.0.0.1', self.port))
+        s.send(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\nConnection: close\r\n\r\n'.encode())
+        d = b''
+        while True:
+            try: c = s.recv(4096)
+            except: break
+            if not c: break
+            d += c
+        s.close()
+        return d.split(b'\r\n\r\n', 1)[1] if b'\r\n\r\n' in d else d
+
+    def new_tab(self, name, url='about:blank'):
+        """Create a new tab and connect to it."""
+        if name in self._tabs:
+            self._active = name
+            return self._tabs[name]
+        # Create new target
+        resp = json.loads(self._cdp_http(f'/json/new?{url}'))
+        ws_url = resp.get('webSocketDebuggerUrl', '')
+        if not ws_url:
+            raise RuntimeError(f'Failed to create tab: {resp}')
+        ws = ws_sync.connect(ws_url, max_size=10_000_000)
+        tab = CDPTab(ws, resp.get('id'))
+        tab._send('Page.enable')
+        tab._send('Network.enable')
+        tab._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
+        tab._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
+        self._tabs[name] = tab
+        self._active = name
+        log(f'New tab: {name} ({url})')
+        return tab
+
+    def switch(self, name):
+        """Switch to an existing tab."""
+        if name not in self._tabs:
+            return None
+        self._active = name
+        return self._tabs[name]
+
+    def close_tab(self, name):
+        """Close a tab."""
+        if name in self._tabs and name != 'default':
+            self._tabs[name].close()
+            del self._tabs[name]
+            if self._active == name:
+                self._active = 'default'
+
+    # Proxy methods to active tab for backwards compat
+    def _send(self, method, params=None): return self.tab._send(method, params)
+    def js(self, code): return self.tab.js(code)
+    def go(self, url): return self.tab.go(url)
+    def screenshot(self, path): return self.tab.screenshot(path)
+    def key(self, text): return self.tab.key(text)
+    def enter(self): return self.tab.enter()
+    @property
+    def title(self): return self.tab.title
+    @property
+    def url(self): return self.tab.url
+
+    def quit(self):
+        for tab in self._tabs.values():
+            tab.close()
+        self._tabs.clear()
         try: self.proc.kill()
         except: pass
 
@@ -287,10 +336,11 @@ def chrome():
                 targets = json.loads(http('/json/list'))
                 ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
                 ws = ws_sync.connect(ws_url, max_size=10_000_000)
-                _chrome = GhostChrome(proc, port, ws, str(ghost_dir))
-                _chrome._send('Page.enable'); _chrome._send('Network.enable')
-                _chrome._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
-                _chrome._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
+                default_tab = CDPTab(ws)
+                default_tab._send('Page.enable'); default_tab._send('Network.enable')
+                default_tab._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
+                default_tab._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
+                _chrome = GhostChrome(proc, port, default_tab, str(ghost_dir))
 
                 PID_FILE.parent.mkdir(parents=True, exist_ok=True)
                 PID_FILE.write_text(json.dumps(list(_chrome_pids)))
@@ -341,9 +391,9 @@ def _sync_session(src_profile, dst_profile):
                 log(f'Failed to sync {dirname}: {e}')
 
 def chrome_go(url, wait_s=5):
-    """Navigate Ghost Chrome to URL. Cookies come from profile sync, no export needed."""
+    """Navigate the default browsing tab. Chat tabs remain untouched."""
     d = chrome()
-    _chrome_tabs.clear()  # Single tab — navigating away invalidates chat state
+    d.switch('default')
     d.go(url); time.sleep(wait_s)
     return d
 
@@ -760,18 +810,16 @@ def tool_extract(args):
 # ── Chat ──
 
 def _chat_ensure(platform, url, cookies):
-    """Ensure chat platform is loaded. Cookies come from Ghost Chrome profile sync."""
+    """Ensure chat platform is loaded in its own dedicated tab."""
     d = chrome()
-    if platform not in _chrome_tabs:
-        # Always navigate fresh — ChatGPT/Grok lose their internal WS on tab switch
-        d.go(url); time.sleep(8)
-        # For ChatGPT: ensure we're on a fresh chat (not a stale conversation)
-        if platform == 'gpt':
-            current = d.js('return location.href') or ''
-            if '/c/' in current:
-                d.go('https://chatgpt.com'); time.sleep(3)
-        _chrome_tabs[platform] = True
-        log(f'{platform}: {d.title}')
+    # Switch to existing tab or create new one
+    if d.switch(platform):
+        return d
+    # Create dedicated tab for this chat platform
+    tab = d.new_tab(platform, url)
+    time.sleep(8)
+    log(f'{platform}: {d.title}')
+    # Switch back is automatic (new_tab sets active)
     return d
 
 def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wait=120):
@@ -871,7 +919,9 @@ def tool_js(args):
     return str(result)[:5000]
 
 def tool_status(args):
-    return json.dumps({'chrome': _chrome is not None, 'tabs': list(_chrome_tabs.keys()), 'pids': list(_chrome_pids)}, indent=2)
+    tabs = list(_chrome._tabs.keys()) if _chrome else []
+    active = _chrome._active if _chrome else None
+    return json.dumps({'chrome': _chrome is not None, 'tabs': tabs, 'active': active, 'pids': list(_chrome_pids)}, indent=2)
 
 # ── Plugins ──
 
