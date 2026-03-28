@@ -179,17 +179,8 @@ class GhostChrome:
 
     def _cdp_http(self, path):
         """HTTP request to Chrome DevTools protocol."""
-        import socket as _sock
-        s = _sock.socket(); s.settimeout(5); s.connect(('127.0.0.1', self.port))
-        s.send(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\nConnection: close\r\n\r\n'.encode())
-        d = b''
-        while True:
-            try: c = s.recv(4096)
-            except: break
-            if not c: break
-            d += c
-        s.close()
-        return d.split(b'\r\n\r\n', 1)[1] if b'\r\n\r\n' in d else d
+        r = urllib.request.urlopen(f'http://127.0.0.1:{self.port}{path}', timeout=10)
+        return r.read()
 
     def new_tab(self, name, url='about:blank'):
         """Create a new tab and connect to it."""
@@ -320,20 +311,7 @@ def chrome():
                 _chrome_pids.add(proc.pid); time.sleep(2)
 
                 # Get page WS URL
-                def http(path):
-                    s = socket.socket(); s.settimeout(3); s.connect(('127.0.0.1', port))
-                    s.send(f'GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n'.encode())
-                    d = b''
-                    while True:
-                        try: c = s.recv(4096)
-                        except: break
-                        if not c: break
-                        d += c
-                        if len(d) > 200: break
-                    s.close()
-                    return d.split(b'\r\n\r\n', 1)[1] if b'\r\n\r\n' in d else d
-
-                targets = json.loads(http('/json/list'))
+                targets = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list', timeout=10).read())
                 ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
                 ws = ws_sync.connect(ws_url, max_size=10_000_000)
                 default_tab = CDPTab(ws)
