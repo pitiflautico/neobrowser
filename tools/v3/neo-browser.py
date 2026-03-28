@@ -2,25 +2,53 @@
 """
 NeoBrowser V3 — AI Browser MCP Server.
 
-Tools:
-  BROWSE  — Fast HTTP browse (V1, ~1s). Best for reading pages.
-  SEARCH  — Web search via DuckDuckGo (~1s).
-  OPEN    — Open URL in Chrome ghost (headless, CF bypass, ~5s).
-  READ    — Extract clean text from current page.
-  FIND    — Find element by text, CSS, XPath, or role.
-  CLICK   — Click element by text or CSS selector.
-  TYPE    — Type text in input field.
-  FILL    — Fill form fields.
-  SUBMIT  — Submit current form.
-  SCROLL  — Scroll page up/down.
-  SCREENSHOT — Capture page screenshot.
-  WAIT    — Wait for element or text to appear.
-  LOGIN   — Fill email+password and submit.
-  EXTRACT — Extract structured data (tables, links).
-  GPT     — Send/read ChatGPT. Actions: send, read_last, is_streaming, history.
-  GROK    — Send/read Grok. Actions: send, read_last, is_streaming, history.
-  PLUGIN  — Run/list/create reusable browser pipelines (~/.neorender/plugins/).
-  STATUS  — Browser and chat session status.
+Architecture:
+  - Ghost Chrome: headless Chrome per MCP process (~/.neorender/ghost-{pid}/)
+  - Session sync: cookies from real Chrome profile on startup (Google excluded)
+  - Multi-tab: each site gets its own CDP tab (browsing, GPT, Grok)
+  - Per-process isolation: no collisions between MCP instances
+
+Tabs:
+  - default: browsing tab (open, click, read, scroll, fill, etc.)
+  - gpt: dedicated ChatGPT tab (persists across browse calls)
+  - grok: dedicated Grok tab (persists across browse calls)
+  New tabs created via CDP Target.createTarget, each with own WebSocket.
+
+Tools (19):
+  HTTP (no Chrome):
+    BROWSE  — Fast HTTP fetch + parse (~1s). Best for reading pages.
+    SEARCH  — Web search via DuckDuckGo HTML (~1s).
+
+  Chrome browsing (default tab):
+    OPEN    — Navigate to URL in Ghost Chrome (~5s). CF bypass, session.
+    READ    — Extract text. type=tweets|posts|comments|products|table or CSS selector.
+    FIND    — Find element by text, CSS, XPath, or ARIA role.
+    CLICK   — Click element by text or CSS selector.
+    TYPE    — Type in input (finds by label, placeholder, name, aria-label).
+    FILL    — Smart fill: inputs, textareas, selects, checkboxes, radios.
+    SUBMIT  — Submit form, returns sanitized page.
+    SCROLL  — Scroll up/down, returns sanitized page.
+    WAIT    — Wait for element/text, returns sanitized page.
+    LOGIN   — Fill email+password and submit.
+    EXTRACT — Extract tables or links as JSON.
+    SCREENSHOT — Capture PNG.
+    JS      — Execute arbitrary JavaScript.
+
+  Chat (dedicated tabs):
+    GPT     — ChatGPT. Actions: send, read_last, is_streaming, history.
+    GROK    — Grok. Actions: send, read_last, is_streaming, history.
+
+  Meta:
+    PLUGIN  — Run/list/create YAML pipelines (~/.neorender/plugins/).
+    STATUS  — Chrome state, active tabs, PIDs.
+
+Session sync (on Chrome launch):
+  1. Cookies: SQLite backup from real Chrome (WAL-safe). Google excluded.
+  2. Local Storage: SPA auth tokens (X, ChatGPT, LinkedIn...).
+  3. IndexedDB: some sites store auth here.
+
+Install: pip install -e tools/v3/  →  command: neo-browser
+Config:  {"command": "neo-browser", "env": {"NEOBROWSER_PROFILE": "Profile 24"}}
 """
 
 import json, sys, os, time, subprocess, threading, atexit, signal, tempfile, re, urllib.request, urllib.parse
