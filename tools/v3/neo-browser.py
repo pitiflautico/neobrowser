@@ -262,6 +262,7 @@ def chrome():
     global _chrome
     if _chrome:
         try:
+            _chrome.tab('default')  # Always return on default tab
             result = _chrome.js('return document.readyState')
             if result: return _chrome
         except: pass
@@ -419,7 +420,6 @@ def _is_login_wall(d):
 def chrome_go(url, wait_s=5):
     """Navigate default tab to URL. Chat tabs stay untouched."""
     d = chrome()
-    d.tab('default')
     d.go(url); time.sleep(wait_s)
 
     # Check for login wall → resync cookies and retry
