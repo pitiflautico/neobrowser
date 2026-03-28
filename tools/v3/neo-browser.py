@@ -84,7 +84,6 @@ SANITIZE_JS = '''(function(){
 _chrome = None
 _chrome_lock = threading.Lock()
 _chrome_pids = set()
-_chrome_tabs = {}
 
 # Kill stale pids
 try:
@@ -114,17 +113,17 @@ except ImportError:
     log('ERROR: pip install websockets')
     sys.exit(1)
 
-class CDPTab:
-    """A single Chrome tab connected via CDP WebSocket."""
-    def __init__(self, ws, target_id=None):
+class GhostChrome:
+    """Single-tab headless Chrome with CDP. Simple."""
+    def __init__(self, proc, port, ws):
+        self.proc = proc
+        self.port = port
         self.ws = ws
-        self.target_id = target_id
         self._id = 10
 
     def _send(self, method, params=None):
         self._id += 1
-        msg = json.dumps({'id': self._id, 'method': method, 'params': params or {}})
-        self.ws.send(msg)
+        self.ws.send(json.dumps({'id': self._id, 'method': method, 'params': params or {}}))
         while True:
             data = json.loads(self.ws.recv(timeout=30))
             if data.get('id') == self._id:
@@ -158,94 +157,12 @@ class CDPTab:
     @property
     def url(self): return self.js('location.href') or ''
 
-    def close(self):
+    def quit(self):
         try: self.ws.close()
         except: pass
-
-
-class GhostChrome:
-    """Chrome process with multi-tab support via CDP."""
-    def __init__(self, proc, port, default_tab, profile_dir):
-        self.proc = proc
-        self.port = port
-        self.profile_dir = profile_dir
-        self._tabs = {'default': default_tab}  # name → CDPTab
-        self._active = 'default'
-
-    @property
-    def tab(self):
-        """Current active tab."""
-        return self._tabs.get(self._active)
-
-    def _cdp_http(self, path):
-        """HTTP request to Chrome DevTools protocol."""
-        r = urllib.request.urlopen(f'http://127.0.0.1:{self.port}{path}', timeout=10)
-        return r.read()
-
-    def new_tab(self, name, url='about:blank'):
-        """Create a new tab and connect to it."""
-        if name in self._tabs:
-            self._active = name
-            return self._tabs[name]
-        # Create new target via CDP protocol (works on all Chrome versions)
-        default = self._tabs.get('default') or list(self._tabs.values())[0]
-        result = default._send('Target.createTarget', {'url': url})
-        target_id = result.get('targetId', '')
-        if not target_id:
-            raise RuntimeError(f'Failed to create tab: {result}')
-        # Get WS URL for new target
-        targets = json.loads(self._cdp_http('/json/list'))
-        ws_url = None
-        for t in targets:
-            if t.get('id') == target_id:
-                ws_url = t.get('webSocketDebuggerUrl', '')
-                break
-        if not ws_url:
-            raise RuntimeError(f'No WS URL for target {target_id}')
-        ws = ws_sync.connect(ws_url, max_size=10_000_000)
-        tab = CDPTab(ws, target_id)
-        tab._send('Page.enable')
-        tab._send('Network.enable')
-        tab._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
-        tab._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
-        self._tabs[name] = tab
-        self._active = name
-        log(f'New tab: {name} ({url})')
-        return tab
-
-    def switch(self, name):
-        """Switch to an existing tab."""
-        if name not in self._tabs:
-            return None
-        self._active = name
-        return self._tabs[name]
-
-    def close_tab(self, name):
-        """Close a tab."""
-        if name in self._tabs and name != 'default':
-            self._tabs[name].close()
-            del self._tabs[name]
-            if self._active == name:
-                self._active = 'default'
-
-    # Proxy methods to active tab for backwards compat
-    def _send(self, method, params=None): return self.tab._send(method, params)
-    def js(self, code): return self.tab.js(code)
-    def go(self, url): return self.tab.go(url)
-    def screenshot(self, path): return self.tab.screenshot(path)
-    def key(self, text): return self.tab.key(text)
-    def enter(self): return self.tab.enter()
-    @property
-    def title(self): return self.tab.title
-    @property
-    def url(self): return self.tab.url
-
-    def quit(self):
-        for tab in self._tabs.values():
-            tab.close()
-        self._tabs.clear()
-        try: self.proc.kill()
-        except: pass
+        if self.proc:
+            try: self.proc.kill()
+            except: pass
 
     def sanitize(self):
         try:
@@ -281,67 +198,28 @@ def chrome():
     global _chrome
     if _chrome:
         try:
-            # Verify websocket is alive with a real JS eval, not just property access
             result = _chrome.js('return document.readyState')
             if result: return _chrome
-            raise Exception('dead ws')
-        except:
-            try: _chrome.quit()
-            except: pass
-            _kill_pids()
-            _chrome = None; _chrome_tabs.clear(); _chrome_pids.clear(); time.sleep(1)
+        except: pass
+        try: _chrome.quit()
+        except: pass
+        _kill_pids()
+        _chrome = None; _chrome_pids.clear(); time.sleep(1)
 
     with _chrome_lock:
         if _chrome: return _chrome
-
-        ghost_dir = Path.home() / '.neorender' / 'ghost-profile'
-        ghost_default = ghost_dir / 'Default'
-        ghost_default.mkdir(parents=True, exist_ok=True)
-        port_file = Path.home() / '.neorender' / 'chrome-port'
-
-        # Try connecting to existing Ghost Chrome (shared across MCP instances)
-        if port_file.exists():
-            try:
-                existing_port = int(port_file.read_text().strip())
-                # Connect to an existing page to issue CDP commands
-                targets = json.loads(urllib.request.urlopen(
-                    f'http://127.0.0.1:{existing_port}/json/list', timeout=3).read())
-                page = [t for t in targets if t['type'] == 'page'][0]
-                tmp_ws = ws_sync.connect(page['webSocketDebuggerUrl'], max_size=10_000_000)
-                tmp_tab = CDPTab(tmp_ws)
-                # Create our OWN new tab via CDP (not HTTP /json/new which returns 405)
-                result = tmp_tab._send('Target.createTarget', {'url': 'about:blank'})
-                target_id = result.get('targetId', '')
-                tmp_ws.close()
-                if not target_id:
-                    raise RuntimeError('Failed to create tab')
-                # Connect to our new tab
-                targets = json.loads(urllib.request.urlopen(
-                    f'http://127.0.0.1:{existing_port}/json/list', timeout=3).read())
-                ws_url = next(t['webSocketDebuggerUrl'] for t in targets if t.get('id') == target_id)
-                ws = ws_sync.connect(ws_url, max_size=10_000_000)
-                default_tab = CDPTab(ws, target_id)
-                default_tab._send('Page.enable'); default_tab._send('Network.enable')
-                default_tab._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
-                default_tab._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
-                _chrome = GhostChrome(None, existing_port, default_tab, str(ghost_dir))
-                log(f'Attached to existing Ghost Chrome (port={existing_port}), own tab created')
-                return _chrome
-            except:
-                log('Existing Chrome not reachable, launching new...')
-                port_file.unlink(missing_ok=True)
-
         for attempt in range(3):
             try:
                 if attempt > 0: _kill_pids(); time.sleep(2)
                 log('Launching Ghost Chrome...')
-                import socket, shutil
+                import socket
 
-                # Clean stale locks from crashed sessions
-                for lock in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']:
-                    (ghost_dir / lock).unlink(missing_ok=True)
+                # Each MCP instance gets its own Chrome profile (no collisions)
+                ghost_dir = Path.home() / '.neorender' / f'ghost-{os.getpid()}'
+                ghost_default = ghost_dir / 'Default'
+                ghost_default.mkdir(parents=True, exist_ok=True)
 
-                # Sync session data from real Chrome profile
+                # Sync cookies from real Chrome
                 real_profile = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome' / PROFILE
                 if real_profile.exists():
                     _sync_session(real_profile, ghost_default)
@@ -354,21 +232,17 @@ def chrome():
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 _chrome_pids.add(proc.pid); time.sleep(2)
 
-                # Get page WS URL
                 targets = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list', timeout=10).read())
                 ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
                 ws = ws_sync.connect(ws_url, max_size=10_000_000)
-                default_tab = CDPTab(ws)
-                default_tab._send('Page.enable'); default_tab._send('Network.enable')
-                default_tab._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
-                default_tab._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
-                _chrome = GhostChrome(proc, port, default_tab, str(ghost_dir))
+                _chrome = GhostChrome(proc, port, ws)
+                _chrome._send('Page.enable'); _chrome._send('Network.enable')
+                _chrome._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
+                _chrome._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
 
-                # Save port for other MCP instances to connect
-                port_file.write_text(str(port))
                 PID_FILE.parent.mkdir(parents=True, exist_ok=True)
                 PID_FILE.write_text(json.dumps(list(_chrome_pids)))
-                log(f'Ghost Chrome ready (port={port}, pid={proc.pid}, profile={PROFILE})')
+                log(f'Ghost Chrome ready (port={port}, pid={proc.pid})')
                 return _chrome
             except Exception as e:
                 log(f'Chrome attempt {attempt+1} failed: {e}'); _chrome = None
@@ -479,9 +353,8 @@ def _is_login_wall(d):
         return False
 
 def chrome_go(url, wait_s=5):
-    """Navigate the default browsing tab. Auto-resync cookies if login wall detected."""
+    """Navigate to URL. Auto-resync cookies if login wall detected."""
     d = chrome()
-    d.switch('default')
     d.go(url); time.sleep(wait_s)
 
     # Check for login wall → resync cookies and retry
@@ -907,16 +780,15 @@ def tool_extract(args):
 # ── Chat ──
 
 def _chat_ensure(platform, url, cookies):
-    """Ensure chat platform is loaded in its own dedicated tab."""
+    """Navigate to chat platform. Single tab — just go there."""
     d = chrome()
-    # Switch to existing tab or create new one
-    if d.switch(platform):
-        return d
-    # Create dedicated tab for this chat platform
-    tab = d.new_tab(platform, url)
-    time.sleep(8)
-    log(f'{platform}: {d.title}')
-    # Switch back is automatic (new_tab sets active)
+    current = d.js('return location.hostname') or ''
+    if platform == 'gpt' and 'chatgpt' not in current:
+        d.go(url); time.sleep(8)
+        log(f'{platform}: {d.title}')
+    elif platform == 'grok' and 'grok' not in current:
+        d.go(url); time.sleep(8)
+        log(f'{platform}: {d.title}')
     return d
 
 def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wait=120):
@@ -1016,9 +888,8 @@ def tool_js(args):
     return str(result)[:5000]
 
 def tool_status(args):
-    tabs = list(_chrome._tabs.keys()) if _chrome else []
-    active = _chrome._active if _chrome else None
-    return json.dumps({'chrome': _chrome is not None, 'tabs': tabs, 'active': active, 'pids': list(_chrome_pids)}, indent=2)
+    url = _chrome.js('return location.href') if _chrome else None
+    return json.dumps({'chrome': _chrome is not None, 'url': url, 'pids': list(_chrome_pids)}, indent=2)
 
 # ── Plugins ──
 
@@ -1089,13 +960,12 @@ def cleanup():
     global _chrome
     if _chrome: _chrome.quit(); _chrome = None
     _kill_pids(); PID_FILE.unlink(missing_ok=True)
-    # Remove locks so next launch doesn't fail
-    ghost_dir = Path.home() / '.neorender' / 'ghost-profile'
-    for lock in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']:
-        (ghost_dir / lock).unlink(missing_ok=True)
-    # Only remove port file if WE launched Chrome (not if we attached)
-    if _chrome and _chrome.proc:
-        (Path.home() / '.neorender' / 'chrome-port').unlink(missing_ok=True)
+    # Clean up our per-process profile
+    import shutil
+    ghost_dir = Path.home() / '.neorender' / f'ghost-{os.getpid()}'
+    if ghost_dir.exists():
+        try: shutil.rmtree(str(ghost_dir))
+        except: pass
     log('Cleanup')
 
 atexit.register(cleanup)
