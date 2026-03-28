@@ -114,12 +114,47 @@ except ImportError:
     sys.exit(1)
 
 class GhostChrome:
-    """Single-tab headless Chrome with CDP. Simple."""
+    """Headless Chrome with real tabs. Each tab has its own CDP websocket."""
     def __init__(self, proc, port, ws):
         self.proc = proc
         self.port = port
-        self.ws = ws
+        self._tabs = {'default': ws}   # name → websocket
+        self._active = 'default'
         self._id = 10
+
+    @property
+    def ws(self):
+        return self._tabs[self._active]
+
+    def tab(self, name, url=None):
+        """Switch to tab by name. Creates it if it doesn't exist and url is given."""
+        if name in self._tabs:
+            self._active = name
+            return self
+        if not url:
+            return None
+        # Create new tab via CDP Target.createTarget
+        old = self._active
+        result = self._send('Target.createTarget', {'url': url})
+        target_id = result.get('targetId', '')
+        if not target_id:
+            raise RuntimeError(f'Tab creation failed: {result}')
+        # Find its websocket URL
+        targets = json.loads(urllib.request.urlopen(
+            f'http://127.0.0.1:{self.port}/json/list', timeout=5).read())
+        ws_url = next((t['webSocketDebuggerUrl'] for t in targets if t.get('id') == target_id), None)
+        if not ws_url:
+            raise RuntimeError(f'No WS for target {target_id}')
+        ws = ws_sync.connect(ws_url, max_size=10_000_000)
+        self._tabs[name] = ws
+        self._active = name
+        # Init new tab
+        self._send('Page.enable')
+        self._send('Network.enable')
+        self._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
+        self._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
+        log(f'Tab "{name}" created → {url}')
+        return self
 
     def _send(self, method, params=None):
         self._id += 1
@@ -158,8 +193,9 @@ class GhostChrome:
     def url(self): return self.js('location.href') or ''
 
     def quit(self):
-        try: self.ws.close()
-        except: pass
+        for ws in self._tabs.values():
+            try: ws.close()
+            except: pass
         if self.proc:
             try: self.proc.kill()
             except: pass
@@ -353,8 +389,9 @@ def _is_login_wall(d):
         return False
 
 def chrome_go(url, wait_s=5):
-    """Navigate to URL. Auto-resync cookies if login wall detected."""
+    """Navigate default tab to URL. Chat tabs stay untouched."""
     d = chrome()
+    d.tab('default')
     d.go(url); time.sleep(wait_s)
 
     # Check for login wall → resync cookies and retry
@@ -780,15 +817,14 @@ def tool_extract(args):
 # ── Chat ──
 
 def _chat_ensure(platform, url, cookies):
-    """Navigate to chat platform. Single tab — just go there."""
+    """Switch to chat tab. Creates it on first use, preserves state after."""
     d = chrome()
-    current = d.js('return location.hostname') or ''
-    if platform == 'gpt' and 'chatgpt' not in current:
-        d.go(url); time.sleep(8)
-        log(f'{platform}: {d.title}')
-    elif platform == 'grok' and 'grok' not in current:
-        d.go(url); time.sleep(8)
-        log(f'{platform}: {d.title}')
+    if d.tab(platform):
+        return d  # Tab exists, switched to it
+    # First time — create dedicated tab
+    d.tab(platform, url)
+    time.sleep(8)
+    log(f'{platform}: {d.title}')
     return d
 
 def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wait=120):
@@ -888,8 +924,10 @@ def tool_js(args):
     return str(result)[:5000]
 
 def tool_status(args):
+    tabs = list(_chrome._tabs.keys()) if _chrome else []
+    active = _chrome._active if _chrome else None
     url = _chrome.js('return location.href') if _chrome else None
-    return json.dumps({'chrome': _chrome is not None, 'url': url, 'pids': list(_chrome_pids)}, indent=2)
+    return json.dumps({'chrome': _chrome is not None, 'tabs': tabs, 'active': active, 'url': url, 'pids': list(_chrome_pids)}, indent=2)
 
 # ── Plugins ──
 
