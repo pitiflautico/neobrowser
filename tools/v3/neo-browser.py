@@ -283,16 +283,37 @@ def chrome():
 
     with _chrome_lock:
         if _chrome: return _chrome
+
+        ghost_dir = Path.home() / '.neorender' / 'ghost-profile'
+        ghost_default = ghost_dir / 'Default'
+        ghost_default.mkdir(parents=True, exist_ok=True)
+        port_file = Path.home() / '.neorender' / 'chrome-port'
+
+        # Try connecting to existing Ghost Chrome (shared across MCP instances)
+        if port_file.exists():
+            try:
+                existing_port = int(port_file.read_text().strip())
+                targets = json.loads(urllib.request.urlopen(
+                    f'http://127.0.0.1:{existing_port}/json/list', timeout=3).read())
+                page = [t for t in targets if t['type'] == 'page'][0]
+                ws = ws_sync.connect(page['webSocketDebuggerUrl'], max_size=10_000_000)
+                default_tab = CDPTab(ws)
+                default_tab._send('Page.enable'); default_tab._send('Network.enable')
+                default_tab._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
+                default_tab._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
+                _chrome = GhostChrome(None, existing_port, default_tab, str(ghost_dir))
+                log(f'Attached to existing Ghost Chrome (port={existing_port})')
+                return _chrome
+            except:
+                log('Existing Chrome not reachable, launching new...')
+                port_file.unlink(missing_ok=True)
+
         for attempt in range(3):
             try:
                 if attempt > 0: _kill_pids(); time.sleep(2)
                 log('Launching Ghost Chrome...')
                 import socket, shutil
 
-                # Persistent profile with synced cookies from real Chrome
-                ghost_dir = Path.home() / '.neorender' / 'ghost-profile'
-                ghost_default = ghost_dir / 'Default'
-                ghost_default.mkdir(parents=True, exist_ok=True)
                 # Clean stale locks from crashed sessions
                 for lock in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']:
                     (ghost_dir / lock).unlink(missing_ok=True)
@@ -320,6 +341,8 @@ def chrome():
                 default_tab._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
                 _chrome = GhostChrome(proc, port, default_tab, str(ghost_dir))
 
+                # Save port for other MCP instances to connect
+                port_file.write_text(str(port))
                 PID_FILE.parent.mkdir(parents=True, exist_ok=True)
                 PID_FILE.write_text(json.dumps(list(_chrome_pids)))
                 log(f'Ghost Chrome ready (port={port}, pid={proc.pid}, profile={PROFILE})')
@@ -1041,10 +1064,13 @@ def cleanup():
     global _chrome
     if _chrome: _chrome.quit(); _chrome = None
     _kill_pids(); PID_FILE.unlink(missing_ok=True)
-    # Remove SingletonLock so next launch doesn't fail
+    # Remove locks so next launch doesn't fail
     ghost_dir = Path.home() / '.neorender' / 'ghost-profile'
     for lock in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']:
         (ghost_dir / lock).unlink(missing_ok=True)
+    # Only remove port file if WE launched Chrome (not if we attached)
+    if _chrome and _chrome.proc:
+        (Path.home() / '.neorender' / 'chrome-port').unlink(missing_ok=True)
     log('Cleanup')
 
 atexit.register(cleanup)
