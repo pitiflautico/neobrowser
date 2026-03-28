@@ -333,40 +333,55 @@ def _sync_session(src_profile, dst_profile):
     """Sync cookies and session data from real Chrome profile to Ghost profile.
     Both profiles use the same macOS Keychain encryption key, so cookies decrypt fine."""
     import shutil, sqlite3
+    synced = []
 
-    # Files to sync: cookies (auth), Local Storage (tokens), Session Storage
-    for name in ['Cookies', 'Cookies-journal']:
-        src = src_profile / name
-        dst = dst_profile / name
-        if src.exists():
+    # 1. Cookies DB — SQLite backup (WAL-safe, no lock conflicts)
+    src_cookies = src_profile / 'Cookies'
+    dst_cookies = dst_profile / 'Cookies'
+    if src_cookies.exists() and src_cookies.stat().st_size > 0:
+        try:
+            conn_src = sqlite3.connect(f'file:{src_cookies}?mode=ro&nolock=1', uri=True)
+            conn_dst = sqlite3.connect(str(dst_cookies))
+            conn_src.backup(conn_dst)
+            # Count cookies to verify
+            count = conn_dst.execute('SELECT COUNT(*) FROM cookies').fetchone()[0]
+            conn_dst.close(); conn_src.close()
+            synced.append(f'Cookies ({count} entries)')
+        except Exception as e:
+            # Fallback: file copy (works if Chrome is not running)
             try:
-                # Copy via SQLite backup to handle WAL mode safely
-                if name == 'Cookies' and src.stat().st_size > 0:
-                    try:
-                        conn_src = sqlite3.connect(f'file:{src}?mode=ro&nolock=1', uri=True)
-                        conn_dst = sqlite3.connect(str(dst))
-                        conn_src.backup(conn_dst)
-                        conn_dst.close(); conn_src.close()
-                        log(f'Synced {name} (SQLite backup)')
-                        continue
-                    except Exception as e:
-                        log(f'SQLite backup failed for {name}: {e}, falling back to copy')
-                shutil.copy2(str(src), str(dst))
-                log(f'Synced {name} (file copy)')
-            except Exception as e:
-                log(f'Failed to sync {name}: {e}')
+                shutil.copy2(str(src_cookies), str(dst_cookies))
+                synced.append('Cookies (file copy)')
+            except Exception as e2:
+                log(f'Cookie sync failed: {e} / {e2}')
 
-    # Sync Local Storage (contains auth tokens for many SPAs)
+    # 2. Local Storage (SPA auth tokens — X, ChatGPT, LinkedIn, etc.)
     for dirname in ['Local Storage', 'Session Storage']:
         src_dir = src_profile / dirname
         dst_dir = dst_profile / dirname
         if src_dir.exists():
             try:
                 if dst_dir.exists(): shutil.rmtree(str(dst_dir))
-                shutil.copytree(str(src_dir), str(dst_dir))
-                log(f'Synced {dirname}/')
+                shutil.copytree(str(src_dir), str(dst_dir), dirs_exist_ok=True)
+                synced.append(dirname)
             except Exception as e:
                 log(f'Failed to sync {dirname}: {e}')
+
+    # 3. IndexedDB (some sites store auth here)
+    src_idb = src_profile / 'IndexedDB'
+    dst_idb = dst_profile / 'IndexedDB'
+    if src_idb.exists():
+        try:
+            if dst_idb.exists(): shutil.rmtree(str(dst_idb))
+            shutil.copytree(str(src_idb), str(dst_idb), dirs_exist_ok=True)
+            synced.append('IndexedDB')
+        except Exception as e:
+            log(f'Failed to sync IndexedDB: {e}')
+
+    if synced:
+        log(f'Session sync from {src_profile.name}: {", ".join(synced)}')
+    else:
+        log(f'Session sync: nothing synced from {src_profile.name}')
 
 def _resync_cookies():
     """Re-sync cookies from real Chrome profile into running Ghost Chrome via CDP."""
