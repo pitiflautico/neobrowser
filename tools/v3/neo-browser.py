@@ -293,16 +293,21 @@ def chrome():
         if port_file.exists():
             try:
                 existing_port = int(port_file.read_text().strip())
-                targets = json.loads(urllib.request.urlopen(
-                    f'http://127.0.0.1:{existing_port}/json/list', timeout=3).read())
-                page = [t for t in targets if t['type'] == 'page'][0]
-                ws = ws_sync.connect(page['webSocketDebuggerUrl'], max_size=10_000_000)
-                default_tab = CDPTab(ws)
+                # Verify Chrome is alive
+                urllib.request.urlopen(f'http://127.0.0.1:{existing_port}/json/version', timeout=3)
+                # Create our OWN new tab (don't steal existing tabs)
+                new_target = json.loads(urllib.request.urlopen(
+                    f'http://127.0.0.1:{existing_port}/json/new?about:blank', timeout=5).read())
+                ws_url = new_target.get('webSocketDebuggerUrl', '')
+                if not ws_url:
+                    raise RuntimeError('No ws url for new tab')
+                ws = ws_sync.connect(ws_url, max_size=10_000_000)
+                default_tab = CDPTab(ws, new_target.get('id'))
                 default_tab._send('Page.enable'); default_tab._send('Network.enable')
                 default_tab._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
                 default_tab._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
                 _chrome = GhostChrome(None, existing_port, default_tab, str(ghost_dir))
-                log(f'Attached to existing Ghost Chrome (port={existing_port})')
+                log(f'Attached to existing Ghost Chrome (port={existing_port}), new tab created')
                 return _chrome
             except:
                 log('Existing Chrome not reachable, launching new...')
