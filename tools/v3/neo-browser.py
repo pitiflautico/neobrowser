@@ -34,7 +34,6 @@ CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
 PROFILE = os.environ.get('NEOBROWSER_PROFILE', 'Profile 24')
 V1_BIN = 'neobrowser'
-V2_BIN = str(Path(__file__).parent.parent.parent / 'target' / 'release' / 'neorender')
 RESPONSE_DIR = Path.home() / '.neorender' / 'responses'
 RESPONSE_DIR.mkdir(parents=True, exist_ok=True)
 PID_FILE = Path.home() / '.neorender' / 'neo-browser-pids.json'
@@ -314,22 +313,10 @@ def _sync_session(src_profile, dst_profile):
             except Exception as e:
                 log(f'Failed to sync {dirname}: {e}')
 
-_imported = set()
 def chrome_go(url, wait_s=5):
+    """Navigate Ghost Chrome to URL. Cookies come from profile sync, no export needed."""
     d = chrome()
-    from urllib.parse import urlparse
-    domain = '.'.join(urlparse(url).hostname.replace('www.', '').split('.')[-2:]) if urlparse(url).hostname else ''
-    if domain and domain not in _imported:
-        try:
-            r = subprocess.run([V2_BIN, 'export-cookies', domain, '--profile', PROFILE],
-                               capture_output=True, text=True, timeout=15)
-            if r.returncode == 0:
-                for c in json.loads(r.stdout):
-                    d.cookie(c['name'], c['value'], c.get('domain', ''), c.get('path', '/'),
-                             c.get('secure', False), c.get('http_only', False), c.get('expires'))
-                log(f'Cookies imported for {domain}')
-        except: pass
-        _imported.add(domain)
+    _chrome_tabs.clear()  # Single tab — navigating away invalidates chat state
     d.go(url); time.sleep(wait_s)
     return d
 
@@ -746,17 +733,9 @@ def tool_extract(args):
 # ── Chat ──
 
 def _chat_ensure(platform, url, cookies):
+    """Ensure chat platform is loaded. Cookies come from Ghost Chrome profile sync."""
     d = chrome()
     if platform not in _chrome_tabs:
-        for domain in cookies:
-            try:
-                r = subprocess.run([V2_BIN, 'export-cookies', domain, '--profile', PROFILE],
-                                   capture_output=True, text=True, timeout=15)
-                if r.returncode == 0:
-                    for c in json.loads(r.stdout):
-                        d.cookie(c['name'], c['value'], c.get('domain', ''), c.get('path', '/'),
-                                 c.get('secure', False), c.get('http_only', False), c.get('expires'))
-            except: pass
         d.go(url); time.sleep(8)
         _chrome_tabs[platform] = True
         log(f'{platform}: {d.title}')
