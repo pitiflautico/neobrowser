@@ -376,13 +376,23 @@ def tool_open(args):
 
 def tool_read(args):
     url = args.get('url', '')
+    selector = args.get('selector', '')
     if url:
-        out, ms = fast('see', url)
-        if len(out) > 100:
-            log(f'V1 read: {ms}ms')
-            return out[:3000]
+        if not selector:
+            out, ms = fast('see', url)
+            if len(out) > 100:
+                log(f'V1 read: {ms}ms')
+                return out[:3000]
         chrome_go(url, 3)
-    return chrome().sanitize()
+    d = chrome()
+    if selector:
+        text = d.js(f'''
+            const els = document.querySelectorAll({json.dumps(selector)});
+            if (!els.length) return 'No matches for: {selector}';
+            return Array.from(els).map(el => el.innerText.trim()).filter(t => t.length > 0).join('\\n---\\n');
+        ''')
+        return save(text or f'No content for: {selector}', 'read')
+    return d.sanitize()
 
 def tool_find(args):
     text = args.get('text', args.get('selector', ''))
@@ -835,7 +845,7 @@ TOOLS = [
     {"name": "browse", "description": "Fast HTTP browse (~1s). Returns page content with links and actions. Best for reading web pages.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "URL to browse"}}, "required": ["url"]}},
     {"name": "search", "description": "Web search via DuckDuckGo (~1s).", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "num": {"type": "integer", "default": 10}}, "required": ["query"]}},
     {"name": "open", "description": "Open URL in Ghost Chrome (headless, CF bypass, ~5s). Use for SPAs, Cloudflare sites, or when browse returns empty.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "wait": {"type": "integer", "default": 5000, "description": "Wait ms after load"}}, "required": ["url"]}},
-    {"name": "read", "description": "Extract clean text from page. Tries fast HTTP first, falls back to Chrome.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}}},
+    {"name": "read", "description": "Extract text from page. With selector: extracts only matching elements. Without: full page sanitized.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "selector": {"type": "string", "description": "CSS selector to extract specific elements (e.g. 'article[data-testid=tweet]', '.post-content', 'table')"}}}},
     {"name": "find", "description": "Find element by text, CSS selector, XPath, or ARIA role.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "by": {"type": "string", "enum": ["text", "css", "xpath", "role"], "default": "text"}}, "required": ["text"]}},
     {"name": "click", "description": "Click element by text content or CSS selector.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Text or CSS selector of element to click"}}, "required": ["text"]}},
     {"name": "type", "description": "Type text in input. Finds by: label text, placeholder, name, aria-label, type, or CSS selector.", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "Label text, placeholder, name, or CSS selector"}, "value": {"type": "string", "description": "Text to type"}}, "required": ["selector", "value"]}},
