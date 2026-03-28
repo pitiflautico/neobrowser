@@ -124,11 +124,16 @@ class GhostChrome:
 
     def _send(self, method, params=None):
         self._id += 1
-        self.ws.send(json.dumps({'id': self._id, 'method': method, 'params': params or {}}))
-        while True:
-            data = json.loads(self.ws.recv(timeout=30))
-            if data.get('id') == self._id:
-                return data.get('result', {})
+        msg = json.dumps({'id': self._id, 'method': method, 'params': params or {}})
+        try:
+            self.ws.send(msg)
+            while True:
+                data = json.loads(self.ws.recv(timeout=30))
+                if data.get('id') == self._id:
+                    return data.get('result', {})
+        except Exception as e:
+            log(f'CDP send failed: {e}')
+            raise
 
     def js(self, code):
         expr = f'(function(){{{code}}})()' if 'return ' in code else code
