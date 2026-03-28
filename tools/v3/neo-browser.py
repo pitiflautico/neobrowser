@@ -221,6 +221,9 @@ def chrome():
                 ghost_dir = Path.home() / '.neorender' / 'ghost-profile'
                 ghost_default = ghost_dir / 'Default'
                 ghost_default.mkdir(parents=True, exist_ok=True)
+                # Clean stale locks from crashed sessions
+                for lock in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']:
+                    (ghost_dir / lock).unlink(missing_ok=True)
 
                 # Sync session data from real Chrome profile
                 real_profile = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome' / PROFILE
@@ -834,6 +837,10 @@ def cleanup():
     global _chrome
     if _chrome: _chrome.quit(); _chrome = None
     _kill_pids(); PID_FILE.unlink(missing_ok=True)
+    # Remove SingletonLock so next launch doesn't fail
+    ghost_dir = Path.home() / '.neorender' / 'ghost-profile'
+    for lock in ['SingletonLock', 'SingletonSocket', 'SingletonCookie']:
+        (ghost_dir / lock).unlink(missing_ok=True)
     log('Cleanup')
 
 atexit.register(cleanup)
