@@ -450,7 +450,7 @@ def tool_read(args):
         js = SMART_EXTRACTORS.get(content_type.lower())
         if not js:
             return f'Unknown type: {content_type}. Available: {", ".join(SMART_EXTRACTORS.keys())}'
-        text = d.js(f'(function(){{{js}}})()')
+        text = d.js(js)
         return save(text or f'No {content_type} found on page', 'read')
 
     # CSS selector extraction
