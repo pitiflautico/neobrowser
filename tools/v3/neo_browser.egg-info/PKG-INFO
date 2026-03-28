@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: neo-browser
+Version: 3.0.0
+Summary: AI Browser MCP Server — browse, chat, automate with Ghost Chrome
+Requires-Python: >=3.10
+Requires-Dist: websockets<16,>=14
+Requires-Dist: pyyaml>=6.0

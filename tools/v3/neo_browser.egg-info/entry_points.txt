@@ -1,0 +1,2 @@
+[console_scripts]
+neo-browser = neo_browser:main

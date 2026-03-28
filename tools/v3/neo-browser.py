@@ -1118,11 +1118,14 @@ def handle(req):
     elif id is not None:
         respond_err(id, -32601, f'Unknown method: {method}')
 
-log('NeoBrowser V3 started — 17 tools, Ghost Chrome headless, CF bypass')
+def main():
+    log(f'NeoBrowser V3 started — {len(TOOLS)} tools, Ghost Chrome headless, CF bypass')
+    for line in sys.stdin:
+        line = line.strip()
+        if not line: continue
+        try: handle(json.loads(line))
+        except json.JSONDecodeError: log(f'JSON err: {line[:80]}')
+        except Exception as e: log(f'Error: {e}')
 
-for line in sys.stdin:
-    line = line.strip()
-    if not line: continue
-    try: handle(json.loads(line))
-    except json.JSONDecodeError: log(f'JSON err: {line[:80]}')
-    except Exception as e: log(f'Error: {e}')
+if __name__ == '__main__':
+    main()

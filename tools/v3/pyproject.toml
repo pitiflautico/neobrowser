@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neo-browser"
+version = "3.0.0"
+description = "AI Browser MCP Server — browse, chat, automate with Ghost Chrome"
+requires-python = ">=3.10"
+dependencies = [
+    "websockets>=14,<16",
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools]
+py-modules = ["neo_browser"]
+
+[project.scripts]
+neo-browser = "neo_browser:main"

@@ -1,0 +1,2 @@
+websockets<16,>=14
+pyyaml>=6.0
