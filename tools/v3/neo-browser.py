@@ -73,6 +73,44 @@ Object.defineProperty(screen,'availWidth',{get:()=>1920});
 Object.defineProperty(screen,'availHeight',{get:()=>1055});
 Object.defineProperty(window,'outerHeight',{get:()=>1055});
 Object.defineProperty(window,'innerHeight',{get:()=>968});
+
+// Chat response interceptor — captures SSE streams from ChatGPT/Grok
+(function(){
+    window.__neoChat = {response: '', done: false, ts: 0};
+    const origFetch = window.fetch;
+    window.fetch = async function(...args) {
+        const url = (typeof args[0] === 'string' ? args[0] : args[0]?.url) || '';
+        const resp = await origFetch.apply(this, args);
+        if (url.includes('/backend-api/conversation') || url.includes('/rest/api/conversation')) {
+            window.__neoChat = {response: '', done: false, ts: Date.now()};
+            const clone = resp.clone();
+            const reader = clone.body.getReader();
+            const decoder = new TextDecoder();
+            (async () => {
+                try {
+                    while (true) {
+                        const {done, value} = await reader.read();
+                        if (done) break;
+                        const chunk = decoder.decode(value);
+                        // Parse SSE: extract assistant text from data lines
+                        for (const line of chunk.split('\\n')) {
+                            if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+                            try {
+                                const d = JSON.parse(line.slice(6));
+                                const parts = d?.message?.content?.parts;
+                                if (parts && d.message.author?.role === 'assistant') {
+                                    window.__neoChat.response = parts.join('');
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                } catch(e) {}
+                window.__neoChat.done = true;
+            })();
+        }
+        return resp;
+    };
+})();
 '''
 
 SANITIZE_JS = '''(function(){
@@ -871,28 +909,12 @@ def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wa
                 continue
 
         if i > 2:
-            # Method 1: original selector (works on some versions)
-            resp = d.js(extract_js)
-            # Method 2: parse main.innerText (ChatGPT 2025+ doesn't render assistant text in DOM)
+            # Method 1: SSE stream interceptor (most reliable — captures raw API response)
+            resp = d.js('return window.__neoChat?.done && window.__neoChat.response ? window.__neoChat.response : null')
+            # Method 2: DOM selector (works on some ChatGPT versions)
             if not resp or len(resp) < 3:
-                resp = d.js('''
-                    const main = document.querySelector('main');
-                    if (!main) return null;
-                    const text = main.innerText || '';
-                    // Find last "ChatGPT" or "ChatGPT Plus" label — response follows user message
-                    const parts = text.split(/Tú dijiste:|You said:/);
-                    if (parts.length < 2) return null;
-                    // Get the section after last user message
-                    const lastSection = parts[parts.length - 1];
-                    // Extract text between "ChatGPT Plus/ChatGPT" and the footer
-                    const match = lastSection.match(/ChatGPT(?:\\s+Plus)?\\s*\\n([\\s\\S]*?)(?:ChatGPT puede|ChatGPT can|$)/);
-                    if (match && match[1]) {
-                        const clean = match[1].trim();
-                        if (clean.length > 0) return clean;
-                    }
-                    return null;
-                ''')
-            # Method 3: page title often contains the response summary
+                resp = d.js(extract_js)
+            # Method 3: page title fallback
             if not resp or len(resp) < 3:
                 title = d.js('return document.title') or ''
                 if title and title != user_msg and len(title) > 3:
@@ -913,9 +935,14 @@ def tool_gpt(args):
     d = _chat_ensure('gpt', 'https://chatgpt.com', ['chatgpt.com', 'openai.com'])
 
     if action == 'read_last':
-        return save(d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null') or 'No messages', 'gpt')
+        # Try SSE interceptor first, then DOM
+        resp = d.js('return window.__neoChat?.response || null')
+        if not resp:
+            resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
+        return save(resp or 'No messages', 'gpt')
     if action == 'is_streaming':
-        return json.dumps({'streaming': bool(d.js('return !!document.querySelector("[data-testid=stop-button]")')), 'open': True})
+        streaming = d.js('return (window.__neoChat && !window.__neoChat.done) || !!document.querySelector("[data-testid=stop-button]")')
+        return json.dumps({'streaming': bool(streaming), 'open': True})
     if action == 'history':
         msgs = d.js(f'const m=[];document.querySelectorAll("[data-message-author-role]").forEach(e=>{{const r=e.getAttribute("data-message-author-role"),t=e.innerText?.trim()?.substring(0,300);if(t)m.push({{role:r,text:t}})}});return JSON.stringify(m.slice(-{int(args.get("count",5))}))')
         try:
@@ -925,6 +952,8 @@ def tool_gpt(args):
     # send
     msg = args.get('message', '')
     if not msg: return 'message required'
+    # Reset interceptor before sending
+    d.js('window.__neoChat = {response: "", done: false, ts: Date.now()}')
     # Focus the textarea and type via CDP key events (ProseMirror needs real keys)
     d.js('const el=document.getElementById("prompt-textarea");if(el){el.focus();el.click()}')
     time.sleep(0.3)
