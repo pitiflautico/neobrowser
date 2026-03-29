@@ -211,7 +211,7 @@ class GhostChrome:
         ws_url = next((t['webSocketDebuggerUrl'] for t in targets if t.get('id') == target_id), None)
         if not ws_url:
             raise RuntimeError(f'No WS for target {target_id}')
-        ws = ws_sync.connect(ws_url, max_size=10_000_000)
+        ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=None)
         self._tabs[name] = ws
         self._active = name
         # Init new tab
@@ -337,7 +337,7 @@ def chrome():
 
                 targets = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list', timeout=10).read())
                 ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
-                ws = ws_sync.connect(ws_url, max_size=10_000_000)
+                ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=None)
                 _chrome = GhostChrome(proc, port, ws)
                 _chrome._send('Page.enable'); _chrome._send('Network.enable')
                 _chrome._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
