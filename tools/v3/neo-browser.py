@@ -284,11 +284,14 @@ class GhostChrome:
             return self
         if not url:
             return None
-        # Create new tab, connect, init, navigate, WAIT for load
-        result = self._send('Target.createTarget', {'url': 'about:blank'})
+        # Create tab WITH the target URL directly (not about:blank → navigate)
+        # This is more reliable in headless because Chrome handles the initial
+        # navigation internally, same as opening a new tab in a real browser.
+        result = self._send('Target.createTarget', {'url': url})
         target_id = result.get('targetId', '')
         if not target_id:
             raise RuntimeError(f'Tab creation failed: {result}')
+        time.sleep(1)  # Give Chrome a moment to create the target
         targets = json.loads(urllib.request.urlopen(
             f'http://127.0.0.1:{self.port}/json/list', timeout=5).read())
         ws_url = next((t['webSocketDebuggerUrl'] for t in targets if t.get('id') == target_id), None)
@@ -299,19 +302,18 @@ class GhostChrome:
         self._active = name
         self._send('Page.enable')
         self._send('Network.enable')
+        # Note: addScriptToEvaluateOnNewDocument won't apply to THIS navigation
+        # (already started), but WILL apply to future navigations in this tab.
         self._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
         self._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
-        # Navigate and WAIT for load (not fire-and-forget)
-        self._send('Page.navigate', {'url': url})
-        for _ in range(30):  # max 15s
+        # Wait for page load
+        for _ in range(30):
             time.sleep(0.5)
-            cur = self.js('return location.href') or ''
-            if cur != 'about:blank':
-                # Wait for complete
-                for _ in range(20):  # max 10s more
-                    time.sleep(0.5)
-                    if self.js('return document.readyState') == 'complete': break
-                break
+            state = self.js('return document.readyState')
+            if state == 'complete': break
+        # Inject NEOMODE_JS manually since addScriptToEvaluateOnNewDocument
+        # missed the initial navigation
+        self.js(NEOMODE_JS)
         log(f'Tab "{name}" → {self.js("return location.href")}')
         if name in ('gpt', 'grok'):
             self._start_keepalive()
