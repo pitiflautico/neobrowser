@@ -1073,34 +1073,32 @@ class ChatPipeline:
         self.max_retries = 2
 
     def ensure(self):
-        """Step 1: Tab exists, URL is correct, page is loaded, input is visible."""
+        """Step 1: Navigate default tab to chat URL if not already there."""
         d = chrome()
-        if d.tab(self.platform):
-            try:
-                url = d.js('return location.href') or ''
-                if self.url.split('/')[2] in url:
-                    # Check for error state
-                    error = d.js('return document.body?.innerText?.includes("Something went wrong") || document.body?.innerText?.includes("error")')
-                    if error:
-                        log(f'{self.platform}: error state, navigating to fresh chat')
-                        d.go(self.url); time.sleep(5)
-                    self.d = d
-                    return True
-            except:
-                log(f'{self.platform}: tab dead, recreating')
-                try: d._tabs[self.platform].close()
-                except: pass
-                del d._tabs[self.platform]
+        # chrome() returns on default tab. Check if already on our platform.
+        url = d.js('return location.href') or ''
+        domain = self.url.split('/')[2]
 
-        # Create new tab
-        d.tab(self.platform, self.url)
-        # Wait: URL changes from about:blank → page loads
+        if domain in url:
+            # Already on the right site. Check for error state.
+            error = d.js('return document.body?.innerText?.includes("Something went wrong")')
+            if error:
+                log(f'{self.platform}: error state, navigating fresh')
+                d.go(self.url); time.sleep(5)
+            self.d = d
+            return True
+
+        # Navigate to chat platform
+        d.go(self.url)
         for _ in range(30):
             time.sleep(0.5)
-            url = d.js('return location.href') or ''
-            if url != 'about:blank' and d.js('return document.readyState') == 'complete':
-                break
-        time.sleep(1)
+            if d.js('return document.readyState') == 'complete':
+                cur = d.js('return location.href') or ''
+                if domain in cur: break
+        time.sleep(1)  # SPA hydration
+        # Inject NEOMODE_JS if not present (navigation resets it)
+        if not d.js('return typeof window.__neoFind'):
+            d.js(NEOMODE_JS)
         log(f'{self.platform}: ready ({d.title})')
         self.d = d
         return True
@@ -1108,6 +1106,9 @@ class ChatPipeline:
     def verify_ready(self):
         """Step 2: No pending response, input field is available."""
         d = self.d
+        # Ensure __neoFind is available
+        if not d.js('return typeof window.__neoFind === "function"'):
+            d.js(NEOMODE_JS)
         # Check no streaming in progress
         streaming = d.js('''
             return !!(document.querySelector('[data-testid="stop-button"]')
@@ -1119,8 +1120,8 @@ class ChatPipeline:
                 time.sleep(1)
                 still = d.js('return !!document.querySelector("[data-testid=stop-button]")')
                 if not still: break
-        # Check input exists
-        has_input = d.js('return !!window.__neoFind?.()')
+        # Check input exists — try direct ID first, then __neoFind
+        has_input = d.js('return !!(document.getElementById("prompt-textarea") || window.__neoFind?.())')
         if not has_input:
             log(f'{self.platform}: no input found, reloading')
             d.go(self.url); time.sleep(5)
@@ -1133,7 +1134,7 @@ class ChatPipeline:
         # Reset SSE interceptor
         d.js('window.__neoChat = {response: "", done: false, ts: Date.now()}')
         # Focus
-        d.js('const el=window.__neoFind?.();if(el){el.focus();el.click()}')
+        d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
         time.sleep(0.2)
         # Type via key events (ProseMirror requires real keyboard input)
         d.key(msg)
@@ -1235,9 +1236,6 @@ class ChatPipeline:
             except Exception as e:
                 log(f'{self.platform}: pipeline error: {e}')
                 if attempt < self.max_retries:
-                    # Kill dead tab, will recreate on next attempt
-                    try: del self.d._tabs[self.platform]
-                    except: pass
                     time.sleep(1)
                 else:
                     return f'Error after {self.max_retries+1} attempts: {e}'
