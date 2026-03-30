@@ -134,6 +134,39 @@ WebGLRenderingContext.prototype.getParameter=function(p){
         return resp;
     };
 })();
+
+// ── Field detector: finds any writable element on the page ──
+window.__neoFind = function(hint) {
+    const h = (hint || '').toLowerCase();
+    // 1. By hint (label, placeholder, name, aria-label)
+    if (h) {
+        const all = document.querySelectorAll('input,textarea,select,[contenteditable="true"]');
+        for (const el of all) {
+            if (el.offsetHeight === 0) continue;
+            const match = [
+                el.placeholder, el.name, el.id, el.getAttribute('aria-label'),
+                el.labels?.[0]?.innerText,
+                el.parentElement?.previousElementSibling?.innerText
+            ].some(v => v && v.toLowerCase().includes(h));
+            if (match) return el;
+        }
+        // By type (email, password, etc.)
+        const byType = document.querySelector('[type="'+hint+'"]');
+        if (byType && byType.offsetHeight > 0) return byType;
+    }
+    // 2. Focused element if writable
+    const active = document.activeElement;
+    if (active && active !== document.body) {
+        const tag = active.tagName.toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || active.contentEditable === 'true') return active;
+    }
+    // 3. First visible writable: contenteditable > textarea > input
+    for (const sel of ['[contenteditable="true"]', 'textarea:not([readonly])', 'input:not([type=hidden]):not([readonly])']) {
+        const el = document.querySelector(sel);
+        if (el && el.offsetHeight > 0) return el;
+    }
+    return null;
+};
 '''
 
 SANITIZE_JS = '''(function(){
@@ -828,48 +861,23 @@ def tool_click(args):
     return f'Clicked "{text}"\n\n{d.sanitize()}' if clicked else f'Not found: "{text}"'
 
 def tool_type(args):
-    """Smart type — finds input by label, placeholder, name, aria-label, or CSS."""
+    """Smart type — uses __neoFind detector."""
     sel = args.get('selector', args.get('text', ''))
     val = args.get('value', '')
     if not sel or not val: return 'selector and value required'
     d = chrome()
     found = d.js(f'''
-        const key = {json.dumps(sel)};
-        const kl = key.toLowerCase();
-        // Try CSS selector first
-        let el = document.querySelector(key);
-        // By placeholder
-        if (!el) el = document.querySelector('[placeholder*="'+kl+'" i]');
-        // By name
-        if (!el) el = document.querySelector('[name*="'+kl+'" i]');
-        // By aria-label
-        if (!el) el = document.querySelector('[aria-label*="'+kl+'" i]');
-        // By label text
-        if (!el) {{
-            const labels = document.querySelectorAll('label');
-            for (const lbl of labels) {{
-                if (lbl.innerText.toLowerCase().includes(kl)) {{
-                    el = lbl.htmlFor ? document.getElementById(lbl.htmlFor) : lbl.querySelector('input,textarea');
-                    if (el) break;
-                }}
-            }}
-        }}
-        // By type (email, password, etc.)
-        if (!el) el = document.querySelector('[type="'+key+'"]');
+        const el = window.__neoFind?.({json.dumps(sel)}) || document.querySelector({json.dumps(sel)});
         if (el) {{
-            el.focus();
-            el.click();
-            // Clear existing value
-            if (el.value) el.value = '';
+            el.focus(); el.click();
+            if (el.value !== undefined) el.value = '';
             el.dispatchEvent(new Event('focus', {{bubbles:true}}));
-            return JSON.stringify({{found: true, tag: el.tagName, name: el.name||'', placeholder: el.placeholder||''}});
+            return JSON.stringify({{found: true, tag: el.tagName, name: el.name||''}});
         }}
         return JSON.stringify({{found: false}});
     ''')
-    try:
-        info = json.loads(found) if found else {'found': False}
-    except:
-        info = {'found': False}
+    try: info = json.loads(found) if found else {'found': False}
+    except: info = {'found': False}
 
     if not info.get('found'):
         return f'Not found: "{sel}"'
@@ -887,38 +895,6 @@ def tool_fill(args):
     return chrome().js(f'''
         const fields = {json.dumps(fields)};
         const filled = [], errors = [];
-
-        function findField(key) {{
-            const kl = key.toLowerCase();
-            // 1. By name/id exact
-            let el = document.querySelector('[name="'+key+'"]') || document.querySelector('#'+key);
-            if (el) return el;
-            // 2. By placeholder (case insensitive)
-            el = document.querySelector('[placeholder*="'+kl+'" i]');
-            if (el) return el;
-            // 3. By aria-label
-            el = document.querySelector('[aria-label*="'+kl+'" i]');
-            if (el) return el;
-            // 4. By label text → linked input
-            const labels = document.querySelectorAll('label');
-            for (const lbl of labels) {{
-                if (lbl.innerText.toLowerCase().includes(kl)) {{
-                    if (lbl.htmlFor) return document.getElementById(lbl.htmlFor);
-                    const input = lbl.querySelector('input,textarea,select');
-                    if (input) return input;
-                }}
-            }}
-            // 5. By type (email, password, tel, etc.)
-            el = document.querySelector('[type="'+key+'"]');
-            if (el) return el;
-            // 6. By visible text near input (label-like spans/divs before input)
-            const allInputs = document.querySelectorAll('input,textarea,select');
-            for (const inp of allInputs) {{
-                const prev = inp.previousElementSibling || inp.parentElement;
-                if (prev && prev.innerText && prev.innerText.toLowerCase().includes(kl)) return inp;
-            }}
-            return null;
-        }}
 
         function setValue(el, val) {{
             const tag = el.tagName.toLowerCase();
@@ -986,7 +962,7 @@ def tool_fill(args):
         }}
 
         for (const [key, val] of Object.entries(fields)) {{
-            const el = findField(key);
+            const el = window.__neoFind?.(key) || document.querySelector('[name="'+key+'"]');
             if (el) {{
                 if (setValue(el, val)) filled.push(key);
                 else errors.push(key + ' (set failed)');
@@ -1086,21 +1062,8 @@ def _chat_ensure(platform, url, cookies):
     return d
 
 def _chat_send(d, msg):
-    """Find the chat input, paste message, send. Works across ChatGPT, Grok, etc."""
-    d.js('''
-        // Find any chat input: contenteditable, textarea, or input
-        const selectors = [
-            '#prompt-textarea',                          // ChatGPT
-            '[contenteditable="true"]',                  // Generic contenteditable
-            'div.query-bar p', 'div.query-bar',          // Grok
-            'textarea[placeholder]',                     // Generic textarea
-        ];
-        for (const sel of selectors) {
-            const el = document.querySelector(sel);
-            if (el && el.offsetHeight > 0) { el.focus(); el.click(); return true; }
-        }
-        return false;
-    ''')
+    """Find the chat input, paste message, send. Uses __neoFind detector."""
+    d.js('const el=window.__neoFind?.();if(el){el.focus();el.click()}')
     time.sleep(0.2)
     d.paste(msg)
     time.sleep(0.2)
