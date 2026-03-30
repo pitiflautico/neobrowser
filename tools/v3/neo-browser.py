@@ -223,13 +223,11 @@ class GhostChrome:
             return self
         if not url:
             return None
-        # Create new tab via CDP Target.createTarget
-        old = self._active
-        result = self._send('Target.createTarget', {'url': url})
+        # Create tab on about:blank first so we can inject scripts BEFORE navigation
+        result = self._send('Target.createTarget', {'url': 'about:blank'})
         target_id = result.get('targetId', '')
         if not target_id:
             raise RuntimeError(f'Tab creation failed: {result}')
-        # Find its websocket URL
         targets = json.loads(urllib.request.urlopen(
             f'http://127.0.0.1:{self.port}/json/list', timeout=5).read())
         ws_url = next((t['webSocketDebuggerUrl'] for t in targets if t.get('id') == target_id), None)
@@ -238,11 +236,13 @@ class GhostChrome:
         ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=None)
         self._tabs[name] = ws
         self._active = name
-        # Init new tab
+        # Init: inject stealth + interceptors BEFORE navigating
         self._send('Page.enable')
         self._send('Network.enable')
         self._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
         self._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
+        # NOW navigate — scripts will be active
+        self._send('Page.navigate', {'url': url})
         log(f'Tab "{name}" created → {url}')
         return self
 
@@ -457,6 +457,7 @@ def chrome():
                 proc = subprocess.Popen([CHROME_BIN, f'--remote-debugging-port={port}',
                     f'--user-data-dir={str(ghost_dir)}', '--headless=new', '--no-first-run',
                     '--disable-background-networking', '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
                     '--window-size=1920,1080', f'--user-agent={CHROME_UA}', 'about:blank'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 _chrome_pids.add(proc.pid); time.sleep(2)
