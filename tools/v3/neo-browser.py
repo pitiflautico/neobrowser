@@ -1051,133 +1051,231 @@ def tool_extract(args):
 
 # ── Chat ──
 
-def _chat_ensure(platform, url, cookies):
-    """Switch to chat tab. Creates on first use, recovers if dead."""
-    d = chrome()
-    if d.tab(platform):
-        # Verify tab is alive
-        try:
-            state = d.js('return document.readyState')
-            if state: return d
-        except:
-            log(f'{platform}: tab dead, recreating...')
-            del d._tabs[platform]
-    # Create tab (starts on about:blank, then navigates)
-    d.tab(platform, url)
-    # Wait for URL to change from about:blank
-    for _ in range(20):
-        time.sleep(0.5)
-        cur = d.js('return location.href') or ''
-        if cur != 'about:blank': break
-    # Wait for page load
-    for _ in range(20):
-        time.sleep(0.5)
-        if d.js('return document.readyState') == 'complete': break
-    time.sleep(1)  # SPA hydration
-    log(f'{platform}: {d.title}')
-    return d
+class ChatPipeline:
+    """Closed pipeline for chat platforms. Each step verifies before proceeding."""
 
-def _chat_send(d, msg):
-    """Find the chat input, type message, send. key() for ProseMirror compat."""
-    d.js('const el=window.__neoFind?.();if(el){el.focus();el.click()}')
-    time.sleep(0.2)
-    d.key(msg)
-    time.sleep(0.2)
-    d.enter()
+    def __init__(self, platform, url):
+        self.platform = platform
+        self.url = url
+        self.d = None
+        self.max_retries = 2
 
-def _chat_extract(d, platform, extract_js, user_msg):
-    """Try all extraction methods. Returns text or None."""
-    # 1. SSE interceptor (most reliable for ChatGPT 2025+)
-    resp = d.js('return window.__neoChat?.done && window.__neoChat.response ? window.__neoChat.response : null')
-    if resp and len(resp) > 3 and resp != user_msg: return resp
-    # 2. SSE interceptor still streaming (partial response)
-    resp = d.js('return window.__neoChat?.response?.length > 10 ? window.__neoChat.response : null')
-    if resp and len(resp) > 3 and resp != user_msg: return resp
-    # 3. DOM selector
-    resp = d.js(extract_js)
-    if resp and len(resp) > 3 and resp != user_msg: return resp
-    return None
+    def ensure(self):
+        """Step 1: Tab exists, URL is correct, page is loaded, input is visible."""
+        d = chrome()
+        if d.tab(self.platform):
+            try:
+                url = d.js('return location.href') or ''
+                if self.url.split('/')[2] in url:
+                    # Check for error state
+                    error = d.js('return document.body?.innerText?.includes("Something went wrong") || document.body?.innerText?.includes("error")')
+                    if error:
+                        log(f'{self.platform}: error state, navigating to fresh chat')
+                        d.go(self.url); time.sleep(5)
+                    self.d = d
+                    return True
+            except:
+                log(f'{self.platform}: tab dead, recreating')
+                try: d._tabs[self.platform].close()
+                except: pass
+                del d._tabs[self.platform]
 
-def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wait=90):
-    """Wait for chat response with exponential backoff."""
-    prev = ''; stable = 0; elapsed = 0; interval = 0.5
-    while elapsed < max_wait:
-        time.sleep(interval)
-        elapsed += interval
+        # Create new tab
+        d.tab(self.platform, self.url)
+        # Wait: URL changes from about:blank → page loads
+        for _ in range(30):
+            time.sleep(0.5)
+            url = d.js('return location.href') or ''
+            if url != 'about:blank' and d.js('return document.readyState') == 'complete':
+                break
+        time.sleep(1)
+        log(f'{self.platform}: ready ({d.title})')
+        self.d = d
+        return True
 
-        if elapsed > 2:
-            resp = _chat_extract(d, platform, extract_js, user_msg)
+    def verify_ready(self):
+        """Step 2: No pending response, input field is available."""
+        d = self.d
+        # Check no streaming in progress
+        streaming = d.js('''
+            return !!(document.querySelector('[data-testid="stop-button"]')
+                || (window.__neoChat && !window.__neoChat.done && window.__neoChat.response))
+        ''')
+        if streaming:
+            log(f'{self.platform}: waiting for previous response to finish...')
+            for _ in range(30):
+                time.sleep(1)
+                still = d.js('return !!document.querySelector("[data-testid=stop-button]")')
+                if not still: break
+        # Check input exists
+        has_input = d.js('return !!window.__neoFind?.()')
+        if not has_input:
+            log(f'{self.platform}: no input found, reloading')
+            d.go(self.url); time.sleep(5)
+            has_input = d.js('return !!window.__neoFind?.()')
+        return bool(has_input)
+
+    def send(self, msg):
+        """Step 3: Focus input, type message, verify it appeared, send."""
+        d = self.d
+        # Reset SSE interceptor
+        d.js('window.__neoChat = {response: "", done: false, ts: Date.now()}')
+        # Focus
+        d.js('const el=window.__neoFind?.();if(el){el.focus();el.click()}')
+        time.sleep(0.2)
+        # Type via key events (ProseMirror requires real keyboard input)
+        d.key(msg)
+        time.sleep(0.2)
+        # Verify message appeared in the input
+        typed = d.js('const el=document.activeElement;return(el?.innerText||el?.value||"").length>0')
+        if not typed:
+            log(f'{self.platform}: message not typed, retrying with fallback')
+            d.js(f'const el=window.__neoFind?.();if(el){{el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}')
+            time.sleep(0.2)
+        # Send
+        d.enter()
+        log(f'{self.platform}: sent ({len(msg)} chars)')
+        return True
+
+    def wait_response(self, user_msg, max_wait=90):
+        """Step 4: Wait for response with SSE interceptor + DOM fallback."""
+        d = self.d
+        prev = ''; stable = 0; elapsed = 0; interval = 0.5
+
+        while elapsed < max_wait:
+            time.sleep(interval)
+            elapsed += interval
+
+            if elapsed < 2: continue
+
+            # Check for ChatGPT error
+            error = d.js('return document.body?.innerText?.includes("Something went wrong")')
+            if error:
+                log(f'{self.platform}: ChatGPT error, retrying...')
+                # Click retry button if exists
+                d.js('document.querySelector("button")?.click()')
+                time.sleep(3)
+                continue
+
+            # Extract response — priority: SSE > DOM > title
+            resp = None
+            # 1. SSE interceptor (captures raw API response)
+            sse = d.js('return window.__neoChat?.response || null')
+            if sse and len(sse) > 3 and sse != user_msg:
+                done = d.js('return window.__neoChat?.done')
+                if done:
+                    resp = sse
+                elif len(sse) > 10:
+                    resp = sse  # Still streaming but has content
+
+            # 2. DOM (older ChatGPT versions)
+            if not resp:
+                resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
+                if resp and (len(resp) < 3 or resp == user_msg): resp = None
+
+            # 3. Title fallback
+            if not resp:
+                title = d.js('return document.title') or ''
+                if title and title != user_msg and len(title) > 3 and title != 'ChatGPT':
+                    resp = f'[title] {title}'
+
             if resp:
                 if resp == prev:
                     stable += 1
-                    if stable >= 2: return save(resp, platform)
-                else: stable = 0
+                    if stable >= 2:
+                        log(f'{self.platform}: response captured ({len(resp)} chars)')
+                        return save(resp, self.platform)
+                else:
+                    stable = 0
                 prev = resp
+                interval = min(interval, 1)  # Speed up when we see content
+            else:
+                if interval < 4: interval = min(interval * 2, 4)
 
-            # Exponential backoff: 0.5 → 1 → 2 → 4 (cap)
-            if interval < 4: interval = min(interval * 2, 4)
+            if int(elapsed) > 0 and int(elapsed) % 20 == 0:
+                log(f'{self.platform}: waiting... ({int(elapsed)}s)')
 
-        if elapsed > 15 and int(elapsed) % 15 == 0: log(f'{platform}: waiting... ({int(elapsed)}s)')
-    return save(prev, platform) if prev else 'No response'
+        return save(prev, self.platform) if prev else 'No response'
+
+    def run(self, msg, wait=True):
+        """Full pipeline: ensure → verify → send → wait."""
+        for attempt in range(self.max_retries + 1):
+            try:
+                # Step 1: Tab + page ready
+                if not self.ensure():
+                    return 'Failed to open chat platform'
+
+                # Step 2: Input available, no pending response
+                if not self.verify_ready():
+                    if attempt < self.max_retries:
+                        log(f'{self.platform}: not ready, retry {attempt+1}')
+                        continue
+                    return f'{self.platform}: input not found after retries'
+
+                # Step 3: Type + verify + send
+                if not self.send(msg):
+                    continue
+
+                # Step 4: Wait for response
+                if not wait: return 'Sent.'
+                return self.wait_response(msg)
+
+            except Exception as e:
+                log(f'{self.platform}: pipeline error: {e}')
+                if attempt < self.max_retries:
+                    # Kill dead tab, will recreate on next attempt
+                    try: del self.d._tabs[self.platform]
+                    except: pass
+                    time.sleep(1)
+                else:
+                    return f'Error after {self.max_retries+1} attempts: {e}'
+        return 'No response'
+
+
+# Chat instances
+_gpt = ChatPipeline('gpt', 'https://chatgpt.com')
+_grok = ChatPipeline('grok', 'https://grok.com')
+
 
 def tool_gpt(args):
     action = args.get('action', 'send')
-    d = _chat_ensure('gpt', 'https://chatgpt.com', ['chatgpt.com', 'openai.com'])
 
-    if action == 'read_last':
-        # Try SSE interceptor first, then DOM
-        resp = d.js('return window.__neoChat?.response || null')
-        if not resp:
-            resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
-        return save(resp or 'No messages', 'gpt')
-    if action == 'is_streaming':
-        streaming = d.js('return (window.__neoChat && !window.__neoChat.done) || !!document.querySelector("[data-testid=stop-button]")')
-        return json.dumps({'streaming': bool(streaming), 'open': True})
-    if action == 'history':
-        msgs = d.js(f'const m=[];document.querySelectorAll("[data-message-author-role]").forEach(e=>{{const r=e.getAttribute("data-message-author-role"),t=e.innerText?.trim()?.substring(0,300);if(t)m.push({{role:r,text:t}})}});return JSON.stringify(m.slice(-{int(args.get("count",5))}))')
-        try:
-            return '\n'.join(f'> {"YOU" if m["role"]=="user" else "GPT"}: {m["text"][:200]}' for m in json.loads(msgs))
-        except: return msgs or 'No messages'
+    if action in ('read_last', 'is_streaming', 'history'):
+        _gpt.ensure()
+        d = _gpt.d
+        if action == 'read_last':
+            resp = d.js('return window.__neoChat?.response || null')
+            if not resp:
+                resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
+            return save(resp or 'No messages', 'gpt')
+        if action == 'is_streaming':
+            streaming = d.js('return (window.__neoChat && !window.__neoChat.done) || !!document.querySelector("[data-testid=stop-button]")')
+            return json.dumps({'streaming': bool(streaming), 'open': True})
+        if action == 'history':
+            msgs = d.js(f'const m=[];document.querySelectorAll("[data-message-author-role]").forEach(e=>{{const r=e.getAttribute("data-message-author-role"),t=e.innerText?.trim()?.substring(0,300);if(t)m.push({{role:r,text:t}})}});return JSON.stringify(m.slice(-{int(args.get("count",5))}))')
+            try: return '\n'.join(f'> {"YOU" if m["role"]=="user" else "GPT"}: {m["text"][:200]}' for m in json.loads(msgs))
+            except: return msgs or 'No messages'
 
-    # send
     msg = args.get('message', '')
     if not msg: return 'message required'
-    d.js('window.__neoChat = {response: "", done: false, ts: Date.now()}')
-    _chat_send(d, msg)
-    log('GPT: sent')
-    if not args.get('wait', True): return 'Sent.'
-    return _chat_wait_response(d, 'gpt', msg,
-        'const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null',
-        'return document.querySelectorAll("[data-message-author-role=assistant]").length')
+    return _gpt.run(msg, wait=args.get('wait', True))
 
 def tool_grok(args):
     action = args.get('action', 'send')
-    d = _chat_ensure('grok', 'https://grok.com', ['x.com', 'grok.com'])
 
-    if action == 'read_last':
-        return save(d.js('const s=[".markdown","div.prose","article"];for(const q of s){const e=document.querySelectorAll(q);if(e.length>0)return e[e.length-1].innerText}return null') or 'No messages', 'grok')
-    if action == 'is_streaming':
-        return json.dumps({'streaming': bool(d.js('return !!document.querySelector("[class*=streaming],[class*=typing]")')), 'open': True})
-    if action == 'history':
-        return d.js('const m=document.querySelector("main")||document.body;return m.innerText?.substring(0,2000)') or 'No messages'
+    if action in ('read_last', 'is_streaming', 'history'):
+        _grok.ensure()
+        d = _grok.d
+        if action == 'read_last':
+            return save(d.js('const s=[".markdown","div.prose","article"];for(const q of s){const e=document.querySelectorAll(q);if(e.length>0)return e[e.length-1].innerText}return null') or 'No messages', 'grok')
+        if action == 'is_streaming':
+            return json.dumps({'streaming': bool(d.js('return !!document.querySelector("[class*=streaming],[class*=typing]")')), 'open': True})
+        if action == 'history':
+            return d.js('const m=document.querySelector("main")||document.body;return m.innerText?.substring(0,2000)') or 'No messages'
 
-    # send
     msg = args.get('message', '')
     if not msg: return 'message required'
-    _chat_send(d, msg)
-    log('Grok: sent')
-    if not args.get('wait', True): return 'Sent.'
-    return _chat_wait_response(d, 'grok', msg, f'''
-        const userMsg={json.dumps(msg)};const main=document.querySelector("main")||document.body;
-        const all=main.innerText||"";const idx=all.lastIndexOf(userMsg);
-        if(idx>-1){{let a=all.substring(idx+userMsg.length).trim();
-            a=a.replace(/^\\s*\\d+ sources?\\s*/i,"").replace(/Pregunta lo que quieras.*$/s,"");
-            if(a.length>5)return a.trim()}}
-        const s=[".markdown","div.prose","article"];
-        for(const q of s){{const e=document.querySelectorAll(q);for(let i=e.length-1;i>=0;i--){{
-            const t=e[i].innerText?.trim();if(t&&t.length>10&&!t.includes(userMsg))return t}}}}
-        return null;
-    ''')
+    return _grok.run(msg, wait=args.get('wait', True))
 
 def tool_js(args):
     """Execute arbitrary JavaScript on current page. For debugging and advanced use."""
