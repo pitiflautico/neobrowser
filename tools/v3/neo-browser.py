@@ -395,7 +395,7 @@ class GhostChrome:
     def sanitize(self):
         try:
             data = json.loads(self.js(SANITIZE_JS))
-            lines = [f'[{data.get("type","page")}] ({data.get("auth","")}) {data["title"]}', f'url: {data["url"]}', '']
+            lines = [data["title"], '']
             for h in data.get('headings', [])[:5]: lines.append(f'# {h}')
             for f in data.get('forms', []):
                 if f['fields']:
@@ -404,17 +404,14 @@ class GhostChrome:
                         lbl = fd.get('label') or fd.get('placeholder') or fd.get('name') or fd['type']
                         lines.append(f'  [{fd["type"]}] {lbl}')
                     if f.get('submit'): lines.append(f'  [submit] {f["submit"]}')
-            btns = data.get('buttons', [])
-            if btns: lines.extend(['', f'[btn] {" | ".join(btns[:10])}'])
             links = data.get('links', [])
             if links:
-                lines.extend(['', f'[links] {len(links)}'])
-                for l in links[:15]: lines.append(f'  {l["text"]} → {l["href"]}')
+                for l in links[:10]: lines.append(f'  {l["text"]} → {l["href"]}')
             text = data.get('text', '')
-            if text: lines.extend(['', text[:1500] + ('...' if len(text) > 1500 else '')])
+            if text: lines.extend(['', text[:2000]])
             return '\n'.join(lines)
-        except Exception as e:
-            return f'{self.title}\n\n{self.js("return document.body?.innerText?.substring(0,2000)") or ""}'
+        except:
+            return self.js("return document.body?.innerText?.substring(0,2000)") or self.title
 
 
 def _kill_pids():
@@ -781,7 +778,7 @@ def tool_click(args):
             .filter(e=>(e.innerText||'').toLowerCase().includes(ql))}}
         if(els[0]){{els[0].click();return true}}return false;
     ''')
-    time.sleep(2)
+    if clicked: time.sleep(0.5)  # Brief wait for click handler
     return f'Clicked "{text}"\n\n{d.sanitize()}' if clicked else f'Not found: "{text}"'
 
 def tool_type(args):
@@ -966,14 +963,13 @@ def tool_submit(args):
         return '';
     ''')
     if not r: return 'No form or submit button found'
-    time.sleep(2)
+    time.sleep(1)
     return d.sanitize()
 
 def tool_scroll(args):
     d = chrome()
     dy = int(args.get('amount', 500)) * (1 if args.get('direction', 'down') == 'down' else -1)
     d.js(f'window.scrollBy(0,{dy})')
-    time.sleep(0.5)
     return d.sanitize()
 
 def tool_screenshot(args):
@@ -1003,16 +999,16 @@ def tool_login(args):
         if(ei){{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(s)s.call(ei,e);else ei.value=e;ei.dispatchEvent(new Event('input',{{bubbles:true}}))}}
         if(pi){{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(s)s.call(pi,p);else pi.value=p;pi.dispatchEvent(new Event('input',{{bubbles:true}}))}}
     ''')
-    time.sleep(1)
+    time.sleep(0.5)
     d.js('document.querySelector("[type=submit],button[type=submit]")?.click()')
-    time.sleep(5)
+    time.sleep(3)
     return d.sanitize()
 
 def tool_extract(args):
     t = args.get('type', 'links')
     d = chrome()
     if t == 'table':
-        return d.js('const t=document.querySelector("table");if(!t)return "[]";return JSON.stringify(Array.from(t.querySelectorAll("tr")).map(r=>Array.from(r.querySelectorAll("th,td")).map(c=>c.innerText.trim())))')
+        return d.js(SMART_EXTRACTORS['table'])  # Reuse smart extractor, no duplication
     return d.js('return JSON.stringify(Array.from(document.querySelectorAll("a[href]")).slice(0,50).map(a=>({text:a.innerText.trim().substring(0,60),href:a.href})))')
 
 # ── Chat ──
@@ -1022,47 +1018,50 @@ def _chat_ensure(platform, url, cookies):
     d = chrome()
     if d.tab(platform):
         return d  # Tab exists, switched to it
-    # First time — create dedicated tab
+    # First time — create dedicated tab, wait until loaded
     d.tab(platform, url)
-    time.sleep(8)
+    for _ in range(20):  # Max 10s instead of fixed 8s
+        time.sleep(0.5)
+        state = d.js('return document.readyState')
+        if state == 'complete':
+            time.sleep(1)  # Extra 1s for SPA hydration
+            break
     log(f'{platform}: {d.title}')
     return d
 
-def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wait=120):
-    """Wait for chat response. Tries multiple extraction methods."""
-    before_count = 0
-    if count_js:
-        before_count = d.js(count_js) or 0
+def _chat_extract(d, platform, extract_js, user_msg):
+    """Try all extraction methods. Returns text or None."""
+    # 1. SSE interceptor (most reliable for ChatGPT 2025+)
+    resp = d.js('return window.__neoChat?.done && window.__neoChat.response ? window.__neoChat.response : null')
+    if resp and len(resp) > 3 and resp != user_msg: return resp
+    # 2. SSE interceptor still streaming (partial response)
+    resp = d.js('return window.__neoChat?.response?.length > 10 ? window.__neoChat.response : null')
+    if resp and len(resp) > 3 and resp != user_msg: return resp
+    # 3. DOM selector
+    resp = d.js(extract_js)
+    if resp and len(resp) > 3 and resp != user_msg: return resp
+    return None
 
-    prev = ''; stable = 0
-    for i in range(max_wait):
-        time.sleep(1)
+def _chat_wait_response(d, platform, user_msg, extract_js, count_js=None, max_wait=90):
+    """Wait for chat response with exponential backoff."""
+    prev = ''; stable = 0; elapsed = 0; interval = 0.5
+    while elapsed < max_wait:
+        time.sleep(interval)
+        elapsed += interval
 
-        if count_js and i < 30:
-            current_count = d.js(count_js) or 0
-            if current_count <= before_count and i < 15:
-                continue
-
-        if i > 2:
-            # Method 1: SSE stream interceptor (most reliable — captures raw API response)
-            resp = d.js('return window.__neoChat?.done && window.__neoChat.response ? window.__neoChat.response : null')
-            # Method 2: DOM selector (works on some ChatGPT versions)
-            if not resp or len(resp) < 3:
-                resp = d.js(extract_js)
-            # Method 3: page title fallback
-            if not resp or len(resp) < 3:
-                title = d.js('return document.title') or ''
-                if title and title != user_msg and len(title) > 3:
-                    resp = f'[title] {title}'
-
-            if resp and len(resp) > 3 and resp != user_msg:
+        if elapsed > 2:
+            resp = _chat_extract(d, platform, extract_js, user_msg)
+            if resp:
                 if resp == prev:
                     stable += 1
                     if stable >= 2: return save(resp, platform)
                 else: stable = 0
                 prev = resp
 
-        if i > 0 and i % 15 == 0: log(f'{platform}: waiting... ({i}s)')
+            # Exponential backoff: 0.5 → 1 → 2 → 4 (cap)
+            if interval < 4: interval = min(interval * 2, 4)
+
+        if elapsed > 15 and int(elapsed) % 15 == 0: log(f'{platform}: waiting... ({int(elapsed)}s)')
     return save(prev, platform) if prev else 'No response'
 
 def tool_gpt(args):
@@ -1087,13 +1086,12 @@ def tool_gpt(args):
     # send
     msg = args.get('message', '')
     if not msg: return 'message required'
-    # Reset interceptor before sending
+    # Reset interceptor + focus + type + send in one flow
     d.js('window.__neoChat = {response: "", done: false, ts: Date.now()}')
-    # Focus the textarea and type via CDP key events (ProseMirror needs real keys)
     d.js('const el=document.getElementById("prompt-textarea");if(el){el.focus();el.click()}')
-    time.sleep(0.3)
+    time.sleep(0.2)
     d.key(msg)
-    time.sleep(0.5)
+    time.sleep(0.2)
     d.enter()
     log('GPT: sent')
     if not args.get('wait', True): return 'Sent.'
