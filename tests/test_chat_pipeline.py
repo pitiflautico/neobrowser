@@ -26,10 +26,10 @@ def free_port():
 
 def launch_chrome(profile_dir, port):
     proc = subprocess.Popen([CHROME_BIN, f'--remote-debugging-port={port}',
-        f'--user-data-dir={profile_dir}', '--headless=new', '--no-first-run',
+        f'--user-data-dir={profile_dir}', '--no-first-run',
         '--disable-background-networking', '--disable-dev-shm-usage',
         '--disable-blink-features=AutomationControlled',
-        '--window-size=1920,1080', f'--user-agent={UA}', 'about:blank'],
+        '--window-size=1920,1080', '--window-position=-32000,-32000', f'--user-agent={UA}', 'about:blank'],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(2)
     return proc
