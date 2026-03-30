@@ -1018,14 +1018,18 @@ def _chat_ensure(platform, url, cookies):
     d = chrome()
     if d.tab(platform):
         return d  # Tab exists, switched to it
-    # First time — create dedicated tab, wait until loaded
+    # Create tab (starts on about:blank, then navigates)
     d.tab(platform, url)
-    for _ in range(20):  # Max 10s instead of fixed 8s
+    # Wait for URL to change from about:blank (navigation started)
+    for _ in range(20):
         time.sleep(0.5)
-        state = d.js('return document.readyState')
-        if state == 'complete':
-            time.sleep(1)  # Extra 1s for SPA hydration
-            break
+        cur = d.js('return location.href') or ''
+        if cur != 'about:blank': break
+    # Then wait for page to fully load
+    for _ in range(20):
+        time.sleep(0.5)
+        if d.js('return document.readyState') == 'complete': break
+    time.sleep(1)  # SPA hydration
     log(f'{platform}: {d.title}')
     return d
 
