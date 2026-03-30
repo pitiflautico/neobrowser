@@ -284,7 +284,7 @@ class GhostChrome:
             return self
         if not url:
             return None
-        # All tabs share default context (same cookies = same sessions)
+        # Create new tab, connect, init, navigate, WAIT for load
         result = self._send('Target.createTarget', {'url': 'about:blank'})
         target_id = result.get('targetId', '')
         if not target_id:
@@ -301,8 +301,18 @@ class GhostChrome:
         self._send('Network.enable')
         self._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
         self._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
+        # Navigate and WAIT for load (not fire-and-forget)
         self._send('Page.navigate', {'url': url})
-        log(f'Tab "{name}" → {url}')
+        for _ in range(30):  # max 15s
+            time.sleep(0.5)
+            cur = self.js('return location.href') or ''
+            if cur != 'about:blank':
+                # Wait for complete
+                for _ in range(20):  # max 10s more
+                    time.sleep(0.5)
+                    if self.js('return document.readyState') == 'complete': break
+                break
+        log(f'Tab "{name}" → {self.js("return location.href")}')
         if name in ('gpt', 'grok'):
             self._start_keepalive()
         return self
