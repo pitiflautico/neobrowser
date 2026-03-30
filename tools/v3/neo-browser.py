@@ -284,17 +284,8 @@ class GhostChrome:
             return self
         if not url:
             return None
-        # Chat tabs get isolated BrowserContext (separate cookie jar, no interference)
-        is_chat = name in ('gpt', 'grok')
-        if is_chat:
-            try:
-                ctx = self._send('Target.createBrowserContext', {})
-                ctx_id = ctx.get('browserContextId', '')
-                result = self._send('Target.createTarget', {'url': 'about:blank', 'browserContextId': ctx_id})
-            except:
-                result = self._send('Target.createTarget', {'url': 'about:blank'})
-        else:
-            result = self._send('Target.createTarget', {'url': 'about:blank'})
+        # All tabs share default context (same cookies = same sessions)
+        result = self._send('Target.createTarget', {'url': 'about:blank'})
         target_id = result.get('targetId', '')
         if not target_id:
             raise RuntimeError(f'Tab creation failed: {result}')
@@ -306,16 +297,13 @@ class GhostChrome:
         ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=None)
         self._tabs[name] = ws
         self._active = name
-        # Init: inject stealth + interceptors BEFORE navigating
         self._send('Page.enable')
         self._send('Network.enable')
         self._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
         self._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
-        # Navigate
         self._send('Page.navigate', {'url': url})
-        log(f'Tab "{name}" created (isolated={is_chat}) → {url}')
-        # Start keepalive for chat tabs
-        if is_chat:
+        log(f'Tab "{name}" → {url}')
+        if name in ('gpt', 'grok'):
             self._start_keepalive()
         return self
 
@@ -1090,10 +1078,10 @@ def _chat_ensure(platform, url, cookies):
     return d
 
 def _chat_send(d, msg):
-    """Find the chat input, paste message, send. Uses __neoFind detector."""
+    """Find the chat input, type message, send. key() for ProseMirror compat."""
     d.js('const el=window.__neoFind?.();if(el){el.focus();el.click()}')
     time.sleep(0.2)
-    d.paste(msg)
+    d.key(msg)
     time.sleep(0.2)
     d.enter()
 
