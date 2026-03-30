@@ -157,7 +157,7 @@ SANITIZE_JS = '''(function(){
     const main=document.querySelector('main,article,[role="main"],#content,.content')||document.body;
     const clone=main.cloneNode(true);
     ['script','style','nav','footer','header','aside','svg','noscript'].forEach(t=>clone.querySelectorAll(t).forEach(n=>n.remove()));
-    r.text=clone.innerText.trim().replace(/\\n{3,}/g,'\\n\\n').substring(0,3000);
+    r.text=clone.innerText.trim().replace(/\\n{3,}/g,'\\n\\n').substring(0,6000);
     r.forms=Array.from(document.querySelectorAll('form')).slice(0,5).map(f=>{
         const fields=Array.from(f.querySelectorAll('input:not([type=hidden]),textarea,select')).map(i=>({
             type:i.type||i.tagName.toLowerCase(),name:i.name||i.id||'',
@@ -433,9 +433,16 @@ class GhostChrome:
         with open(path, 'wb') as f: f.write(base64.b64decode(r.get('data', '')))
 
     def key(self, text):
-        for c in text:
-            self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'text': c, 'key': c, 'windowsVirtualKeyCode': ord(c)})
-            self._send('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': c})
+        """Type text via CDP key events."""
+        # Try insertText first (fast, works with ProseMirror when focused)
+        self._send('Input.insertText', {'text': text})
+        # Verify it worked by checking active element has content
+        has_text = self.js('const el=document.activeElement;return(el?.innerText||el?.value||"").length>0')
+        if not has_text:
+            # Fallback: char-by-char dispatchKeyEvent
+            for c in text:
+                self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'text': c, 'key': c, 'windowsVirtualKeyCode': ord(c)})
+                self._send('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': c})
 
     def enter(self):
         self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13, 'text': '\r'})
@@ -471,10 +478,10 @@ class GhostChrome:
             if links:
                 for l in links[:10]: lines.append(f'  {l["text"]} → {l["href"]}')
             text = data.get('text', '')
-            if text: lines.extend(['', text[:2000]])
+            if text: lines.extend(['', text[:4000]])
             return '\n'.join(lines)
         except:
-            return self.js("return document.body?.innerText?.substring(0,2000)") or self.title
+            return self.js("return document.body?.innerText?.substring(0,4000)") or self.title
 
 
 def _kill_pids():
@@ -645,7 +652,14 @@ def _is_login_wall(d):
 def chrome_go(url, wait_s=5):
     """Navigate default tab to URL. Chat tabs stay untouched."""
     d = chrome()
-    d.go(url); time.sleep(wait_s)
+    d.go(url)
+    # Poll readyState instead of fixed sleep
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        time.sleep(0.15)
+        if d.js('return document.readyState') == 'complete':
+            time.sleep(0.3)  # Brief settle for JS frameworks
+            break
 
     # Check for login wall → resync cookies and retry
     if _is_login_wall(d):
@@ -674,7 +688,19 @@ def tool_browse(args):
     if len(out) > 200:
         log(f'V1 browse: {ms}ms')
         return out
-    log('V1 empty, Chrome fallback...')
+    # Try raw HTTP before expensive Chrome fallback
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': CHROME_UA})
+        resp = urllib.request.urlopen(req, timeout=10)
+        body = resp.read().decode('utf-8', errors='replace')
+        if len(body) > 200:
+            text = re.sub(r'<[^>]+>', ' ', body)
+            text = re.sub(r'\s+', ' ', text).strip()
+            if len(text) > 100:
+                log(f'HTTP fallback: {len(text)} chars')
+                return text[:5000]
+    except: pass
+    log('HTTP fallback empty, Chrome fallback...')
     d = chrome_go(url)
     return d.sanitize()
 
@@ -822,9 +848,15 @@ def tool_find(args):
         const q={json.dumps(text)},by={json.dumps(by)};let els=[];
         if(by==='css')els=Array.from(document.querySelectorAll(q));
         else if(by==='xpath'){{const r=document.evaluate(q,document,null,5,null);let n;while(n=r.iterateNext())els.push(n)}}
-        else{{const ql=q.toLowerCase();els=Array.from(document.querySelectorAll('*')).filter(e=>
-            (e.innerText||'').toLowerCase().includes(ql)||(e.getAttribute('aria-label')||'').toLowerCase().includes(ql)||
-            (e.placeholder||'').toLowerCase().includes(ql))}}
+        else{{const ql=q.toLowerCase();
+            const SEL='a,button,input,select,textarea,label,h1,h2,h3,h4,p,li,td,th,span,[role=button],[role=link],[role=tab],[aria-label]';
+            els=Array.from(document.querySelectorAll(SEL)).filter(e=>{{
+                const aria=(e.getAttribute('aria-label')||'').toLowerCase();
+                const ph=(e.placeholder||'').toLowerCase();
+                const t=(e.innerText||'').toLowerCase();
+                return aria.includes(ql)||ph.includes(ql)||(t.includes(ql)&&t.length<300);
+            }});
+            els.sort((a,b)=>(a.innerText||'').length-(b.innerText||'').length)}}
         return JSON.stringify(els.slice(0,5).map((e,i)=>({{
             index:i,tag:e.tagName.toLowerCase(),text:(e.innerText||'').substring(0,80),
             clickable:e.tagName==='A'||e.tagName==='BUTTON'||e.getAttribute('role')==='button'
@@ -917,10 +949,14 @@ def tool_fill(args):
             // RADIO
             if (type === 'radio') {{
                 const radios = document.querySelectorAll('[name="'+el.name+'"]');
+                const vl = val.toLowerCase();
                 for (const r of radios) {{
-                    const lbl = r.parentElement?.innerText?.toLowerCase() || '';
-                    if (r.value.toLowerCase() === val.toLowerCase() || lbl.includes(val.toLowerCase())) {{
-                        r.click();
+                    const parentText = r.parentElement?.innerText?.toLowerCase() || '';
+                    const labelFor = r.id ? (document.querySelector('label[for="'+r.id+'"]')?.innerText?.toLowerCase() || '') : '';
+                    if (r.value.toLowerCase() === vl || parentText.includes(vl) || labelFor.includes(vl)) {{
+                        r.checked = true;
+                        r.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        r.dispatchEvent(new Event('input', {{bubbles: true}}));
                         return true;
                     }}
                 }}
@@ -1025,37 +1061,38 @@ class ChatPipeline:
     def __init__(self, platform, url):
         self.platform = platform
         self.url = url
+        self.conv_url = None  # Current conversation URL (e.g. chatgpt.com/c/xxx)
         self.d = None
         self.max_retries = 2
 
     def ensure(self):
-        """Step 1: Navigate default tab to chat URL if not already there."""
+        """Step 1: Switch to dedicated tab (creates on first call)."""
         d = chrome()
-        # chrome() returns on default tab. Check if already on our platform.
-        url = d.js('return location.href') or ''
+        target = self.conv_url or self.url
         domain = self.url.split('/')[2]
 
-        if domain in url:
-            # Already on the right site. Check for error state.
-            error = d.js('return document.body?.innerText?.includes("Something went wrong")')
-            if error:
-                log(f'{self.platform}: error state, navigating fresh')
-                d.go(self.url); time.sleep(5)
-            self.d = d
-            return True
+        # Switch to dedicated tab (creates it with target URL on first call)
+        if self.platform not in d._tabs:
+            log(f'{self.platform}: creating dedicated tab → {target}')
+            d.tab(self.platform, target)
+        else:
+            d.tab(self.platform)
+            url = d.js('return location.href') or ''
+            # Navigate if we have a conv_url and we're not on it
+            if self.conv_url and self.conv_url not in url:
+                d.go(self.conv_url)
+                time.sleep(3)
 
-        # Navigate to chat platform
-        d.go(self.url)
-        for _ in range(30):
-            time.sleep(0.5)
-            if d.js('return document.readyState') == 'complete':
-                cur = d.js('return location.href') or ''
-                if domain in cur: break
-        time.sleep(1)  # SPA hydration
-        # Inject NEOMODE_JS if not present (navigation resets it)
-        if not d.js('return typeof window.__neoFind'):
+        # Check for error state
+        error = d.js('return document.body?.innerText?.includes("Something went wrong")')
+        if error:
+            log(f'{self.platform}: error state, navigating fresh')
+            self.conv_url = None
+            d.go(self.url); time.sleep(5)
+
+        # Inject NEOMODE_JS if not present
+        if not d.js('return typeof window.__neoFind === "function"'):
             d.js(NEOMODE_JS)
-        log(f'{self.platform}: ready ({d.title})')
         self.d = d
         return True
 
@@ -1087,12 +1124,14 @@ class ChatPipeline:
     def send(self, msg):
         """Step 3: Focus input, type message, verify it appeared, send."""
         d = self.d
-        # Reset SSE interceptor
-        d.js('window.__neoChat = {response: "", done: false, ts: Date.now()}')
+        # Capture assistant message count before sending (for DOM-based detection)
+        self._msg_count_before = int(d.js(
+            'return document.querySelectorAll("[data-message-author-role=assistant]").length'
+        ) or 0)
         # Focus
         d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
         time.sleep(0.2)
-        # Type via key events (ProseMirror requires real keyboard input)
+        # Type via CDP Input.insertText (works with ProseMirror/contentEditable)
         d.key(msg)
         time.sleep(0.2)
         # Verify message appeared in the input
@@ -1101,106 +1140,105 @@ class ChatPipeline:
             log(f'{self.platform}: message not typed, retrying with fallback')
             d.js(f'const el=window.__neoFind?.();if(el){{el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}')
             time.sleep(0.2)
-        # Send
         d.enter()
         log(f'{self.platform}: sent ({len(msg)} chars)')
         return True
 
     def wait_response(self, user_msg, max_wait=60):
-        """Step 4: Wait for title change + streaming done, then fetch via API."""
+        """Step 4: Wait for new assistant message, then fetch via API."""
         d = self.d
+        before = getattr(self, '_msg_count_before', 0)
 
-        # Phase 1: Wait for title to change (= ChatGPT started responding)
-        for i in range(max_wait):
-            time.sleep(1)
-            title = d.js('return document.title') or ''
-            if title and title != 'ChatGPT' and title != user_msg:
-                log(f'{self.platform}: title changed ({i}s): {title}')
+        # Phase 1: Wait for new assistant message div (faster than title change)
+        for i in range(max_wait * 2):  # poll every 500ms
+            time.sleep(0.5)
+            count = int(d.js(
+                'return document.querySelectorAll("[data-message-author-role=assistant]").length'
+            ) or 0)
+            if count > before:
+                log(f'{self.platform}: new response detected ({i*0.5:.1f}s)')
                 break
         else:
-            return 'No response (title never changed)'
+            # Fallback: check title change
+            title = d.js('return document.title') or ''
+            if title and title != 'ChatGPT':
+                log(f'{self.platform}: detected via title: {title}')
+            else:
+                return 'No response (no new assistant message)'
 
         # Phase 2: Wait for streaming to finish
-        for _ in range(30):
-            time.sleep(1)
-            busy = d.js('return !!document.querySelector("[aria-busy=true],.result-streaming")')
+        for _ in range(60):
+            time.sleep(0.5)
+            busy = d.js('return !!document.querySelector("[data-testid=stop-button],[aria-busy=true],.result-streaming")')
             if not busy: break
-        time.sleep(1)
+        time.sleep(0.5)
 
-        # Phase 3: Get response via conversation API
+        # Phase 3: Save conversation URL
         conv_url = d.js('return location.href') or ''
+        if '/c/' in conv_url:
+            self.conv_url = conv_url
+
+        # Phase 4: Get response — try API first, then DOM fallback
         conv_id = conv_url.split('/c/')[-1] if '/c/' in conv_url else ''
-        if not conv_id:
-            log(f'{self.platform}: no conversation ID, using title')
-            return save(title, self.platform)
+        if conv_id:
+            token = d.js_async("fetch('/api/auth/session').then(r=>r.json()).then(d=>d.accessToken||'').catch(()=>'')")
+            if token:
+                resp = d.js_async(f'''
+                    fetch('/backend-api/conversation/{conv_id}', {{
+                        headers: {{'Authorization': 'Bearer {token}'}}
+                    }})
+                    .then(r => r.json())
+                    .then(d => {{
+                        if (d.mapping) {{
+                            const msgs = Object.values(d.mapping)
+                                .filter(m => m.message?.author?.role === 'assistant')
+                                .map(m => m.message?.content?.parts?.join(''))
+                                .filter(Boolean);
+                            return msgs.length ? msgs[msgs.length - 1] : '';
+                        }}
+                        return '';
+                    }})
+                    .catch(() => '')
+                ''')
+                if resp and len(resp) > 2:
+                    log(f'{self.platform}: response via API ({len(resp)} chars)')
+                    return save(resp, self.platform)
 
-        # Get access token
-        token = d.js_async("fetch('/api/auth/session').then(r=>r.json()).then(d=>d.accessToken||'').catch(()=>'')")
-        if not token:
-            log(f'{self.platform}: no token, using title')
-            return save(title, self.platform)
-
-        # Fetch full conversation
-        resp = d.js_async(f'''
-            fetch('/backend-api/conversation/{conv_id}', {{
-                headers: {{'Authorization': 'Bearer {token}'}}
-            }})
-            .then(r => r.json())
-            .then(d => {{
-                if (d.mapping) {{
-                    const msgs = Object.values(d.mapping);
-                    const assistant = msgs.filter(m => m.message?.author?.role === 'assistant');
-                    if (assistant.length) {{
-                        return assistant.map(a => a.message?.content?.parts?.join('')).filter(Boolean).join('\\n');
-                    }}
-                }}
-                return '';
-            }})
-            .catch(e => '')
-        ''')
-
-        if resp and len(resp) > 2:
-            log(f'{self.platform}: response via API ({len(resp)} chars)')
-            return save(resp, self.platform)
-
-        # Fallback: DOM innerText (works in non-headless)
+        # DOM fallback: last assistant message
         dom = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
         if dom and len(dom) > 2:
             return save(dom, self.platform)
 
         # Last resort: title
+        title = d.js('return document.title') or ''
         return save(title, self.platform)
 
     def run(self, msg, wait=True):
         """Full pipeline: ensure → verify → send → wait."""
-        for attempt in range(self.max_retries + 1):
-            try:
-                # Step 1: Tab + page ready
-                if not self.ensure():
-                    return 'Failed to open chat platform'
-
-                # Step 2: Input available, no pending response
-                if not self.verify_ready():
-                    if attempt < self.max_retries:
-                        log(f'{self.platform}: not ready, retry {attempt+1}')
+        try:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    if not self.ensure():
+                        return 'Failed to open chat platform'
+                    if not self.verify_ready():
+                        if attempt < self.max_retries:
+                            log(f'{self.platform}: not ready, retry {attempt+1}')
+                            continue
+                        return f'{self.platform}: input not found after retries'
+                    if not self.send(msg):
                         continue
-                    return f'{self.platform}: input not found after retries'
-
-                # Step 3: Type + verify + send
-                if not self.send(msg):
-                    continue
-
-                # Step 4: Wait for response
-                if not wait: return 'Sent.'
-                return self.wait_response(msg)
-
-            except Exception as e:
-                log(f'{self.platform}: pipeline error: {e}')
-                if attempt < self.max_retries:
-                    time.sleep(1)
-                else:
-                    return f'Error after {self.max_retries+1} attempts: {e}'
-        return 'No response'
+                    if not wait: return 'Sent.'
+                    return self.wait_response(msg)
+                except Exception as e:
+                    log(f'{self.platform}: pipeline error: {e}')
+                    if attempt < self.max_retries:
+                        time.sleep(1)
+                    else:
+                        return f'Error after {self.max_retries+1} attempts: {e}'
+            return 'No response'
+        finally:
+            try: chrome().tab('default')
+            except: pass
 
 
 # Chat instances
@@ -1212,20 +1250,22 @@ def tool_gpt(args):
     action = args.get('action', 'send')
 
     if action in ('read_last', 'is_streaming', 'history'):
-        _gpt.ensure()
-        d = _gpt.d
-        if action == 'read_last':
-            resp = d.js('return window.__neoChat?.response || null')
-            if not resp:
+        try:
+            _gpt.ensure()
+            d = _gpt.d
+            if action == 'read_last':
                 resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
-            return save(resp or 'No messages', 'gpt')
-        if action == 'is_streaming':
-            streaming = d.js('return (window.__neoChat && !window.__neoChat.done) || !!document.querySelector("[data-testid=stop-button]")')
-            return json.dumps({'streaming': bool(streaming), 'open': True})
-        if action == 'history':
-            msgs = d.js(f'const m=[];document.querySelectorAll("[data-message-author-role]").forEach(e=>{{const r=e.getAttribute("data-message-author-role"),t=e.innerText?.trim()?.substring(0,300);if(t)m.push({{role:r,text:t}})}});return JSON.stringify(m.slice(-{int(args.get("count",5))}))')
-            try: return '\n'.join(f'> {"YOU" if m["role"]=="user" else "GPT"}: {m["text"][:200]}' for m in json.loads(msgs))
-            except: return msgs or 'No messages'
+                return save(resp or 'No messages', 'gpt')
+            if action == 'is_streaming':
+                streaming = d.js('return !!document.querySelector("[data-testid=stop-button]")')
+                return json.dumps({'streaming': bool(streaming), 'open': True})
+            if action == 'history':
+                msgs = d.js(f'const m=[];document.querySelectorAll("[data-message-author-role]").forEach(e=>{{const r=e.getAttribute("data-message-author-role"),t=e.innerText?.trim()?.substring(0,300);if(t)m.push({{role:r,text:t}})}});return JSON.stringify(m.slice(-{int(args.get("count",5))}))')
+                try: return '\n'.join(f'> {"YOU" if m["role"]=="user" else "GPT"}: {m["text"][:200]}' for m in json.loads(msgs))
+                except: return msgs or 'No messages'
+        finally:
+            try: chrome().tab('default')
+            except: pass
 
     msg = args.get('message', '')
     if not msg: return 'message required'
@@ -1235,14 +1275,18 @@ def tool_grok(args):
     action = args.get('action', 'send')
 
     if action in ('read_last', 'is_streaming', 'history'):
-        _grok.ensure()
-        d = _grok.d
-        if action == 'read_last':
-            return save(d.js('const s=[".markdown","div.prose","article"];for(const q of s){const e=document.querySelectorAll(q);if(e.length>0)return e[e.length-1].innerText}return null') or 'No messages', 'grok')
-        if action == 'is_streaming':
-            return json.dumps({'streaming': bool(d.js('return !!document.querySelector("[class*=streaming],[class*=typing]")')), 'open': True})
-        if action == 'history':
-            return d.js('const m=document.querySelector("main")||document.body;return m.innerText?.substring(0,2000)') or 'No messages'
+        try:
+            _grok.ensure()
+            d = _grok.d
+            if action == 'read_last':
+                return save(d.js('const s=[".markdown","div.prose","article"];for(const q of s){const e=document.querySelectorAll(q);if(e.length>0)return e[e.length-1].innerText}return null') or 'No messages', 'grok')
+            if action == 'is_streaming':
+                return json.dumps({'streaming': bool(d.js('return !!document.querySelector("[class*=streaming],[class*=typing]")')), 'open': True})
+            if action == 'history':
+                return d.js('const m=document.querySelector("main")||document.body;return m.innerText?.substring(0,2000)') or 'No messages'
+        finally:
+            try: chrome().tab('default')
+            except: pass
 
     msg = args.get('message', '')
     if not msg: return 'message required'
