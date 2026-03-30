@@ -145,34 +145,40 @@ window.__neoFind = function(hint) {
 
 SANITIZE_JS = '''(function(){
     const r={title:document.title,url:location.href};
+    // Page type detection
     const u=location.href.toLowerCase();
-    if(u.includes('login')||u.includes('sign_in'))r.type='login';
-    else if(u.includes('search')||u.includes('query'))r.type='search';
-    else if(u.includes('messaging')||u.includes('messages'))r.type='messaging';
-    else if(document.querySelectorAll('article').length>1)r.type='feed';
-    else if(document.querySelector('article'))r.type='article';
-    else r.type='page';
+    r.type=u.includes('login')||u.includes('sign_in')?'login':
+           document.querySelectorAll('article').length>1?'feed':
+           document.querySelector('article')?'article':'page';
+    // Auth state
     r.auth=!!document.querySelector('[class*="avatar"],[class*="profile-photo"]')?'logged-in':'anonymous';
-    r.headings=Array.from(document.querySelectorAll('h1,h2,h3')).slice(0,10).map(h=>h.innerText.trim()).filter(t=>t.length>0&&t.length<200);
+    // Main content — strip noise
     const main=document.querySelector('main,article,[role="main"],#content,.content')||document.body;
     const clone=main.cloneNode(true);
-    ['script','style','nav','footer','header','aside','svg','noscript'].forEach(t=>clone.querySelectorAll(t).forEach(n=>n.remove()));
-    r.text=clone.innerText.trim().replace(/\\n{3,}/g,'\\n\\n').substring(0,6000);
-    r.forms=Array.from(document.querySelectorAll('form')).slice(0,5).map(f=>{
-        const fields=Array.from(f.querySelectorAll('input:not([type=hidden]),textarea,select')).map(i=>({
-            type:i.type||i.tagName.toLowerCase(),name:i.name||i.id||'',
-            placeholder:i.placeholder||'',label:(i.labels?.[0]?.innerText||i.getAttribute('aria-label')||'').trim()
-        }));
+    ['script','style','nav','footer','header','aside','svg','noscript','iframe'].forEach(t=>clone.querySelectorAll(t).forEach(n=>n.remove()));
+    r.text=clone.innerText.trim().replace(/\\n{3,}/g,'\\n\\n').substring(0,4000);
+    // Forms — compact
+    const forms=document.querySelectorAll('form');
+    if(forms.length)r.forms=Array.from(forms).slice(0,3).map(f=>{
+        const fields=Array.from(f.querySelectorAll('input:not([type=hidden]),textarea,select')).slice(0,10).map(i=>{
+            const lbl=(i.labels?.[0]?.innerText||i.getAttribute('aria-label')||i.placeholder||i.name||'').trim();
+            return lbl+':'+i.type;
+        });
         const sub=f.querySelector('[type=submit],button[type=submit],button:not([type])');
-        return{fields,submit:sub?.innerText?.trim()||''};
+        return fields.join(', ')+(sub?' ['+sub.innerText.trim()+']':'');
     });
+    // Actions — clickable elements the LLM can use
     const seen=new Set();
-    r.links=Array.from(document.querySelectorAll('a[href]')).filter(a=>{
-        const t=a.innerText.trim(),h=a.href;
-        if(!t||t.length>100||t.length<2||h.startsWith('javascript:')||seen.has(t))return false;
+    r.actions=Array.from(document.querySelectorAll('a[href],button,[role=button],[role=link],[role=tab]')).filter(el=>{
+        const t=el.innerText.trim();
+        if(!t||t.length>80||t.length<2||seen.has(t))return false;
+        if(el.tagName==='A'&&el.href?.startsWith('javascript:'))return false;
         seen.add(t);return true;
-    }).slice(0,15).map(a=>({text:a.innerText.trim(),href:a.href}));
-    r.buttons=Array.from(document.querySelectorAll('button,[role="button"]')).map(b=>b.innerText.trim()).filter(t=>t.length>0&&t.length<50).slice(0,10);
+    }).slice(0,20).map(el=>{
+        const t=el.innerText.trim();
+        const href=el.tagName==='A'?el.href:'';
+        return href?t+' → '+href:t;
+    });
     return JSON.stringify(r);
 })()'''
 
@@ -237,10 +243,14 @@ class GhostChrome:
         target_id = result.get('targetId', '')
         if not target_id:
             raise RuntimeError(f'Tab creation failed: {result}')
-        time.sleep(1)  # Give Chrome a moment to create the target
-        targets = json.loads(urllib.request.urlopen(
-            f'http://127.0.0.1:{self.port}/json/list', timeout=5).read())
-        ws_url = next((t['webSocketDebuggerUrl'] for t in targets if t.get('id') == target_id), None)
+        # Poll for target to appear instead of fixed 1s sleep
+        ws_url = None
+        for _ in range(10):
+            time.sleep(0.15)
+            targets = json.loads(urllib.request.urlopen(
+                f'http://127.0.0.1:{self.port}/json/list', timeout=5).read())
+            ws_url = next((t['webSocketDebuggerUrl'] for t in targets if t.get('id') == target_id), None)
+            if ws_url: break
         if not ws_url:
             raise RuntimeError(f'No WS for target {target_id}')
         ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=None)
@@ -331,16 +341,18 @@ class GhostChrome:
         tree = self._send('Accessibility.getFullAXTree')
         nodes = tree.get('nodes', [])
         lines = []
+        seen = set()
         for node in nodes:
             role = node.get('role', {}).get('value', '')
             name = node.get('name', {}).get('value', '')
             value = node.get('value', {}).get('value', '')
             if not name and not value:
                 continue
-            # Skip noise roles
-            if role in ('generic', 'none', 'presentation', 'InlineTextBox', 'LineBreak'):
+            if role in ('generic', 'none', 'presentation', 'InlineTextBox', 'LineBreak', 'paragraph', 'Section', 'group'):
                 continue
             text = name or value
+            if text in seen: continue
+            seen.add(text)
             if role == 'heading':
                 level = node.get('properties', [{}])
                 lines.append(f'# {text}')
@@ -465,21 +477,18 @@ class GhostChrome:
     def sanitize(self):
         try:
             data = json.loads(self.js(SANITIZE_JS))
-            lines = [data["title"], '']
-            for h in data.get('headings', [])[:5]: lines.append(f'# {h}')
+            parts = [f'=== {data["title"]} | {data["url"]} | {data.get("type","page")} ===']
+            # Forms
             for f in data.get('forms', []):
-                if f['fields']:
-                    lines.append('')
-                    for fd in f['fields']:
-                        lbl = fd.get('label') or fd.get('placeholder') or fd.get('name') or fd['type']
-                        lines.append(f'  [{fd["type"]}] {lbl}')
-                    if f.get('submit'): lines.append(f'  [submit] {f["submit"]}')
-            links = data.get('links', [])
-            if links:
-                for l in links[:10]: lines.append(f'  {l["text"]} → {l["href"]}')
+                parts.append(f'Form: {f}')
+            # Content
             text = data.get('text', '')
-            if text: lines.extend(['', text[:4000]])
-            return '\n'.join(lines)
+            if text: parts.append(text[:4000])
+            # Actions (clickable)
+            actions = data.get('actions', [])
+            if actions:
+                parts.append('\nActions: ' + ' | '.join(actions[:15]))
+            return '\n'.join(parts)
         except:
             return self.js("return document.body?.innerText?.substring(0,4000)") or self.title
 
@@ -527,7 +536,14 @@ def chrome():
                     '--disable-blink-features=AutomationControlled',
                     '--window-size=1920,1080', f'--user-agent={CHROME_UA}', 'about:blank'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                _chrome_pids.add(proc.pid); time.sleep(2)
+                _chrome_pids.add(proc.pid)
+                # Poll for Chrome to be ready instead of fixed 2s sleep
+                for _ in range(20):
+                    time.sleep(0.15)
+                    try:
+                        urllib.request.urlopen(f'http://127.0.0.1:{port}/json/version', timeout=2)
+                        break
+                    except: pass
 
                 targets = json.loads(urllib.request.urlopen(f'http://127.0.0.1:{port}/json/list', timeout=10).read())
                 ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
@@ -673,11 +689,11 @@ def chrome_go(url, wait_s=5):
 
 def save(text, tag='response'):
     if not text: return 'No content'
-    if len(text) <= 500: return text
+    if len(text) <= 4000: return text
     ts = time.strftime('%Y%m%d-%H%M%S')
     p = RESPONSE_DIR / f'{tag}-{ts}.md'
     p.write_text(text)
-    return text[:500] + f'...\n[Full: {len(text)} chars → {p}]'
+    return text[:4000] + f'\n... [{len(text)} chars total → {p}]'
 
 # ── Tool implementations ──
 
@@ -1051,7 +1067,14 @@ def tool_extract(args):
     d = chrome()
     if t == 'table':
         return d.js(SMART_EXTRACTORS['table'])  # Reuse smart extractor, no duplication
-    return d.js('return JSON.stringify(Array.from(document.querySelectorAll("a[href]")).slice(0,50).map(a=>({text:a.innerText.trim().substring(0,60),href:a.href})))')
+    return d.js('''
+        const seen=new Set();
+        return Array.from(document.querySelectorAll("a[href]")).filter(a=>{
+            const t=a.innerText.trim();
+            if(!t||t.length<2||t.length>80||seen.has(t)||a.href.startsWith("javascript:"))return false;
+            seen.add(t);return true;
+        }).slice(0,30).map(a=>a.innerText.trim()+" → "+a.href).join("\\n");
+    ''')
 
 # ── Chat ──
 
@@ -1122,25 +1145,27 @@ class ChatPipeline:
         return bool(has_input)
 
     def send(self, msg):
-        """Step 3: Focus input, type message, verify it appeared, send."""
+        """Step 3: Type message and send."""
         d = self.d
-        # Capture assistant message count before sending (for DOM-based detection)
         self._msg_count_before = int(d.js(
             'return document.querySelectorAll("[data-message-author-role=assistant]").length'
         ) or 0)
-        # Focus
+        # Focus and type via insertText (CDP trusted event, works with ProseMirror)
         d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
-        time.sleep(0.2)
-        # Type via CDP Input.insertText (works with ProseMirror/contentEditable)
+        time.sleep(0.15)
         d.key(msg)
-        time.sleep(0.2)
-        # Verify message appeared in the input
+        time.sleep(0.15)
+        # Verify typed, fallback to innerText if needed
         typed = d.js('const el=document.activeElement;return(el?.innerText||el?.value||"").length>0')
         if not typed:
-            log(f'{self.platform}: message not typed, retrying with fallback')
-            d.js(f'const el=window.__neoFind?.();if(el){{el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}')
-            time.sleep(0.2)
+            log(f'{self.platform}: key() failed, using innerText fallback')
+            d.js(f'const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){{el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}')
+            time.sleep(0.15)
+        # Send: try Enter first, then click send button
         d.enter()
+        time.sleep(0.3)
+        # Check if send button exists and click it (ProseMirror sometimes ignores Enter)
+        d.js('const b=document.querySelector("[data-testid=send-button]");if(b&&!b.disabled)b.click()')
         log(f'{self.platform}: sent ({len(msg)} chars)')
         return True
 
