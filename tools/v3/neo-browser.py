@@ -67,12 +67,36 @@ RESPONSE_DIR.mkdir(parents=True, exist_ok=True)
 PID_FILE = Path.home() / '.neorender' / 'neo-browser-pids.json'
 
 NEOMODE_JS = '''
+// ── Stealth: screen dimensions ──
 Object.defineProperty(screen,'width',{get:()=>1920});
 Object.defineProperty(screen,'height',{get:()=>1080});
 Object.defineProperty(screen,'availWidth',{get:()=>1920});
 Object.defineProperty(screen,'availHeight',{get:()=>1055});
 Object.defineProperty(window,'outerHeight',{get:()=>1055});
 Object.defineProperty(window,'innerHeight',{get:()=>968});
+
+// ── Stealth: hide headless signals ──
+Object.defineProperty(navigator,'webdriver',{get:()=>false});
+Object.defineProperty(navigator,'plugins',{get:()=>[
+    {name:'Chrome PDF Plugin',filename:'internal-pdf-viewer',description:'Portable Document Format',length:1},
+    {name:'Chrome PDF Viewer',filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai',description:'',length:1},
+    {name:'Native Client',filename:'internal-nacl-plugin',description:'',length:2}
+]});
+Object.defineProperty(navigator,'languages',{get:()=>['es-ES','es','en-US','en']});
+Object.defineProperty(navigator,'hardwareConcurrency',{get:()=>8});
+Object.defineProperty(navigator,'deviceMemory',{get:()=>8});
+Object.defineProperty(navigator,'maxTouchPoints',{get:()=>0});
+window.chrome={runtime:{},loadTimes:function(){},csi:function(){}};
+Object.defineProperty(navigator,'permissions',{get:()=>({
+    query:p=>Promise.resolve({state:p.name==='notifications'?'denied':'granted',onchange:null})
+})});
+// WebGL vendor
+const getParameter=WebGLRenderingContext.prototype.getParameter;
+WebGLRenderingContext.prototype.getParameter=function(p){
+    if(p===37445)return'Google Inc. (Apple)';
+    if(p===37446)return'ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)';
+    return getParameter.call(this,p);
+};
 
 // Chat response interceptor — captures SSE streams from ChatGPT/Grok
 (function(){
@@ -237,6 +261,108 @@ class GhostChrome:
 
     def go(self, url):
         self._send('Page.navigate', {'url': url})
+
+    def accessibility(self):
+        """Get page content via accessibility tree — token-efficient, sees what screen readers see."""
+        self._send('Accessibility.enable')
+        tree = self._send('Accessibility.getFullAXTree')
+        nodes = tree.get('nodes', [])
+        lines = []
+        for node in nodes:
+            role = node.get('role', {}).get('value', '')
+            name = node.get('name', {}).get('value', '')
+            value = node.get('value', {}).get('value', '')
+            if not name and not value:
+                continue
+            # Skip noise roles
+            if role in ('generic', 'none', 'presentation', 'InlineTextBox', 'LineBreak'):
+                continue
+            text = name or value
+            if role == 'heading':
+                level = node.get('properties', [{}])
+                lines.append(f'# {text}')
+            elif role == 'link':
+                lines.append(f'[{text}]')
+            elif role == 'button':
+                lines.append(f'[btn: {text}]')
+            elif role in ('textbox', 'searchbox', 'combobox'):
+                lines.append(f'[input: {text}]')
+            elif role == 'img':
+                lines.append(f'[img: {text}]')
+            elif role in ('StaticText', 'text'):
+                lines.append(text)
+            elif role in ('listitem', 'menuitem', 'option'):
+                lines.append(f'- {text}')
+            elif text.strip():
+                lines.append(text)
+        return '\n'.join(lines)
+
+    def markdown(self):
+        """Convert current page to clean Markdown."""
+        return self.js('''
+            function toMd(el, depth) {
+                if (!el || depth > 15) return '';
+                const tag = el.tagName?.toLowerCase() || '';
+                const skip = ['script','style','nav','footer','header','aside','svg','noscript','iframe'];
+                if (skip.includes(tag)) return '';
+
+                // Text node
+                if (el.nodeType === 3) return el.textContent || '';
+
+                let md = '';
+                const children = Array.from(el.childNodes).map(c => toMd(c, depth+1)).join('');
+
+                switch(tag) {
+                    case 'h1': return '\\n# ' + children.trim() + '\\n';
+                    case 'h2': return '\\n## ' + children.trim() + '\\n';
+                    case 'h3': return '\\n### ' + children.trim() + '\\n';
+                    case 'h4': return '\\n#### ' + children.trim() + '\\n';
+                    case 'h5': case 'h6': return '\\n##### ' + children.trim() + '\\n';
+                    case 'p': return '\\n' + children.trim() + '\\n';
+                    case 'br': return '\\n';
+                    case 'hr': return '\\n---\\n';
+                    case 'strong': case 'b': return '**' + children.trim() + '**';
+                    case 'em': case 'i': return '*' + children.trim() + '*';
+                    case 'code': return '`' + children.trim() + '`';
+                    case 'pre': return '\\n```\\n' + children.trim() + '\\n```\\n';
+                    case 'blockquote': return '\\n> ' + children.trim().replace(/\\n/g, '\\n> ') + '\\n';
+                    case 'a': {
+                        const href = el.getAttribute('href') || '';
+                        const text = children.trim();
+                        if (!text || !href || href.startsWith('javascript:')) return text;
+                        return '[' + text + '](' + href + ')';
+                    }
+                    case 'img': {
+                        const alt = el.getAttribute('alt') || '';
+                        const src = el.getAttribute('src') || '';
+                        return '![' + alt + '](' + src + ')';
+                    }
+                    case 'li': return '- ' + children.trim() + '\\n';
+                    case 'ul': case 'ol': return '\\n' + children;
+                    case 'table': return '\\n' + tableToMd(el) + '\\n';
+                    case 'td': case 'th': return children.trim();
+                    default: return children;
+                }
+            }
+
+            function tableToMd(table) {
+                const rows = Array.from(table.querySelectorAll('tr'));
+                if (!rows.length) return '';
+                const lines = [];
+                rows.forEach((row, i) => {
+                    const cells = Array.from(row.querySelectorAll('th,td')).map(c => c.innerText.trim());
+                    lines.push('| ' + cells.join(' | ') + ' |');
+                    if (i === 0) lines.push('| ' + cells.map(() => '---').join(' | ') + ' |');
+                });
+                return lines.join('\\n');
+            }
+
+            const main = document.querySelector('main,article,[role="main"],#content,.content') || document.body;
+            let result = toMd(main, 0);
+            // Clean up
+            result = result.replace(/\\n{3,}/g, '\\n\\n').trim();
+            return result.substring(0, 5000);
+        ''')
 
     def screenshot(self, path):
         import base64
@@ -602,9 +728,17 @@ def tool_read(args):
 
     # Smart extractor by content type
     if content_type:
-        js = SMART_EXTRACTORS.get(content_type.lower())
+        ct = content_type.lower()
+        # Built-in extractors
+        if ct == 'markdown':
+            return save(d.markdown() or 'No content', 'read-md')
+        if ct == 'accessibility':
+            return save(d.accessibility() or 'No content', 'read-a11y')
+        # JS-based extractors
+        js = SMART_EXTRACTORS.get(ct)
         if not js:
-            return f'Unknown type: {content_type}. Available: {", ".join(SMART_EXTRACTORS.keys())}'
+            types = list(SMART_EXTRACTORS.keys()) + ['markdown', 'accessibility']
+            return f'Unknown type: {content_type}. Available: {", ".join(types)}'
         text = d.js(js)
         return save(text or f'No {content_type} found on page', 'read')
 
@@ -1097,7 +1231,7 @@ TOOLS = [
     {"name": "browse", "description": "Fast HTTP browse (~1s). Returns page content with links and actions. Best for reading web pages.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "URL to browse"}}, "required": ["url"]}},
     {"name": "search", "description": "Web search via DuckDuckGo (~1s).", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "num": {"type": "integer", "default": 10}}, "required": ["query"]}},
     {"name": "open", "description": "Open URL in Ghost Chrome (headless, CF bypass, ~5s). Use for SPAs, Cloudflare sites, or when browse returns empty.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "wait": {"type": "integer", "default": 5000, "description": "Wait ms after load"}}, "required": ["url"]}},
-    {"name": "read", "description": "Extract text from page. With type: smart extraction (tweets, posts, comments, products, table). With selector: CSS extraction. Without: full page.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "type": {"type": "string", "enum": ["tweets", "posts", "comments", "products", "table"], "description": "Smart content extractor"}, "selector": {"type": "string", "description": "CSS selector fallback"}}}},
+    {"name": "read", "description": "Extract text from page. type=markdown (clean MD), type=accessibility (a11y tree, token-efficient), type=tweets/posts/comments/products/table (smart extractors). selector=CSS for manual extraction.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "type": {"type": "string", "enum": ["markdown", "accessibility", "tweets", "posts", "comments", "products", "table"], "description": "Extraction mode"}, "selector": {"type": "string", "description": "CSS selector"}}}},
     {"name": "find", "description": "Find element by text, CSS selector, XPath, or ARIA role.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "by": {"type": "string", "enum": ["text", "css", "xpath", "role"], "default": "text"}}, "required": ["text"]}},
     {"name": "click", "description": "Click element by text content or CSS selector.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Text or CSS selector of element to click"}}, "required": ["text"]}},
     {"name": "type", "description": "Type text in input. Finds by: label text, placeholder, name, aria-label, type, or CSS selector.", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "Label text, placeholder, name, or CSS selector"}, "value": {"type": "string", "description": "Text to type"}}, "required": ["selector", "value"]}},
