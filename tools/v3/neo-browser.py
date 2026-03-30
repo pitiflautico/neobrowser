@@ -138,57 +138,37 @@ WebGLRenderingContext.prototype.getParameter=function(p){
 // ── Smart field detector: scoring + Shadow DOM + iframes + rich editors ──
 window.__neoFind = function(hint) {
     const h = (hint || '').toLowerCase();
-    const EDITORS = '.ProseMirror,[data-slate-editor],[data-lexical-editor],.ql-editor,.DraftEditor-editorContainer [contenteditable],.cm-content[contenteditable],[role=textbox],[contenteditable=true]';
-    const TYPES = new Set(['text','search','email','url','tel','password','number']);
-
-    function vis(el) {
-        if (!el?.isConnected) return false;
-        const s = getComputedStyle(el);
-        if (s.display==='none'||s.visibility==='hidden'||s.opacity==='0') return false;
-        const r = el.getBoundingClientRect();
-        return r.width > 2 && r.height > 2 && r.bottom > -20 && r.top < innerHeight+20;
-    }
-    function edit(el) {
-        if (!el || !vis(el)) return false;
-        if (el.matches?.('input')) return TYPES.has((el.type||'text').toLowerCase()) && !el.disabled && !el.readOnly;
-        if (el.matches?.('textarea')) return !el.disabled && !el.readOnly;
-        if (el.isContentEditable) return true;
-        const role = el.getAttribute?.('role');
-        return role && ['textbox','searchbox','combobox'].includes(role);
-    }
-    function* deep(root) {
-        if (!root) return;
-        const w = (root.createTreeWalker||document.createTreeWalker.bind(document))(root, NodeFilter.SHOW_ELEMENT);
-        while (w.nextNode()) {
-            yield w.currentNode;
-            if (w.currentNode.shadowRoot) yield* deep(w.currentNode.shadowRoot);
-            if (w.currentNode.tagName==='IFRAME') try { if(w.currentNode.contentDocument) yield* deep(w.currentNode.contentDocument) } catch{}
-        }
-    }
-    function labelOf(el) {
-        return [el.placeholder, el.name, el.id, el.getAttribute?.('aria-label'),
-            el.labels?.[0]?.innerText, el.parentElement?.previousElementSibling?.innerText,
-            el.closest?.('label')?.innerText].map(v=>(v||'').toLowerCase()).join(' ');
-    }
-
+    // Gather all editable candidates via querySelectorAll (reliable, no generator)
+    const SEL = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=file]):not([type=range]):not([type=color]),textarea,[contenteditable="true"],[role="textbox"],.ProseMirror,[data-slate-editor],[data-lexical-editor],.ql-editor';
+    const candidates = document.querySelectorAll(SEL);
     let best = null, bestScore = -1;
-    for (const el of deep(document)) {
-        if (!edit(el)) continue;
+
+    for (const el of candidates) {
+        if (!el.isConnected || el.disabled || el.readOnly) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) continue;
+        try {
+            const s = getComputedStyle(el);
+            if (s.display==='none'||s.visibility==='hidden'||s.opacity==='0') continue;
+        } catch { continue; }
+
         let score = 0;
-        // Hint match
-        if (h && labelOf(el).includes(h)) score += 50;
-        // Editor bonus (ProseMirror, Slate, etc.)
-        if (el.matches?.(EDITORS)) score += 20;
+        // Hint match (label, placeholder, name, id, aria-label)
+        if (h) {
+            const label = [el.placeholder, el.name, el.id, el.getAttribute?.('aria-label'),
+                el.labels?.[0]?.innerText, el.closest?.('label')?.innerText,
+                el.parentElement?.previousElementSibling?.innerText
+            ].map(v=>(v||'').toLowerCase()).join(' ');
+            if (label.includes(h)) score += 50;
+        }
+        // Editor bonus
+        if (el.classList?.contains('ProseMirror') || el.getAttribute?.('data-slate-editor')) score += 20;
+        if (el.getAttribute?.('role') === 'textbox') score += 15;
         // Focused
         if (document.activeElement === el) score += 30;
-        // Larger = more prominent
-        const r = el.getBoundingClientRect();
+        // Size (larger = more important)
         score += Math.min(r.width * r.height / 10000, 15);
-        // Center of viewport bonus
-        const cx = r.left + r.width/2, cy = r.top + r.height/2;
-        const dist = Math.sqrt((cx-innerWidth/2)**2 + (cy-innerHeight/2)**2);
-        score += Math.max(0, 10 - dist/100);
-        // Visible in viewport
+        // In viewport
         if (r.top >= 0 && r.bottom <= innerHeight) score += 5;
 
         if (score > bestScore) { bestScore = score; best = el; }
