@@ -98,26 +98,23 @@ WebGLRenderingContext.prototype.getParameter=function(p){
     return getParameter.call(this,p);
 };
 
-// Chat response interceptor — captures SSE streams from ChatGPT/Grok
+// Chat response interceptor — taps into SSE stream via TransformStream (no clone)
 (function(){
     window.__neoChat = {response: '', done: false, ts: 0};
     const origFetch = window.fetch;
     window.fetch = async function(...args) {
         const url = (typeof args[0] === 'string' ? args[0] : args[0]?.url) || '';
         const resp = await origFetch.apply(this, args);
-        if (url.includes('/backend-api/conversation') || url.includes('/rest/api/conversation')) {
+        if (url.includes('/backend-api/conversation')) {
             window.__neoChat = {response: '', done: false, ts: Date.now()};
-            const clone = resp.clone();
-            const reader = clone.body.getReader();
+            const origBody = resp.body;
             const decoder = new TextDecoder();
-            (async () => {
-                try {
-                    while (true) {
-                        const {done, value} = await reader.read();
-                        if (done) break;
-                        const chunk = decoder.decode(value);
-                        // Parse SSE: extract assistant text from data lines
-                        for (const line of chunk.split('\\n')) {
+            const {readable, writable} = new TransformStream({
+                transform(chunk, controller) {
+                    controller.enqueue(chunk);
+                    try {
+                        const text = decoder.decode(chunk, {stream: true});
+                        for (const line of text.split('\\n')) {
                             if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
                             try {
                                 const d = JSON.parse(line.slice(6));
@@ -127,10 +124,12 @@ WebGLRenderingContext.prototype.getParameter=function(p){
                                 }
                             } catch(e) {}
                         }
-                    }
-                } catch(e) {}
-                window.__neoChat.done = true;
-            })();
+                    } catch(e) {}
+                },
+                flush() { window.__neoChat.done = true; }
+            });
+            origBody.pipeTo(writable);
+            return new Response(readable, {status: resp.status, headers: resp.headers});
         }
         return resp;
     };
