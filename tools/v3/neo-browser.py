@@ -203,13 +203,14 @@ except ImportError:
     sys.exit(1)
 
 class GhostChrome:
-    """Headless Chrome with real tabs. Each tab has its own CDP websocket."""
+    """Headless Chrome with isolated tabs. Chat tabs get their own BrowserContext."""
     def __init__(self, proc, port, ws):
         self.proc = proc
         self.port = port
         self._tabs = {'default': ws}   # name → websocket
         self._active = 'default'
         self._id = 10
+        self._keepalive = None         # background thread for chat keepalive
 
     @property
     def ws(self):
@@ -222,8 +223,17 @@ class GhostChrome:
             return self
         if not url:
             return None
-        # Create tab on about:blank first so we can inject scripts BEFORE navigation
-        result = self._send('Target.createTarget', {'url': 'about:blank'})
+        # Chat tabs get isolated BrowserContext (separate cookie jar, no interference)
+        is_chat = name in ('gpt', 'grok')
+        if is_chat:
+            try:
+                ctx = self._send('Target.createBrowserContext', {})
+                ctx_id = ctx.get('browserContextId', '')
+                result = self._send('Target.createTarget', {'url': 'about:blank', 'browserContextId': ctx_id})
+            except:
+                result = self._send('Target.createTarget', {'url': 'about:blank'})
+        else:
+            result = self._send('Target.createTarget', {'url': 'about:blank'})
         target_id = result.get('targetId', '')
         if not target_id:
             raise RuntimeError(f'Tab creation failed: {result}')
@@ -240,10 +250,47 @@ class GhostChrome:
         self._send('Network.enable')
         self._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
         self._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
-        # NOW navigate — scripts will be active
+        # Navigate
         self._send('Page.navigate', {'url': url})
-        log(f'Tab "{name}" created → {url}')
+        log(f'Tab "{name}" created (isolated={is_chat}) → {url}')
+        # Start keepalive for chat tabs
+        if is_chat:
+            self._start_keepalive()
         return self
+
+    def _start_keepalive(self):
+        """Background thread pings chat tabs every 15s to prevent GC/freeze."""
+        if self._keepalive and self._keepalive.is_alive():
+            return
+        def _ping():
+            while True:
+                time.sleep(15)
+                for name in list(self._tabs):
+                    if name in ('gpt', 'grok') and name in self._tabs:
+                        try:
+                            old = self._active
+                            self._active = name
+                            self.js('1')  # no-op eval to keep tab alive
+                            self._active = old
+                        except: pass
+        self._keepalive = threading.Thread(target=_ping, daemon=True)
+        self._keepalive.start()
+        log('Chat keepalive started')
+
+    def paste(self, text):
+        """Paste text via clipboard — more reliable than key events for ProseMirror/contenteditable."""
+        self.js(f'''
+            const dt = new DataTransfer();
+            dt.setData('text/plain', {json.dumps(text)});
+            const el = document.activeElement;
+            if (el) {{
+                el.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true}}));
+            }}
+        ''')
+        # Fallback: if paste event didn't work, set via execCommand
+        current = self.js('return document.activeElement?.textContent || ""') or ''
+        if text not in current:
+            self.js(f'document.execCommand("insertText", false, {json.dumps(text)})')
 
     def _send(self, method, params=None):
         self._id += 1
@@ -1013,24 +1060,51 @@ def tool_extract(args):
 # ── Chat ──
 
 def _chat_ensure(platform, url, cookies):
-    """Switch to chat tab. Creates it on first use, preserves state after."""
+    """Switch to chat tab. Creates on first use, recovers if dead."""
     d = chrome()
     if d.tab(platform):
-        return d  # Tab exists, switched to it
+        # Verify tab is alive
+        try:
+            state = d.js('return document.readyState')
+            if state: return d
+        except:
+            log(f'{platform}: tab dead, recreating...')
+            del d._tabs[platform]
     # Create tab (starts on about:blank, then navigates)
     d.tab(platform, url)
-    # Wait for URL to change from about:blank (navigation started)
+    # Wait for URL to change from about:blank
     for _ in range(20):
         time.sleep(0.5)
         cur = d.js('return location.href') or ''
         if cur != 'about:blank': break
-    # Then wait for page to fully load
+    # Wait for page load
     for _ in range(20):
         time.sleep(0.5)
         if d.js('return document.readyState') == 'complete': break
     time.sleep(1)  # SPA hydration
     log(f'{platform}: {d.title}')
     return d
+
+def _chat_send(d, msg):
+    """Find the chat input, paste message, send. Works across ChatGPT, Grok, etc."""
+    d.js('''
+        // Find any chat input: contenteditable, textarea, or input
+        const selectors = [
+            '#prompt-textarea',                          // ChatGPT
+            '[contenteditable="true"]',                  // Generic contenteditable
+            'div.query-bar p', 'div.query-bar',          // Grok
+            'textarea[placeholder]',                     // Generic textarea
+        ];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && el.offsetHeight > 0) { el.focus(); el.click(); return true; }
+        }
+        return false;
+    ''')
+    time.sleep(0.2)
+    d.paste(msg)
+    time.sleep(0.2)
+    d.enter()
 
 def _chat_extract(d, platform, extract_js, user_msg):
     """Try all extraction methods. Returns text or None."""
@@ -1089,13 +1163,8 @@ def tool_gpt(args):
     # send
     msg = args.get('message', '')
     if not msg: return 'message required'
-    # Reset interceptor + focus + type + send in one flow
     d.js('window.__neoChat = {response: "", done: false, ts: Date.now()}')
-    d.js('const el=document.getElementById("prompt-textarea");if(el){el.focus();el.click()}')
-    time.sleep(0.2)
-    d.key(msg)
-    time.sleep(0.2)
-    d.enter()
+    _chat_send(d, msg)
     log('GPT: sent')
     if not args.get('wait', True): return 'Sent.'
     return _chat_wait_response(d, 'gpt', msg,
@@ -1116,9 +1185,7 @@ def tool_grok(args):
     # send
     msg = args.get('message', '')
     if not msg: return 'message required'
-    d.js('const el=document.querySelector("div.query-bar p")||document.querySelector("div.query-bar");if(el){el.click();el.focus()}')
-    time.sleep(0.3)
-    d.key(msg); time.sleep(0.3); d.enter()
+    _chat_send(d, msg)
     log('Grok: sent')
     if not args.get('wait', True): return 'Sent.'
     return _chat_wait_response(d, 'grok', msg, f'''
