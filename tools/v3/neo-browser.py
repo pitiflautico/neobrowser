@@ -445,16 +445,8 @@ class GhostChrome:
         with open(path, 'wb') as f: f.write(base64.b64decode(r.get('data', '')))
 
     def key(self, text):
-        """Type text via CDP key events."""
-        # Try insertText first (fast, works with ProseMirror when focused)
+        """Type text via CDP Input.insertText."""
         self._send('Input.insertText', {'text': text})
-        # Verify it worked by checking active element has content
-        has_text = self.js('const el=document.activeElement;return(el?.innerText||el?.value||"").length>0')
-        if not has_text:
-            # Fallback: char-by-char dispatchKeyEvent
-            for c in text:
-                self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'text': c, 'key': c, 'windowsVirtualKeyCode': ord(c)})
-                self._send('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': c})
 
     def enter(self):
         self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13, 'text': '\r'})
@@ -902,7 +894,8 @@ def tool_type(args):
         const el = window.__neoFind?.({json.dumps(sel)}) || document.querySelector({json.dumps(sel)});
         if (el) {{
             el.focus(); el.click();
-            if (el.value !== undefined) el.value = '';
+            // Clear only standard inputs, not contentEditable (ProseMirror)
+            if (el.tagName==='INPUT'||el.tagName==='TEXTAREA') el.value = '';
             el.dispatchEvent(new Event('focus', {{bubbles:true}}));
             return JSON.stringify({{found: true, tag: el.tagName, name: el.name||''}});
         }}
@@ -1069,12 +1062,13 @@ def tool_extract(args):
         return d.js(SMART_EXTRACTORS['table'])  # Reuse smart extractor, no duplication
     return d.js('''
         const seen=new Set();
-        return Array.from(document.querySelectorAll("a[href]")).filter(a=>{
+        const links=Array.from(document.querySelectorAll("a[href]")).filter(a=>{
             const t=a.innerText.trim();
             if(!t||t.length<2||t.length>80||seen.has(t)||a.href.startsWith("javascript:"))return false;
             seen.add(t);return true;
         }).slice(0,30).map(a=>a.innerText.trim()+" → "+a.href).join("\\n");
-    ''')
+        return links || "No links found";
+    ''') or 'No links found'
 
 # ── Chat ──
 
@@ -1122,21 +1116,15 @@ class ChatPipeline:
     def verify_ready(self):
         """Step 2: No pending response, input field is available."""
         d = self.d
-        # Ensure __neoFind is available
         if not d.js('return typeof window.__neoFind === "function"'):
             d.js(NEOMODE_JS)
-        # Check no streaming in progress
-        streaming = d.js('''
-            return !!(document.querySelector('[data-testid="stop-button"]')
-                || (window.__neoChat && !window.__neoChat.done && window.__neoChat.response))
-        ''')
-        if streaming:
-            log(f'{self.platform}: waiting for previous response to finish...')
-            for _ in range(30):
-                time.sleep(1)
-                still = d.js('return !!document.querySelector("[data-testid=stop-button]")')
-                if not still: break
-        # Check input exists — try direct ID first, then __neoFind
+        # Wait for any in-progress streaming to finish
+        if d.js('return !!document.querySelector("[data-testid=stop-button]")'):
+            log(f'{self.platform}: waiting for streaming to finish...')
+            for _ in range(60):
+                time.sleep(0.5)
+                if not d.js('return !!document.querySelector("[data-testid=stop-button]")'): break
+        # Check input exists
         has_input = d.js('return !!(document.getElementById("prompt-textarea") || window.__neoFind?.())')
         if not has_input:
             log(f'{self.platform}: no input found, reloading')
@@ -1150,21 +1138,18 @@ class ChatPipeline:
         self._msg_count_before = int(d.js(
             'return document.querySelectorAll("[data-message-author-role=assistant]").length'
         ) or 0)
-        # Focus and type via insertText (CDP trusted event, works with ProseMirror)
+        # Focus textarea
         d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
-        time.sleep(0.15)
+        time.sleep(0.1)
+        # Type: try CDP insertText, fallback to direct DOM manipulation
         d.key(msg)
-        time.sleep(0.15)
-        # Verify typed, fallback to innerText if needed
         typed = d.js('const el=document.activeElement;return(el?.innerText||el?.value||"").length>0')
         if not typed:
-            log(f'{self.platform}: key() failed, using innerText fallback')
-            d.js(f'const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){{el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}')
-            time.sleep(0.15)
-        # Send: try Enter first, then click send button
+            d.js(f'''const el=document.getElementById("prompt-textarea")||window.__neoFind?.();
+                if(el){{el.focus();el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}''')
+        time.sleep(0.1)
+        # Send: Enter + send button click (covers all cases)
         d.enter()
-        time.sleep(0.3)
-        # Check if send button exists and click it (ProseMirror sometimes ignores Enter)
         d.js('const b=document.querySelector("[data-testid=send-button]");if(b&&!b.disabled)b.click()')
         log(f'{self.platform}: sent ({len(msg)} chars)')
         return True
@@ -1229,9 +1214,9 @@ class ChatPipeline:
                     log(f'{self.platform}: response via API ({len(resp)} chars)')
                     return save(resp, self.platform)
 
-        # DOM fallback: last assistant message
+        # DOM fallback: last assistant message (skip error messages)
         dom = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
-        if dom and len(dom) > 2:
+        if dom and len(dom) > 2 and 'Something went wrong' not in dom:
             return save(dom, self.platform)
 
         # Last resort: title
@@ -1322,7 +1307,8 @@ def tool_js(args):
     code = args.get('code', '')
     if not code: return 'code required'
     result = chrome().js(code)
-    if result is None: return 'null'
+    if result is None: return '(null)'
+    if result == '': return '(empty string)'
     return str(result)[:5000]
 
 def tool_status(args):
