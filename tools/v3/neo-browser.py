@@ -135,37 +135,65 @@ WebGLRenderingContext.prototype.getParameter=function(p){
     };
 })();
 
-// ── Field detector: finds any writable element on the page ──
+// ── Smart field detector: scoring + Shadow DOM + iframes + rich editors ──
 window.__neoFind = function(hint) {
     const h = (hint || '').toLowerCase();
-    // 1. By hint (label, placeholder, name, aria-label)
-    if (h) {
-        const all = document.querySelectorAll('input,textarea,select,[contenteditable="true"]');
-        for (const el of all) {
-            if (el.offsetHeight === 0) continue;
-            const match = [
-                el.placeholder, el.name, el.id, el.getAttribute('aria-label'),
-                el.labels?.[0]?.innerText,
-                el.parentElement?.previousElementSibling?.innerText
-            ].some(v => v && v.toLowerCase().includes(h));
-            if (match) return el;
+    const EDITORS = '.ProseMirror,[data-slate-editor],[data-lexical-editor],.ql-editor,.DraftEditor-editorContainer [contenteditable],.cm-content[contenteditable],[role=textbox],[contenteditable=true]';
+    const TYPES = new Set(['text','search','email','url','tel','password','number']);
+
+    function vis(el) {
+        if (!el?.isConnected) return false;
+        const s = getComputedStyle(el);
+        if (s.display==='none'||s.visibility==='hidden'||s.opacity==='0') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 2 && r.height > 2 && r.bottom > -20 && r.top < innerHeight+20;
+    }
+    function edit(el) {
+        if (!el || !vis(el)) return false;
+        if (el.matches?.('input')) return TYPES.has((el.type||'text').toLowerCase()) && !el.disabled && !el.readOnly;
+        if (el.matches?.('textarea')) return !el.disabled && !el.readOnly;
+        if (el.isContentEditable) return true;
+        const role = el.getAttribute?.('role');
+        return role && ['textbox','searchbox','combobox'].includes(role);
+    }
+    function* deep(root) {
+        if (!root) return;
+        const w = (root.createTreeWalker||document.createTreeWalker.bind(document))(root, NodeFilter.SHOW_ELEMENT);
+        while (w.nextNode()) {
+            yield w.currentNode;
+            if (w.currentNode.shadowRoot) yield* deep(w.currentNode.shadowRoot);
+            if (w.currentNode.tagName==='IFRAME') try { if(w.currentNode.contentDocument) yield* deep(w.currentNode.contentDocument) } catch{}
         }
-        // By type (email, password, etc.)
-        const byType = document.querySelector('[type="'+hint+'"]');
-        if (byType && byType.offsetHeight > 0) return byType;
     }
-    // 2. Focused element if writable
-    const active = document.activeElement;
-    if (active && active !== document.body) {
-        const tag = active.tagName.toLowerCase();
-        if (tag === 'input' || tag === 'textarea' || active.contentEditable === 'true') return active;
+    function labelOf(el) {
+        return [el.placeholder, el.name, el.id, el.getAttribute?.('aria-label'),
+            el.labels?.[0]?.innerText, el.parentElement?.previousElementSibling?.innerText,
+            el.closest?.('label')?.innerText].map(v=>(v||'').toLowerCase()).join(' ');
     }
-    // 3. First visible writable: contenteditable > textarea > input
-    for (const sel of ['[contenteditable="true"]', 'textarea:not([readonly])', 'input:not([type=hidden]):not([readonly])']) {
-        const el = document.querySelector(sel);
-        if (el && el.offsetHeight > 0) return el;
+
+    let best = null, bestScore = -1;
+    for (const el of deep(document)) {
+        if (!edit(el)) continue;
+        let score = 0;
+        // Hint match
+        if (h && labelOf(el).includes(h)) score += 50;
+        // Editor bonus (ProseMirror, Slate, etc.)
+        if (el.matches?.(EDITORS)) score += 20;
+        // Focused
+        if (document.activeElement === el) score += 30;
+        // Larger = more prominent
+        const r = el.getBoundingClientRect();
+        score += Math.min(r.width * r.height / 10000, 15);
+        // Center of viewport bonus
+        const cx = r.left + r.width/2, cy = r.top + r.height/2;
+        const dist = Math.sqrt((cx-innerWidth/2)**2 + (cy-innerHeight/2)**2);
+        score += Math.max(0, 10 - dist/100);
+        // Visible in viewport
+        if (r.top >= 0 && r.bottom <= innerHeight) score += 5;
+
+        if (score > bestScore) { bestScore = score; best = el; }
     }
-    return null;
+    return best;
 };
 '''
 
