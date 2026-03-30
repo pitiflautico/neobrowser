@@ -318,6 +318,16 @@ class GhostChrome:
         self._keepalive.start()
         log('Chat keepalive started')
 
+    def js_async(self, code):
+        """Execute JS with awaitPromise=true for async/Promise code."""
+        self._id += 1
+        self.ws.send(json.dumps({'id': self._id, 'method': 'Runtime.evaluate',
+            'params': {'expression': code, 'returnByValue': True, 'awaitPromise': True}}))
+        while True:
+            data = json.loads(self.ws.recv(timeout=60))
+            if data.get('id') == self._id:
+                return data.get('result', {}).get('result', {}).get('value')
+
     def paste(self, text):
         """Paste text via clipboard — more reliable than key events for ProseMirror/contenteditable."""
         self.js(f'''
@@ -539,11 +549,10 @@ def chrome():
 
                 s = socket.socket(); s.bind(('127.0.0.1', 0)); port = s.getsockname()[1]; s.close()
                 proc = subprocess.Popen([CHROME_BIN, f'--remote-debugging-port={port}',
-                    f'--user-data-dir={str(ghost_dir)}', '--no-first-run',
+                    f'--user-data-dir={str(ghost_dir)}', '--headless=new', '--no-first-run',
                     '--disable-background-networking', '--disable-dev-shm-usage',
                     '--disable-blink-features=AutomationControlled',
-                    '--window-size=1920,1080', '--window-position=-32000,-32000',
-                    f'--user-agent={CHROME_UA}', 'about:blank'],
+                    '--window-size=1920,1080', f'--user-agent={CHROME_UA}', 'about:blank'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 _chrome_pids.add(proc.pid); time.sleep(2)
 
@@ -1131,65 +1140,70 @@ class ChatPipeline:
         log(f'{self.platform}: sent ({len(msg)} chars)')
         return True
 
-    def wait_response(self, user_msg, max_wait=90):
-        """Step 4: Wait for response with SSE interceptor + DOM fallback."""
+    def wait_response(self, user_msg, max_wait=60):
+        """Step 4: Wait for title change + streaming done, then fetch via API."""
         d = self.d
-        prev = ''; stable = 0; elapsed = 0; interval = 0.5
 
-        while elapsed < max_wait:
-            time.sleep(interval)
-            elapsed += interval
+        # Phase 1: Wait for title to change (= ChatGPT started responding)
+        for i in range(max_wait):
+            time.sleep(1)
+            title = d.js('return document.title') or ''
+            if title and title != 'ChatGPT' and title != user_msg:
+                log(f'{self.platform}: title changed ({i}s): {title}')
+                break
+        else:
+            return 'No response (title never changed)'
 
-            if elapsed < 2: continue
+        # Phase 2: Wait for streaming to finish
+        for _ in range(30):
+            time.sleep(1)
+            busy = d.js('return !!document.querySelector("[aria-busy=true],.result-streaming")')
+            if not busy: break
+        time.sleep(1)
 
-            # Check for ChatGPT error
-            error = d.js('return document.body?.innerText?.includes("Something went wrong")')
-            if error:
-                log(f'{self.platform}: ChatGPT error, retrying...')
-                # Click retry button if exists
-                d.js('document.querySelector("button")?.click()')
-                time.sleep(3)
-                continue
+        # Phase 3: Get response via conversation API
+        conv_url = d.js('return location.href') or ''
+        conv_id = conv_url.split('/c/')[-1] if '/c/' in conv_url else ''
+        if not conv_id:
+            log(f'{self.platform}: no conversation ID, using title')
+            return save(title, self.platform)
 
-            # Extract response — priority: SSE > DOM > title
-            resp = None
-            # 1. SSE interceptor (captures raw API response)
-            sse = d.js('return window.__neoChat?.response || null')
-            if sse and len(sse) > 3 and sse != user_msg:
-                done = d.js('return window.__neoChat?.done')
-                if done:
-                    resp = sse
-                elif len(sse) > 10:
-                    resp = sse  # Still streaming but has content
+        # Get access token
+        token = d.js_async("fetch('/api/auth/session').then(r=>r.json()).then(d=>d.accessToken||'').catch(()=>'')")
+        if not token:
+            log(f'{self.platform}: no token, using title')
+            return save(title, self.platform)
 
-            # 2. DOM (older ChatGPT versions)
-            if not resp:
-                resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
-                if resp and (len(resp) < 3 or resp == user_msg): resp = None
+        # Fetch full conversation
+        resp = d.js_async(f'''
+            fetch('/backend-api/conversation/{conv_id}', {{
+                headers: {{'Authorization': 'Bearer {token}'}}
+            }})
+            .then(r => r.json())
+            .then(d => {{
+                if (d.mapping) {{
+                    const msgs = Object.values(d.mapping);
+                    const assistant = msgs.filter(m => m.message?.author?.role === 'assistant');
+                    if (assistant.length) {{
+                        return assistant.map(a => a.message?.content?.parts?.join('')).filter(Boolean).join('\\n');
+                    }}
+                }}
+                return '';
+            }})
+            .catch(e => '')
+        ''')
 
-            # 3. Title fallback
-            if not resp:
-                title = d.js('return document.title') or ''
-                if title and title != user_msg and len(title) > 3 and title != 'ChatGPT':
-                    resp = f'[title] {title}'
+        if resp and len(resp) > 2:
+            log(f'{self.platform}: response via API ({len(resp)} chars)')
+            return save(resp, self.platform)
 
-            if resp:
-                if resp == prev:
-                    stable += 1
-                    if stable >= 2:
-                        log(f'{self.platform}: response captured ({len(resp)} chars)')
-                        return save(resp, self.platform)
-                else:
-                    stable = 0
-                prev = resp
-                interval = min(interval, 1)  # Speed up when we see content
-            else:
-                if interval < 4: interval = min(interval * 2, 4)
+        # Fallback: DOM innerText (works in non-headless)
+        dom = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
+        if dom and len(dom) > 2:
+            return save(dom, self.platform)
 
-            if int(elapsed) > 0 and int(elapsed) % 20 == 0:
-                log(f'{self.platform}: waiting... ({int(elapsed)}s)')
-
-        return save(prev, self.platform) if prev else 'No response'
+        # Last resort: title
+        return save(title, self.platform)
 
     def run(self, msg, wait=True):
         """Full pipeline: ensure → verify → send → wait."""
