@@ -98,42 +98,8 @@ WebGLRenderingContext.prototype.getParameter=function(p){
     return getParameter.call(this,p);
 };
 
-// Chat response interceptor — taps into SSE stream via TransformStream (no clone)
-(function(){
-    window.__neoChat = {response: '', done: false, ts: 0};
-    const origFetch = window.fetch;
-    window.fetch = async function(...args) {
-        const url = (typeof args[0] === 'string' ? args[0] : args[0]?.url) || '';
-        const resp = await origFetch.apply(this, args);
-        if (url.includes('/backend-api/conversation')) {
-            window.__neoChat = {response: '', done: false, ts: Date.now()};
-            const origBody = resp.body;
-            const decoder = new TextDecoder();
-            const {readable, writable} = new TransformStream({
-                transform(chunk, controller) {
-                    controller.enqueue(chunk);
-                    try {
-                        const text = decoder.decode(chunk, {stream: true});
-                        for (const line of text.split('\\n')) {
-                            if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
-                            try {
-                                const d = JSON.parse(line.slice(6));
-                                const parts = d?.message?.content?.parts;
-                                if (parts && d.message.author?.role === 'assistant') {
-                                    window.__neoChat.response = parts.join('');
-                                }
-                            } catch(e) {}
-                        }
-                    } catch(e) {}
-                },
-                flush() { window.__neoChat.done = true; }
-            });
-            origBody.pipeTo(writable);
-            return new Response(readable, {status: resp.status, headers: resp.headers});
-        }
-        return resp;
-    };
-})();
+// Chat state tracker (no fetch interception — causes streaming hangs)
+window.__neoChat = {response: '', done: false, ts: 0};
 
 // ── Smart field detector: scoring + Shadow DOM + iframes + rich editors ──
 window.__neoFind = function(hint) {
