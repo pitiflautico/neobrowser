@@ -1,0 +1,24 @@
+{
+  "name": "neobrowser",
+  "version": "3.1.0",
+  "description": "AI Browser MCP Server — give your AI agent a real Chrome browser with session persistence",
+  "bin": {
+    "neo-browser": "./bin/neo-browser.js"
+  },
+  "files": [
+    "bin/",
+    "tools/v3/neo-browser.py",
+    "README.md"
+  ],
+  "keywords": ["mcp", "browser", "ai", "chrome", "cdp", "headless", "automation", "claude", "chatgpt"],
+  "author": "Dani Perez <dani@pitiflautico.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pitiflautico/neobrowser.git"
+  },
+  "homepage": "https://github.com/pitiflautico/neobrowser",
+  "engines": {
+    "node": ">=16"
+  }
+}

@@ -1,0 +1,12 @@
+target/
+tests/
+docs/
+pipeline/
+vendor/
+src/
+crates/
+site/
+*.rs
+Cargo.*
+.claude/
+Profile*/
