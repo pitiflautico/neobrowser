@@ -74,6 +74,9 @@ XAI_API_KEY = os.environ.get('XAI_API_KEY', '')
 CONTENT_PROCESS = os.environ.get('NEOBROWSER_CONTENT_PROCESS', '')  # set to '1' to enable
 CONTENT_MAX_CHARS = 100000
 
+# Cookie domain control: comma-separated list of domains to sync (empty = sync all except Google)
+COOKIE_DOMAINS = [d.strip() for d in os.environ.get('NEOBROWSER_COOKIE_DOMAINS', '').split(',') if d.strip()]
+
 # ── Security ──
 
 def sanitize_unicode(text):
@@ -119,6 +122,14 @@ def scan_secrets(text):
         if re.search(pattern, text):
             found.append(name)
     return found
+
+def error_response(code, message, url='', suggestion=''):
+    """Structured error for agents to act on."""
+    r = {'error': code, 'message': message}
+    if url: r['url'] = url
+    if suggestion: r['suggestion'] = suggestion
+    log(f'ERROR [{code}]: {message}')
+    return json.dumps(r)
 
 NEOMODE_JS = '''
 // ── Stealth: screen dimensions ──
@@ -626,13 +637,29 @@ def _sync_session(src_profile, dst_profile):
             conn_dst = sqlite3.connect(str(dst_cookies))
             # Copy schema first
             conn_src.backup(conn_dst)
-            # Delete Google cookies from ghost copy to prevent session theft
-            excluded = ' OR '.join(f'host_key LIKE "%{d}"' for d in EXCLUDED_DOMAINS)
-            deleted = conn_dst.execute(f'DELETE FROM cookies WHERE {excluded}').rowcount
-            count = conn_dst.execute('SELECT COUNT(*) FROM cookies').fetchone()[0]
-            conn_dst.commit()
-            conn_dst.close(); conn_src.close()
-            synced.append(f'Cookies ({count} kept, {deleted} Google excluded)')
+            if COOKIE_DOMAINS:
+                # Allowlist mode: keep only cookies matching specified domains, delete everything else
+                log(f'Cookie sync: domain allowlist active ({len(COOKIE_DOMAINS)} domains)')
+                keep_conditions = ' OR '.join('host_key LIKE ?' for _ in COOKIE_DOMAINS)
+                keep_params = [f'%{d}%' for d in COOKIE_DOMAINS]
+                deleted = conn_dst.execute(
+                    f'DELETE FROM cookies WHERE NOT ({keep_conditions})', keep_params
+                ).rowcount
+                count = conn_dst.execute('SELECT COUNT(*) FROM cookies').fetchone()[0]
+                conn_dst.commit()
+                conn_dst.close(); conn_src.close()
+                synced.append(f'Cookies ({count} kept, {deleted} outside allowlist removed)')
+            else:
+                # Default: exclude Google domains to prevent session invalidation
+                excluded = ' OR '.join('host_key LIKE ?' for _ in EXCLUDED_DOMAINS)
+                excluded_params = [f'%{d}' for d in EXCLUDED_DOMAINS]
+                deleted = conn_dst.execute(
+                    f'DELETE FROM cookies WHERE {excluded}', excluded_params
+                ).rowcount
+                count = conn_dst.execute('SELECT COUNT(*) FROM cookies').fetchone()[0]
+                conn_dst.commit()
+                conn_dst.close(); conn_src.close()
+                synced.append(f'Cookies ({count} kept, {deleted} Google excluded)')
         except Exception as e:
             log(f'Cookie sync failed: {e}')
 
@@ -774,7 +801,7 @@ def tool_browse(args):
     url = args.get('url', '')
     if not url: return 'url required'
     if not validate_url(url):
-        return f'Blocked: {url} (invalid or private URL)'
+        return error_response('url_blocked', f'URL blocked by security policy: {url}', suggestion='Only public HTTP/HTTPS URLs are allowed')
     out, ms = fast('see', url)
     if len(out) > 200:
         log(f'V1 browse: {ms}ms')
@@ -1166,9 +1193,11 @@ class ChatPipeline:
         self.conv_url = None  # Current conversation URL (e.g. chatgpt.com/c/xxx)
         self.d = None
         self.max_retries = 2
+        self.last_error = None
 
     def ensure(self):
         """Step 1: Navigate default tab to chat platform."""
+        self.last_error = None
         d = chrome()
         target = self.conv_url or self.url
         domain = self.url.split('/')[2]
@@ -1200,12 +1229,15 @@ class ChatPipeline:
         page_text = d.js('return document.body?.innerText?.substring(0,500)') or ''
         if any(s in page_text.lower() for s in ['log in', 'sign in', 'sign up', 'create account']):
             log(f'{self.platform}: login wall detected')
+            self.last_error = error_response('login_wall', 'Login required', suggestion='Re-sync cookies or log in manually')
             return False
         if any(s in page_text.lower() for s in ['captcha', 'verify you are human', 'cloudflare']):
             log(f'{self.platform}: captcha detected')
+            self.last_error = error_response('captcha', 'Captcha or verification required', suggestion='Try again later or solve manually')
             return False
         if any(s in page_text.lower() for s in ['rate limit', 'too many requests', 'try again later']):
             log(f'{self.platform}: rate limited')
+            self.last_error = error_response('rate_limit', 'Rate limited by platform', suggestion='Wait and retry')
             return False
 
         # Inject NEOMODE_JS if not present
@@ -1289,7 +1321,7 @@ class ChatPipeline:
                 log(f'{self.platform}: phase1 — detected via title: {title}')
             else:
                 log(f'{self.platform}: phase1 — no new message after {max_wait}s, aborting')
-                return 'No response (no new assistant message)'
+                return error_response('no_response', 'No assistant message appeared', suggestion='ChatGPT may be overloaded, try again')
 
         # Phase 2: Wait for streaming to finish
         log(f'{self.platform}: phase2 — waiting for streaming to finish')
@@ -1313,17 +1345,18 @@ class ChatPipeline:
             log(f'{self.platform}: response via DOM ({len(dom)} chars)')
             return save(dom, self.platform)
 
-        # Fallback: title
+        # Fallback: title (DOM extraction failed)
+        conv_url = d.js('return location.href') or ''
         title = d.js('return document.title') or ''
         log(f'{self.platform}: no DOM response, falling back to title: {title}')
-        return save(title, self.platform)
+        return error_response('extraction_failed', 'Could not extract response from DOM', url=conv_url, suggestion='ChatGPT DOM may have changed')
 
     def run(self, msg, wait=True):
         """Full pipeline: ensure → verify → send → wait."""
         for attempt in range(self.max_retries + 1):
             try:
                 if not self.ensure():
-                    return 'Failed to open chat platform'
+                    return self.last_error or error_response('platform_unavailable', 'Could not open chat platform')
                 if not self.verify_ready():
                     if attempt < self.max_retries:
                         log(f'{self.platform}: not ready, retry {attempt+1}')
