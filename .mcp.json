@@ -3,7 +3,8 @@
     "neo-browser": {
       "command": "neo-browser",
       "env": {
-        "NEOBROWSER_PROFILE": "Profile 24"
+        "NEOBROWSER_PROFILE": "Profile 24",
+        "NEOBROWSER_CONTENT_PROCESS": "1"
       }
     }
   }

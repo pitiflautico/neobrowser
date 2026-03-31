@@ -51,8 +51,7 @@ NeoBrowser works with zero configuration. These environment variables unlock add
 |---|---|
 | `OPENAI_API_KEY` | ChatGPT via API (reliable, replaces fragile browser automation) |
 | `XAI_API_KEY` | Grok via API (reliable, replaces fragile browser automation) |
-| `NEOBROWSER_CONTENT_MODEL` | Model for content processing (e.g. `claude-haiku-4-5-20251001`) |
-| `ANTHROPIC_API_KEY` | Required for content processing model |
+| `NEOBROWSER_CONTENT_PROCESS` | Set to `1` to process web content through `claude -p --model haiku` before returning |
 
 Without these, NeoBrowser uses browser-based chat (experimental) and returns raw content.
 

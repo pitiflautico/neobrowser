@@ -5,7 +5,7 @@ All notable changes to NeoBrowser are documented here.
 ## [3.2.0] - 2026-03-31
 
 ### Added
-- Content processing via small model (opt-in): set NEOBROWSER_CONTENT_MODEL and ANTHROPIC_API_KEY to reduce tokens
+- Content processing via claude CLI (no API key needed): set NEOBROWSER_CONTENT_PROCESS=1 to reduce tokens
 - API mode for ChatGPT: set OPENAI_API_KEY to bypass fragile browser automation
 - API mode for Grok: set XAI_API_KEY to bypass fragile browser automation
 - Unicode sanitization on all web content (strips hidden prompt injection chars)
