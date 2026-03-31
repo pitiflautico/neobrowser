@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html class="dark" lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>NeoBrowser — El Primer Navegador Creado para IA</title>
+<meta name="description" content="NeoBrowser es un servidor MCP de navegador para IA. Dale a tu agente de IA un navegador Chrome real con tu sesion ya cargada. 19 herramientas, un archivo Python, cero frameworks."/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "background": "#0a0a12",
+        "surface": "#0a0a12",
+        "surface-low": "#11111a",
+        "surface-high": "#1a1a26",
+        "surface-highest": "#222230",
+        "primary": "#818cf8",
+        "primary-dim": "#6366f1",
+        "secondary": "#34d399",
+        "secondary-dim": "#10b981",
+        "tertiary": "#f472b6",
+        "tertiary-dim": "#ec4899",
+        "on-surface": "#f0f0f8",
+        "on-surface-variant": "#9898aa",
+        "outline-variant": "#494651",
+      },
+      fontFamily: {
+        "headline": ["Space Grotesk", "sans-serif"],
+        "body": ["Inter", "sans-serif"],
+      },
+    },
+  },
+}
+</script>
+<style>
+body {
+  background-color: #0a0a12;
+  color: #f0f0f8;
+  overflow-x: hidden;
+}
+.glass-panel {
+  background: rgba(26, 26, 38, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+.glass-nav {
+  background: rgba(10, 10, 18, 0.7);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+.neon-glow-primary {
+  box-shadow: 0 0 32px 0 rgba(129, 140, 248, 0.15);
+}
+.neon-glow-secondary {
+  box-shadow: 0 0 32px 0 rgba(52, 211, 153, 0.15);
+}
+.neon-glow-tertiary {
+  box-shadow: 0 0 32px 0 rgba(244, 114, 182, 0.15);
+}
+.refraction-border {
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-20px) scale(1.02); }
+}
+@keyframes float-slower {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(15px) scale(0.98); }
+}
+.float-slow { animation: float-slow 8s ease-in-out infinite; }
+.float-slower { animation: float-slower 12s ease-in-out infinite; }
+.gradient-text {
+  background: linear-gradient(135deg, #818cf8, #34d399, #f472b6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.terminal-line::before {
+  content: "$ ";
+  color: #34d399;
+}
+</style>
+</head>
+<body class="font-body selection:bg-primary/30">
+
+<!-- Nav -->
+<nav class="fixed top-0 w-full z-50 glass-nav shadow-[0_1px_20px_rgba(129,140,248,0.08)]">
+  <div class="flex items-center justify-between px-6 md:px-8 py-4 max-w-7xl mx-auto">
+    <div class="flex items-center gap-2">
+      <span class="material-symbols-outlined text-primary text-2xl" style="font-variation-settings: 'FILL' 1;">public</span>
+      <span class="text-xl font-bold tracking-tighter text-on-surface font-headline">NEOBROWSER</span>
+    </div>
+    <div class="hidden md:flex items-center gap-8 font-headline tracking-tight text-sm">
+      <a class="text-on-surface-variant hover:text-on-surface transition-colors" href="#features">Capacidades</a>
+      <a class="text-on-surface-variant hover:text-on-surface transition-colors" href="#how-it-works">Como funciona</a>
+      <a class="text-on-surface-variant hover:text-on-surface transition-colors" href="#developers">Docs</a>
+      <a class="text-on-surface-variant hover:text-on-surface transition-colors" href="https://github.com/pitiflautico/neobrowser">GitHub</a>
+    </div>
+    <div class="flex items-center gap-4">
+      <a href="../en/" class="text-xs font-label uppercase tracking-widest text-on-surface-variant hover:text-on-surface transition-colors">EN</a>
+      <a href="#get-started" class="bg-primary text-background px-5 py-2 rounded-lg font-medium text-sm hover:shadow-[0_0_20px_rgba(129,140,248,0.4)] transition-all active:scale-95">
+        Empezar
+      </a>
+    </div>
+  </div>
+</nav>
+
+<main class="pt-20">
+
+<!-- Hero -->
+<section class="relative min-h-[90vh] flex items-center justify-center overflow-hidden px-6 py-24">
+  <div class="absolute inset-0 z-0">
+    <div class="absolute top-1/4 -left-32 w-[500px] h-[500px] bg-primary/15 rounded-full blur-[150px] float-slow"></div>
+    <div class="absolute bottom-1/4 -right-32 w-[400px] h-[400px] bg-secondary/10 rounded-full blur-[130px] float-slower"></div>
+    <div class="absolute top-1/2 left-1/2 -translate-x-1/2 w-[300px] h-[300px] bg-tertiary/8 rounded-full blur-[120px]"></div>
+  </div>
+  <div class="relative z-10 max-w-5xl mx-auto text-center">
+    <div class="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 mb-10 refraction-border">
+      <span class="w-2 h-2 rounded-full bg-secondary animate-pulse"></span>
+      <span class="text-xs font-label uppercase tracking-[0.15em] text-on-surface-variant">Servidor MCP de Navegador para IA &middot; Open Source &middot; v3.0</span>
+    </div>
+    <h1 class="text-5xl md:text-7xl lg:text-8xl font-headline font-bold tracking-tighter text-on-surface leading-[0.95] mb-8">
+      El primer navegador<br/><span class="gradient-text">creado para IA.</span>
+    </h1>
+    <p class="text-lg md:text-xl text-on-surface-variant max-w-2xl mx-auto mb-12 leading-relaxed">
+      Dale a tu agente de IA un navegador Chrome real con tu sesion ya cargada. 19 herramientas, un archivo Python, cero frameworks.
+    </p>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+      <a href="#get-started" class="w-full sm:w-auto px-10 py-4 bg-primary text-background rounded-xl font-bold text-lg hover:shadow-[0_0_30px_rgba(129,140,248,0.4)] transition-all active:scale-95">
+        Empezar
+      </a>
+      <a href="#benchmarks" class="w-full sm:w-auto px-10 py-4 glass-panel border border-white/10 rounded-xl font-bold text-lg text-secondary hover:bg-white/5 transition-all refraction-border">
+        Ver en accion
+      </a>
+    </div>
+
+    <!-- Terminal -->
+    <div class="mt-16 md:mt-20 max-w-3xl mx-auto rounded-2xl overflow-hidden glass-panel border border-white/5 refraction-border neon-glow-primary text-left">
+      <div class="flex items-center gap-2 px-5 py-3 border-b border-white/5">
+        <div class="w-3 h-3 rounded-full bg-tertiary/60"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+        <div class="w-3 h-3 rounded-full bg-secondary/60"></div>
+        <span class="ml-3 text-xs text-on-surface-variant font-mono">terminal</span>
+      </div>
+      <div class="p-5 md:p-6 font-mono text-sm leading-relaxed space-y-1">
+        <div class="text-on-surface-variant terminal-line">pip install websockets</div>
+        <div class="text-on-surface-variant terminal-line">python3 neo-browser.py</div>
+        <div class="text-on-surface-variant/70">[neo] NeoBrowser V3 started — 19 tools, Ghost Chrome headless</div>
+        <div class="text-on-surface-variant/70">[neo] Session sync: 5332 cookies, Local Storage, IndexedDB</div>
+        <div class="text-secondary">[neo] Ghost Chrome ready (port=52167)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Stats -->
+<section class="py-20 px-6">
+  <div class="max-w-5xl mx-auto grid grid-cols-2 md:grid-cols-4 gap-6 md:gap-8">
+    <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
+      <div class="text-4xl md:text-5xl font-headline font-bold text-secondary">0.37s</div>
+      <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Promedio por operacion</div>
+    </div>
+    <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
+      <div class="text-4xl md:text-5xl font-headline font-bold text-primary">19</div>
+      <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Herramientas MCP listas</div>
+    </div>
+    <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
+      <div class="text-4xl md:text-5xl font-headline font-bold text-tertiary">1.6s</div>
+      <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Tiempo de arranque</div>
+    </div>
+    <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
+      <div class="text-4xl md:text-5xl font-headline font-bold text-on-surface">1500</div>
+      <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Lineas de Python</div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section id="features" class="py-24 md:py-32 px-6 max-w-7xl mx-auto">
+  <div class="mb-16">
+    <span class="font-label text-secondary uppercase tracking-[0.25em] text-sm font-semibold">Capacidades</span>
+    <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">Que hace NeoBrowser</h2>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-12 gap-5">
+    <!-- Large: Ghost Chrome -->
+    <div class="md:col-span-8 group relative overflow-hidden rounded-2xl bg-surface-high/40 border border-white/5 p-8 md:p-10 neon-glow-primary transition-all duration-500 hover:scale-[1.005] refraction-border">
+      <span class="material-symbols-outlined text-primary text-4xl mb-5 block">dark_mode</span>
+      <h3 class="text-2xl md:text-3xl font-headline font-bold mb-4">Chrome real, cero configuracion</h3>
+      <p class="text-on-surface-variant text-lg max-w-lg leading-relaxed">Se lanza un Chrome headless por proceso MCP con tus cookies y localStorage ya sincronizados. Los sitios donde tienes sesion simplemente funcionan.</p>
+      <div class="mt-8 flex items-center gap-3 px-4 py-3 rounded-xl bg-background/50 border border-white/5 max-w-sm">
+        <div class="w-9 h-9 rounded-lg bg-primary/15 flex items-center justify-center flex-shrink-0">
+          <span class="material-symbols-outlined text-primary text-lg">bolt</span>
+        </div>
+        <span class="text-sm text-on-surface-variant">Ghost Chrome — perfil aislado, sesion real</span>
+      </div>
+    </div>
+    <!-- Small: Session Sync -->
+    <div class="md:col-span-4 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-3xl mb-5 block">sync</span>
+      <h3 class="text-xl font-headline font-bold mb-3">Tu navegador, su sesion</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">Cookies, localStorage e IndexedDB de tu Chrome real. Los dominios de Google quedan excluidos para proteger tu login.</p>
+    </div>
+    <!-- Medium: Dual Path -->
+    <div class="md:col-span-6 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-tertiary text-3xl mb-5 block">fork_right</span>
+      <h3 class="text-xl font-headline font-bold mb-3">Doble via HTTP rapida + Chrome CDP</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">Paginas estaticas en 0.11s via HTTP. SPAs y paginas Cloudflare en 1s via Chrome DevTools Protocol. Lo mejor de ambos mundos.</p>
+    </div>
+    <!-- Medium: 19 Tools -->
+    <div class="md:col-span-6 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-primary text-3xl mb-5 block">construction</span>
+      <h3 class="text-xl font-headline font-bold mb-3">Navegar, clicar, rellenar, extraer</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">browse, search, open, read, find, click, type, fill, submit, scroll, wait, login, extract, screenshot, js, gpt, grok, plugin, status.</p>
+    </div>
+    <!-- Small: AI Chat -->
+    <div class="md:col-span-4 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-3xl mb-5 block">smart_toy</span>
+      <h3 class="text-xl font-headline font-bold mb-3">Habla con ChatGPT y Grok</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">Pestanas persistentes dedicadas. Envia mensajes, lee respuestas, comprueba el estado del streaming, obtiene historial de conversacion.</p>
+    </div>
+    <!-- Large: Single File -->
+    <div class="md:col-span-8 group relative overflow-hidden rounded-2xl bg-surface-high/40 border border-white/5 p-8 md:p-10 neon-glow-secondary transition-all duration-500 hover:scale-[1.005] refraction-border">
+      <span class="material-symbols-outlined text-secondary text-4xl mb-5 block">draft</span>
+      <h3 class="text-2xl md:text-3xl font-headline font-bold mb-4">Un archivo. Una dependencia.</h3>
+      <p class="text-on-surface-variant text-lg max-w-lg leading-relaxed">neo-browser.py — 1500 lineas de Python. Solo necesita el paquete websockets. Sin Selenium, sin Playwright, sin chromedriver.</p>
+    </div>
+  </div>
+</section>
+
+<!-- How It Works -->
+<section id="how-it-works" class="py-24 md:py-32 px-6">
+  <div class="max-w-4xl mx-auto">
+    <div class="mb-16 text-center">
+      <span class="font-label text-primary uppercase tracking-[0.25em] text-sm font-semibold">Arquitectura</span>
+      <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">Tres capas. Sin atajos.</h2>
+    </div>
+    <div class="space-y-4">
+      <!-- HTTP Layer -->
+      <div class="glass-panel rounded-2xl border border-white/5 p-8 refraction-border neon-glow-secondary transition-all hover:scale-[1.005]">
+        <div class="flex items-start gap-5">
+          <div class="w-12 h-12 rounded-xl bg-secondary/10 flex items-center justify-center flex-shrink-0">
+            <span class="material-symbols-outlined text-secondary text-2xl">wifi</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h3 class="text-xl font-headline font-bold">Capa HTTP</h3>
+              <span class="text-xs font-label px-2 py-0.5 rounded bg-secondary/10 text-secondary uppercase tracking-wider">urllib</span>
+            </div>
+            <p class="text-on-surface-variant leading-relaxed">Via rapida para paginas estaticas. Busqueda en DuckDuckGo, lecturas simples de paginas. Sin Chrome.</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-center">
+        <span class="material-symbols-outlined text-on-surface-variant/30 text-2xl">arrow_downward</span>
+      </div>
+      <!-- Ghost Chrome Layer -->
+      <div class="glass-panel rounded-2xl border border-white/5 p-8 refraction-border neon-glow-primary transition-all hover:scale-[1.005]">
+        <div class="flex items-start gap-5">
+          <div class="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center flex-shrink-0">
+            <span class="material-symbols-outlined text-primary text-2xl">dark_mode</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h3 class="text-xl font-headline font-bold">Ghost Chrome</h3>
+              <span class="text-xs font-label px-2 py-0.5 rounded bg-primary/10 text-primary uppercase tracking-wider">CDP</span>
+            </div>
+            <p class="text-on-surface-variant leading-relaxed">Chrome headless con perfil aislado. Sincronizacion de cookies desde Chrome real. Aislamiento por proceso.</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-center">
+        <span class="material-symbols-outlined text-on-surface-variant/30 text-2xl">arrow_downward</span>
+      </div>
+      <!-- CDP Protocol Layer -->
+      <div class="glass-panel rounded-2xl border border-white/5 p-8 refraction-border neon-glow-tertiary transition-all hover:scale-[1.005]">
+        <div class="flex items-start gap-5">
+          <div class="w-12 h-12 rounded-xl bg-tertiary/10 flex items-center justify-center flex-shrink-0">
+            <span class="material-symbols-outlined text-tertiary text-2xl">code</span>
+          </div>
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <h3 class="text-xl font-headline font-bold">Protocolo CDP</h3>
+              <span class="text-xs font-label px-2 py-0.5 rounded bg-tertiary/10 text-tertiary uppercase tracking-wider">WebSocket</span>
+            </div>
+            <p class="text-on-surface-variant leading-relaxed">Chrome DevTools Protocol directo. Sin Selenium, sin chromedriver. Comandos WebSocket en bruto.</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-center">
+        <span class="material-symbols-outlined text-on-surface-variant/30 text-2xl">arrow_downward</span>
+      </div>
+      <!-- Output -->
+      <div class="text-center py-4">
+        <div class="inline-flex items-center gap-3 px-6 py-3 rounded-full bg-surface-high border border-white/5 refraction-border">
+          <span class="material-symbols-outlined text-secondary">output</span>
+          <span class="font-headline font-semibold">Salida estructurada</span>
+          <span class="material-symbols-outlined text-on-surface-variant/50">arrow_forward</span>
+          <span class="font-headline font-semibold text-primary">Tu agente IA</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- For Developers -->
+<section id="developers" class="py-24 md:py-32 px-6 max-w-7xl mx-auto">
+  <div class="mb-16">
+    <span class="font-label text-tertiary uppercase tracking-[0.25em] text-sm font-semibold">Integracion</span>
+    <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">Conectar y listo</h2>
+  </div>
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-16">
+    <!-- MCP Config -->
+    <div class="rounded-2xl glass-panel border border-white/5 overflow-hidden refraction-border">
+      <div class="flex items-center gap-2 px-5 py-3 border-b border-white/5">
+        <span class="material-symbols-outlined text-on-surface-variant text-sm">data_object</span>
+        <span class="text-xs text-on-surface-variant font-mono">~/.claude/mcp.json</span>
+      </div>
+      <div class="p-5 md:p-6 font-mono text-sm leading-relaxed">
+        <div class="text-on-surface-variant/60">{</div>
+        <div class="pl-4"><span class="text-secondary">"neo-browser"</span>: {</div>
+        <div class="pl-8"><span class="text-primary">"command"</span>: <span class="text-on-surface">"python3"</span>,</div>
+        <div class="pl-8"><span class="text-primary">"args"</span>: [<span class="text-on-surface">"path/to/neo-browser.py"</span>]</div>
+        <div class="pl-4">}</div>
+        <div class="text-on-surface-variant/60">}</div>
+      </div>
+    </div>
+    <!-- Description -->
+    <div class="flex flex-col justify-center">
+      <p class="text-lg text-on-surface-variant leading-relaxed mb-6">Funciona con Claude Code, Cursor, Windsurf, y cualquier herramienta IA compatible con MCP.</p>
+      <p class="text-on-surface-variant leading-relaxed">Agrega la configuracion, reinicia tu editor. Tu IA ya puede navegar la web, rellenar formularios, extraer datos y automatizar flujos en cualquier sitio.</p>
+    </div>
+  </div>
+  <!-- Tool categories -->
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-primary text-2xl mt-0.5">explore</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Navegar</h4>
+        <p class="text-sm text-on-surface-variant">Abrir paginas, click, escribir, scroll</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-2xl mt-0.5">analytics</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Extraer</h4>
+        <p class="text-sm text-on-surface-variant">Leer contenido, formularios, tablas, enlaces</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-tertiary text-2xl mt-0.5">wifi</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Red</h4>
+        <p class="text-sm text-on-surface-variant">Peticiones HTTP, interceptar, mockear</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-primary text-2xl mt-0.5">key</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Sesiones</h4>
+        <p class="text-sm text-on-surface-variant">Cookies, autenticacion, persistencia de estado</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-2xl mt-0.5">smart_toy</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">Automatizar</h4>
+        <p class="text-sm text-on-surface-variant">Pipelines, flujos, procesos multi-paso</p>
+      </div>
+    </div>
+    <div class="flex items-start gap-4 p-5 rounded-xl bg-surface-low/50 border border-white/5 refraction-border">
+      <span class="material-symbols-outlined text-tertiary text-2xl mt-0.5">api</span>
+      <div>
+        <h4 class="font-headline font-semibold mb-1">API directa</h4>
+        <p class="text-sm text-on-surface-variant">HTTP TLS de Chrome sin overhead del navegador</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Benchmarks -->
+<section id="benchmarks" class="py-24 md:py-32 px-6">
+  <div class="max-w-4xl mx-auto">
+    <div class="mb-16 text-center">
+      <span class="font-label text-secondary uppercase tracking-[0.25em] text-sm font-semibold">Rendimiento</span>
+      <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">No nos creas. Compruebalo.</h2>
+    </div>
+    <div class="rounded-2xl glass-panel border border-white/5 overflow-hidden refraction-border neon-glow-secondary">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left">
+          <thead>
+            <tr class="border-b border-white/5">
+              <th class="px-6 py-4 font-headline font-semibold text-on-surface-variant text-sm"></th>
+              <th class="px-6 py-4 font-headline font-semibold text-secondary text-sm">NeoBrowser</th>
+              <th class="px-6 py-4 font-headline font-semibold text-on-surface-variant text-sm">Playwright</th>
+            </tr>
+          </thead>
+          <tbody class="text-sm">
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Browse (HTTP)</td>
+              <td class="px-6 py-4 text-secondary font-semibold">0.11–0.77s</td>
+              <td class="px-6 py-4 text-on-surface-variant">N/A (sin via HTTP)</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Open (Chrome)</td>
+              <td class="px-6 py-4 text-secondary font-semibold">0.48–1.32s</td>
+              <td class="px-6 py-4 text-on-surface-variant">2–5s</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Arranque en frio</td>
+              <td class="px-6 py-4 text-secondary font-semibold">1.6s</td>
+              <td class="px-6 py-4 text-on-surface-variant">3–5s</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Rellenar formulario</td>
+              <td class="px-6 py-4 text-secondary font-semibold">&lt;0.01s</td>
+              <td class="px-6 py-4 text-on-surface-variant">0.5–1s</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Sync de sesion</td>
+              <td class="px-6 py-4 text-secondary font-semibold">Automatico</td>
+              <td class="px-6 py-4 text-on-surface-variant">Manual</td>
+            </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Dependencias</td>
+              <td class="px-6 py-4 text-secondary font-semibold">1 (websockets)</td>
+              <td class="px-6 py-4 text-on-surface-variant">50+</td>
+            </tr>
+            <tr>
+              <td class="px-6 py-4 text-on-surface-variant">Tamano del archivo</td>
+              <td class="px-6 py-4 text-secondary font-semibold">1 archivo, 1500 LOC</td>
+              <td class="px-6 py-4 text-on-surface-variant">Framework + drivers</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="px-6 py-4 border-t border-white/5">
+        <p class="text-xs text-on-surface-variant/60">NeoBrowser usa Chrome real via CDP. La comparacion con Playwright se basa en una instalacion tipica de Playwright + Chromium.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Get Started -->
+<section id="get-started" class="py-24 md:py-32 px-6">
+  <div class="max-w-3xl mx-auto">
+    <div class="mb-12 text-center">
+      <span class="font-label text-primary uppercase tracking-[0.25em] text-sm font-semibold">Inicio rapido</span>
+      <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 tracking-tight">Funcionando en 60 segundos.</h2>
+    </div>
+    <div class="rounded-2xl glass-panel border border-white/5 overflow-hidden refraction-border neon-glow-primary">
+      <div class="flex items-center gap-2 px-5 py-3 border-b border-white/5">
+        <div class="w-3 h-3 rounded-full bg-tertiary/60"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500/60"></div>
+        <div class="w-3 h-3 rounded-full bg-secondary/60"></div>
+        <span class="ml-3 text-xs text-on-surface-variant font-mono">terminal</span>
+      </div>
+      <div class="p-5 md:p-6 font-mono text-sm leading-loose space-y-1">
+        <div class="text-on-surface-variant/50"># Instalar</div>
+        <div class="text-on-surface-variant terminal-line">pip install websockets</div>
+        <div class="text-on-surface-variant terminal-line">git clone https://github.com/pitiflautico/neobrowser.git</div>
+        <div class="h-3"></div>
+        <div class="text-on-surface-variant/50"># Agregar a Claude Code</div>
+        <div class="text-on-surface-variant terminal-line">cat ~/.claude/mcp.json</div>
+        <div class="text-on-surface-variant/70">{"neo-browser": {"command": "python3", "args": ["path/to/neo-browser.py"]}}</div>
+        <div class="h-3"></div>
+        <div class="text-on-surface-variant/50"># O ejecutar directamente</div>
+        <div class="text-on-surface-variant terminal-line">python3 neo-browser.py</div>
+      </div>
+    </div>
+    <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mt-8">
+      <a href="#developers" class="w-full sm:w-auto px-8 py-3 bg-surface-high border border-white/5 rounded-xl font-semibold text-on-surface hover:bg-surface-highest transition-all refraction-border text-center">
+        <span class="material-symbols-outlined text-sm align-middle mr-1">description</span> Documentacion
+      </a>
+      <a href="https://github.com/pitiflautico/neobrowser" class="w-full sm:w-auto px-8 py-3 bg-surface-high border border-white/5 rounded-xl font-semibold text-on-surface hover:bg-surface-highest transition-all refraction-border text-center">
+        <span class="material-symbols-outlined text-sm align-middle mr-1">code</span> Repositorio GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- Open Source -->
+<section class="py-24 md:py-32 px-6">
+  <div class="max-w-4xl mx-auto text-center">
+    <span class="font-label text-secondary uppercase tracking-[0.25em] text-sm font-semibold">Comunidad</span>
+    <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 mb-6 tracking-tight">Construido en abierto. Licencia MIT.</h2>
+    <div class="flex flex-wrap items-center justify-center gap-4 mb-8">
+      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">1500 lineas</span>
+      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">19 herramientas</span>
+      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">1 dependencia</span>
+    </div>
+    <p class="text-lg text-on-surface-variant max-w-2xl mx-auto mb-12 leading-relaxed">
+      Construido por Dani Perez y Claude Opus — un humano y una IA creando un navegador para agentes de IA.
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-6">
+      <a href="https://github.com/pitiflautico/neobrowser" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-primary/30 transition-all refraction-border">
+        <span class="material-symbols-outlined text-primary">code</span>
+        <span class="font-headline font-semibold">GitHub</span>
+      </a>
+      <a href="#" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-secondary/30 transition-all refraction-border">
+        <span class="material-symbols-outlined text-secondary">forum</span>
+        <span class="font-headline font-semibold">Discord</span>
+      </a>
+      <a href="#" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-tertiary/30 transition-all refraction-border">
+        <span class="material-symbols-outlined text-tertiary">group</span>
+        <span class="font-headline font-semibold">Contribuir</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- Footer -->
+<footer class="border-t border-white/5 py-12 px-6">
+  <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+    <div class="flex items-center gap-2">
+      <span class="material-symbols-outlined text-primary text-sm" style="font-variation-settings: 'FILL' 1;">public</span>
+      <span class="font-headline font-bold text-on-surface-variant tracking-tighter">NeoBrowser</span>
+      <span class="text-on-surface-variant/50 text-sm ml-1">Servidor MCP de Navegador para IA</span>
+    </div>
+    <div class="flex flex-wrap justify-center gap-6">
+      <a class="text-xs text-on-surface-variant hover:text-on-surface transition-colors" href="#developers">Docs</a>
+      <a class="text-xs text-on-surface-variant hover:text-on-surface transition-colors" href="https://github.com/pitiflautico/neobrowser">GitHub</a>
+      <a class="text-xs text-on-surface-variant hover:text-on-surface transition-colors" href="#">Licencia MIT</a>
+    </div>
+    <p class="text-xs text-on-surface-variant/50">Hecho con Python, Chrome y determinacion.</p>
+  </div>
+</footer>
+
+</body>
+</html>
