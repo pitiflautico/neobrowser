@@ -131,6 +131,63 @@ def error_response(code, message, url='', suggestion=''):
     log(f'ERROR [{code}]: {message}')
     return json.dumps(r)
 
+# ── Page cache (LRU + TTL) ──
+
+class PageCache:
+    """Simple LRU cache with TTL. Thread-safe."""
+    def __init__(self, max_items=50, ttl_s=900):  # 15min TTL, 50 entries
+        self._cache = {}  # url → (timestamp, content)
+        self._max = max_items
+        self._ttl = ttl_s
+        self._lock = threading.Lock()
+
+    def get(self, url):
+        with self._lock:
+            if url in self._cache:
+                ts, content = self._cache[url]
+                if time.time() - ts < self._ttl:
+                    log(f'Cache hit: {url[:60]}')
+                    return content
+                del self._cache[url]
+        return None
+
+    def put(self, url, content):
+        with self._lock:
+            # Evict oldest if full
+            if len(self._cache) >= self._max:
+                oldest = min(self._cache, key=lambda k: self._cache[k][0])
+                del self._cache[oldest]
+            self._cache[url] = (time.time(), content)
+
+_page_cache = PageCache()
+
+# ── Sequential execution for browser ops ──
+
+_browser_lock = threading.Lock()
+
+def sequential_browser(fn):
+    """Decorator: serialize browser-mutating operations."""
+    def wrapper(*args, **kwargs):
+        with _browser_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+# ── Large result persistence ──
+
+MAX_RESULT_CHARS = 100000
+
+def persist_if_large(text, tag='result'):
+    """If text exceeds MAX_RESULT_CHARS, save to disk and return path + preview."""
+    if not text or len(text) <= MAX_RESULT_CHARS:
+        return text
+    ts = time.strftime('%Y%m%d-%H%M%S')
+    p = RESPONSE_DIR / f'{tag}-{ts}.txt'
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+    preview = text[:2000]
+    log(f'Result too large ({len(text)} chars), saved to {p}')
+    return f'{preview}\n\n... [{len(text)} chars total, saved to {p}]\nUse Read tool with offset/limit to read portions.'
+
 NEOMODE_JS = '''
 // ── Stealth: screen dimensions ──
 Object.defineProperty(screen,'width',{get:()=>1920});
@@ -802,10 +859,14 @@ def tool_browse(args):
     if not url: return 'url required'
     if not validate_url(url):
         return error_response('url_blocked', f'URL blocked by security policy: {url}', suggestion='Only public HTTP/HTTPS URLs are allowed')
+    cached = _page_cache.get(url)
+    if cached: return cached
     out, ms = fast('see', url)
     if len(out) > 200:
         log(f'V1 browse: {ms}ms')
-        return sanitize_unicode(process_content(out))
+        result = sanitize_unicode(process_content(out))
+        _page_cache.put(url, result)
+        return result
     # Try raw HTTP before expensive Chrome fallback
     try:
         req = urllib.request.Request(url, headers={'User-Agent': CHROME_UA})
@@ -816,11 +877,15 @@ def tool_browse(args):
             text = re.sub(r'\s+', ' ', text).strip()
             if len(text) > 100:
                 log(f'HTTP fallback: {len(text)} chars')
-                return sanitize_unicode(process_content(text[:5000]))
+                result = sanitize_unicode(process_content(text[:5000]))
+                _page_cache.put(url, result)
+                return result
     except: pass
     log('HTTP fallback empty, Chrome fallback...')
     d = chrome_go(url)
-    return sanitize_unicode(process_content(d.sanitize()))
+    result = sanitize_unicode(process_content(d.sanitize()))
+    _page_cache.put(url, result)
+    return result
 
 def tool_search(args):
     q = args.get('query', '')
@@ -845,6 +910,7 @@ def tool_search(args):
     except Exception as e:
         return f'Search error: {e}'
 
+@sequential_browser
 def tool_open(args):
     url = args.get('url', '')
     if not url: return 'url required'
@@ -956,9 +1022,9 @@ def tool_read(args):
             if (!els.length) return 'No matches for selector';
             return Array.from(els).map(el => el.innerText.trim()).filter(t => t.length > 0).join('\\n---\\n');
         ''')
-        return save(text or f'No content for: {selector}', 'read')
+        return persist_if_large(save(text or f'No content for: {selector}', 'read'), 'read')
 
-    return d.sanitize()
+    return persist_if_large(d.sanitize(), 'read')
 
 def tool_find(args):
     text = args.get('text', args.get('selector', ''))
@@ -983,6 +1049,7 @@ def tool_find(args):
         }})));
     ''') or '[]'
 
+@sequential_browser
 def tool_click(args):
     text = args.get('text', args.get('selector', ''))
     if not text: return 'text or selector required'
@@ -996,6 +1063,7 @@ def tool_click(args):
     if clicked: time.sleep(0.5)  # Brief wait for click handler
     return f'Clicked "{text}"\n\n{d.sanitize()}' if clicked else f'Not found: "{text}"'
 
+@sequential_browser
 def tool_type(args):
     """Smart type — uses __neoFind detector."""
     sel = args.get('selector', args.get('text', ''))
@@ -1022,6 +1090,7 @@ def tool_type(args):
     d.key(val)
     return json.dumps({'typed': True, 'value': val, 'field': info})
 
+@sequential_browser
 def tool_fill(args):
     """Smart fill — handles inputs, textareas, selects, checkboxes, radios.
     Finds fields by: name, id, placeholder, label text, aria-label, type."""
@@ -1115,6 +1184,7 @@ def tool_fill(args):
         return JSON.stringify({{filled, errors}});
     ''')
 
+@sequential_browser
 def tool_submit(args):
     d = chrome()
     r = d.js('''
@@ -1129,6 +1199,7 @@ def tool_submit(args):
     time.sleep(1)
     return d.sanitize()
 
+@sequential_browser
 def tool_scroll(args):
     d = chrome()
     dy = int(args.get('amount', 500)) * (1 if args.get('direction', 'down') == 'down' else -1)
@@ -1152,6 +1223,7 @@ def tool_wait(args):
         time.sleep(0.5)
     return f'Not found after {int(time.time()-start)}s: "{sel}"'
 
+@sequential_browser
 def tool_login(args):
     url, email, pw = args.get('url', ''), args.get('email', ''), args.get('password', '')
     if not all([url, email, pw]): return 'url, email, password required'
@@ -1171,8 +1243,8 @@ def tool_extract(args):
     t = args.get('type', 'links')
     d = chrome()
     if t == 'table':
-        return d.js(SMART_EXTRACTORS['table'])  # Reuse smart extractor, no duplication
-    return d.js('''
+        return persist_if_large(d.js(SMART_EXTRACTORS['table']) or '', 'extract')  # Reuse smart extractor, no duplication
+    result = d.js('''
         const seen=new Set();
         const links=Array.from(document.querySelectorAll("a[href]")).filter(a=>{
             const t=a.innerText.trim();
@@ -1181,6 +1253,7 @@ def tool_extract(args):
         }).slice(0,30).map(a=>a.innerText.trim()+" → "+a.href).join("\\n");
         return links || "No links found";
     ''') or 'No links found'
+    return persist_if_large(result, 'extract')
 
 # ── Chat ──
 
