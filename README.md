@@ -1,34 +1,72 @@
 # NeoBrowser
 
-A real browser for AI agents. Single Python file, no Selenium, no Playwright — direct Chrome DevTools Protocol over WebSocket.
+MCP server that gives AI agents a real browser.
+One Python file. One dependency. Your session already loaded.
 
-NeoBrowser is an MCP (Model Context Protocol) server. It gives Claude, ChatGPT, or any MCP-compatible agent a persistent headless Chrome instance with your real browser session already loaded.
+---
+
+## Install
+
+```bash
+npx neobrowser
+```
+
+Requires Python 3.10+ and Chrome.
+
+Run `npx neobrowser doctor` to check everything is set up.
+
+---
+
+## Configure
+
+**Claude Code** (`~/.claude/mcp.json`):
+```json
+{
+  "neo-browser": {
+    "command": "npx",
+    "args": ["-y", "neobrowser"]
+  }
+}
+```
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "neo-browser": {
+      "command": "npx",
+      "args": ["-y", "neobrowser"]
+    }
+  }
+}
+```
 
 ---
 
 ## What it does
 
-When you connect NeoBrowser to your AI client:
+**Example 1: Search and read**
+```
+You: search for "rust async runtime" and open the first result
+→ neo-browser calls search("rust async runtime") → 5 results in 0.9s
+→ then open(first_url) → page content in 1.2s
+```
 
-- A headless Chrome starts in the background, isolated per MCP process
-- Your cookies and localStorage sync from your real Chrome profile (Google domains excluded to avoid invalidating your login)
-- The agent gets 19 tools: navigate, click, fill, extract, screenshot, search, and more
-- Session persists across the entire conversation — no re-login per operation
+**Example 2: Fill a form**
+```
+You: go to httpbin.org/forms/post and fill the form with test data
+→ neo-browser calls open(url) → page loaded in 0.9s
+→ then fill(5 fields) → filled in <0.01s
+→ then submit() → form submitted
+```
 
----
-
-## Architecture
-
-| Component | Detail |
-|---|---|
-| Entry point | `tools/v3/neo-browser.py` (~1500 lines) |
-| Transport | MCP over stdin/stdout JSON-RPC |
-| Chrome control | Raw CDP via WebSocket (`websockets` only) |
-| Session isolation | `~/.neorender/ghost-{pid}/` per process |
-| Cookie sync | SQLite read from real Chrome (WAL-safe, read-only) |
-| Dependencies | Python 3.10+, Chrome, `websockets` |
-
-No Selenium. No Playwright. No chromedriver. One file, one dependency.
+**Example 3: Ask ChatGPT**
+```
+You: ask ChatGPT what it thinks about MCP servers
+→ neo-browser opens dedicated ChatGPT tab (first time: ~10s)
+→ types message, sends, waits for response
+→ returns ChatGPT's answer via conversation API
+```
 
 ---
 
@@ -36,17 +74,17 @@ No Selenium. No Playwright. No chromedriver. One file, one dependency.
 
 ### HTTP — no Chrome required
 
-| Tool | Description | Speed |
-|---|---|---|
-| `browse` | Fast HTTP fetch + smart parse | ~0.1–0.8s |
-| `search` | DuckDuckGo web search | ~1s |
+| Tool | Description |
+|---|---|
+| `browse` | Fast HTTP fetch + smart parse (~0.1–0.8s) |
+| `search` | DuckDuckGo web search (~1s) |
 
 ### Chrome browsing
 
 | Tool | Description |
 |---|---|
 | `open` | Navigate to URL in Ghost Chrome |
-| `read` | Extract content: markdown, accessibility tree, tweets, posts, comments, products, tables |
+| `read` | Extract content: markdown, a11y tree, tweets, posts, tables, products |
 | `find` | Find element by text, CSS, XPath, or ARIA role |
 | `click` | Click by text or CSS selector |
 | `type` | Type in input — finds field by label, placeholder, name, or aria-label |
@@ -75,113 +113,96 @@ No Selenium. No Playwright. No chromedriver. One file, one dependency.
 
 ---
 
+## How it works
+
+- **Ghost Chrome**: headless Chrome per MCP process, isolated profile, deleted on exit
+- **Session sync**: cookies + localStorage + IndexedDB copied from your real Chrome at startup
+- **Dual path**: `browse` uses HTTP for static pages, `open` uses Chrome CDP for SPAs and auth-gated pages
+- No Selenium, no Playwright, no chromedriver — raw CDP over WebSocket, one `websockets` dependency
+
+---
+
+## Session & Security
+
+**What gets copied at startup:**
+- Cookies from your Chrome profile (SQLite, read-only, WAL-safe)
+- localStorage entries
+- IndexedDB databases
+- SessionStorage
+
+**What's excluded by default:**
+- Google domains: `.google.com`, `.googleapis.com`, `.youtube.com`, `.gmail.com`
+- Reason: Google detects duplicate sessions and logs out your real browser
+
+**Which profile:**
+- Default: the profile set in the `PROFILE` constant in `neo-browser.py` (currently `Profile 24`)
+- Logged on startup: `[neo] Session sync from Profile 24: 5332 cookies kept, 398 Google excluded`
+
+**What's NOT shared:**
+- Passwords — never copied
+- Autofill data — never copied
+- Browsing history — never copied
+- The ghost profile is deleted on exit
+
+**Control:**
+- To change profile: set `PROFILE` constant in `neo-browser.py`
+- To exclude more domains: add to `EXCLUDED_DOMAINS` tuple
+- To disable session sync: remove the real Chrome profile path
+
+---
+
 ## Benchmarks
 
-Measured wall-clock on macOS, Chrome headless. All overhead included.
+All times wall-clock, macOS, measured with `benchmark.py`.
 
 ```
-21 tests, 21 passed — 2026-03-30
-
-Cold start:      1.6s   (Chrome launch + cookie sync, one-time per session)
-19 operations:   7.1s   (0.37s/op average)
-ChatGPT:        33.0s   (mostly LLM server response time)
+Cold start:      1.6s    (Chrome launch + cookie sync, one-time per session)
+19 operations:   7.1s    (0.37s avg)
+ChatGPT:        33.0s    (mostly LLM server response time)
 ```
 
 Per operation, warm:
 
 ```
-browse (HTTP)        0.44s avg    ~1000 tokens/page
-open (Chrome)        1.00s avg    ~1000 tokens/page
-read                 0.10s avg    ~1025 tokens/page
-fill / find / click  <0.01s       instant
+browse (HTTP)        0.11–0.77s
+open (Chrome)        0.48–1.32s
+read                 0.10s avg
+fill / find / click  <0.01s
 screenshot           0.12s
 search (DDG)         0.94s
 ```
-
-`browse` vs `open` on the same URL:
-
-```
-browse example.com    0.11s     93 tokens   (HTTP fast path)
-open   example.com    0.48s     32 tokens   (Chrome CDP)
-browse hacker news    0.77s   1073 tokens   (HTTP, raw content)
-open   hacker news    1.32s   1000 tokens   (Chrome, structured output)
-```
-
-Notes:
-- Cold start is one-time per MCP session
-- ChatGPT time is ~95% server response, not NeoBrowser overhead
-- `open` times include readyState polling — no fixed sleeps
-- Use `browse` for static content, `open` for SPAs and Cloudflare-protected pages
-
----
-
-## Installation
-
-```bash
-# Install from npm
-npx neobrowser
-
-# Or install globally
-npm install -g neobrowser
-```
-
-Add to your MCP config:
-
-**Claude Code** (`~/.claude/mcp.json`):
-```json
-{
-  "neo-browser": {
-    "command": "npx",
-    "args": ["-y", "neobrowser"]
-  }
-}
-```
-
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-```json
-{
-  "mcpServers": {
-    "neo-browser": {
-      "command": "npx",
-      "args": ["-y", "neobrowser"]
-    }
-  }
-}
-```
-
-**Manual install (alternative):** Clone the repo and run `python3 tools/v3/neo-browser.py` directly.
-
-Requirements: Node.js, Google Chrome installed.
-
----
-
-## Session sync
-
-On startup, NeoBrowser reads cookies from your real Chrome profile (SQLite, read-only, WAL-safe) and injects them into the Ghost Chrome instance. This means sites where you are already logged in will also be logged in for the agent — without you doing anything.
-
-Google domains are excluded by default to avoid invalidating active Google sessions.
-
----
-
-## YAML Plugins
-
-Reusable automation pipelines defined in YAML. The `plugin` tool runs them by name.
-
-Example: a pipeline that logs into a site, navigates to a dashboard, and extracts a table can be saved once and reused across sessions.
 
 ---
 
 ## Limitations
 
-- **ChatGPT / Grok dedicated tabs**: `type` (insertText via CDP) does not work in these tabs due to how the editors handle input. The `gpt` and `grok` tools use a different injection method that does work.
-- **ChatGPT response times**: highly variable (5–60s+) depending on server load. The 33s benchmark is typical but not guaranteed.
-- **Cookie sync scope**: only cookies that Chrome has stored in SQLite at startup time are synced. Cookies set after startup in your real browser are not reflected.
-- **Single Chrome instance per MCP process**: running multiple heavy parallel operations on the same tab will serialize. Multiple MCP processes each get their own isolated Chrome.
-- **Cloudflare and anti-bot**: NeoBrowser uses a real Chrome UA with automation flags disabled. Most Cloudflare challenges pass. Some enterprise WAFs may still block.
-- **macOS tested**: developed and benchmarked on macOS. Linux should work. Windows not tested.
+- ChatGPT response times vary (5–60s+) — server dependent, not NeoBrowser overhead
+- Cookie sync is one-time at startup — cookies set later in your real Chrome are not reflected
+- CDP `insertText` doesn't work in dedicated chat tabs (uses DOM fallback instead)
+- macOS tested, Linux should work, Windows not tested
+- Some enterprise WAFs may still block despite real Chrome UA
+
+---
+
+## CLI
+
+```
+neo-browser.py              Start MCP server
+neo-browser.py --help       Show help
+neo-browser.py --version    Show version
+neo-browser.py doctor       Check dependencies
+```
 
 ---
 
 ## License
 
 MIT
+
+---
+
+## Links
+
+- npm: https://www.npmjs.com/package/neobrowser
+- GitHub: https://github.com/pitiflautico/neobrowser
+- Landing: https://pitiflautico.github.io/neobrowser

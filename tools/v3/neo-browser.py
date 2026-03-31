@@ -1395,7 +1395,13 @@ def cleanup():
     log('Cleanup')
 
 atexit.register(cleanup)
-signal.signal(signal.SIGTERM, lambda *a: (cleanup(), sys.exit(0)))
+
+def _signal_handler(*a):
+    cleanup()
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
 
 # ── MCP Tools ──
 
@@ -1465,14 +1471,79 @@ def handle(req):
     elif id is not None:
         respond_err(id, -32601, f'Unknown method: {method}')
 
+HELP_TEXT = """\
+NeoBrowser v3.1.0 — AI Browser MCP Server
+
+Usage:
+  neo-browser.py              Start MCP server (stdin/stdout JSON-RPC)
+  neo-browser.py --help       Show this help
+  neo-browser.py --version    Show version
+  neo-browser.py doctor       Check dependencies
+
+MCP Config (Claude Code):
+  {"neo-browser": {"command": "npx", "args": ["-y", "neobrowser"]}}
+
+Requires: Python 3.10+, Google Chrome, websockets (pip)
+Docs: https://github.com/pitiflautico/neobrowser
+"""
+
+def run_doctor():
+    import importlib
+    ok = '\033[32mOK\033[0m'
+    fail = '\033[31mFAIL\033[0m'
+
+    # Python version
+    vi = sys.version_info
+    py_ok = vi >= (3, 10)
+    print(f"  Python {vi.major}.{vi.minor}.{vi.micro}        {ok if py_ok else fail + ' (need 3.10+)'}")
+
+    # websockets
+    try:
+        importlib.import_module('websockets')
+        print(f"  websockets              {ok}")
+    except ImportError:
+        print(f"  websockets              {fail} (pip install websockets)")
+
+    # Chrome binary
+    chrome_found = Path(CHROME_BIN).exists()
+    print(f"  Chrome binary           {ok if chrome_found else fail + f' (not found: {CHROME_BIN})'}")
+
+    # Ghost dir writable
+    ghost_dir = Path.home() / '.neorender'
+    try:
+        ghost_dir.mkdir(parents=True, exist_ok=True)
+        test_file = ghost_dir / '.write_test'
+        test_file.touch()
+        test_file.unlink()
+        print(f"  ~/.neorender/ writable  {ok}")
+    except Exception as e:
+        print(f"  ~/.neorender/ writable  {fail} ({e})")
+
 def main():
+    args = sys.argv[1:]
+    if args and args[0] in ('--help', '-h'):
+        print(HELP_TEXT)
+        sys.exit(0)
+    if args and args[0] in ('--version', '-v'):
+        print('neobrowser 3.1.0')
+        sys.exit(0)
+    if args and args[0] == 'doctor':
+        print('NeoBrowser doctor\n')
+        run_doctor()
+        sys.exit(0)
+
     log(f'NeoBrowser V3 started — {len(TOOLS)} tools, Ghost Chrome headless, CF bypass')
-    for line in sys.stdin:
-        line = line.strip()
-        if not line: continue
-        try: handle(json.loads(line))
-        except json.JSONDecodeError: log(f'JSON err: {line[:80]}')
-        except Exception as e: log(f'Error: {e}')
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line: continue
+            try: handle(json.loads(line))
+            except json.JSONDecodeError: log(f'JSON err: {line[:80]}')
+            except Exception as e: log(f'Error: {e}')
+    except Exception as e:
+        log(f'Fatal: {e}')
+    finally:
+        cleanup()
 
 if __name__ == '__main__':
     main()

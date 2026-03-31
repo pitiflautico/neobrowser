@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NeoBrowser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-snap-type: y mandatory;
+    }
+
+    body {
+      background: #0a0a12;
+      color: #fff;
+      font-family: 'Space Grotesk', sans-serif;
+      overflow-y: scroll;
+    }
+
+    section {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      scroll-snap-align: start;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    /* ── Section 1: #intro ── */
+    #intro .line1 {
+      font-size: clamp(1.6rem, 4vw, 3rem);
+      font-weight: 600;
+      color: #ffffff;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+      margin-bottom: 0.6em;
+    }
+
+    #intro .line2 {
+      font-size: clamp(1.6rem, 4vw, 3rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+      background: linear-gradient(90deg, #a855f7, #34d399, #ec4899);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* ── Section 2: #outro ── */
+    #outro .cmd {
+      font-family: 'Space Grotesk', monospace;
+      font-size: clamp(2rem, 5vw, 4rem);
+      font-weight: 700;
+      color: #34d399;
+      letter-spacing: -0.02em;
+      margin-bottom: 1rem;
+    }
+
+    #outro .repo {
+      font-size: clamp(0.95rem, 2vw, 1.25rem);
+      font-weight: 400;
+      color: #ffffff;
+      margin-bottom: 0.5rem;
+      opacity: 0.85;
+    }
+
+    #outro .license {
+      font-size: clamp(0.8rem, 1.5vw, 1rem);
+      font-weight: 400;
+      color: #6b7280;
+    }
+  </style>
+</head>
+<body>
+
+  <section id="intro">
+    <p class="line1">Mi IA no podia navegar la web.</p>
+    <p class="line2">Asi que le construi un navegador.</p>
+  </section>
+
+  <section id="outro">
+    <p class="cmd">npx neobrowser</p>
+    <p class="repo">github.com/pitiflautico/neobrowser</p>
+    <p class="license">Open source. MIT.</p>
+  </section>
+
+  <script>
+    // Jump to hash on load
+    const hash = window.location.hash;
+    if (hash === '#outro') {
+      document.querySelector('#outro').scrollIntoView({ behavior: 'instant' });
+    }
+
+    // Update hash as user scrolls between sections
+    const sections = document.querySelectorAll('section[id]');
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          history.replaceState(null, '', '#' + e.target.id);
+        }
+      });
+    }, { threshold: 0.6 });
+
+    sections.forEach(s => observer.observe(s));
+  </script>
+
+</body>
+</html>
