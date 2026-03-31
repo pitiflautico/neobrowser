@@ -152,8 +152,8 @@ body {
         <span class="ml-3 text-xs text-on-surface-variant font-mono">terminal</span>
       </div>
       <div class="p-5 md:p-6 font-mono text-sm leading-relaxed space-y-1">
-        <div class="text-on-surface-variant terminal-line">pip install websockets</div>
-        <div class="text-on-surface-variant terminal-line">python3 neo-browser.py</div>
+        <div class="text-on-surface-variant terminal-line">npx neobrowser</div>
+        <div class="text-on-surface-variant terminal-line">neo-browser</div>
         <div class="text-on-surface-variant/70">[neo] NeoBrowser V3 started — 19 tools, Ghost Chrome headless</div>
         <div class="text-on-surface-variant/70">[neo] Session sync: 5332 cookies, Local Storage, IndexedDB</div>
         <div class="text-secondary">[neo] Ghost Chrome ready (port=52167)</div>
@@ -464,16 +464,16 @@ body {
         <span class="ml-3 text-xs text-on-surface-variant font-mono">terminal</span>
       </div>
       <div class="p-5 md:p-6 font-mono text-sm leading-loose space-y-1">
-        <div class="text-on-surface-variant/50"># Instalar</div>
-        <div class="text-on-surface-variant terminal-line">pip install websockets</div>
-        <div class="text-on-surface-variant terminal-line">git clone https://github.com/pitiflautico/neobrowser.git</div>
+        <div class="text-on-surface-variant/50"># Instalar desde npm</div>
+        <div class="text-on-surface-variant terminal-line">npx neobrowser</div>
         <div class="h-3"></div>
-        <div class="text-on-surface-variant/50"># Agregar a Claude Code</div>
+        <div class="text-on-surface-variant/50"># O instalar globalmente</div>
+        <div class="text-on-surface-variant terminal-line">npm install -g neobrowser</div>
+        <div class="text-on-surface-variant terminal-line">neo-browser</div>
+        <div class="h-3"></div>
+        <div class="text-on-surface-variant/50"># Agregar a Claude Code / Claude Desktop</div>
         <div class="text-on-surface-variant terminal-line">cat ~/.claude/mcp.json</div>
-        <div class="text-on-surface-variant/70">{"neo-browser": {"command": "python3", "args": ["path/to/neo-browser.py"]}}</div>
-        <div class="h-3"></div>
-        <div class="text-on-surface-variant/50"># O ejecutar directamente</div>
-        <div class="text-on-surface-variant terminal-line">python3 neo-browser.py</div>
+        <div class="text-on-surface-variant/70">{"neo-browser": {"command": "npx", "args": ["-y", "neobrowser"]}}</div>
       </div>
     </div>
     <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mt-8">
@@ -482,6 +482,9 @@ body {
       </a>
       <a href="https://github.com/pitiflautico/neobrowser" class="w-full sm:w-auto px-8 py-3 bg-surface-high border border-white/5 rounded-xl font-semibold text-on-surface hover:bg-surface-highest transition-all refraction-border text-center">
         <span class="material-symbols-outlined text-sm align-middle mr-1">code</span> Repositorio GitHub
+      </a>
+      <a href="https://www.npmjs.com/package/neobrowser" class="w-full sm:w-auto px-8 py-3 bg-surface-high border border-white/5 rounded-xl font-semibold text-on-surface hover:bg-surface-highest transition-all refraction-border text-center">
+        <span class="material-symbols-outlined text-sm align-middle mr-1">inventory_2</span> Disponible en npm
       </a>
     </div>
   </div>
@@ -504,6 +507,10 @@ body {
       <a href="https://github.com/pitiflautico/neobrowser" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-primary/30 transition-all refraction-border">
         <span class="material-symbols-outlined text-primary">code</span>
         <span class="font-headline font-semibold">GitHub</span>
+      </a>
+      <a href="https://www.npmjs.com/package/neobrowser" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-secondary/30 transition-all refraction-border">
+        <span class="material-symbols-outlined text-secondary">inventory_2</span>
+        <span class="font-headline font-semibold">Disponible en npm</span>
       </a>
       <a href="#" class="group flex items-center gap-2 px-6 py-3 rounded-xl glass-panel border border-white/5 hover:border-secondary/30 transition-all refraction-border">
         <span class="material-symbols-outlined text-secondary">forum</span>

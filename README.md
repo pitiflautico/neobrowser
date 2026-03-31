@@ -118,17 +118,21 @@ Notes:
 ## Installation
 
 ```bash
-pip install websockets
+# Install from npm
+npx neobrowser
+
+# Or install globally
+npm install -g neobrowser
 ```
 
-Clone the repo, then add to your MCP config:
+Add to your MCP config:
 
 **Claude Code** (`~/.claude/mcp.json`):
 ```json
 {
   "neo-browser": {
-    "command": "python3",
-    "args": ["/path/to/neorender-v2/tools/v3/neo-browser.py"]
+    "command": "npx",
+    "args": ["-y", "neobrowser"]
   }
 }
 ```
@@ -138,14 +142,16 @@ Clone the repo, then add to your MCP config:
 {
   "mcpServers": {
     "neo-browser": {
-      "command": "python3",
-      "args": ["/path/to/neorender-v2/tools/v3/neo-browser.py"]
+      "command": "npx",
+      "args": ["-y", "neobrowser"]
     }
   }
 }
 ```
 
-Requirements: Python 3.10+, Google Chrome installed, `websockets` package.
+**Manual install (alternative):** Clone the repo and run `python3 tools/v3/neo-browser.py` directly.
+
+Requirements: Node.js, Google Chrome installed.
 
 ---
 
