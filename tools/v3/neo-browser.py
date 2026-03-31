@@ -1343,10 +1343,14 @@ class ChatPipeline:
     def send(self, msg):
         """Step 3: Type message and send."""
         d = self.d
+        # Capture both count AND text of last assistant message (to detect stale responses)
         self._msg_count_before = int(d.js(
             'return document.querySelectorAll("[data-message-author-role=assistant]").length'
         ) or 0)
-        log(f'{self.platform}: msg_count_before={self._msg_count_before}')
+        self._last_text_before = d.js(
+            'const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText?.substring(0,200):""'
+        ) or ''
+        log(f'{self.platform}: before: {self._msg_count_before} msgs, last="{self._last_text_before[:50]}"')
         # Focus textarea
         d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
         time.sleep(0.1)
@@ -1377,23 +1381,34 @@ class ChatPipeline:
 
         t0 = time.time()
 
-        # Phase 1: Wait for new assistant message div (faster than title change)
-        log(f'{self.platform}: phase1 — waiting for new assistant message (before={before})')
+        # Phase 1: Wait for new assistant message (count increase OR text change)
+        last_text_before = getattr(self, '_last_text_before', '')
+        log(f'{self.platform}: phase1 — waiting for new response (before={before} msgs)')
+        detected = False
         for i in range(max_wait * 2):  # poll every 500ms
             time.sleep(0.5)
-            count = int(d.js(
-                'return document.querySelectorAll("[data-message-author-role=assistant]").length'
-            ) or 0)
-            if count > before:
-                log(f'{self.platform}: phase1 — new message detected at {time.time()-t0:.1f}s (count={count})')
-                break
-        else:
-            # Fallback: check title change
+            state = d.js('''
+                const msgs = document.querySelectorAll("[data-message-author-role=assistant]");
+                const count = msgs.length;
+                const lastText = count ? msgs[msgs.length-1].innerText?.substring(0,200) : "";
+                return JSON.stringify({count, lastText});
+            ''')
+            try:
+                s = json.loads(state or '{}')
+                count = s.get('count', 0)
+                last_text = s.get('lastText', '')
+                # Detect: new message appeared OR last message text changed from what we had
+                if count > before or (count == before and count > 0 and last_text != last_text_before and len(last_text) > 5):
+                    log(f'{self.platform}: phase1 — response detected at {time.time()-t0:.1f}s (count={count})')
+                    detected = True
+                    break
+            except: pass
+        if not detected:
             title = d.js('return document.title') or ''
             if title and title != 'ChatGPT':
                 log(f'{self.platform}: phase1 — detected via title: {title}')
             else:
-                log(f'{self.platform}: phase1 — no new message after {max_wait}s, aborting')
+                log(f'{self.platform}: phase1 — no response after {max_wait}s')
                 return error_response('no_response', 'No assistant message appeared', suggestion='ChatGPT may be overloaded, try again')
 
         # Phase 2: Wait for streaming to finish
