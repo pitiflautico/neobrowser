@@ -70,9 +70,8 @@ PID_FILE = Path.home() / '.neorender' / 'neo-browser-pids.json'
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 XAI_API_KEY = os.environ.get('XAI_API_KEY', '')
 
-# Content processing via small model (reduces tokens for main model)
-CONTENT_MODEL = os.environ.get('NEOBROWSER_CONTENT_MODEL', '')  # e.g. 'claude-haiku-4-5-20251001'
-CONTENT_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+# Content processing via claude CLI (reduces tokens for main model)
+CONTENT_PROCESS = os.environ.get('NEOBROWSER_CONTENT_PROCESS', '')  # set to '1' to enable
 CONTENT_MAX_CHARS = 100000
 
 # ── Security ──
@@ -745,40 +744,29 @@ def save(text, tag='response'):
     p.write_text(text)
     return text[:4000] + f'\n... [{len(text)} chars total → {p}]'
 
-def process_content(text, prompt='Extract the main content. Return structured, concise text. Skip navigation, ads, footers.'):
-    """Pass web content through a small model to extract only relevant info."""
-    if not CONTENT_MODEL or not CONTENT_API_KEY:
-        return text  # No model configured, return raw
-    if len(text) < 200:
-        return text  # Too short to need processing
+def process_content(text, prompt='You are a content extractor. Output ONLY the extracted data, no commentary. Extract the main content as clean structured text. Remove navigation, ads, footers, cookie banners, boilerplate. Keep titles, links, dates, authors, numbers. Do not interpret or analyze — just extract and structure.'):
+    """Pass web content through claude -p to extract only relevant info."""
+    if not CONTENT_PROCESS or len(text) < 500:
+        return text
 
-    # Truncate before sending to model
     truncated = text[:CONTENT_MAX_CHARS]
-
     try:
-        req = urllib.request.Request(
-            'https://api.anthropic.com/v1/messages',
-            data=json.dumps({
-                'model': CONTENT_MODEL,
-                'max_tokens': 2000,
-                'messages': [{'role': 'user', 'content': f'{prompt}\n\n---\n\n{truncated}'}]
-            }).encode(),
-            headers={
-                'Content-Type': 'application/json',
-                'x-api-key': CONTENT_API_KEY,
-                'anthropic-version': '2023-06-01'
-            }
+        result = subprocess.run(
+            ['claude', '-p', '--model', 'haiku', f'{prompt}\n\n---\n\n{truncated}'],
+            capture_output=True, text=True, timeout=30
         )
-        resp = urllib.request.urlopen(req, timeout=30)
-        result = json.loads(resp.read())
-        content = result.get('content', [{}])[0].get('text', '')
+        content = result.stdout.strip()
         if content and len(content) > 50:
-            log(f'Content processed: {len(text)} → {len(content)} chars')
+            log(f'Content processed via claude: {len(text)} → {len(content)} chars')
             return content
+    except FileNotFoundError:
+        log('Content processing: claude CLI not found')
+    except subprocess.TimeoutExpired:
+        log('Content processing: timeout')
     except Exception as e:
         log(f'Content processing failed: {e}')
 
-    return text  # Fallback to raw on any error
+    return text
 
 # ── Tool implementations ──
 
@@ -1180,39 +1168,41 @@ class ChatPipeline:
         self.max_retries = 2
 
     def ensure(self):
-        """Step 1: Switch to dedicated tab (creates on first call)."""
+        """Step 1: Navigate default tab to chat platform."""
         d = chrome()
         target = self.conv_url or self.url
         domain = self.url.split('/')[2]
+        current = d.js('return location.href') or ''
 
-        # Switch to dedicated tab (creates it with target URL on first call)
-        if self.platform not in d._tabs:
-            log(f'{self.platform}: creating dedicated tab → {target}')
-            d.tab(self.platform, target)
-        else:
-            log(f'{self.platform}: reusing existing tab')
-            d.tab(self.platform)
-            url = d.js('return location.href') or ''
-            # Navigate if we have a conv_url and we're not on it
-            if self.conv_url and self.conv_url not in url:
-                log(f'{self.platform}: navigating to conv_url {self.conv_url}')
-                d.go(self.conv_url)
-                time.sleep(3)
+        # Navigate if not already on the platform
+        if domain not in current:
+            log(f'{self.platform}: navigating to {target}')
+            d.go(target)
+            for _ in range(30):
+                time.sleep(0.5)
+                if d.js('return document.readyState') == 'complete':
+                    cur = d.js('return location.href') or ''
+                    if domain in cur: break
+            time.sleep(1)
+        elif self.conv_url and self.conv_url not in current:
+            log(f'{self.platform}: navigating to conversation {self.conv_url}')
+            d.go(self.conv_url)
+            time.sleep(3)
 
         # Check for error state
         error = d.js('return document.body?.innerText?.includes("Something went wrong")')
         if error:
-            log(f'{self.platform}: error state detected, navigating fresh')
+            log(f'{self.platform}: error state, navigating fresh')
             self.conv_url = None
             d.go(self.url); time.sleep(5)
 
         # Detect login/captcha/rate limit
         page_text = d.js('return document.body?.innerText?.substring(0,500)') or ''
         if any(s in page_text.lower() for s in ['log in', 'sign in', 'sign up', 'create account']):
-            log(f'{self.platform}: login wall detected — session may have expired')
+            log(f'{self.platform}: login wall detected')
             return False
         if any(s in page_text.lower() for s in ['captcha', 'verify you are human', 'cloudflare']):
-            log(f'{self.platform}: captcha/verification detected')
+            log(f'{self.platform}: captcha detected')
             return False
         if any(s in page_text.lower() for s in ['rate limit', 'too many requests', 'try again later']):
             log(f'{self.platform}: rate limited')
@@ -1220,10 +1210,7 @@ class ChatPipeline:
 
         # Inject NEOMODE_JS if not present
         if not d.js('return typeof window.__neoFind === "function"'):
-            log(f'{self.platform}: injecting NEOMODE_JS')
             d.js(NEOMODE_JS)
-        else:
-            log(f'{self.platform}: NEOMODE_JS already present')
         self.d = d
         return True
 
@@ -1333,30 +1320,26 @@ class ChatPipeline:
 
     def run(self, msg, wait=True):
         """Full pipeline: ensure → verify → send → wait."""
-        try:
-            for attempt in range(self.max_retries + 1):
-                try:
-                    if not self.ensure():
-                        return 'Failed to open chat platform'
-                    if not self.verify_ready():
-                        if attempt < self.max_retries:
-                            log(f'{self.platform}: not ready, retry {attempt+1}')
-                            continue
-                        return f'{self.platform}: input not found after retries'
-                    if not self.send(msg):
-                        continue
-                    if not wait: return 'Sent.'
-                    return self.wait_response(msg)
-                except Exception as e:
-                    log(f'{self.platform}: pipeline error: {e}')
+        for attempt in range(self.max_retries + 1):
+            try:
+                if not self.ensure():
+                    return 'Failed to open chat platform'
+                if not self.verify_ready():
                     if attempt < self.max_retries:
-                        time.sleep(1)
-                    else:
-                        return f'Error after {self.max_retries+1} attempts: {e}'
-            return 'No response'
-        finally:
-            try: chrome().tab('default')
-            except: pass
+                        log(f'{self.platform}: not ready, retry {attempt+1}')
+                        continue
+                    return f'{self.platform}: input not found after retries'
+                if not self.send(msg):
+                    continue
+                if not wait: return 'Sent.'
+                return self.wait_response(msg)
+            except Exception as e:
+                log(f'{self.platform}: pipeline error: {e}')
+                if attempt < self.max_retries:
+                    time.sleep(1)
+                else:
+                    return f'Error after {self.max_retries+1} attempts: {e}'
+        return 'No response'
 
 
 # Chat instances
@@ -1394,22 +1377,18 @@ def tool_gpt(args):
     action = args.get('action', 'send')
 
     if action in ('read_last', 'is_streaming', 'history'):
-        try:
-            _gpt.ensure()
-            d = _gpt.d
-            if action == 'read_last':
-                resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
-                return save(resp or 'No messages', 'gpt')
-            if action == 'is_streaming':
-                streaming = d.js('return !!document.querySelector("[data-testid=stop-button]")')
-                return json.dumps({'streaming': bool(streaming), 'open': True})
-            if action == 'history':
-                msgs = d.js(f'const m=[];document.querySelectorAll("[data-message-author-role]").forEach(e=>{{const r=e.getAttribute("data-message-author-role"),t=e.innerText?.trim()?.substring(0,300);if(t)m.push({{role:r,text:t}})}});return JSON.stringify(m.slice(-{int(args.get("count",5))}))')
-                try: return '\n'.join(f'> {"YOU" if m["role"]=="user" else "GPT"}: {m["text"][:200]}' for m in json.loads(msgs))
-                except: return msgs or 'No messages'
-        finally:
-            try: chrome().tab('default')
-            except: pass
+        _gpt.ensure()
+        d = _gpt.d
+        if action == 'read_last':
+            resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
+            return save(resp or 'No messages', 'gpt')
+        if action == 'is_streaming':
+            streaming = d.js('return !!document.querySelector("[data-testid=stop-button]")')
+            return json.dumps({'streaming': bool(streaming), 'open': True})
+        if action == 'history':
+            msgs = d.js(f'const m=[];document.querySelectorAll("[data-message-author-role]").forEach(e=>{{const r=e.getAttribute("data-message-author-role"),t=e.innerText?.trim()?.substring(0,300);if(t)m.push({{role:r,text:t}})}});return JSON.stringify(m.slice(-{int(args.get("count",5))}))')
+            try: return '\n'.join(f'> {"YOU" if m["role"]=="user" else "GPT"}: {m["text"][:200]}' for m in json.loads(msgs))
+            except: return msgs or 'No messages'
 
     # API mode: use OpenAI API directly if key is available
     if action == 'send' and OPENAI_API_KEY:
@@ -1428,18 +1407,14 @@ def tool_grok(args):
     action = args.get('action', 'send')
 
     if action in ('read_last', 'is_streaming', 'history'):
-        try:
-            _grok.ensure()
-            d = _grok.d
-            if action == 'read_last':
-                return save(d.js('const s=[".markdown","div.prose","article"];for(const q of s){const e=document.querySelectorAll(q);if(e.length>0)return e[e.length-1].innerText}return null') or 'No messages', 'grok')
-            if action == 'is_streaming':
-                return json.dumps({'streaming': bool(d.js('return !!document.querySelector("[class*=streaming],[class*=typing]")')), 'open': True})
-            if action == 'history':
-                return d.js('const m=document.querySelector("main")||document.body;return m.innerText?.substring(0,2000)') or 'No messages'
-        finally:
-            try: chrome().tab('default')
-            except: pass
+        _grok.ensure()
+        d = _grok.d
+        if action == 'read_last':
+            return save(d.js('const s=[".markdown","div.prose","article"];for(const q of s){const e=document.querySelectorAll(q);if(e.length>0)return e[e.length-1].innerText}return null') or 'No messages', 'grok')
+        if action == 'is_streaming':
+            return json.dumps({'streaming': bool(d.js('return !!document.querySelector("[class*=streaming],[class*=typing]")')), 'open': True})
+        if action == 'history':
+            return d.js('const m=document.querySelector("main")||document.body;return m.innerText?.substring(0,2000)') or 'No messages'
 
     # API mode: use xAI API directly if key is available
     if action == 'send' and XAI_API_KEY:
