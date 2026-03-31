@@ -765,7 +765,7 @@ def _resync_cookies():
     except:
         pass
     # Copy fresh cookies DB to ghost profile
-    ghost_cookies = Path.home() / '.neorender' / 'ghost-profile' / 'Default' / 'Cookies'
+    ghost_cookies = Path.home() / '.neorender' / f'ghost-{os.getpid()}' / 'Default' / 'Cookies'
     try:
         conn_src = sqlite3.connect(f'file:{real_cookies}?mode=ro&nolock=1', uri=True)
         conn_dst = sqlite3.connect(str(ghost_cookies))
@@ -1294,6 +1294,43 @@ class ChatPipeline:
         self.max_retries = 2
         self.last_error = None
 
+    def _resync_and_reload(self, browser):
+        """Re-sync cookies from real Chrome and reload the page."""
+        import sqlite3
+        try:
+            real_cookies = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome' / PROFILE / 'Cookies'
+            if not real_cookies.exists():
+                log(f'{self.platform}: real Chrome cookies not found at {real_cookies}')
+                return False
+            ghost_cookies = Path.home() / '.neorender' / f'ghost-{os.getpid()}' / 'Default' / 'Cookies'
+            if not ghost_cookies.parent.exists():
+                log(f'{self.platform}: ghost profile not found')
+                return False
+            # Copy fresh cookies
+            conn_src = sqlite3.connect(f'file:{real_cookies}?mode=ro&nolock=1', uri=True)
+            conn_dst = sqlite3.connect(str(ghost_cookies))
+            conn_src.backup(conn_dst)
+            # Apply domain filter
+            if COOKIE_DOMAINS:
+                keep = ' OR '.join('host_key LIKE ?' for _ in COOKIE_DOMAINS)
+                conn_dst.execute(f'DELETE FROM cookies WHERE NOT ({keep})', [f'%{dom}%' for dom in COOKIE_DOMAINS])
+            else:
+                EXCLUDED = ('.google.com', '.google.es', '.googleapis.com', '.gstatic.com',
+                            '.youtube.com', '.accounts.google.com', '.gmail.com')
+                excl = ' OR '.join('host_key LIKE ?' for _ in EXCLUDED)
+                conn_dst.execute(f'DELETE FROM cookies WHERE {excl}', [f'%{x}' for x in EXCLUDED])
+            conn_dst.commit()
+            conn_dst.close(); conn_src.close()
+            log(f'{self.platform}: cookies re-synced, reloading page')
+            browser.go(self.url)
+            for _ in range(20):
+                time.sleep(0.5)
+                if browser.js('return document.readyState') == 'complete': break
+            return True
+        except Exception as e:
+            log(f'{self.platform}: re-sync failed: {e}')
+            return False
+
     def ensure(self):
         """Step 1: Navigate default tab to chat platform."""
         self.last_error = None
@@ -1326,10 +1363,22 @@ class ChatPipeline:
 
         # Detect login/captcha/rate limit
         page_text = d.js('return document.body?.innerText?.substring(0,500)') or ''
-        if any(s in page_text.lower() for s in ['log in', 'sign in', 'sign up', 'create account']):
-            log(f'{self.platform}: login wall detected')
-            self.last_error = error_response('login_wall', 'Login required', suggestion='Re-sync cookies or log in manually')
-            return False
+        login_signals = ['log in', 'sign in', 'sign up', 'create account', 'iniciar sesión', 'inicia sesión']
+        if any(s in page_text.lower() for s in login_signals):
+            log(f'{self.platform}: login wall detected, attempting cookie re-sync')
+            if self._resync_and_reload(d):
+                # Check again after re-sync
+                time.sleep(3)
+                page_text = d.js('return document.body?.innerText?.substring(0,500)') or ''
+                if not any(s in page_text.lower() for s in login_signals):
+                    log(f'{self.platform}: re-sync fixed login wall')
+                else:
+                    log(f'{self.platform}: re-sync did not fix login wall')
+                    self.last_error = error_response('login_wall', 'Login required (re-sync failed)', suggestion='Log into ChatGPT in your real Chrome browser, then restart NeoBrowser')
+                    return False
+            else:
+                self.last_error = error_response('login_wall', 'Login required', suggestion='Log into ChatGPT in your real Chrome browser, then restart NeoBrowser')
+                return False
         if any(s in page_text.lower() for s in ['captcha', 'verify you are human', 'cloudflare']):
             log(f'{self.platform}: captcha detected')
             self.last_error = error_response('captcha', 'Captcha or verification required', suggestion='Try again later or solve manually')
