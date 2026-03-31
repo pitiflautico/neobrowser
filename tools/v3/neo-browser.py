@@ -1374,70 +1374,78 @@ class ChatPipeline:
         log(f'{self.platform}: sent ({len(msg)} chars)')
         return True
 
-    def wait_response(self, user_msg, max_wait=60):
-        """Step 4: Wait for new assistant message, then fetch via API."""
+    def check_response(self):
+        """Check if a response is ready. Non-blocking. Returns text, status JSON, or None."""
+        d = self.d
+        if not d: return None
+        state = d.js('''
+            const msgs = document.querySelectorAll("[data-message-author-role=assistant]");
+            const count = msgs.length;
+            const last = count ? msgs[msgs.length-1] : null;
+            const text = last?.innerText || "";
+            const streaming = !!document.querySelector("[data-testid=stop-button],[aria-busy=true],.result-streaming");
+            const url = location.href;
+            return JSON.stringify({count, text: text.substring(0, 50000), streaming, url});
+        ''')
+        try:
+            return json.loads(state or '{}')
+        except:
+            return None
+
+    def wait_response(self, user_msg, max_wait=120):
+        """Step 4: Quick checks for response, return early with status if still streaming."""
         d = self.d
         before = getattr(self, '_msg_count_before', 0)
+        last_text_before = getattr(self, '_last_text_before', '')
 
         t0 = time.time()
 
-        # Phase 1: Wait for new assistant message (count increase OR text change)
-        last_text_before = getattr(self, '_last_text_before', '')
-        log(f'{self.platform}: phase1 — waiting for new response (before={before} msgs)')
-        detected = False
-        for i in range(max_wait * 2):  # poll every 500ms
+        # Quick checks: poll for up to 10s to catch fast responses
+        log(f'{self.platform}: checking for response (before={before} msgs)')
+        for i in range(20):  # 20 × 0.5s = 10s max
             time.sleep(0.5)
-            state = d.js('''
-                const msgs = document.querySelectorAll("[data-message-author-role=assistant]");
-                const count = msgs.length;
-                const lastText = count ? msgs[msgs.length-1].innerText?.substring(0,200) : "";
-                return JSON.stringify({count, lastText});
-            ''')
-            try:
-                s = json.loads(state or '{}')
-                count = s.get('count', 0)
-                last_text = s.get('lastText', '')
-                # Detect: new message appeared OR last message text changed from what we had
-                if count > before or (count == before and count > 0 and last_text != last_text_before and len(last_text) > 5):
-                    log(f'{self.platform}: phase1 — response detected at {time.time()-t0:.1f}s (count={count})')
-                    detected = True
-                    break
-            except: pass
-        if not detected:
-            title = d.js('return document.title') or ''
-            if title and title != 'ChatGPT':
-                log(f'{self.platform}: phase1 — detected via title: {title}')
-            else:
-                log(f'{self.platform}: phase1 — no response after {max_wait}s')
-                return error_response('no_response', 'No assistant message appeared', suggestion='ChatGPT may be overloaded, try again')
+            s = self.check_response()
+            if not s: continue
+            count = s.get('count', 0)
+            text = s.get('text', '')
+            streaming = s.get('streaming', False)
+            new_msg = count > before or (count == before and count > 0 and text != last_text_before and len(text) > 5)
 
-        # Phase 2: Wait for streaming to finish
-        log(f'{self.platform}: phase2 — waiting for streaming to finish')
-        for _ in range(60):
-            time.sleep(0.5)
-            busy = d.js('return !!document.querySelector("[data-testid=stop-button],[aria-busy=true],.result-streaming")')
-            if not busy: break
-        time.sleep(0.5)
-        log(f'{self.platform}: phase2 — streaming done at {time.time()-t0:.1f}s')
+            if new_msg and not streaming and len(text) > 2:
+                # Response complete — return it
+                if 'Something went wrong' in text:
+                    return error_response('gpt_error', 'ChatGPT returned an error', suggestion='Try again')
+                # Save conversation URL
+                url = s.get('url', '')
+                if '/c/' in url: self.conv_url = url
+                log(f'{self.platform}: response ready at {time.time()-t0:.1f}s ({len(text)} chars)')
+                return save(text, self.platform)
 
-        # Phase 3: Save conversation URL
-        log(f'{self.platform}: phase3 — saving conversation URL')
-        conv_url = d.js('return location.href') or ''
-        if '/c/' in conv_url:
-            self.conv_url = conv_url
+            if new_msg and streaming:
+                # Response started but still streaming — return status
+                log(f'{self.platform}: streaming at {time.time()-t0:.1f}s ({len(text)} chars so far)')
+                return json.dumps({'status': 'streaming', 'chars_so_far': len(text),
+                                   'suggestion': 'Use action=read_last to get the response when ready, or action=is_streaming to check'})
 
-        # Phase 4: Get response from DOM (no internal API dependency)
-        log(f'{self.platform}: phase4 — extracting response from DOM')
-        dom = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
-        if dom and len(dom) > 2 and 'Something went wrong' not in dom:
-            log(f'{self.platform}: response via DOM ({len(dom)} chars)')
-            return save(dom, self.platform)
+        # 10s passed, check one last time
+        s = self.check_response()
+        if s:
+            text = s.get('text', '')
+            streaming = s.get('streaming', False)
+            count = s.get('count', 0)
+            new_msg = count > before or (count == before and count > 0 and text != last_text_before and len(text) > 5)
 
-        # Fallback: title (DOM extraction failed)
-        conv_url = d.js('return location.href') or ''
-        title = d.js('return document.title') or ''
-        log(f'{self.platform}: no DOM response, falling back to title: {title}')
-        return error_response('extraction_failed', 'Could not extract response from DOM', url=conv_url, suggestion='ChatGPT DOM may have changed')
+            if new_msg and len(text) > 2 and not streaming:
+                url = s.get('url', '')
+                if '/c/' in url: self.conv_url = url
+                return save(text, self.platform)
+
+            if streaming or new_msg:
+                return json.dumps({'status': 'streaming', 'chars_so_far': len(text),
+                                   'suggestion': 'Use action=read_last to get the response when ready, or action=is_streaming to check'})
+
+        # Nothing happened
+        return error_response('no_response', 'No response detected after 10s', suggestion='ChatGPT may be overloaded, try action=is_streaming to check')
 
     def run(self, msg, wait=True):
         """Full pipeline: ensure → verify → send → wait."""
