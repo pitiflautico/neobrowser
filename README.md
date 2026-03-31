@@ -43,6 +43,21 @@ Run `npx neobrowser doctor` to check everything is set up.
 
 ---
 
+## Configuration
+
+NeoBrowser works with zero configuration. These environment variables unlock additional features:
+
+| Variable | What it does |
+|---|---|
+| `OPENAI_API_KEY` | ChatGPT via API (reliable, replaces fragile browser automation) |
+| `XAI_API_KEY` | Grok via API (reliable, replaces fragile browser automation) |
+| `NEOBROWSER_CONTENT_MODEL` | Model for content processing (e.g. `claude-haiku-4-5-20251001`) |
+| `ANTHROPIC_API_KEY` | Required for content processing model |
+
+Without these, NeoBrowser uses browser-based chat (experimental) and returns raw content.
+
+---
+
 ## What it does
 
 **Example 1: Search and read**

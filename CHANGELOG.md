@@ -2,6 +2,29 @@
 
 All notable changes to NeoBrowser are documented here.
 
+## [3.2.0] - 2026-03-31
+
+### Added
+- Content processing via small model (opt-in): set NEOBROWSER_CONTENT_MODEL and ANTHROPIC_API_KEY to reduce tokens
+- API mode for ChatGPT: set OPENAI_API_KEY to bypass fragile browser automation
+- API mode for Grok: set XAI_API_KEY to bypass fragile browser automation
+- Unicode sanitization on all web content (strips hidden prompt injection chars)
+- URL validation: blocks private IPs and credential-embedded URLs in browse tool
+- Secret scanner: warns when tool output contains API keys or private keys
+- Login wall / captcha / rate limit detection in ChatPipeline
+
+### Changed
+- GPT/Grok tools marked as experimental in descriptions
+- GPT response extraction uses DOM-only (removed /backend-api/conversation dependency)
+- ChatPipeline has diagnostic logging at every phase
+- send() verifies text landed in input before hitting Enter
+
+### Security
+- sanitize_unicode(): NFKC normalize + strip zero-width/directional/PUA chars
+- validate_url(): blocks non-https, credentials in URL, link-local, RFC1918
+- scan_secrets(): detects 8 secret types (Anthropic, OpenAI, AWS, GitHub, GitLab, Slack, private keys)
+- All web content output passes through unicode sanitization
+
 ## [3.1.0] - 2026-03-31
 
 ### Added

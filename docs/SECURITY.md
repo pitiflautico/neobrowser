@@ -66,3 +66,32 @@ Each MCP process gets its own Chrome instance:
 - Add sensitive domains to `EXCLUDED_DOMAINS` if needed
 - The ghost profile is ephemeral — deleted when the MCP process exits
 - Run `neo-browser.py doctor` to verify your setup
+
+## URL Validation
+
+The `browse` tool blocks requests to:
+- Private IPs (10.x, 172.16-31.x, 192.168.x, 127.0.0.1)
+- Link-local addresses (169.254.x — cloud metadata endpoints)
+- URLs with embedded credentials (user:pass@host)
+- Non-HTTP(S) schemes
+
+The `open` tool logs a warning but does not block (user explicitly requested the URL).
+
+## Unicode Sanitization
+
+All web content is sanitized before being returned to the AI model:
+- NFKC normalization
+- Strips zero-width characters (U+200B-200F)
+- Strips directional formatting (U+202A-202E, U+2066-2069)
+- Strips BOM (U+FEFF)
+- Strips private use area (U+E000-F8FF)
+
+This prevents hidden prompt injection via invisible Unicode characters.
+
+## Secret Detection
+
+Tool output is scanned for common secret patterns before being returned:
+- Anthropic, OpenAI, AWS, GitHub, GitLab, Slack API keys
+- PEM private keys
+
+Detection is warn-only (logged to stderr). Secrets are not redacted or blocked.

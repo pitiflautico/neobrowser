@@ -66,6 +66,61 @@ RESPONSE_DIR = Path.home() / '.neorender' / 'responses'
 RESPONSE_DIR.mkdir(parents=True, exist_ok=True)
 PID_FILE = Path.home() / '.neorender' / 'neo-browser-pids.json'
 
+# API keys for direct chat (bypass browser, more reliable)
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+XAI_API_KEY = os.environ.get('XAI_API_KEY', '')
+
+# Content processing via small model (reduces tokens for main model)
+CONTENT_MODEL = os.environ.get('NEOBROWSER_CONTENT_MODEL', '')  # e.g. 'claude-haiku-4-5-20251001'
+CONTENT_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+CONTENT_MAX_CHARS = 100000
+
+# ── Security ──
+
+def sanitize_unicode(text):
+    """Strip invisible Unicode characters that could hide prompt injection."""
+    if not text: return text
+    import unicodedata
+    text = unicodedata.normalize('NFKC', text)
+    text = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\ue000-\uf8ff]', '', text)
+    return text
+
+def validate_url(url):
+    """Basic URL validation — block dangerous schemes and private IPs."""
+    if not url: return False
+    u = urllib.parse.urlparse(url)
+    if u.scheme not in ('http', 'https'): return False
+    if u.username or u.password: return False  # No credentials in URLs
+    host = u.hostname or ''
+    if host in ('localhost', '127.0.0.1', '0.0.0.0', '[::]', '[::1]'): return False
+    if host.startswith('169.254.'): return False  # Link-local / cloud metadata
+    if host.startswith('10.'): return False
+    if host.startswith('192.168.'): return False
+    for i in range(16, 32):
+        if host.startswith(f'172.{i}.'): return False
+    return True
+
+# Simple secret detection patterns
+_SECRET_PATTERNS = [
+    (r'sk-ant-api\w{20,}', 'Anthropic API key'),
+    (r'sk-[a-zA-Z0-9]{20,}', 'OpenAI API key'),
+    (r'AKIA[0-9A-Z]{16}', 'AWS Access Key'),
+    (r'ghp_[a-zA-Z0-9]{36}', 'GitHub PAT'),
+    (r'gho_[a-zA-Z0-9]{36}', 'GitHub OAuth'),
+    (r'glpat-[a-zA-Z0-9\-_]{20,}', 'GitLab PAT'),
+    (r'xoxb-[a-zA-Z0-9\-]+', 'Slack Bot Token'),
+    (r'-----BEGIN (?:RSA |EC )?PRIVATE KEY-----', 'Private Key'),
+]
+
+def scan_secrets(text):
+    """Scan text for leaked secrets. Returns list of pattern names or empty list."""
+    if not text: return []
+    found = []
+    for pattern, name in _SECRET_PATTERNS:
+        if re.search(pattern, text):
+            found.append(name)
+    return found
+
 NEOMODE_JS = '''
 // ── Stealth: screen dimensions ──
 Object.defineProperty(screen,'width',{get:()=>1920});
@@ -480,9 +535,9 @@ class GhostChrome:
             actions = data.get('actions', [])
             if actions:
                 parts.append('\nActions: ' + ' | '.join(actions[:15]))
-            return '\n'.join(parts)
+            return sanitize_unicode('\n'.join(parts))
         except:
-            return self.js("return document.body?.innerText?.substring(0,4000)") or self.title
+            return sanitize_unicode(self.js("return document.body?.innerText?.substring(0,4000)") or self.title)
 
 
 def _kill_pids():
@@ -681,21 +736,61 @@ def chrome_go(url, wait_s=5):
 
 def save(text, tag='response'):
     if not text: return 'No content'
+    secrets = scan_secrets(text)
+    if secrets:
+        log(f'WARNING: potential secrets detected in output: {", ".join(secrets)}')
     if len(text) <= 4000: return text
     ts = time.strftime('%Y%m%d-%H%M%S')
     p = RESPONSE_DIR / f'{tag}-{ts}.md'
     p.write_text(text)
     return text[:4000] + f'\n... [{len(text)} chars total → {p}]'
 
+def process_content(text, prompt='Extract the main content. Return structured, concise text. Skip navigation, ads, footers.'):
+    """Pass web content through a small model to extract only relevant info."""
+    if not CONTENT_MODEL or not CONTENT_API_KEY:
+        return text  # No model configured, return raw
+    if len(text) < 200:
+        return text  # Too short to need processing
+
+    # Truncate before sending to model
+    truncated = text[:CONTENT_MAX_CHARS]
+
+    try:
+        req = urllib.request.Request(
+            'https://api.anthropic.com/v1/messages',
+            data=json.dumps({
+                'model': CONTENT_MODEL,
+                'max_tokens': 2000,
+                'messages': [{'role': 'user', 'content': f'{prompt}\n\n---\n\n{truncated}'}]
+            }).encode(),
+            headers={
+                'Content-Type': 'application/json',
+                'x-api-key': CONTENT_API_KEY,
+                'anthropic-version': '2023-06-01'
+            }
+        )
+        resp = urllib.request.urlopen(req, timeout=30)
+        result = json.loads(resp.read())
+        content = result.get('content', [{}])[0].get('text', '')
+        if content and len(content) > 50:
+            log(f'Content processed: {len(text)} → {len(content)} chars')
+            return content
+    except Exception as e:
+        log(f'Content processing failed: {e}')
+
+    return text  # Fallback to raw on any error
+
 # ── Tool implementations ──
 
 def tool_browse(args):
     url = args.get('url', '')
     if not url: return 'url required'
+    if not validate_url(url):
+        return f'Blocked: {url} (invalid or private URL)'
     out, ms = fast('see', url)
     if len(out) > 200:
         log(f'V1 browse: {ms}ms')
-        return out
+        return sanitize_unicode(process_content(out))
     # Try raw HTTP before expensive Chrome fallback
     try:
         req = urllib.request.Request(url, headers={'User-Agent': CHROME_UA})
@@ -706,11 +801,11 @@ def tool_browse(args):
             text = re.sub(r'\s+', ' ', text).strip()
             if len(text) > 100:
                 log(f'HTTP fallback: {len(text)} chars')
-                return text[:5000]
+                return sanitize_unicode(process_content(text[:5000]))
     except: pass
     log('HTTP fallback empty, Chrome fallback...')
     d = chrome_go(url)
-    return d.sanitize()
+    return sanitize_unicode(process_content(d.sanitize()))
 
 def tool_search(args):
     q = args.get('query', '')
@@ -738,8 +833,10 @@ def tool_search(args):
 def tool_open(args):
     url = args.get('url', '')
     if not url: return 'url required'
+    if not validate_url(url):
+        log(f'WARNING: navigating to potentially unsafe URL: {url}')
     d = chrome_go(url, int(args.get('wait', 5000)) / 1000)
-    return d.sanitize()
+    return process_content(d.sanitize())
 
 SMART_EXTRACTORS = {
     'tweets': '''
@@ -817,7 +914,7 @@ def tool_read(args):
             out, ms = fast('see', url)
             if len(out) > 100:
                 log(f'V1 read: {ms}ms')
-                return out[:3000]
+                return sanitize_unicode(out[:3000])
         chrome_go(url, 3)
     d = chrome()
 
@@ -826,7 +923,7 @@ def tool_read(args):
         ct = content_type.lower()
         # Built-in extractors
         if ct == 'markdown':
-            return save(d.markdown() or 'No content', 'read-md')
+            return process_content(save(d.markdown() or 'No content', 'read-md'))
         if ct == 'accessibility':
             return save(d.accessibility() or 'No content', 'read-a11y')
         # JS-based extractors
@@ -1093,23 +1190,40 @@ class ChatPipeline:
             log(f'{self.platform}: creating dedicated tab → {target}')
             d.tab(self.platform, target)
         else:
+            log(f'{self.platform}: reusing existing tab')
             d.tab(self.platform)
             url = d.js('return location.href') or ''
             # Navigate if we have a conv_url and we're not on it
             if self.conv_url and self.conv_url not in url:
+                log(f'{self.platform}: navigating to conv_url {self.conv_url}')
                 d.go(self.conv_url)
                 time.sleep(3)
 
         # Check for error state
         error = d.js('return document.body?.innerText?.includes("Something went wrong")')
         if error:
-            log(f'{self.platform}: error state, navigating fresh')
+            log(f'{self.platform}: error state detected, navigating fresh')
             self.conv_url = None
             d.go(self.url); time.sleep(5)
 
+        # Detect login/captcha/rate limit
+        page_text = d.js('return document.body?.innerText?.substring(0,500)') or ''
+        if any(s in page_text.lower() for s in ['log in', 'sign in', 'sign up', 'create account']):
+            log(f'{self.platform}: login wall detected — session may have expired')
+            return False
+        if any(s in page_text.lower() for s in ['captcha', 'verify you are human', 'cloudflare']):
+            log(f'{self.platform}: captcha/verification detected')
+            return False
+        if any(s in page_text.lower() for s in ['rate limit', 'too many requests', 'try again later']):
+            log(f'{self.platform}: rate limited')
+            return False
+
         # Inject NEOMODE_JS if not present
         if not d.js('return typeof window.__neoFind === "function"'):
+            log(f'{self.platform}: injecting NEOMODE_JS')
             d.js(NEOMODE_JS)
+        else:
+            log(f'{self.platform}: NEOMODE_JS already present')
         self.d = d
         return True
 
@@ -1120,16 +1234,18 @@ class ChatPipeline:
             d.js(NEOMODE_JS)
         # Wait for any in-progress streaming to finish
         if d.js('return !!document.querySelector("[data-testid=stop-button]")'):
-            log(f'{self.platform}: waiting for streaming to finish...')
+            log(f'{self.platform}: streaming in progress, waiting...')
             for _ in range(60):
                 time.sleep(0.5)
                 if not d.js('return !!document.querySelector("[data-testid=stop-button]")'): break
         # Check input exists
         has_input = d.js('return !!(document.getElementById("prompt-textarea") || window.__neoFind?.())')
         if not has_input:
-            log(f'{self.platform}: no input found, reloading')
+            log(f'{self.platform}: input not found, reloading')
             d.go(self.url); time.sleep(5)
             has_input = d.js('return !!window.__neoFind?.()')
+            if not has_input:
+                log(f'{self.platform}: input still not found after reload')
         return bool(has_input)
 
     def send(self, msg):
@@ -1138,6 +1254,7 @@ class ChatPipeline:
         self._msg_count_before = int(d.js(
             'return document.querySelectorAll("[data-message-author-role=assistant]").length'
         ) or 0)
+        log(f'{self.platform}: msg_count_before={self._msg_count_before}')
         # Focus textarea
         d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
         time.sleep(0.1)
@@ -1145,9 +1262,16 @@ class ChatPipeline:
         d.key(msg)
         typed = d.js('const el=document.activeElement;return(el?.innerText||el?.value||"").length>0')
         if not typed:
+            log(f'{self.platform}: key() did not populate input, falling back to innerText injection')
             d.js(f'''const el=document.getElementById("prompt-textarea")||window.__neoFind?.();
                 if(el){{el.focus();el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}''')
+        else:
+            log(f'{self.platform}: key() successfully populated input')
         time.sleep(0.1)
+        # Verify text is in the input before sending
+        content = d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();return el?.innerText||""')
+        if not content or len(content) < 3:
+            log(f'{self.platform}: WARNING — text not in input, send may fail')
         # Send: Enter + send button click (covers all cases)
         d.enter()
         d.js('const b=document.querySelector("[data-testid=send-button]");if(b&&!b.disabled)b.click()')
@@ -1159,68 +1283,52 @@ class ChatPipeline:
         d = self.d
         before = getattr(self, '_msg_count_before', 0)
 
+        t0 = time.time()
+
         # Phase 1: Wait for new assistant message div (faster than title change)
+        log(f'{self.platform}: phase1 — waiting for new assistant message (before={before})')
         for i in range(max_wait * 2):  # poll every 500ms
             time.sleep(0.5)
             count = int(d.js(
                 'return document.querySelectorAll("[data-message-author-role=assistant]").length'
             ) or 0)
             if count > before:
-                log(f'{self.platform}: new response detected ({i*0.5:.1f}s)')
+                log(f'{self.platform}: phase1 — new message detected at {time.time()-t0:.1f}s (count={count})')
                 break
         else:
             # Fallback: check title change
             title = d.js('return document.title') or ''
             if title and title != 'ChatGPT':
-                log(f'{self.platform}: detected via title: {title}')
+                log(f'{self.platform}: phase1 — detected via title: {title}')
             else:
+                log(f'{self.platform}: phase1 — no new message after {max_wait}s, aborting')
                 return 'No response (no new assistant message)'
 
         # Phase 2: Wait for streaming to finish
+        log(f'{self.platform}: phase2 — waiting for streaming to finish')
         for _ in range(60):
             time.sleep(0.5)
             busy = d.js('return !!document.querySelector("[data-testid=stop-button],[aria-busy=true],.result-streaming")')
             if not busy: break
         time.sleep(0.5)
+        log(f'{self.platform}: phase2 — streaming done at {time.time()-t0:.1f}s')
 
         # Phase 3: Save conversation URL
+        log(f'{self.platform}: phase3 — saving conversation URL')
         conv_url = d.js('return location.href') or ''
         if '/c/' in conv_url:
             self.conv_url = conv_url
 
-        # Phase 4: Get response — try API first, then DOM fallback
-        conv_id = conv_url.split('/c/')[-1] if '/c/' in conv_url else ''
-        if conv_id:
-            token = d.js_async("fetch('/api/auth/session').then(r=>r.json()).then(d=>d.accessToken||'').catch(()=>'')")
-            if token:
-                resp = d.js_async(f'''
-                    fetch('/backend-api/conversation/{conv_id}', {{
-                        headers: {{'Authorization': 'Bearer {token}'}}
-                    }})
-                    .then(r => r.json())
-                    .then(d => {{
-                        if (d.mapping) {{
-                            const msgs = Object.values(d.mapping)
-                                .filter(m => m.message?.author?.role === 'assistant')
-                                .map(m => m.message?.content?.parts?.join(''))
-                                .filter(Boolean);
-                            return msgs.length ? msgs[msgs.length - 1] : '';
-                        }}
-                        return '';
-                    }})
-                    .catch(() => '')
-                ''')
-                if resp and len(resp) > 2:
-                    log(f'{self.platform}: response via API ({len(resp)} chars)')
-                    return save(resp, self.platform)
-
-        # DOM fallback: last assistant message (skip error messages)
+        # Phase 4: Get response from DOM (no internal API dependency)
+        log(f'{self.platform}: phase4 — extracting response from DOM')
         dom = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
         if dom and len(dom) > 2 and 'Something went wrong' not in dom:
+            log(f'{self.platform}: response via DOM ({len(dom)} chars)')
             return save(dom, self.platform)
 
-        # Last resort: title
+        # Fallback: title
         title = d.js('return document.title') or ''
+        log(f'{self.platform}: no DOM response, falling back to title: {title}')
         return save(title, self.platform)
 
     def run(self, msg, wait=True):
@@ -1256,6 +1364,32 @@ _gpt = ChatPipeline('gpt', 'https://chatgpt.com')
 _grok = ChatPipeline('grok', 'https://grok.com')
 
 
+def chat_via_api(platform, message, api_key, base_url='https://api.openai.com/v1', model='gpt-4o'):
+    """Send message via official API. Returns response text or None on failure."""
+    try:
+        req = urllib.request.Request(
+            f'{base_url}/chat/completions',
+            data=json.dumps({
+                'model': model,
+                'messages': [{'role': 'user', 'content': message}],
+                'max_tokens': 2000
+            }).encode(),
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {api_key}'
+            }
+        )
+        resp = urllib.request.urlopen(req, timeout=60)
+        result = json.loads(resp.read())
+        content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+        if content:
+            log(f'{platform}: response via API ({len(content)} chars)')
+            return content
+    except Exception as e:
+        log(f'{platform}: API call failed: {e}')
+    return None
+
+
 def tool_gpt(args):
     action = args.get('action', 'send')
 
@@ -1277,6 +1411,15 @@ def tool_gpt(args):
             try: chrome().tab('default')
             except: pass
 
+    # API mode: use OpenAI API directly if key is available
+    if action == 'send' and OPENAI_API_KEY:
+        msg = args.get('message', '')
+        if not msg: return 'message required'
+        result = chat_via_api('gpt', msg, OPENAI_API_KEY)
+        if result:
+            return save(result, 'gpt')
+        log('gpt: API failed, falling back to browser')
+
     msg = args.get('message', '')
     if not msg: return 'message required'
     return _gpt.run(msg, wait=args.get('wait', True))
@@ -1297,6 +1440,17 @@ def tool_grok(args):
         finally:
             try: chrome().tab('default')
             except: pass
+
+    # API mode: use xAI API directly if key is available
+    if action == 'send' and XAI_API_KEY:
+        msg = args.get('message', '')
+        if not msg: return 'message required'
+        result = chat_via_api('grok', msg, XAI_API_KEY,
+                              base_url='https://api.x.ai/v1',
+                              model='grok-3')
+        if result:
+            return save(result, 'grok')
+        log('grok: API failed, falling back to browser')
 
     msg = args.get('message', '')
     if not msg: return 'message required'
@@ -1420,8 +1574,8 @@ TOOLS = [
     {"name": "wait", "description": "Wait for element or text to appear on page.", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "wait": {"type": "integer", "default": 10000}}, "required": ["selector"]}},
     {"name": "login", "description": "Automated login: fill email+password and submit.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "email": {"type": "string"}, "password": {"type": "string"}}, "required": ["url", "email", "password"]}},
     {"name": "extract", "description": "Extract structured data (tables or links).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "enum": ["table", "links"], "default": "links"}}}},
-    {"name": "gpt", "description": "ChatGPT. Send message or read. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}, "raw": {"type": "boolean", "default": False}}}},
-    {"name": "grok", "description": "Grok. Send message or read. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}}}},
+    {"name": "gpt", "description": "ChatGPT (experimental). Uses OpenAI API if OPENAI_API_KEY is set, otherwise browser. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}, "raw": {"type": "boolean", "default": False}}}},
+    {"name": "grok", "description": "Grok (experimental). Uses xAI API if XAI_API_KEY is set, otherwise browser. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}}}},
     {"name": "plugin", "description": "Run, list, or create browser plugins (reusable pipelines). Plugins are YAML files in ~/.neorender/plugins/. Actions: run (execute a plugin), list (show available), create (make new).", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["run", "list", "create"], "default": "run"}, "name": {"type": "string", "description": "Plugin name"}, "description": {"type": "string"}, "yaml": {"type": "string", "description": "YAML content for create action"}}, "additionalProperties": True}},
     {"name": "js", "description": "Execute JavaScript on current page. Returns result as string.", "inputSchema": {"type": "object", "properties": {"code": {"type": "string", "description": "JavaScript code to execute. Use 'return' for values."}}, "required": ["code"]}},
     {"name": "status", "description": "Browser and chat session status.", "inputSchema": {"type": "object", "properties": {}}},
