@@ -852,8 +852,28 @@ def process_content(text, prompt='You are a content extractor. Output ONLY the e
 
     return text
 
+# ── Tool definitions ──
+
+TOOLS = {}
+
+def tool_def(name, description, schema, read_only=True, concurrent=True, max_result=0):
+    """Register a tool with metadata. Decorator."""
+    def decorator(fn):
+        TOOLS[name] = {
+            'name': name,
+            'description': description,
+            'schema': schema,
+            'read_only': read_only,
+            'concurrent': concurrent,
+            'max_result': max_result,
+            'fn': fn,
+        }
+        return fn
+    return decorator
+
 # ── Tool implementations ──
 
+@tool_def('browse', 'Fetch and parse a web page (fast HTTP, falls back to Chrome)', {'url': 'required', 'selector': 'optional CSS selector'}, read_only=True, concurrent=True, max_result=100000)
 def tool_browse(args):
     url = args.get('url', '')
     if not url: return 'url required'
@@ -887,6 +907,7 @@ def tool_browse(args):
     _page_cache.put(url, result)
     return result
 
+@tool_def('search', 'Search DuckDuckGo', {'query': 'required'}, read_only=True, concurrent=True)
 def tool_search(args):
     q = args.get('query', '')
     if not q: return 'query required'
@@ -910,7 +931,7 @@ def tool_search(args):
     except Exception as e:
         return f'Search error: {e}'
 
-@sequential_browser
+@tool_def('open', 'Open URL in Chrome tab', {'url': 'required', 'tab': 'optional tab name'}, read_only=False, concurrent=False)
 def tool_open(args):
     url = args.get('url', '')
     if not url: return 'url required'
@@ -986,6 +1007,7 @@ SMART_EXTRACTORS = {
     ''',
 }
 
+@tool_def('read', 'Read current page content as markdown/structured text', {'selector': 'optional CSS selector', 'mode': 'optional: markdown|a11y|tweets|posts|tables'}, read_only=True, concurrent=True, max_result=100000)
 def tool_read(args):
     url = args.get('url', '')
     selector = args.get('selector', '')
@@ -1022,10 +1044,11 @@ def tool_read(args):
             if (!els.length) return 'No matches for selector';
             return Array.from(els).map(el => el.innerText.trim()).filter(t => t.length > 0).join('\\n---\\n');
         ''')
-        return persist_if_large(save(text or f'No content for: {selector}', 'read'), 'read')
+        return save(text or f'No content for: {selector}', 'read')
 
-    return persist_if_large(d.sanitize(), 'read')
+    return d.sanitize()
 
+@tool_def('find', 'Find elements on page by text, role, or selector', {'text': 'optional', 'role': 'optional', 'selector': 'optional'}, read_only=True, concurrent=True)
 def tool_find(args):
     text = args.get('text', args.get('selector', ''))
     by = args.get('by', 'text')
@@ -1049,7 +1072,7 @@ def tool_find(args):
         }})));
     ''') or '[]'
 
-@sequential_browser
+@tool_def('click', 'Click an element', {'text': 'optional', 'selector': 'optional', 'index': 'optional'}, read_only=False, concurrent=False)
 def tool_click(args):
     text = args.get('text', args.get('selector', ''))
     if not text: return 'text or selector required'
@@ -1063,7 +1086,7 @@ def tool_click(args):
     if clicked: time.sleep(0.5)  # Brief wait for click handler
     return f'Clicked "{text}"\n\n{d.sanitize()}' if clicked else f'Not found: "{text}"'
 
-@sequential_browser
+@tool_def('type', 'Type text into focused element', {'text': 'required'}, read_only=False, concurrent=False)
 def tool_type(args):
     """Smart type — uses __neoFind detector."""
     sel = args.get('selector', args.get('text', ''))
@@ -1090,7 +1113,7 @@ def tool_type(args):
     d.key(val)
     return json.dumps({'typed': True, 'value': val, 'field': info})
 
-@sequential_browser
+@tool_def('fill', 'Fill a form field', {'selector': 'optional', 'text': 'optional', 'value': 'required'}, read_only=False, concurrent=False)
 def tool_fill(args):
     """Smart fill — handles inputs, textareas, selects, checkboxes, radios.
     Finds fields by: name, id, placeholder, label text, aria-label, type."""
@@ -1184,7 +1207,7 @@ def tool_fill(args):
         return JSON.stringify({{filled, errors}});
     ''')
 
-@sequential_browser
+@tool_def('submit', 'Submit a form', {'selector': 'optional'}, read_only=False, concurrent=False)
 def tool_submit(args):
     d = chrome()
     r = d.js('''
@@ -1199,13 +1222,14 @@ def tool_submit(args):
     time.sleep(1)
     return d.sanitize()
 
-@sequential_browser
+@tool_def('scroll', 'Scroll the page', {'direction': 'optional: up|down', 'amount': 'optional pixels'}, read_only=False, concurrent=False)
 def tool_scroll(args):
     d = chrome()
     dy = int(args.get('amount', 500)) * (1 if args.get('direction', 'down') == 'down' else -1)
     d.js(f'window.scrollBy(0,{dy})')
     return d.sanitize()
 
+@tool_def('screenshot', 'Take a screenshot of current page', {}, read_only=True, concurrent=True)
 def tool_screenshot(args):
     url = args.get('url', '')
     if url: chrome_go(url, 3)
@@ -1213,6 +1237,7 @@ def tool_screenshot(args):
     chrome().screenshot(p)
     return f'Screenshot: {p}'
 
+@tool_def('wait', 'Wait for element or condition', {'selector': 'optional', 'text': 'optional', 'timeout': 'optional ms'}, read_only=True, concurrent=True)
 def tool_wait(args):
     sel = args.get('selector', args.get('text', ''))
     if not sel: return 'selector or text required'
@@ -1223,7 +1248,7 @@ def tool_wait(args):
         time.sleep(0.5)
     return f'Not found after {int(time.time()-start)}s: "{sel}"'
 
-@sequential_browser
+@tool_def('login', 'Log into a website using stored session', {'url': 'required'}, read_only=False, concurrent=False)
 def tool_login(args):
     url, email, pw = args.get('url', ''), args.get('email', ''), args.get('password', '')
     if not all([url, email, pw]): return 'url, email, password required'
@@ -1239,11 +1264,12 @@ def tool_login(args):
     time.sleep(3)
     return d.sanitize()
 
+@tool_def('extract', 'Extract links or table data from current page', {'type': 'optional: links|tables'}, read_only=True, concurrent=True, max_result=100000)
 def tool_extract(args):
     t = args.get('type', 'links')
     d = chrome()
     if t == 'table':
-        return persist_if_large(d.js(SMART_EXTRACTORS['table']) or '', 'extract')  # Reuse smart extractor, no duplication
+        return d.js(SMART_EXTRACTORS['table']) or ''  # Reuse smart extractor, no duplication
     result = d.js('''
         const seen=new Set();
         const links=Array.from(document.querySelectorAll("a[href]")).filter(a=>{
@@ -1253,7 +1279,7 @@ def tool_extract(args):
         }).slice(0,30).map(a=>a.innerText.trim()+" → "+a.href).join("\\n");
         return links || "No links found";
     ''') or 'No links found'
-    return persist_if_large(result, 'extract')
+    return result
 
 # ── Chat ──
 
@@ -1502,6 +1528,7 @@ def chat_via_api(platform, message, api_key, base_url='https://api.openai.com/v1
     return None
 
 
+@tool_def('gpt', 'Send message to ChatGPT', {'message': 'required', 'action': 'optional: send|read_last|is_streaming|history', 'raw': 'optional bool'}, read_only=False, concurrent=False)
 def tool_gpt(args):
     action = args.get('action', 'send')
 
@@ -1532,6 +1559,7 @@ def tool_gpt(args):
     if not msg: return 'message required'
     return _gpt.run(msg, wait=args.get('wait', True))
 
+@tool_def('grok', 'Send message to Grok', {'message': 'required', 'action': 'optional: send|read_last|is_streaming|history', 'raw': 'optional bool'}, read_only=False, concurrent=False)
 def tool_grok(args):
     action = args.get('action', 'send')
 
@@ -1560,6 +1588,7 @@ def tool_grok(args):
     if not msg: return 'message required'
     return _grok.run(msg, wait=args.get('wait', True))
 
+@tool_def('js', 'Execute JavaScript in current page', {'code': 'required'}, read_only=True, concurrent=True)
 def tool_js(args):
     """Execute arbitrary JavaScript on current page. For debugging and advanced use."""
     code = args.get('code', '')
@@ -1569,6 +1598,7 @@ def tool_js(args):
     if result == '': return '(empty string)'
     return str(result)[:5000]
 
+@tool_def('status', 'Show browser status (tabs, URLs, PIDs)', {}, read_only=True, concurrent=True)
 def tool_status(args):
     tabs = list(_chrome._tabs.keys()) if _chrome else []
     active = _chrome._active if _chrome else None
@@ -1577,6 +1607,7 @@ def tool_status(args):
 
 # ── Plugins ──
 
+@tool_def('plugin', 'Run a YAML automation pipeline', {'name': 'required', 'args': 'optional'}, read_only=False, concurrent=False)
 def tool_plugin(args):
     from plugins import load_plugin, list_plugins, create_plugin, run_plugin
 
@@ -1626,10 +1657,7 @@ def tool_plugin(args):
 
         # Execute with tool dispatch
         def dispatch(tool_name, tool_args):
-            fn = DISPATCH.get(tool_name)
-            if fn:
-                return fn(tool_args)
-            return f'Unknown tool: {tool_name}'
+            return dispatch_tool(tool_name, tool_args)
 
         try:
             result = run_plugin(plugin_data, user_inputs, dispatch)
@@ -1661,37 +1689,48 @@ def _signal_handler(*a):
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
 
-# ── MCP Tools ──
+# ── MCP dispatch ──
 
-TOOLS = [
-    {"name": "browse", "description": "Fast HTTP browse (~1s). Returns page content with links and actions. Best for reading web pages.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "URL to browse"}}, "required": ["url"]}},
-    {"name": "search", "description": "Web search via DuckDuckGo (~1s).", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "num": {"type": "integer", "default": 10}}, "required": ["query"]}},
-    {"name": "open", "description": "Open URL in Ghost Chrome (headless, CF bypass, ~5s). Use for SPAs, Cloudflare sites, or when browse returns empty.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "wait": {"type": "integer", "default": 5000, "description": "Wait ms after load"}}, "required": ["url"]}},
-    {"name": "read", "description": "Extract text from page. type=markdown (clean MD), type=accessibility (a11y tree, token-efficient), type=tweets/posts/comments/products/table (smart extractors). selector=CSS for manual extraction.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "type": {"type": "string", "enum": ["markdown", "accessibility", "tweets", "posts", "comments", "products", "table"], "description": "Extraction mode"}, "selector": {"type": "string", "description": "CSS selector"}}}},
-    {"name": "find", "description": "Find element by text, CSS selector, XPath, or ARIA role.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}, "by": {"type": "string", "enum": ["text", "css", "xpath", "role"], "default": "text"}}, "required": ["text"]}},
-    {"name": "click", "description": "Click element by text content or CSS selector.", "inputSchema": {"type": "object", "properties": {"text": {"type": "string", "description": "Text or CSS selector of element to click"}}, "required": ["text"]}},
-    {"name": "type", "description": "Type text in input. Finds by: label text, placeholder, name, aria-label, type, or CSS selector.", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string", "description": "Label text, placeholder, name, or CSS selector"}, "value": {"type": "string", "description": "Text to type"}}, "required": ["selector", "value"]}},
-    {"name": "fill", "description": "Smart fill — handles inputs, textareas, selects, checkboxes, radios. Finds by label, placeholder, name, id. Use field labels as keys.", "inputSchema": {"type": "object", "properties": {"fields": {"type": "string", "description": "JSON: {\"Name\": \"John\", \"Email\": \"john@test.com\", \"Project type\": \"AI Agents\", \"Budget\": \"50K\"}"}, "url": {"type": "string", "description": "Optional URL to navigate first"}}, "required": ["fields"]}},
-    {"name": "submit", "description": "Submit current form.", "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "scroll", "description": "Scroll page.", "inputSchema": {"type": "object", "properties": {"direction": {"type": "string", "enum": ["up", "down"], "default": "down"}, "amount": {"type": "integer", "default": 500}}}},
-    {"name": "screenshot", "description": "Capture screenshot of current page.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}}},
-    {"name": "wait", "description": "Wait for element or text to appear on page.", "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}, "wait": {"type": "integer", "default": 10000}}, "required": ["selector"]}},
-    {"name": "login", "description": "Automated login: fill email+password and submit.", "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "email": {"type": "string"}, "password": {"type": "string"}}, "required": ["url", "email", "password"]}},
-    {"name": "extract", "description": "Extract structured data (tables or links).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string", "enum": ["table", "links"], "default": "links"}}}},
-    {"name": "gpt", "description": "ChatGPT (experimental). Uses OpenAI API if OPENAI_API_KEY is set, otherwise browser. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}, "raw": {"type": "boolean", "default": False}}}},
-    {"name": "grok", "description": "Grok (experimental). Uses xAI API if XAI_API_KEY is set, otherwise browser. Actions: send (default), read_last, is_streaming, history.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "action": {"type": "string", "enum": ["send", "read_last", "is_streaming", "history"], "default": "send"}, "wait": {"type": "boolean", "default": True}, "count": {"type": "integer", "default": 5}}}},
-    {"name": "plugin", "description": "Run, list, or create browser plugins (reusable pipelines). Plugins are YAML files in ~/.neorender/plugins/. Actions: run (execute a plugin), list (show available), create (make new).", "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["run", "list", "create"], "default": "run"}, "name": {"type": "string", "description": "Plugin name"}, "description": {"type": "string"}, "yaml": {"type": "string", "description": "YAML content for create action"}}, "additionalProperties": True}},
-    {"name": "js", "description": "Execute JavaScript on current page. Returns result as string.", "inputSchema": {"type": "object", "properties": {"code": {"type": "string", "description": "JavaScript code to execute. Use 'return' for values."}}, "required": ["code"]}},
-    {"name": "status", "description": "Browser and chat session status.", "inputSchema": {"type": "object", "properties": {}}},
-]
+def dispatch_tool(name, args):
+    """Dispatch tool by name with auto-locking and result persistence."""
+    t = TOOLS.get(name)
+    if not t:
+        return f'Unknown tool: {name}'
 
-DISPATCH = {
-    'browse': tool_browse, 'search': tool_search, 'open': tool_open, 'read': tool_read,
-    'find': tool_find, 'click': tool_click, 'type': tool_type, 'fill': tool_fill,
-    'submit': tool_submit, 'scroll': tool_scroll, 'screenshot': tool_screenshot,
-    'wait': tool_wait, 'login': tool_login, 'extract': tool_extract,
-    'gpt': tool_gpt, 'grok': tool_grok, 'plugin': tool_plugin, 'js': tool_js, 'status': tool_status,
-}
+    # Auto sequential lock for mutating tools
+    if not t['concurrent']:
+        with _browser_lock:
+            result = t['fn'](args)
+    else:
+        result = t['fn'](args)
+
+    # Auto persist large results
+    if t['max_result'] and isinstance(result, str) and len(result) > t['max_result']:
+        result = persist_if_large(result, name)
+
+    return result
+
+def get_mcp_tools():
+    """Generate MCP tool list from TOOLS registry."""
+    result = []
+    for name, t in TOOLS.items():
+        properties = {}
+        required = []
+        for param, desc in t['schema'].items():
+            properties[param] = {'type': 'string', 'description': desc}
+            if 'required' in desc.lower():
+                required.append(param)
+                properties[param]['description'] = desc.replace('required', '').strip() or f'{param} parameter'
+        result.append({
+            'name': name,
+            'description': t['description'],
+            'inputSchema': {
+                'type': 'object',
+                'properties': properties,
+                'required': required,
+            }
+        })
+    return result
 
 # ── MCP Protocol ──
 
@@ -1706,14 +1745,13 @@ def handle(req):
     if method == 'initialize':
         respond(id, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "neo-browser", "version": "3.0.0"}})
     elif method == 'tools/list':
-        respond(id, {"tools": TOOLS})
+        respond(id, {"tools": get_mcp_tools()})
     elif method == 'tools/call':
         name = params.get('name', '')
         args = params.get('arguments', {})
-        fn = DISPATCH.get(name)
-        if fn:
+        if name in TOOLS:
             try:
-                result = fn(args)
+                result = dispatch_tool(name, args)
                 if result is None: result = ''
                 text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
                 # Guard: truncate if over 500KB to stay under websocket 1MB limit
