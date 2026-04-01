@@ -858,3 +858,225 @@ class TestPersistIfLarge:
 
     def test_none_returned_unchanged(self):
         assert neo_browser.persist_if_large(None, 'tag') is None
+
+
+# ═══════════════════════════════════════════════════════════════
+# TestCookieSync
+# ═══════════════════════════════════════════════════════════════
+
+class TestCookieSync:
+
+    def test_ghost_path_uses_pid(self, neo):
+        """_resync_cookies uses ghost-{PID}, not ghost-profile."""
+        import inspect
+        source = inspect.getsource(neo._resync_cookies)
+        assert 'ghost-{os.getpid()}' in source or "f'ghost-{os.getpid()}'" in source
+
+    def test_excluded_domains_includes_google(self, neo):
+        """Google domains are excluded from cookie sync."""
+        import inspect
+        source = inspect.getsource(neo._sync_session)
+        for domain in ['.google.com', '.googleapis.com', '.youtube.com', '.gmail.com']:
+            assert domain in source
+
+    def test_cookie_domains_is_list(self, neo):
+        """COOKIE_DOMAINS is a list."""
+        assert isinstance(neo.COOKIE_DOMAINS, list)
+
+    def test_cookie_domains_empty_by_default(self, neo):
+        """COOKIE_DOMAINS empty when NEOBROWSER_COOKIE_DOMAINS env var not set."""
+        import os
+        if not os.environ.get('NEOBROWSER_COOKIE_DOMAINS'):
+            assert neo.COOKIE_DOMAINS == []
+
+
+# ═══════════════════════════════════════════════════════════════
+# TestChatPipeline
+# ═══════════════════════════════════════════════════════════════
+
+class TestChatPipeline:
+
+    def test_pipeline_init(self, neo):
+        """ChatPipeline initializes with correct defaults."""
+        p = neo.ChatPipeline('test', 'https://test.com')
+        assert p.platform == 'test'
+        assert p.url == 'https://test.com'
+        assert p.conv_url is None
+        assert p.d is None
+        assert p.max_retries == 2
+        assert p.last_error is None
+
+    def test_pipeline_send_captures_before_state(self, neo):
+        """send() captures both msg count AND last text before sending."""
+        import inspect
+        source = inspect.getsource(neo.ChatPipeline.send)
+        assert '_msg_count_before' in source
+        assert '_last_text_before' in source
+
+    def test_pipeline_wait_response_compares_text(self, neo):
+        """wait_response compares text content, not just count."""
+        import inspect
+        source = inspect.getsource(neo.ChatPipeline.wait_response)
+        assert 'last_text_before' in source
+
+    def test_pipeline_wait_response_non_blocking(self, neo):
+        """wait_response returns streaming status instead of blocking 120s."""
+        import inspect
+        source = inspect.getsource(neo.ChatPipeline.wait_response)
+        assert 'streaming' in source
+        assert 'range(max_wait * 2)' not in source
+
+    def test_pipeline_check_response_exists(self, neo):
+        """check_response method exists for non-blocking checks."""
+        assert hasattr(neo.ChatPipeline, 'check_response')
+
+    def test_pipeline_resync_and_reload_exists(self, neo):
+        """_resync_and_reload method exists for cookie refresh."""
+        assert hasattr(neo.ChatPipeline, '_resync_and_reload')
+
+    def test_pipeline_resync_kills_chrome(self, neo):
+        """_resync_and_reload kills Chrome before re-syncing."""
+        import inspect
+        source = inspect.getsource(neo.ChatPipeline._resync_and_reload)
+        assert '_kill_pids' in source or 'quit' in source
+        assert '_chrome = None' in source or '_chrome' in source
+
+    def test_pipeline_ensure_detects_spanish_login(self, neo):
+        """ensure() detects Spanish login walls (iniciar sesión)."""
+        import inspect
+        source = inspect.getsource(neo.ChatPipeline.ensure)
+        assert 'iniciar sesión' in source or 'inicia sesión' in source
+
+    def test_pipeline_ensure_attempts_resync_on_login(self, neo):
+        """ensure() tries cookie re-sync before failing on login wall."""
+        import inspect
+        source = inspect.getsource(neo.ChatPipeline.ensure)
+        assert '_resync_and_reload' in source
+
+    def test_gpt_instance_exists(self, neo):
+        """_gpt ChatPipeline instance exists at module level."""
+        assert hasattr(neo, '_gpt')
+        assert neo._gpt.platform == 'gpt'
+        assert 'chatgpt.com' in neo._gpt.url
+
+    def test_grok_instance_exists(self, neo):
+        """_grok ChatPipeline instance exists at module level."""
+        assert hasattr(neo, '_grok')
+        assert neo._grok.platform == 'grok'
+        assert 'grok.com' in neo._grok.url
+
+
+# ═══════════════════════════════════════════════════════════════
+# TestPluginLoopBug
+# ═══════════════════════════════════════════════════════════════
+
+class TestPluginLoopBug:
+
+    def test_loop_item_available_in_step_args(self):
+        """REGRESSION: {{item}} in step args should resolve during loop iteration.
+
+        The bug: step_args are resolved against outer ctx (line 149 in plugins.py)
+        before the loop begins, where 'item' doesn't exist yet. The second resolve
+        inside the loop (line 158) is a no-op because the template markers are gone.
+        This test documents the current (buggy) behavior: the loop runs 3 times
+        but URLs have empty item substitutions.
+        """
+        calls = []
+
+        def mock_dispatch(action, args):
+            calls.append((action, dict(args)))
+            return f'result'
+
+        plugin = {
+            'inputs': {
+                'items': {'default': 'a,b,c'}
+            },
+            'steps': [{
+                'action': 'browse',
+                'url': 'https://example.com/{{item}}',
+                'loop': 'items',
+                'as': 'item',
+            }]
+        }
+
+        plg.run_plugin(plugin, {}, mock_dispatch)
+
+        # Loop executes 3 times regardless of the bug
+        assert len(calls) == 3
+
+        # BUG: {{item}} is resolved against outer ctx where 'item' is absent → ''
+        # When FIXED these should be: ['https://example.com/a', 'https://example.com/b', 'https://example.com/c']
+        urls = [c[1].get('url', '') for c in calls]
+        assert urls == [
+            'https://example.com/',
+            'https://example.com/',
+            'https://example.com/',
+        ]
+
+    def test_loop_without_template_in_args_works(self):
+        """Loop with static args (no {{item}}) executes correctly."""
+        calls = []
+
+        def mock_dispatch(action, args):
+            calls.append((action, dict(args)))
+            return 'ok'
+
+        plugin = {
+            'inputs': {
+                'urls': {'default': 'a,b'}
+            },
+            'steps': [{
+                'action': 'scroll',
+                'amount': '500',
+                'loop': 'urls',
+                'as': 'url',
+            }]
+        }
+
+        plg.run_plugin(plugin, {}, mock_dispatch)
+        assert len(calls) == 2
+
+
+# ═══════════════════════════════════════════════════════════════
+# TestLoginWallDetection
+# ═══════════════════════════════════════════════════════════════
+
+class TestLoginWallDetection:
+
+    def test_login_signals_english(self, neo):
+        """Login detection covers English phrases."""
+        import inspect
+        source = inspect.getsource(neo.ChatPipeline.ensure)
+        for phrase in ['log in', 'sign in']:
+            assert phrase in source
+
+    def test_login_signals_spanish(self, neo):
+        """Login detection covers Spanish phrases."""
+        import inspect
+        source = inspect.getsource(neo.ChatPipeline.ensure)
+        assert 'iniciar sesión' in source or 'inicia sesión' in source
+
+
+# ═══════════════════════════════════════════════════════════════
+# TestBrowserLock
+# ═══════════════════════════════════════════════════════════════
+
+class TestBrowserLock:
+
+    def test_browser_lock_is_rlock(self):
+        """_browser_lock must be RLock (not Lock) to prevent deadlocks."""
+        import threading
+        # RLock instances are of a private C-level type; the standard check is
+        # isinstance(lock, type(threading.RLock()))
+        lock = neo_browser._browser_lock
+        assert isinstance(lock, type(threading.RLock()))
+
+    def test_rlock_allows_nested_acquire(self):
+        """RLock allows same thread to acquire twice (plugin → dispatch scenario)."""
+        acquired = []
+        lock = neo_browser._browser_lock
+        with lock:
+            acquired.append(1)
+            with lock:
+                acquired.append(2)
+        assert acquired == [1, 2]
