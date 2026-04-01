@@ -1813,7 +1813,7 @@ Usage:
   neo-browser.py              Start MCP server (stdin/stdout JSON-RPC)
   neo-browser.py --help       Show this help
   neo-browser.py --version    Show version
-  neo-browser.py doctor       Check dependencies
+  neo-browser.py doctor       Check all dependencies and environment
 
 MCP Config (Claude Code):
   {"neo-browser": {"command": "npx", "args": ["-y", "neobrowser"]}}
@@ -1824,35 +1824,151 @@ Docs: https://github.com/pitiflautico/neobrowser
 
 def run_doctor():
     import importlib
-    ok = '\033[32mOK\033[0m'
-    fail = '\033[31mFAIL\033[0m'
+    import subprocess
+    import sqlite3
+    import urllib.request
 
-    # Python version
+    PASS = '\033[32m✓\033[0m'
+    FAIL = '\033[31m✗\033[0m'
+    passed = 0
+    total = 0
+
+    def check(label, ok, detail=''):
+        nonlocal passed, total
+        total += 1
+        if ok:
+            passed += 1
+            print(f"  {PASS} {label}")
+        else:
+            print(f"  {FAIL} {label}{' — ' + detail if detail else ''}")
+        return ok
+
+    print("NeoBrowser Doctor")
+    print("─" * 40)
+
+    # 1. Python version
     vi = sys.version_info
     py_ok = vi >= (3, 10)
-    print(f"  Python {vi.major}.{vi.minor}.{vi.micro}        {ok if py_ok else fail + ' (need 3.10+)'}")
+    check(
+        f"Python {vi.major}.{vi.minor}.{vi.micro}",
+        py_ok,
+        "need Python 3.10+ — upgrade at python.org"
+    )
 
-    # websockets
+    # 2. Chrome binary exists
+    chrome_path = Path(CHROME_BIN)
+    chrome_found = chrome_path.exists()
+    check(
+        f"Chrome found at {CHROME_BIN}",
+        chrome_found,
+        "install Google Chrome from https://google.com/chrome"
+    )
+
+    # 3. Chrome launches headless
+    chrome_launches = False
+    if chrome_found:
+        try:
+            result = subprocess.run(
+                [CHROME_BIN, '--headless=new', '--dump-dom',
+                 '--no-sandbox', '--disable-gpu',
+                 '--disable-dev-shm-usage', 'about:blank'],
+                capture_output=True, text=True, timeout=10
+            )
+            chrome_launches = result.returncode == 0 or '<html' in result.stdout.lower()
+        except Exception:
+            chrome_launches = False
+    check(
+        "Chrome launches headless",
+        chrome_launches,
+        "Chrome binary found but failed to start — check permissions or re-install"
+    )
+
+    # 4. websockets importable
+    ws_ok = False
     try:
         importlib.import_module('websockets')
-        print(f"  websockets              {ok}")
+        ws_ok = True
     except ImportError:
-        print(f"  websockets              {fail} (pip install websockets)")
+        pass
+    check("websockets installed", ws_ok, "pip install websockets")
 
-    # Chrome binary
-    chrome_found = Path(CHROME_BIN).exists()
-    print(f"  Chrome binary           {ok if chrome_found else fail + f' (not found: {CHROME_BIN})'}")
+    # 5. Cookie source — real Chrome profile exists with cookies
+    real_profile = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome' / PROFILE
+    cookie_count = 0
+    cookie_ok = False
+    if real_profile.exists():
+        cookies_db = real_profile / 'Cookies'
+        if cookies_db.exists() and cookies_db.stat().st_size > 0:
+            try:
+                conn = sqlite3.connect(f'file:{cookies_db}?mode=ro&nolock=1', uri=True)
+                cookie_count = conn.execute('SELECT COUNT(*) FROM cookies').fetchone()[0]
+                conn.close()
+                cookie_ok = cookie_count > 0
+            except Exception:
+                cookie_ok = False
+    if cookie_ok:
+        print(f"  {PASS} Cookie source: {PROFILE} ({cookie_count} cookies)")
+        passed += 1
+    else:
+        detail = f"profile not found: {real_profile}" if not real_profile.exists() else "Cookies DB empty or unreadable"
+        print(f"  {FAIL} Cookie source — {detail}")
+    total += 1
 
-    # Ghost dir writable
+    # 6. Ghost profile dir writable
     ghost_dir = Path.home() / '.neorender'
+    ghost_ok = False
     try:
         ghost_dir.mkdir(parents=True, exist_ok=True)
         test_file = ghost_dir / '.write_test'
         test_file.touch()
         test_file.unlink()
-        print(f"  ~/.neorender/ writable  {ok}")
+        ghost_ok = True
     except Exception as e:
-        print(f"  ~/.neorender/ writable  {fail} ({e})")
+        ghost_ok = False
+    check(
+        f"Ghost profile: ~/.neorender/ writable",
+        ghost_ok,
+        f"cannot write to {ghost_dir}"
+    )
+
+    # 7. Plugins dir exists and has plugins
+    plugin_dir = Path.home() / '.neorender' / 'plugins'
+    plugin_count = 0
+    plugin_dir_ok = False
+    if plugin_dir.exists():
+        plugin_count = sum(1 for _ in plugin_dir.glob('*.y*ml'))
+        plugin_dir_ok = True
+    if plugin_dir_ok:
+        suffix = f"{plugin_count} found" if plugin_count else "0 found — create plugins in ~/.neorender/plugins/*.yaml"
+        print(f"  {'✓' if plugin_count else '!'} Plugins: {suffix} in ~/.neorender/plugins/")
+        passed += 1
+    else:
+        print(f"  {FAIL} Plugin dir ~/.neorender/plugins/ missing — will be created on first run")
+    total += 1
+
+    # 8. Network — can reach example.com
+    net_ok = False
+    try:
+        urllib.request.urlopen('http://example.com', timeout=5)
+        net_ok = True
+    except Exception:
+        pass
+    check("Network: example.com reachable", net_ok, "no internet access or DNS failure")
+
+    # 9. PyYAML (optional, needed for plugins)
+    yaml_ok = False
+    try:
+        importlib.import_module('yaml')
+        yaml_ok = True
+    except ImportError:
+        pass
+    check("PyYAML installed", yaml_ok, "optional — needed for plugins: pip install pyyaml")
+
+    print()
+    if passed == total:
+        print(f"  {passed}/{total} checks passed — ready to use")
+    else:
+        print(f"  {passed}/{total} checks passed — fix the items marked ✗ above")
 
 def main():
     args = sys.argv[1:]
@@ -1862,8 +1978,7 @@ def main():
     if args and args[0] in ('--version', '-v'):
         print('neobrowser 3.1.0')
         sys.exit(0)
-    if args and args[0] == 'doctor':
-        print('NeoBrowser doctor\n')
+    if args and args[0] in ('doctor', '--doctor'):
         run_doctor()
         sys.exit(0)
 
