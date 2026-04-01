@@ -52,6 +52,8 @@ NeoBrowser works with zero configuration. These environment variables unlock add
 | `OPENAI_API_KEY` | ChatGPT via API (reliable, replaces fragile browser automation) |
 | `XAI_API_KEY` | Grok via API (reliable, replaces fragile browser automation) |
 | `NEOBROWSER_CONTENT_PROCESS` | Set to `1` to process web content through `claude -p --model haiku` before returning |
+| `NEOBROWSER_COOKIE_DOMAINS` | Comma-separated domain allowlist for cookie sync (e.g. `github.com,twitter.com`) |
+| `NEOBROWSER_PROFILE` | Chrome profile directory to sync from (default: `Profile 24`) |
 
 Without these, NeoBrowser uses browser-based chat (experimental) and returns raw content.
 
@@ -159,8 +161,9 @@ You: ask ChatGPT what it thinks about MCP servers
 - The ghost profile is deleted on exit
 
 **Control:**
-- To change profile: set `PROFILE` constant in `neo-browser.py`
-- To exclude more domains: add to `EXCLUDED_DOMAINS` tuple
+- To change profile: set `NEOBROWSER_PROFILE` env var (or `PROFILE` constant in `neo-browser.py`)
+- To sync only specific domains: set `NEOBROWSER_COOKIE_DOMAINS=github.com,twitter.com`
+- To exclude more domains by default: add to `EXCLUDED_DOMAINS` tuple
 - To disable session sync: remove the real Chrome profile path
 
 ---
@@ -198,13 +201,28 @@ search (DDG)         0.94s
 
 ---
 
+## Tests
+
+```bash
+# Unit tests (pure functions, no Chrome, ~0.1s)
+python3 -m pytest tools/v3/tests/ -q
+
+# Operational tests (real Chrome, ~9s)
+python3 -m pytest tools/v3/tests/operational/ -q
+
+# All 150 tests
+python3 -m pytest tools/v3/tests/ tools/v3/tests/operational/ -q
+```
+
+---
+
 ## CLI
 
 ```
 neo-browser.py              Start MCP server
 neo-browser.py --help       Show help
 neo-browser.py --version    Show version
-neo-browser.py doctor       Check dependencies
+neo-browser.py doctor       Check dependencies (9 checks)
 ```
 
 ---

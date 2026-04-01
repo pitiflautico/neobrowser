@@ -2,6 +2,32 @@
 
 All notable changes to NeoBrowser are documented here.
 
+## 3.3.0 — 2026-04-01
+
+### Features
+- **Structured errors** — JSON responses with error code, message, and suggestion (`login_wall`, `captcha`, `rate_limit`, `no_response`, `url_blocked`, etc.)
+- **Per-domain cookie control** — `NEOBROWSER_COOKIE_DOMAINS` env var for allowlist-based cookie sync
+- **Page cache** — LRU cache (50 entries, 15min TTL) for browse results
+- **Sequential browser lock** — RLock serializes mutating operations, prevents race conditions
+- **Large result persistence** — Results >100K chars saved to disk, preview returned
+- **Non-blocking GPT/Grok** — Returns streaming status instead of blocking 120s; agent polls with `is_streaming`/`read_last`
+- **Tool definition pattern** — `@tool_def` decorator with auto-lock, auto-persist, auto-schema generation
+- **Comprehensive doctor** — 9 checks: Python, Chrome, cookies, network, plugins, etc.
+- **CI pipeline** — GitHub Actions runs 128 unit tests on every push
+
+### Fixes
+- **GPT stale response** — Compares text content, not just message count
+- **Cookie re-sync on login wall** — Restarts Ghost Chrome for fresh cookies (file copy alone doesn't work at runtime)
+- **Ghost profile path** — Fixed hardcoded `ghost-profile` → `ghost-{PID}`
+- **Plugin deadlock** — `Lock` → `RLock` for reentrant dispatch
+- **Read mode/type param** — Accepts both `mode` and `type` (schema/code alignment)
+- **Spanish login detection** — "Iniciar sesión" / "Inicia sesión" recognized
+
+### Tests
+- 128 unit tests (pure functions, no Chrome, 0.1s)
+- 22 operational tests (real Chrome, 9s)
+- Regression tests for every bug found
+
 ## [3.2.0] - 2026-03-31
 
 ### Added
