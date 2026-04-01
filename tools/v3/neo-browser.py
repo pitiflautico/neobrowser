@@ -163,7 +163,7 @@ _page_cache = PageCache()
 
 # ── Sequential execution for browser ops ──
 
-_browser_lock = threading.Lock()
+_browser_lock = threading.RLock()  # Reentrant: plugin → dispatch_tool → lock OK
 
 def sequential_browser(fn):
     """Decorator: serialize browser-mutating operations."""
