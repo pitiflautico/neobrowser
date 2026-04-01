@@ -1434,83 +1434,154 @@ class ChatPipeline:
         if not content or len(content) < 3:
             log(f'{self.platform}: WARNING — text not in input, send may fail')
         # Send: Enter + send button click (covers all cases)
+        user_count_before = int(d.js(
+            'return document.querySelectorAll("[data-message-author-role=user]").length'
+        ) or 0)
         d.enter()
         d.js('const b=document.querySelector("[data-testid=send-button]");if(b&&!b.disabled)b.click()')
-        log(f'{self.platform}: sent ({len(msg)} chars)')
+        # Verify: wait up to 3s for user message to appear in DOM
+        sent = False
+        for _ in range(6):
+            time.sleep(0.5)
+            user_count = int(d.js(
+                'return document.querySelectorAll("[data-message-author-role=user]").length'
+            ) or 0)
+            if user_count > user_count_before:
+                sent = True
+                break
+            # Also check if stop button appeared (ChatGPT started processing)
+            if d.js('return !!document.querySelector("[data-testid=stop-button]")'):
+                sent = True
+                break
+        if sent:
+            log(f'{self.platform}: sent verified ({len(msg)} chars)')
+        else:
+            log(f'{self.platform}: WARNING — send not verified, message may not have been sent')
+        self._send_verified = sent
         return True
 
     def check_response(self):
-        """Check if a response is ready. Non-blocking. Returns text, status JSON, or None."""
+        """Check response state. Non-blocking. Returns dict with granular status."""
         d = self.d
         if not d: return None
         state = d.js('''
             const msgs = document.querySelectorAll("[data-message-author-role=assistant]");
+            const userMsgs = document.querySelectorAll("[data-message-author-role=user]");
             const count = msgs.length;
             const last = count ? msgs[msgs.length-1] : null;
             const text = last?.innerText || "";
-            const streaming = !!document.querySelector("[data-testid=stop-button],[aria-busy=true],.result-streaming");
+            const stopBtn = !!document.querySelector("[data-testid=stop-button]");
+            const streaming = !!document.querySelector(".result-streaming,[aria-busy=true]");
+            const thinking = !!document.querySelector("[class*=thinking],[data-testid*=thinking]");
+            const hasError = text.includes("Something went wrong") || text.includes("error generating");
             const url = location.href;
-            return JSON.stringify({count, text: text.substring(0, 50000), streaming, url});
+            const lastUserMsg = userMsgs.length ? userMsgs[userMsgs.length-1].innerText?.substring(0,100) : "";
+            return JSON.stringify({count, text: text.substring(0, 50000), stopBtn, streaming, thinking, hasError, url, userCount: userMsgs.length, lastUserMsg});
         ''')
         try:
             return json.loads(state or '{}')
         except:
             return None
 
-    def wait_response(self, user_msg, max_wait=120):
-        """Step 4: Quick checks for response, return early with status if still streaming."""
+    def wait_response(self, user_msg, max_wait=90):
+        """Step 4: Smart wait with granular state detection.
+
+        States: send_failed → thinking → generating → complete | hung | error
+        Quick responses (<15s): returned immediately.
+        Slow responses: returns status with state so agent can poll intelligently.
+        """
         d = self.d
         before = getattr(self, '_msg_count_before', 0)
         last_text_before = getattr(self, '_last_text_before', '')
+        send_verified = getattr(self, '_send_verified', False)
 
         t0 = time.time()
+        last_chars = 0  # track progress to detect hung state
+        no_progress_count = 0  # consecutive checks with no new chars
 
-        # Quick checks: poll for up to 10s to catch fast responses
-        log(f'{self.platform}: checking for response (before={before} msgs)')
-        for i in range(20):  # 20 × 0.5s = 10s max
+        # If send wasn't verified, report immediately
+        if not send_verified:
+            return error_response('send_failed', 'Message may not have been sent',
+                                  suggestion='ChatGPT input may have been blocked. Try again.')
+
+        # Poll for up to 30s (60 × 0.5s) to catch most responses
+        log(f'{self.platform}: waiting for response (before={before} msgs)')
+        for i in range(60):
             time.sleep(0.5)
             s = self.check_response()
             if not s: continue
+
             count = s.get('count', 0)
             text = s.get('text', '')
+            stop_btn = s.get('stopBtn', False)
             streaming = s.get('streaming', False)
-            new_msg = count > before or (count == before and count > 0 and text != last_text_before and len(text) > 5)
+            has_error = s.get('hasError', False)
+            chars = len(text)
 
-            if new_msg and not streaming and len(text) > 2:
-                # Response complete — return it
-                if 'Something went wrong' in text:
-                    return error_response('gpt_error', 'ChatGPT returned an error', suggestion='Try again')
-                # Save conversation URL
+            new_msg = count > before or (count == before and count > 0 and text != last_text_before and chars > 5)
+
+            # Error state
+            if has_error:
+                return error_response('gpt_error', 'ChatGPT returned an error', suggestion='Try again')
+
+            # Complete: new message, not streaming, has content
+            if new_msg and not stop_btn and not streaming and chars > 2:
                 url = s.get('url', '')
                 if '/c/' in url: self.conv_url = url
-                log(f'{self.platform}: response ready at {time.time()-t0:.1f}s ({len(text)} chars)')
+                log(f'{self.platform}: complete at {time.time()-t0:.1f}s ({chars} chars)')
                 return save(text, self.platform)
 
-            if new_msg and streaming:
-                # Response started but still streaming — return status
-                log(f'{self.platform}: streaming at {time.time()-t0:.1f}s ({len(text)} chars so far)')
-                return json.dumps({'status': 'streaming', 'chars_so_far': len(text),
-                                   'suggestion': 'Use action=read_last to get the response when ready, or action=is_streaming to check'})
+            # Generating: new text appearing
+            if new_msg and chars > last_chars:
+                no_progress_count = 0
+                last_chars = chars
+                # If we have substantial content and it's been >15s, return status
+                if time.time() - t0 > 15 and chars > 50:
+                    log(f'{self.platform}: generating at {time.time()-t0:.1f}s ({chars} chars)')
+                    return json.dumps({'status': 'generating', 'chars_so_far': chars,
+                                       'suggestion': 'Response is being generated. Use action=read_last when ready, or action=is_streaming to check.'})
+                continue
 
-        # 10s passed, check one last time
+            # Thinking: stop button visible but no text yet
+            if stop_btn and chars == 0:
+                no_progress_count += 1
+                # Normal for complex prompts: wait up to 30s of "thinking"
+                if no_progress_count > 40:  # 20s with no chars at all
+                    log(f'{self.platform}: possible hung state ({no_progress_count} checks, 0 chars)')
+                    return json.dumps({'status': 'thinking', 'chars_so_far': 0, 'elapsed_s': round(time.time()-t0, 1),
+                                       'suggestion': 'ChatGPT is still thinking (complex prompt). Use action=is_streaming to check, or action=read_last when ready.'})
+                if i % 10 == 9:
+                    log(f'{self.platform}: thinking... ({time.time()-t0:.0f}s, 0 chars)')
+                continue
+
+            # Streaming but no new chars
+            if stop_btn and chars > 0 and chars == last_chars:
+                no_progress_count += 1
+                if no_progress_count > 20:  # 10s no progress while streaming
+                    log(f'{self.platform}: stalled at {chars} chars for {no_progress_count} checks')
+                    return json.dumps({'status': 'generating', 'chars_so_far': chars,
+                                       'suggestion': 'Response may be stalled. Use action=read_last to get partial content.'})
+
+        # 30s timeout — report final state
         s = self.check_response()
         if s:
             text = s.get('text', '')
-            streaming = s.get('streaming', False)
+            stop_btn = s.get('stopBtn', False)
+            chars = len(text)
             count = s.get('count', 0)
-            new_msg = count > before or (count == before and count > 0 and text != last_text_before and len(text) > 5)
+            new_msg = count > before or chars > 5
 
-            if new_msg and len(text) > 2 and not streaming:
+            if new_msg and chars > 2 and not stop_btn:
                 url = s.get('url', '')
                 if '/c/' in url: self.conv_url = url
                 return save(text, self.platform)
 
-            if streaming or new_msg:
-                return json.dumps({'status': 'streaming', 'chars_so_far': len(text),
-                                   'suggestion': 'Use action=read_last to get the response when ready, or action=is_streaming to check'})
+            if stop_btn or chars > 0:
+                state = 'generating' if chars > 0 else 'thinking'
+                return json.dumps({'status': state, 'chars_so_far': chars, 'elapsed_s': round(time.time()-t0, 1),
+                                   'suggestion': 'Use action=read_last to get the response when ready, or action=is_streaming to check.'})
 
-        # Nothing happened
-        return error_response('no_response', 'No response detected after 10s', suggestion='ChatGPT may be overloaded, try action=is_streaming to check')
+        return error_response('no_response', 'No response after 30s', suggestion='ChatGPT may be overloaded or message was not sent.')
 
     def run(self, msg, wait=True):
         """Full pipeline: ensure → verify → send → wait."""
@@ -1578,8 +1649,19 @@ def tool_gpt(args):
             resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
             return save(resp or 'No messages', 'gpt')
         if action == 'is_streaming':
-            streaming = d.js('return !!document.querySelector("[data-testid=stop-button]")')
-            return json.dumps({'streaming': bool(streaming), 'open': True})
+            s = _gpt.check_response()
+            if s:
+                chars = len(s.get('text', ''))
+                stop_btn = s.get('stopBtn', False)
+                streaming = s.get('streaming', False)
+                if not stop_btn and not streaming:
+                    state = 'complete' if chars > 0 else 'idle'
+                elif chars == 0:
+                    state = 'thinking'
+                else:
+                    state = 'generating'
+                return json.dumps({'state': state, 'streaming': bool(stop_btn), 'chars': chars, 'open': True})
+            return json.dumps({'state': 'unknown', 'streaming': False, 'open': False})
         if action == 'history':
             msgs = d.js(f'const m=[];document.querySelectorAll("[data-message-author-role]").forEach(e=>{{const r=e.getAttribute("data-message-author-role"),t=e.innerText?.trim()?.substring(0,300);if(t)m.push({{role:r,text:t}})}});return JSON.stringify(m.slice(-{int(args.get("count",5))}))')
             try: return '\n'.join(f'> {"YOU" if m["role"]=="user" else "GPT"}: {m["text"][:200]}' for m in json.loads(msgs))
