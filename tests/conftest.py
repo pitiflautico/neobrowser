@@ -11,7 +11,22 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import subprocess
 import pytest
+
+# ── 0. Prevent Chrome launch during tests ──
+_real_popen = subprocess.Popen
+def _fake_popen(*args, **kwargs):
+    """Block any Chrome launch during tests."""
+    cmd = args[0] if args else kwargs.get('args', [])
+    if isinstance(cmd, (list, tuple)) and any('Chrome' in str(c) for c in cmd):
+        mock = MagicMock()
+        mock.pid = 99999
+        mock.poll.return_value = 0
+        mock.communicate.return_value = (b'', b'')
+        return mock
+    return _real_popen(*args, **kwargs)
+subprocess.Popen = _fake_popen
 
 # ── 1. Stub websockets before any import ──
 _ws_mod = types.ModuleType('websockets')
