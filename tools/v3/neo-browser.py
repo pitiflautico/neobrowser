@@ -88,18 +88,25 @@ def sanitize_unicode(text):
     return text
 
 def validate_url(url):
-    """Basic URL validation — block dangerous schemes and private IPs."""
+    """URL validation — block dangerous schemes, private IPs, and cloud metadata."""
     if not url: return False
     u = urllib.parse.urlparse(url)
     if u.scheme not in ('http', 'https'): return False
     if u.username or u.password: return False  # No credentials in URLs
-    host = u.hostname or ''
-    if host in ('localhost', '127.0.0.1', '0.0.0.0', '[::]', '[::1]'): return False
-    if host.startswith('169.254.'): return False  # Link-local / cloud metadata
-    if host.startswith('10.'): return False
-    if host.startswith('192.168.'): return False
-    for i in range(16, 32):
-        if host.startswith(f'172.{i}.'): return False
+    host = (u.hostname or '').lower()
+    # Blocked hostnames (urlparse strips brackets from IPv6, so use bare forms)
+    BLOCKED_HOSTS = {'localhost', '127.0.0.1', '0.0.0.0', '::', '::1',
+                     'metadata.google.internal', 'metadata.internal'}
+    if host in BLOCKED_HOSTS: return False
+    # Robust IP check — covers IPv4 private, IPv6 loopback, IPv6-mapped
+    # (::ffff:10.x.x.x), link-local, and reserved ranges
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+    except ValueError:
+        pass  # Not an IP literal — hostname, allow
     return True
 
 # Simple secret detection patterns
@@ -122,6 +129,22 @@ def scan_secrets(text):
         if re.search(pattern, text):
             found.append(name)
     return found
+
+def _is_cf_challenge(html):
+    """Detect Cloudflare challenge/block pages in HTTP responses."""
+    if not html or len(html) < 100: return False
+    signals = [
+        'cf-browser-verification',     # CF JS challenge div
+        'cf_chl_opt',                   # CF challenge options script
+        'challenges.cloudflare.com',    # CF challenge iframe/script src
+        'Just a moment...',             # CF waiting page title
+        'Checking if the site connection is secure',  # CF interstitial text
+        'Attention Required! | Cloudflare',           # CF block page title
+        'cf-error-details',             # CF error page div
+        'ray ID',                       # CF ray ID footer
+    ]
+    html_lower = html[:5000].lower()
+    return sum(1 for s in signals if s.lower() in html_lower) >= 2
 
 def error_response(code, message, url='', suggestion=''):
     """Structured error for agents to act on."""
@@ -892,7 +915,9 @@ def tool_browse(args):
         req = urllib.request.Request(url, headers={'User-Agent': CHROME_UA})
         resp = urllib.request.urlopen(req, timeout=10)
         body = resp.read().decode('utf-8', errors='replace')
-        if len(body) > 200:
+        if _is_cf_challenge(body):
+            log(f'Cloudflare challenge detected, skipping HTTP → Chrome')
+        elif len(body) > 200:
             text = re.sub(r'<[^>]+>', ' ', body)
             text = re.sub(r'\s+', ' ', text).strip()
             if len(text) > 100:
@@ -901,7 +926,7 @@ def tool_browse(args):
                 _page_cache.put(url, result)
                 return result
     except: pass
-    log('HTTP fallback empty, Chrome fallback...')
+    log('HTTP fallback insufficient, Chrome fallback...')
     d = chrome_go(url)
     result = sanitize_unicode(process_content(d.sanitize()))
     _page_cache.put(url, result)
@@ -924,7 +949,7 @@ def tool_search(args):
             # Extract real URL from DDG redirect
             uddg = re.search(r'uddg=([^&]+)', raw_url)
             url = urllib.parse.unquote(uddg.group(1)) if uddg else raw_url
-            if url and title:
+            if url and title and validate_url(url):
                 results.append(f'{title}\n  {url}')
                 if len(results) >= num: break
         return '\n\n'.join(results) if results else 'No results'
