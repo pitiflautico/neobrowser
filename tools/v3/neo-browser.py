@@ -1011,7 +1011,7 @@ SMART_EXTRACTORS = {
 def tool_read(args):
     url = args.get('url', '')
     selector = args.get('selector', '')
-    content_type = args.get('type', '')
+    content_type = args.get('type', '') or args.get('mode', '')
     if url:
         if not selector and not content_type:
             out, ms = fast('see', url)
