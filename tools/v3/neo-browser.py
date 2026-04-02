@@ -934,7 +934,7 @@ def tool_def(name, description, schema, read_only=True, concurrent=True, max_res
 
 # ── Tool implementations ──
 
-@tool_def('browse', 'Fetch and parse a web page (fast HTTP, falls back to Chrome)', {'url': 'required', 'selector': 'optional CSS selector'}, read_only=True, concurrent=True, max_result=100000)
+@tool_def('browse', 'Fast HTTP fetch + parse (0.1-0.5s). Returns clean text from static pages. Falls back to Chrome for JS pages. Use open for SPAs, login-required sites, or Cloudflare-protected pages.', {'url': 'required', 'selector': 'optional CSS selector'}, read_only=True, concurrent=True, max_result=100000)
 def tool_browse(args):
     global _cache_epoch
     url = args.get('url', '')
@@ -994,7 +994,7 @@ def tool_browse(args):
             if _inflight.get(url, (None,))[0] == fetch_epoch:
                 del _inflight[url]
 
-@tool_def('search', 'Search DuckDuckGo', {'query': 'required'}, read_only=True, concurrent=True)
+@tool_def('search', 'Web search via DuckDuckGo. Returns ranked title + URL pairs. Use browse or open on results to read full content.', {'query': 'required', 'num': 'optional number of results (default 10)'}, read_only=True, concurrent=True)
 def tool_search(args):
     q = args.get('query', '')
     if not q: return 'query required'
@@ -1018,7 +1018,7 @@ def tool_search(args):
     except Exception as e:
         return f'Search error: {e}'
 
-@tool_def('open', 'Open URL in Chrome tab', {'url': 'required', 'tab': 'optional tab name'}, read_only=False, concurrent=False)
+@tool_def('open', 'Open URL in real Chrome browser. Works with SPAs, JS-heavy sites, Cloudflare. Use tab param to keep multiple pages open (e.g. tab="docs"). After open, use read/find/click to interact.', {'url': 'required', 'tab': 'optional tab name'}, read_only=False, concurrent=False)
 def tool_open(args):
     global _cache_epoch
     url = args.get('url', '')
@@ -1096,7 +1096,7 @@ SMART_EXTRACTORS = {
     ''',
 }
 
-@tool_def('read', 'Read current page content as markdown/structured text', {'selector': 'optional CSS selector', 'mode': 'optional: markdown|a11y|tweets|posts|tables'}, read_only=True, concurrent=True, max_result=100000)
+@tool_def('read', 'Read current Chrome page content. Modes: tweets (Twitter/X posts), posts (articles), tables (structured data), markdown, a11y (accessibility tree). Without mode, returns page text. Use after open.', {'selector': 'optional CSS selector', 'mode': 'optional: markdown|a11y|tweets|posts|tables'}, read_only=True, concurrent=True, max_result=100000)
 def tool_read(args):
     url = args.get('url', '')
     selector = args.get('selector', '')
@@ -1137,7 +1137,7 @@ def tool_read(args):
 
     return d.sanitize()
 
-@tool_def('find', 'Find elements on page by text, role, or selector', {'text': 'optional', 'role': 'optional', 'selector': 'optional'}, read_only=True, concurrent=True)
+@tool_def('find', 'Find interactive elements on current page by text, role, or CSS selector. Returns element list with indices. Use before click to identify targets.', {'text': 'optional', 'role': 'optional', 'selector': 'optional'}, read_only=True, concurrent=True)
 def tool_find(args):
     text = args.get('text', args.get('selector', ''))
     by = args.get('by', 'text')
@@ -1161,7 +1161,7 @@ def tool_find(args):
         }})));
     ''') or '[]'
 
-@tool_def('click', 'Click an element', {'text': 'optional', 'selector': 'optional', 'index': 'optional'}, read_only=False, concurrent=False)
+@tool_def('click', 'Click an element by text content, CSS selector, or index from find results. Triggers navigation, buttons, links, toggles.', {'text': 'optional', 'selector': 'optional', 'index': 'optional'}, read_only=False, concurrent=False)
 def tool_click(args):
     text = args.get('text', args.get('selector', ''))
     if not text: return 'text or selector required'
@@ -1175,7 +1175,7 @@ def tool_click(args):
     if clicked: time.sleep(0.5)  # Brief wait for click handler
     return f'Clicked "{text}"\n\n{d.sanitize()}' if clicked else f'Not found: "{text}"'
 
-@tool_def('type', 'Type text into focused element', {'text': 'required'}, read_only=False, concurrent=False)
+@tool_def('type', 'Type text into the currently focused element. Use after clicking an input field. For filling form fields by selector, use fill instead.', {'text': 'required'}, read_only=False, concurrent=False)
 def tool_type(args):
     """Smart type — uses __neoFind detector."""
     sel = args.get('selector', args.get('text', ''))
@@ -1202,7 +1202,7 @@ def tool_type(args):
     d.key(val)
     return json.dumps({'typed': True, 'value': val, 'field': info})
 
-@tool_def('fill', 'Fill a form field', {'selector': 'optional', 'text': 'optional', 'value': 'required'}, read_only=False, concurrent=False)
+@tool_def('fill', 'Fill a form field by CSS selector with a value. Combines focus + type. For multiple fields, call fill for each. Use submit after filling.', {'selector': 'optional', 'text': 'optional', 'value': 'required'}, read_only=False, concurrent=False)
 def tool_fill(args):
     """Smart fill — handles inputs, textareas, selects, checkboxes, radios.
     Finds fields by: name, id, placeholder, label text, aria-label, type."""
@@ -1296,7 +1296,7 @@ def tool_fill(args):
         return JSON.stringify({{filled, errors}});
     ''')
 
-@tool_def('submit', 'Submit a form', {'selector': 'optional'}, read_only=False, concurrent=False)
+@tool_def('submit', 'Submit a form. Clicks submit button or presses Enter. Use after fill to complete form submission.', {'selector': 'optional'}, read_only=False, concurrent=False)
 def tool_submit(args):
     d = chrome()
     r = d.js('''
@@ -1311,14 +1311,14 @@ def tool_submit(args):
     time.sleep(1)
     return d.sanitize()
 
-@tool_def('scroll', 'Scroll the page', {'direction': 'optional: up|down', 'amount': 'optional pixels'}, read_only=False, concurrent=False)
+@tool_def('scroll', 'Scroll current page. Direction: up or down. Amount in pixels (default 500). Use to load lazy content or reach elements below the fold.', {'direction': 'optional: up|down', 'amount': 'optional pixels'}, read_only=False, concurrent=False)
 def tool_scroll(args):
     d = chrome()
     dy = int(args.get('amount', 500)) * (1 if args.get('direction', 'down') == 'down' else -1)
     d.js(f'window.scrollBy(0,{dy})')
     return d.sanitize()
 
-@tool_def('screenshot', 'Take a screenshot of current page', {}, read_only=True, concurrent=True)
+@tool_def('screenshot', 'Capture screenshot of current Chrome page. Returns base64 PNG. Use to visually verify page state or debug rendering issues.', {}, read_only=True, concurrent=True)
 def tool_screenshot(args):
     url = args.get('url', '')
     if url: chrome_go(url, 3)
@@ -1326,7 +1326,7 @@ def tool_screenshot(args):
     chrome().screenshot(p)
     return f'Screenshot: {p}'
 
-@tool_def('wait', 'Wait for element or condition', {'selector': 'optional', 'text': 'optional', 'timeout': 'optional ms'}, read_only=True, concurrent=True)
+@tool_def('wait', 'Wait for an element (CSS selector) or text to appear on page. Timeout in ms (default 5000). Use after open for async-loaded content like SPAs.', {'selector': 'optional', 'text': 'optional', 'timeout': 'optional ms'}, read_only=True, concurrent=True)
 def tool_wait(args):
     sel = args.get('selector', args.get('text', ''))
     if not sel: return 'selector or text required'
@@ -1337,7 +1337,7 @@ def tool_wait(args):
         time.sleep(0.5)
     return f'Not found after {int(time.time()-start)}s: "{sel}"'
 
-@tool_def('login', 'Log into a website using stored session', {'url': 'required'}, read_only=False, concurrent=False)
+@tool_def('login', 'Navigate to URL and use stored session cookies to authenticate. Detects login walls and attempts cookie re-sync from real Chrome.', {'url': 'required'}, read_only=False, concurrent=False)
 def tool_login(args):
     url, email, pw = args.get('url', ''), args.get('email', ''), args.get('password', '')
     if not all([url, email, pw]): return 'url, email, password required'
@@ -1353,7 +1353,7 @@ def tool_login(args):
     time.sleep(3)
     return d.sanitize()
 
-@tool_def('extract', 'Extract links or table data from current page', {'type': 'optional: links|tables'}, read_only=True, concurrent=True, max_result=100000)
+@tool_def('extract', 'Extract structured data from current page. Types: links (all href URLs) or tables (HTML table data). Returns formatted text.', {'type': 'optional: links|tables'}, read_only=True, concurrent=True, max_result=100000)
 def tool_extract(args):
     t = args.get('type', 'links')
     d = chrome()
@@ -1780,7 +1780,7 @@ def chat_via_api(platform, message, api_key, base_url='https://api.openai.com/v1
     return None
 
 
-@tool_def('gpt', 'Send message to ChatGPT', {'message': 'required', 'action': 'optional: send|read_last|is_streaming|history', 'raw': 'optional bool'}, read_only=False, concurrent=False)
+@tool_def('gpt', 'Chat with ChatGPT via browser session. Actions: send (default), read_last (get last response), is_streaming (check state: thinking/generating/complete), history (recent messages). Set raw=true to skip file save.', {'message': 'required', 'action': 'optional: send|read_last|is_streaming|history', 'raw': 'optional bool'}, read_only=False, concurrent=False)
 def tool_gpt(args):
     action = args.get('action', 'send')
 
@@ -1822,7 +1822,7 @@ def tool_gpt(args):
     if not msg: return 'message required'
     return _gpt.run(msg, wait=args.get('wait', True))
 
-@tool_def('grok', 'Send message to Grok', {'message': 'required', 'action': 'optional: send|read_last|is_streaming|history', 'raw': 'optional bool'}, read_only=False, concurrent=False)
+@tool_def('grok', 'Chat with Grok (X.com) via browser session. Same actions as gpt: send, read_last, is_streaming, history.', {'message': 'required', 'action': 'optional: send|read_last|is_streaming|history', 'raw': 'optional bool'}, read_only=False, concurrent=False)
 def tool_grok(args):
     action = args.get('action', 'send')
 
@@ -1851,7 +1851,7 @@ def tool_grok(args):
     if not msg: return 'message required'
     return _grok.run(msg, wait=args.get('wait', True))
 
-@tool_def('js', 'Execute JavaScript in current page', {'code': 'required'}, read_only=True, concurrent=True)
+@tool_def('js', 'Execute JavaScript in current Chrome page and return the result. Code must use return statement. Has access to full DOM and page APIs.', {'code': 'required'}, read_only=True, concurrent=True)
 def tool_js(args):
     """Execute arbitrary JavaScript on current page. For debugging and advanced use."""
     code = args.get('code', '')
@@ -1861,7 +1861,7 @@ def tool_js(args):
     if result == '': return '(empty string)'
     return str(result)[:5000]
 
-@tool_def('status', 'Show browser status (tabs, URLs, PIDs)', {}, read_only=True, concurrent=True)
+@tool_def('status', 'Show NeoBrowser status: Chrome PID, open tabs, current URLs, connection state.', {}, read_only=True, concurrent=True)
 def tool_status(args):
     tabs = list(_chrome._tabs.keys()) if _chrome else []
     active = _chrome._active if _chrome else None
@@ -1870,7 +1870,7 @@ def tool_status(args):
 
 # ── Plugins ──
 
-@tool_def('plugin', 'Run a YAML automation pipeline', {'name': 'required', 'args': 'optional'}, read_only=False, concurrent=False)
+@tool_def('plugin', 'Run a YAML automation pipeline from ~/.neorender/plugins/. Actions: run (default), list (show available), create (new plugin). Plugins chain browser tools in sequence.', {'name': 'required', 'args': 'optional'}, read_only=False, concurrent=False)
 def tool_plugin(args):
     from plugins import load_plugin, list_plugins, create_plugin, run_plugin
 
