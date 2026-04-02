@@ -183,6 +183,38 @@ class PageCache:
             self._cache[url] = (time.time(), content)
 
 _page_cache = PageCache()
+_cache_epoch = 0  # Bumped on navigation — invalidates stale in-flight cache writes
+
+# ── In-flight dedup ──
+
+_inflight = {}  # url → (epoch, future_result)
+_inflight_lock = threading.Lock()
+
+# ── Cleanup registry ──
+
+_cleanup_fns = set()
+
+def register_cleanup(fn):
+    """Register a cleanup handler. Returns unregister function."""
+    _cleanup_fns.add(fn)
+    return lambda: _cleanup_fns.discard(fn)
+
+def run_all_cleanups():
+    """Run all registered cleanup handlers."""
+    for fn in list(_cleanup_fns):
+        try: fn()
+        except: pass
+
+# ── Process utilities ──
+
+def is_pid_alive(pid):
+    """Signal-0 zombie check — test if PID exists without sending signal."""
+    if pid <= 1: return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 # ── Sequential execution for browser ops ──
 
@@ -638,15 +670,21 @@ def _kill_pids():
 def chrome():
     global _chrome
     if _chrome:
-        try:
-            _chrome.tab('default')  # Always return on default tab
-            result = _chrome.js('return document.readyState')
-            if result: return _chrome
-        except: pass
-        try: _chrome.quit()
-        except: pass
-        _kill_pids()
-        _chrome = None; _chrome_pids.clear(); time.sleep(1)
+        # Zombie check: verify Chrome PID is still alive
+        alive = any(is_pid_alive(p) for p in _chrome_pids) if _chrome_pids else False
+        if not alive:
+            log('Chrome PID dead (zombie detected), relaunching')
+            _chrome = None; _chrome_pids.clear()
+        else:
+            try:
+                _chrome.tab('default')  # Always return on default tab
+                result = _chrome.js('return document.readyState')
+                if result: return _chrome
+            except: pass
+            try: _chrome.quit()
+            except: pass
+            _kill_pids()
+            _chrome = None; _chrome_pids.clear(); time.sleep(1)
 
     with _chrome_lock:
         if _chrome: return _chrome
@@ -898,39 +936,63 @@ def tool_def(name, description, schema, read_only=True, concurrent=True, max_res
 
 @tool_def('browse', 'Fetch and parse a web page (fast HTTP, falls back to Chrome)', {'url': 'required', 'selector': 'optional CSS selector'}, read_only=True, concurrent=True, max_result=100000)
 def tool_browse(args):
+    global _cache_epoch
     url = args.get('url', '')
     if not url: return 'url required'
     if not validate_url(url):
         return error_response('url_blocked', f'URL blocked by security policy: {url}', suggestion='Only public HTTP/HTTPS URLs are allowed')
     cached = _page_cache.get(url)
     if cached: return cached
-    out, ms = fast('see', url)
-    if len(out) > 200:
-        log(f'V1 browse: {ms}ms')
-        result = sanitize_unicode(process_content(out))
-        _page_cache.put(url, result)
-        return result
-    # Try raw HTTP before expensive Chrome fallback
+    # In-flight dedup: if another call is already fetching this URL, wait for it
+    with _inflight_lock:
+        if url in _inflight:
+            epoch, result_holder = _inflight[url]
+            if epoch == _cache_epoch:
+                log(f'In-flight dedup: waiting for {url[:60]}')
+                return result_holder.get('result', 'In-flight request pending')
+    # Register in-flight
+    fetch_epoch = _cache_epoch
+    result_holder = {}
+    with _inflight_lock:
+        _inflight[url] = (fetch_epoch, result_holder)
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': CHROME_UA})
-        resp = urllib.request.urlopen(req, timeout=10)
-        body = resp.read().decode('utf-8', errors='replace')
-        if _is_cf_challenge(body):
-            log(f'Cloudflare challenge detected, skipping HTTP → Chrome')
-        elif len(body) > 200:
-            text = re.sub(r'<[^>]+>', ' ', body)
-            text = re.sub(r'\s+', ' ', text).strip()
-            if len(text) > 100:
-                log(f'HTTP fallback: {len(text)} chars')
-                result = sanitize_unicode(process_content(text[:5000]))
+        out, ms = fast('see', url)
+        if len(out) > 200:
+            log(f'V1 browse: {ms}ms')
+            result = sanitize_unicode(process_content(out))
+            if fetch_epoch == _cache_epoch:  # epoch guard
                 _page_cache.put(url, result)
-                return result
-    except: pass
-    log('HTTP fallback insufficient, Chrome fallback...')
-    d = chrome_go(url)
-    result = sanitize_unicode(process_content(d.sanitize()))
-    _page_cache.put(url, result)
-    return result
+            result_holder['result'] = result
+            return result
+        # Try raw HTTP before expensive Chrome fallback
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': CHROME_UA})
+            resp = urllib.request.urlopen(req, timeout=10)
+            body = resp.read().decode('utf-8', errors='replace')
+            if _is_cf_challenge(body):
+                log(f'Cloudflare challenge detected, skipping HTTP → Chrome')
+            elif len(body) > 200:
+                text = re.sub(r'<[^>]+>', ' ', body)
+                text = re.sub(r'\s+', ' ', text).strip()
+                if len(text) > 100:
+                    log(f'HTTP fallback: {len(text)} chars')
+                    result = sanitize_unicode(process_content(text[:5000]))
+                    if fetch_epoch == _cache_epoch:
+                        _page_cache.put(url, result)
+                    result_holder['result'] = result
+                    return result
+        except: pass
+        log('HTTP fallback insufficient, Chrome fallback...')
+        d = chrome_go(url)
+        result = sanitize_unicode(process_content(d.sanitize()))
+        if fetch_epoch == _cache_epoch:
+            _page_cache.put(url, result)
+        result_holder['result'] = result
+        return result
+    finally:
+        with _inflight_lock:
+            if _inflight.get(url, (None,))[0] == fetch_epoch:
+                del _inflight[url]
 
 @tool_def('search', 'Search DuckDuckGo', {'query': 'required'}, read_only=True, concurrent=True)
 def tool_search(args):
@@ -958,10 +1020,12 @@ def tool_search(args):
 
 @tool_def('open', 'Open URL in Chrome tab', {'url': 'required', 'tab': 'optional tab name'}, read_only=False, concurrent=False)
 def tool_open(args):
+    global _cache_epoch
     url = args.get('url', '')
     if not url: return 'url required'
     if not validate_url(url):
         log(f'WARNING: navigating to potentially unsafe URL: {url}')
+    _cache_epoch += 1  # Invalidate stale in-flight cache writes
     d = chrome_go(url, int(args.get('wait', 5000)) / 1000)
     return process_content(d.sanitize())
 
@@ -1833,6 +1897,7 @@ def tool_plugin(args):
 # ── Cleanup ──
 def cleanup():
     global _chrome
+    run_all_cleanups()  # Drain cleanup registry first
     if _chrome: _chrome.quit(); _chrome = None
     _kill_pids(); PID_FILE.unlink(missing_ok=True)
     # Clean up our per-process profile
