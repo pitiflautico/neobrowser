@@ -1467,6 +1467,42 @@ class ChatPipeline:
             self.last_error = error_response('rate_limit', 'Rate limited by platform', suggestion='Wait and retry')
             return False
 
+        # Verify auth status via Sentinel (ChatGPT anti-bot system)
+        if 'chatgpt.com' in domain:
+            persona = d.js('''
+                try {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', '/backend-api/sentinel/chat-requirements/prepare', false);
+                    xhr.setRequestHeader('Content-Type', 'application/json');
+                    xhr.withCredentials = true;
+                    xhr.send('{}');
+                    const data = JSON.parse(xhr.responseText);
+                    return data.persona || 'unknown';
+                } catch(e) { return 'error: ' + e.message; }
+            ''') or 'unknown'
+            log(f'{self.platform}: sentinel persona = {persona}')
+            if 'noauth' in persona:
+                log(f'{self.platform}: session not authenticated, attempting re-sync')
+                if self._resync_and_reload(d):
+                    d = self.d
+                    # Re-check persona
+                    persona2 = d.js('''
+                        try {
+                            const xhr = new XMLHttpRequest();
+                            xhr.open('POST', '/backend-api/sentinel/chat-requirements/prepare', false);
+                            xhr.setRequestHeader('Content-Type', 'application/json');
+                            xhr.withCredentials = true;
+                            xhr.send('{}');
+                            return JSON.parse(xhr.responseText).persona || 'unknown';
+                        } catch(e) { return 'error'; }
+                    ''') or 'unknown'
+                    log(f'{self.platform}: after re-sync, persona = {persona2}')
+                    if 'noauth' in persona2:
+                        self.last_error = error_response('auth_expired',
+                            'ChatGPT session expired (sentinel: noauth)',
+                            suggestion='Log into chatgpt.com in your real Chrome browser and restart NeoBrowser')
+                        return False
+
         # Inject NEOMODE_JS if not present
         if not d.js('return typeof window.__neoFind === "function"'):
             d.js(NEOMODE_JS)
