@@ -889,9 +889,12 @@ def save(text, tag='response'):
     p.write_text(text)
     return text[:4000] + f'\n... [{len(text)} chars total → {p}]'
 
-def process_content(text, prompt='You are a content extractor. Output ONLY the extracted data, no commentary. Extract the main content as clean structured text. Remove navigation, ads, footers, cookie banners, boilerplate. Keep titles, links, dates, authors, numbers. Do not interpret or analyze — just extract and structure.'):
-    """Pass web content through claude -p to extract only relevant info."""
-    if not CONTENT_PROCESS or len(text) < 500:
+def process_content(text, prompt='You are a content extractor. Output ONLY the extracted data, no commentary. Extract the main content as clean structured text. Remove navigation, ads, footers, cookie banners, boilerplate. Keep titles, links, dates, authors, numbers. Do not interpret or analyze — just extract and structure.', force=False):
+    """Pass web content through claude -p to extract only relevant info.
+    Runs automatically when force=True (user provided a prompt) or when CONTENT_PROCESS env is set."""
+    if not force and not CONTENT_PROCESS:
+        return text
+    if len(text) < 200:
         return text
 
     truncated = text[:CONTENT_MAX_CHARS]
@@ -934,10 +937,11 @@ def tool_def(name, description, schema, read_only=True, concurrent=True, max_res
 
 # ── Tool implementations ──
 
-@tool_def('browse', 'Fast HTTP fetch + parse (0.1-0.5s). Returns clean text from static pages. Falls back to Chrome for JS pages. Use open for SPAs, login-required sites, or Cloudflare-protected pages.', {'url': 'required', 'selector': 'optional CSS selector'}, read_only=True, concurrent=True, max_result=100000)
+@tool_def('browse', 'Fast HTTP fetch + parse (0.1-0.5s). Returns clean text from static pages. Falls back to Chrome for JS pages. Use open for SPAs, login-required sites, or Cloudflare-protected pages. Use prompt param to extract only specific info (processed via small LLM).', {'url': 'required', 'prompt': 'optional: what to extract from the page (e.g. "get the pricing table")', 'selector': 'optional CSS selector'}, read_only=True, concurrent=True, max_result=100000)
 def tool_browse(args):
     global _cache_epoch
     url = args.get('url', '')
+    user_prompt = args.get('prompt', '')
     if not url: return 'url required'
     if not validate_url(url):
         return error_response('url_blocked', f'URL blocked by security policy: {url}', suggestion='Only public HTTP/HTTPS URLs are allowed')
@@ -959,7 +963,7 @@ def tool_browse(args):
         out, ms = fast('see', url)
         if len(out) > 200:
             log(f'V1 browse: {ms}ms')
-            result = sanitize_unicode(process_content(out))
+            result = sanitize_unicode(process_content(out, prompt=user_prompt, force=bool(user_prompt)) if user_prompt else process_content(out))
             if fetch_epoch == _cache_epoch:  # epoch guard
                 _page_cache.put(url, result)
             result_holder['result'] = result
@@ -976,7 +980,7 @@ def tool_browse(args):
                 text = re.sub(r'\s+', ' ', text).strip()
                 if len(text) > 100:
                     log(f'HTTP fallback: {len(text)} chars')
-                    result = sanitize_unicode(process_content(text[:5000]))
+                    result = sanitize_unicode(process_content(text[:5000], prompt=user_prompt, force=bool(user_prompt)) if user_prompt else process_content(text[:5000]))
                     if fetch_epoch == _cache_epoch:
                         _page_cache.put(url, result)
                     result_holder['result'] = result
@@ -984,7 +988,8 @@ def tool_browse(args):
         except: pass
         log('HTTP fallback insufficient, Chrome fallback...')
         d = chrome_go(url)
-        result = sanitize_unicode(process_content(d.sanitize()))
+        raw = d.sanitize()
+        result = sanitize_unicode(process_content(raw, prompt=user_prompt, force=True) if user_prompt else process_content(raw))
         if fetch_epoch == _cache_epoch:
             _page_cache.put(url, result)
         result_holder['result'] = result
@@ -1096,11 +1101,12 @@ SMART_EXTRACTORS = {
     ''',
 }
 
-@tool_def('read', 'Read current Chrome page content. Modes: tweets (Twitter/X posts), posts (articles), tables (structured data), markdown, a11y (accessibility tree). Without mode, returns page text. Use after open.', {'selector': 'optional CSS selector', 'mode': 'optional: markdown|a11y|tweets|posts|tables'}, read_only=True, concurrent=True, max_result=100000)
+@tool_def('read', 'Read current Chrome page content. Modes: tweets (Twitter/X posts), posts (articles), tables (structured data), markdown, a11y (accessibility tree). Without mode, returns page text. Use prompt param to extract only specific info via LLM. Use after open.', {'selector': 'optional CSS selector', 'mode': 'optional: markdown|a11y|tweets|posts|tables', 'prompt': 'optional: what to extract (e.g. "get video duration and title")'}, read_only=True, concurrent=True, max_result=100000)
 def tool_read(args):
     url = args.get('url', '')
     selector = args.get('selector', '')
     content_type = args.get('type', '') or args.get('mode', '')
+    user_prompt = args.get('prompt', '')
     if url:
         if not selector and not content_type:
             out, ms = fast('see', url)
@@ -1135,7 +1141,10 @@ def tool_read(args):
         ''')
         return save(text or f'No content for: {selector}', 'read')
 
-    return d.sanitize()
+    raw = d.sanitize()
+    if user_prompt:
+        return process_content(raw, prompt=user_prompt, force=True)
+    return raw
 
 @tool_def('find', 'Find interactive elements on current page by text, role, or CSS selector. Returns element list with indices. Use before click to identify targets.', {'text': 'optional', 'role': 'optional', 'selector': 'optional'}, read_only=True, concurrent=True)
 def tool_find(args):
