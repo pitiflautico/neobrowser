@@ -1,0 +1,278 @@
+[
+  {
+    "test_name": "cold_start",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:45.428270",
+    "success": true,
+    "duration_ms": 319.6,
+    "init_time_ms": 72.2,
+    "first_action_ms": 247.2,
+    "output_len": 374
+  },
+  {
+    "test_name": "cold_start",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:45.541973",
+    "success": true,
+    "duration_ms": 113.7,
+    "init_time_ms": 0.7,
+    "first_action_ms": 112.8,
+    "output_len": 374
+  },
+  {
+    "test_name": "cold_start",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:45.648805",
+    "success": true,
+    "duration_ms": 106.7,
+    "init_time_ms": 0.9,
+    "first_action_ms": 105.7,
+    "output_len": 374
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.078970",
+    "success": true,
+    "duration_ms": 6427.2,
+    "avg_time": 2142.4,
+    "urls": 3
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079158",
+    "success": true,
+    "duration_ms": 0.1,
+    "avg_time": 0.0,
+    "urls": 3
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079212",
+    "success": true,
+    "duration_ms": 0.0,
+    "avg_time": 0.0,
+    "urls": 3
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079259",
+    "success": true,
+    "duration_ms": 0.0,
+    "avg_time": 0.0,
+    "urls": 3
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079302",
+    "success": true,
+    "duration_ms": 0.0,
+    "avg_time": 0.0,
+    "urls": 3
+  },
+  {
+    "test_name": "static_page",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079337",
+    "success": true,
+    "duration_ms": 0.0,
+    "output_tokens": 93
+  },
+  {
+    "test_name": "static_page",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079356",
+    "success": true,
+    "duration_ms": 0.0,
+    "output_tokens": 93
+  },
+  {
+    "test_name": "static_page",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079374",
+    "success": true,
+    "duration_ms": 0.0,
+    "output_tokens": 93
+  },
+  {
+    "test_name": "static_page",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079392",
+    "success": true,
+    "duration_ms": 0.0,
+    "output_tokens": 93
+  },
+  {
+    "test_name": "static_page",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.079409",
+    "success": true,
+    "duration_ms": 0.0,
+    "output_tokens": 93
+  },
+  {
+    "test_name": "throughput",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:52.080047",
+    "success": true,
+    "duration_ms": 0.6,
+    "concurrency": 5,
+    "ops_per_sec": 8333.33,
+    "failures": 0,
+    "avg_job_ms": 0.1
+  },
+  {
+    "test_name": "resource_usage",
+    "tool": "neobrowser",
+    "timestamp": "2026-04-02T14:01:54.087848",
+    "success": true,
+    "duration_ms": 0,
+    "cpu_avg": 0.0,
+    "cpu_peak": 0.0,
+    "ram_avg": 35.0,
+    "ram_peak": 35.0,
+    "samples": 2
+  },
+  {
+    "test_name": "cold_start",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:54.206864",
+    "success": true,
+    "duration_ms": 118.7,
+    "init_time_ms": 0.0,
+    "first_action_ms": 118.7,
+    "output_len": 288
+  },
+  {
+    "test_name": "cold_start",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:54.286140",
+    "success": true,
+    "duration_ms": 79.2,
+    "init_time_ms": 0.0,
+    "first_action_ms": 79.2,
+    "output_len": 288
+  },
+  {
+    "test_name": "cold_start",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:54.362065",
+    "success": true,
+    "duration_ms": 75.8,
+    "init_time_ms": 0.0,
+    "first_action_ms": 75.8,
+    "output_len": 288
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:55.124857",
+    "success": true,
+    "duration_ms": 762.7,
+    "avg_time": 254.2,
+    "urls": 3
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:55.891536",
+    "success": true,
+    "duration_ms": 766.6,
+    "avg_time": 255.5,
+    "urls": 3
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:56.622075",
+    "success": true,
+    "duration_ms": 730.4,
+    "avg_time": 243.4,
+    "urls": 3
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:57.424076",
+    "success": true,
+    "duration_ms": 801.9,
+    "avg_time": 267.3,
+    "urls": 3
+  },
+  {
+    "test_name": "warm_run",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:58.180020",
+    "success": true,
+    "duration_ms": 755.8,
+    "avg_time": 251.9,
+    "urls": 3
+  },
+  {
+    "test_name": "static_page",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:58.270534",
+    "success": true,
+    "duration_ms": 90.4,
+    "output_tokens": 72
+  },
+  {
+    "test_name": "static_page",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:58.363960",
+    "success": true,
+    "duration_ms": 93.3,
+    "output_tokens": 72
+  },
+  {
+    "test_name": "static_page",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:58.438722",
+    "success": true,
+    "duration_ms": 74.7,
+    "output_tokens": 72
+  },
+  {
+    "test_name": "static_page",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:58.516876",
+    "success": true,
+    "duration_ms": 78.1,
+    "output_tokens": 72
+  },
+  {
+    "test_name": "static_page",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:58.594323",
+    "success": true,
+    "duration_ms": 77.4,
+    "output_tokens": 72
+  },
+  {
+    "test_name": "throughput",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:01:58.682407",
+    "success": true,
+    "duration_ms": 88.0,
+    "concurrency": 5,
+    "ops_per_sec": 56.82,
+    "failures": 0,
+    "avg_job_ms": 84.7
+  },
+  {
+    "test_name": "resource_usage",
+    "tool": "fetch",
+    "timestamp": "2026-04-02T14:02:02.110481",
+    "success": true,
+    "duration_ms": 0,
+    "cpu_avg": 0.9,
+    "cpu_peak": 2.7,
+    "ram_avg": 41.3,
+    "ram_peak": 41.4,
+    "samples": 4
+  }
+]
