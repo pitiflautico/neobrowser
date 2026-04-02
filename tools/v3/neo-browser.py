@@ -1570,11 +1570,28 @@ class ChatPipeline:
             # Thinking: stop button visible but no text yet
             if stop_btn and chars == 0:
                 no_progress_count += 1
-                # Normal for complex prompts: wait up to 30s of "thinking"
-                if no_progress_count > 40:  # 20s with no chars at all
-                    log(f'{self.platform}: possible hung state ({no_progress_count} checks, 0 chars)')
-                    return json.dumps({'status': 'thinking', 'chars_so_far': 0, 'elapsed_s': round(time.time()-t0, 1),
-                                       'suggestion': 'ChatGPT is still thinking (complex prompt). Use action=is_streaming to check, or action=read_last when ready.'})
+                # After 20s of 0 chars: likely hung — stop and retry
+                if no_progress_count > 40:  # 20s with no chars
+                    log(f'{self.platform}: hung detected ({no_progress_count} checks, 0 chars) — stopping and retrying')
+                    d.js('const b=document.querySelector("[data-testid=stop-button]");if(b)b.click()')
+                    time.sleep(2)
+                    # Click "Regenerate" or "Try again" if visible
+                    d.js('''
+                        const btns = document.querySelectorAll("button");
+                        for (const b of btns) {
+                            const t = (b.innerText || "").toLowerCase();
+                            if (t.includes("regenerat") || t.includes("try again") || t.includes("reintentar")) {
+                                b.click(); break;
+                            }
+                        }
+                    ''')
+                    log(f'{self.platform}: retrying after hung recovery')
+                    # Reset counters and keep polling
+                    no_progress_count = 0
+                    before = int(d.js(
+                        'return document.querySelectorAll("[data-message-author-role=assistant]").length'
+                    ) or 0)
+                    continue
                 if i % 10 == 9:
                     log(f'{self.platform}: thinking... ({time.time()-t0:.0f}s, 0 chars)')
                 continue
