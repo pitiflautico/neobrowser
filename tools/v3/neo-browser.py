@@ -13,6 +13,7 @@ Tabs:
   - gpt: dedicated ChatGPT tab (persists across browse calls)
   - grok: dedicated Grok tab (persists across browse calls)
   New tabs created via CDP Target.createTarget, each with own WebSocket.
+  All tabs share the same Chrome process and cookie jar (same session/login).
 
 Tools (19):
   HTTP (no Chrome):
@@ -21,7 +22,10 @@ Tools (19):
 
   Chrome browsing (default tab):
     OPEN    — Navigate to URL in Ghost Chrome (~5s). CF bypass, session.
-    READ    — Extract text. type=tweets|posts|comments|products|table or CSS selector.
+    READ    — Extract page content. Three tiers by cost:
+              Fast JS (~1ms): text|main|headings|meta|links
+              Structured:     markdown|tweets|posts|comments|products|table
+              Expensive AX:   accessibility|spatial
     FIND    — Find element by text, CSS, XPath, or ARIA role.
     CLICK   — Click element by text or CSS selector.
     TYPE    — Type in input (finds by label, placeholder, name, aria-label).
@@ -46,6 +50,65 @@ Session sync (on Chrome launch):
   1. Cookies: SQLite backup from real Chrome (WAL-safe). Google excluded.
   2. Local Storage: SPA auth tokens (X, ChatGPT, LinkedIn...).
   3. IndexedDB: some sites store auth here.
+
+────────────────────────────────────────────────────────────────────────
+GPT PIPELINE — How it works
+────────────────────────────────────────────────────────────────────────
+
+The GPT tool uses Ghost Chrome as a real browser, never the OpenAI API.
+One dedicated tab stays open on ChatGPT for the lifetime of the process.
+
+Conversation model:
+  - conv_url (e.g. chatgpt.com/c/xxx) tracks the active conversation.
+  - On first send: conv_url is None → lands on chatgpt.com → ChatGPT
+    creates a new /c/xxx URL → conv_url is captured and anchored.
+  - On subsequent sends: ensure() sees conv_url, stays on that tab.
+    The conversation continues without re-navigating.
+  - Tab drift: if another process navigated the tab away, ensure()
+    detects the URL mismatch and navigates back to conv_url.
+  - Server restart: if conv_url is None but tab is already on a /c/ URL,
+    ensure() adopts it (no new conversation opened unnecessarily).
+
+Send pipeline (4 steps, each verifies before proceeding):
+  1. ensure()       — Switch to 'gpt' tab. Navigate if needed. Check login
+                      via DOM (no sentinel XHR). Re-sync cookies if wall.
+  2. verify_ready() — Wait for any pending streaming to finish (max 30s).
+                      If still streaming after 30s → error, don't send.
+                      Check #prompt-textarea is present and accessible.
+  3. send()         — CDP mouse click on textarea (real focus).
+                      paste() via ClipboardEvent (replaces existing content,
+                      works with ProseMirror/React). Verify user message
+                      appeared in DOM before returning True.
+  4. wait_response()— Poll for assistant message. Hung detection at 20s
+                      (clicks stop + regenerate). Returns text when complete,
+                      or status JSON if still generating after 30s.
+
+Typing mechanism:
+  - paste() via ClipboardEvent is the only reliable method for ChatGPT's
+    ProseMirror textarea. Input.insertText (CDP) appends instead of
+    replacing. execCommand("delete") and innerText="" don't trigger React.
+  - CDP mouse click (not JS focus) is required before paste() so that
+    ClipboardEvent fires on the correct element.
+
+Starting a new conversation:
+  - Clear conv_url (set _gpt.conv_url = None) then call send().
+  - ensure() will navigate to chatgpt.com root, ChatGPT opens a new chat.
+  - (TODO: expose as action='new' parameter)
+
+Multi-tab / shared session:
+  - Each ChatPipeline instance has its own tab name ('gpt', 'grok').
+  - Browsing tools use 'default' tab — never interferes with chat tabs.
+  - All tabs share the same Chrome profile → same login session.
+  - Running gpt and grok simultaneously works: each on its own tab.
+
+What NOT to do:
+  - Do NOT use OPENAI_API_KEY as bypass — it skips Ghost entirely.
+    (API key bypass has been removed from the send pipeline.)
+  - Do NOT call Input.insertText to set textarea — it appends.
+  - Do NOT use JS focus alone before CDP key events — CDP uses its own
+    focus state, JS focus does not affect it.
+  - Do NOT reload conv_url to clear textarea drafts — ChatGPT restores
+    them from localStorage. Use paste() which replaces the selection.
 
 Install: pip install -e tools/v3/  →  command: neo-browser
 Config:  {"command": "neo-browser", "env": {"NEOBROWSER_PROFILE": "Profile 24"}}
@@ -182,6 +245,10 @@ class PageCache:
                 del self._cache[oldest]
             self._cache[url] = (time.time(), content)
 
+    def clear(self):
+        with self._lock:
+            self._cache.clear()
+
 _page_cache = PageCache()
 _cache_epoch = 0  # Bumped on navigation — invalidates stale in-flight cache writes
 
@@ -244,16 +311,21 @@ def persist_if_large(text, tag='result'):
     return f'{preview}\n\n... [{len(text)} chars total, saved to {p}]\nUse Read tool with offset/limit to read portions.'
 
 NEOMODE_JS = '''
-// ── Stealth: screen dimensions ──
+// ── Stealth: screen + window dimensions ──
 Object.defineProperty(screen,'width',{get:()=>1920});
 Object.defineProperty(screen,'height',{get:()=>1080});
 Object.defineProperty(screen,'availWidth',{get:()=>1920});
 Object.defineProperty(screen,'availHeight',{get:()=>1055});
+Object.defineProperty(screen,'colorDepth',{get:()=>24});
+Object.defineProperty(screen,'pixelDepth',{get:()=>24});
+Object.defineProperty(window,'outerWidth',{get:()=>1920});
 Object.defineProperty(window,'outerHeight',{get:()=>1055});
 Object.defineProperty(window,'innerHeight',{get:()=>968});
 
-// ── Stealth: hide headless signals ──
+// ── Stealth: hide headless / automation signals ──
 Object.defineProperty(navigator,'webdriver',{get:()=>false});
+Object.defineProperty(navigator,'vendor',{get:()=>'Google Inc.'});
+Object.defineProperty(navigator,'platform',{get:()=>'MacIntel'});
 Object.defineProperty(navigator,'plugins',{get:()=>[
     {name:'Chrome PDF Plugin',filename:'internal-pdf-viewer',description:'Portable Document Format',length:1},
     {name:'Chrome PDF Viewer',filename:'mhjfbmdgcfjbbpaeojofohoefgiehjai',description:'',length:1},
@@ -263,11 +335,36 @@ Object.defineProperty(navigator,'languages',{get:()=>['es-ES','es','en-US','en']
 Object.defineProperty(navigator,'hardwareConcurrency',{get:()=>8});
 Object.defineProperty(navigator,'deviceMemory',{get:()=>8});
 Object.defineProperty(navigator,'maxTouchPoints',{get:()=>0});
-window.chrome={runtime:{},loadTimes:function(){},csi:function(){}};
+// Network Information API — CF checks this
+try{Object.defineProperty(navigator,'connection',{get:()=>({effectiveType:'4g',rtt:50,downlink:10,saveData:false,onchange:null})});}catch(e){}
+// Notification API — headless returns undefined otherwise
+try{Object.defineProperty(Notification,'permission',{get:()=>'default'});}catch(e){}
+// document.hasFocus — CF uses this to detect hidden/inactive tabs
+document.hasFocus=()=>true;
+
+// ── Stealth: chrome object (CF checks for chrome.app, chrome.runtime details) ──
+window.chrome={
+    app:{isInstalled:false,
+         InstallState:{DISABLED:'disabled',INSTALLED:'installed',NOT_INSTALLED:'not_installed'},
+         RunningState:{CANNOT_RUN:'cannot_run',READY_TO_RUN:'ready_to_run',RUNNING:'running'},
+         getDetails:()=>null,getIsInstalled:()=>false,installState:()=>{}},
+    runtime:{
+        id:undefined,connect:()=>{},sendMessage:()=>{},
+        PlatformOs:{MAC:'mac',WIN:'win',ANDROID:'android',CROS:'cros',LINUX:'linux'},
+        PlatformArch:{ARM:'arm',X86_32:'x86-32',X86_64:'x86-64'},
+        OnInstalledReason:{INSTALL:'install',UPDATE:'update',CHROME_UPDATE:'chrome_update'},
+        OnRestartRequiredReason:{APP_UPDATE:'app_update',OS_UPDATE:'os_update',PERIODIC:'periodic'}
+    },
+    loadTimes:function(){return{requestTime:performance.timing.navigationStart/1000,startLoadTime:performance.timing.navigationStart/1000,finishDocumentLoadTime:performance.timing.domContentLoadedEventEnd/1000,finishLoadTime:performance.timing.loadEventEnd/1000,firstPaintTime:0,firstPaintAfterLoadTime:0,navigationType:'Other',wasFetchedViaSpdy:false,wasNpnNegotiated:false,npnNegotiatedProtocol:'unknown',wasAlternateProtocolAvailable:false,connectionInfo:'unknown'};},
+    csi:function(){return{startE:performance.timing.navigationStart,onloadT:performance.timing.loadEventEnd,pageT:Date.now()-performance.timing.navigationStart,tran:15};}
+};
+
+// ── Stealth: permissions query ──
 Object.defineProperty(navigator,'permissions',{get:()=>({
-    query:p=>Promise.resolve({state:p.name==='notifications'?'denied':'granted',onchange:null})
+    query:p=>Promise.resolve({state:p.name==='notifications'?'default':'granted',onchange:null})
 })});
-// WebGL vendor
+
+// ── Stealth: WebGL vendor ──
 const getParameter=WebGLRenderingContext.prototype.getParameter;
 WebGLRenderingContext.prototype.getParameter=function(p){
     if(p===37445)return'Google Inc. (Apple)';
@@ -363,6 +460,28 @@ SANITIZE_JS = '''(function(){
 _chrome = None
 _chrome_lock = threading.Lock()
 _chrome_pids = set()
+_chrome_prewarm_thread = None  # Background pre-warm thread
+
+
+def prewarm_chrome():
+    """Start Chrome in a background daemon thread so it's ready before first open().
+
+    Safe to call multiple times — ignores if Chrome is already running or warming.
+    Designed for use in adapter.start() so spa_heavy/form_flow don't pay startup cost.
+    """
+    global _chrome_prewarm_thread
+    if _chrome or (_chrome_prewarm_thread and _chrome_prewarm_thread.is_alive()):
+        return  # already running or warming
+
+    def _warm():
+        try:
+            chrome()  # Triggers full Chrome launch + session sync
+            log('Chrome pre-warm complete')
+        except Exception as e:
+            log(f'Chrome pre-warm failed: {e}')
+
+    _chrome_prewarm_thread = threading.Thread(target=_warm, daemon=True, name='chrome-prewarm')
+    _chrome_prewarm_thread.start()
 
 # Kill stale pids
 try:
@@ -376,7 +495,7 @@ except: pass
 
 # ── V1 Fast Path ──
 
-def fast(cmd, url, extra=None, timeout=30):
+def fast(cmd, url, extra=None, timeout=5):
     args = [V1_BIN, cmd, url] + (extra or [])
     start = time.time()
     try:
@@ -391,6 +510,163 @@ try:
 except ImportError:
     log('ERROR: pip install websockets')
     sys.exit(1)
+
+# ── AX Tree Vision (ported from neobrowser V2 vision.py) ──────────────────────
+# Transforms raw Accessibility.getFullAXTree nodes into structured readable text.
+# V3's original flat loop discarded tree hierarchy; V2's recursive walk preserves it.
+
+_ax_noise = frozenset({
+    'none', 'generic', 'InlineTextBox', 'LineBreak',
+    'presentation', 'separator', 'tooltip', 'directory',
+})
+_ax_structure = frozenset({
+    'list', 'listitem', 'main', 'banner', 'contentinfo',
+    'region', 'form', 'group', 'figure',
+})
+
+def _ax_see(ax_nodes, url=''):
+    """AX tree → compact semantic text. What a screen reader would say."""
+    tree = _ax_build_tree(ax_nodes)
+    if not tree:
+        return f'[empty page] {url}'
+    lines = []
+    if url:
+        domain = url.split('://')[-1].split('/')[0] if '://' in url else url
+        lines.append(f'PAGE {domain}')
+    _ax_walk(tree, lines, depth=0)
+    out = '\n'.join(lines)
+    if len(out) > 12000:
+        out = out[:12000] + '\n[truncated]'
+    return out
+
+def _ax_build_tree(ax_nodes):
+    if not ax_nodes:
+        return None
+    nodes = {}
+    for raw in ax_nodes:
+        nid = raw.get('nodeId', '')
+        role = raw.get('role', {}).get('value', 'none')
+        name = raw.get('name', {}).get('value', '')
+        val_d = raw.get('value', {})
+        value = val_d.get('value', '') if isinstance(val_d, dict) else ''
+        props = {}
+        for p in raw.get('properties', []):
+            pn = p.get('name', '')
+            pv = p.get('value', {})
+            props[pn] = pv.get('value', '') if isinstance(pv, dict) else pv
+        nodes[nid] = {
+            'role': role, 'name': name,
+            'value': str(value) if value else '',
+            'props': props, 'children': [],
+            'child_ids': raw.get('childIds', []),
+        }
+    for node in nodes.values():
+        for cid in node['child_ids']:
+            if cid in nodes:
+                node['children'].append(nodes[cid])
+    root_id = ax_nodes[0].get('nodeId', '')
+    return _ax_collapse(nodes.get(root_id))
+
+def _ax_collapse(node):
+    if not node:
+        return None
+    node['children'] = [_ax_collapse(c) for c in node['children']]
+    node['children'] = [c for c in node['children'] if c is not None]
+    if node['role'] in _ax_noise and len(node['children']) == 1:
+        return node['children'][0]
+    if node['role'] in _ax_noise and not node['children'] and not node['name']:
+        return None
+    return node
+
+def _ax_walk(node, lines, depth):
+    role = node['role']
+    name = node['name']
+    value = node['value']
+    props = node['props']
+    children = node['children']
+    indent = '  ' * min(depth, 4)
+
+    if role in _ax_noise:
+        for c in children: _ax_walk(c, lines, depth)
+        return
+    if role in _ax_structure:
+        for c in children: _ax_walk(c, lines, depth)
+        return
+    if role == 'RootWebArea':
+        if name: lines.append(f'# {name}')
+        for c in children: _ax_walk(c, lines, depth)
+        return
+    if role == 'navigation':
+        items = _ax_nav_items(node)
+        if items: lines.append(f'{indent}NAV: {" | ".join(items)}')
+        return
+    if role in ('search', 'complementary'):
+        return
+    if role == 'heading':
+        level = props.get('level', 2)
+        try: level = int(level)
+        except (ValueError, TypeError): level = 2
+        if name: lines.append(f'{indent}{"#" * min(level, 4)} {name[:200]}')
+        return
+    if role in ('paragraph', 'StaticText'):
+        text = name.strip()
+        if text: lines.append(f'{indent}{text[:200]}'); return
+        for c in children: _ax_walk(c, lines, depth)
+        return
+    if role in ('strong', 'emphasis', 'time'):
+        if name and len(name.strip()) > 2: lines.append(f'{indent}{name.strip()[:200]}')
+        return
+    if role == 'button':
+        if name: lines.append(f'{indent}[{name[:80]}]')
+        return
+    if role == 'link':
+        if not name: return
+        url = props.get('url', '')
+        short = _ax_short_url(url)
+        lines.append(f'{indent}{name[:60]} → {short}' if short else f'{indent}{name[:80]}')
+        return
+    if role in ('textbox', 'searchbox', 'combobox', 'spinbutton', 'slider'):
+        v = f': {value[:40]}' if value else ''
+        lines.append(f'{indent}[_{name[:40]}{v}]')
+        return
+    if role in ('checkbox', 'radio', 'switch'):
+        mark = '✓' if props.get('checked') == 'true' else '○'
+        lines.append(f'{indent}{mark} {name[:60]}')
+        return
+    if role in ('menuitem', 'tab'):
+        selected = '*' if props.get('selected') == 'true' else ''
+        lines.append(f'{indent}{name[:60]}{selected}')
+        return
+    if role == 'image':
+        if name and len(name) > 2: lines.append(f'{indent}[img: {name[:40]}]')
+        return
+    if role == 'article':
+        lines.append(f'{indent}---')
+        for c in children: _ax_walk(c, lines, depth + 1)
+        return
+    for c in children: _ax_walk(c, lines, depth)
+
+def _ax_nav_items(node):
+    items = []
+    def walk(n):
+        if n['role'] in ('link', 'button') and n['name']:
+            clean = n['name'].split(',')[0].strip()
+            if clean and len(clean) < 40: items.append(clean)
+        for c in n.get('children', []): walk(c)
+    walk(node)
+    return items
+
+def _ax_short_url(url):
+    if not url: return ''
+    short = url.split('://')[-1]
+    if short.startswith('www.'): short = short[4:]
+    if '?' in short:
+        base = short.split('?')[0]
+        if len(base) > 5: short = base
+    if len(short) > 50: short = short[:47] + '...'
+    return short
+
+# ── End AX Tree Vision ──────────────────────────────────────────────────────────
 
 class GhostChrome:
     """Headless Chrome with isolated tabs. Chat tabs get their own BrowserContext."""
@@ -512,42 +788,93 @@ class GhostChrome:
     def go(self, url):
         self._send('Page.navigate', {'url': url})
 
+    def go_wait(self, url, timeout_s=9):
+        """Navigate and wait for load, then ensure ghost mode is active."""
+        self._send('Page.navigate', {'url': url})
+        for _ in range(int(timeout_s / 0.3)):
+            time.sleep(0.3)
+            if self.js('return document.readyState') == 'complete': break
+        if not self.js('return typeof window.__neoFind === "function"'):
+            self.js(NEOMODE_JS)
+
     def accessibility(self):
-        """Get page content via accessibility tree — token-efficient, sees what screen readers see."""
+        """Get page content via accessibility tree — recursive tree walk (V2 vision engine)."""
         self._send('Accessibility.enable')
         tree = self._send('Accessibility.getFullAXTree')
         nodes = tree.get('nodes', [])
-        lines = []
-        seen = set()
+        url = self.js('return location.href') or ''
+        return _ax_see(nodes, url)
+
+    def spatial_map(self, with_boxes=True):
+        """AX tree → structured list of interactive elements with role, name, value, bounding boxes."""
+        self._send('Accessibility.enable')
+        tree = self._send('Accessibility.getFullAXTree')
+        nodes = tree.get('nodes', [])
+        if with_boxes:
+            self._send('DOM.enable')
+        elements = []
         for node in nodes:
             role = node.get('role', {}).get('value', '')
+            if role in _ax_noise or role in _ax_structure:
+                continue
             name = node.get('name', {}).get('value', '')
-            value = node.get('value', {}).get('value', '')
+            val_d = node.get('value', {})
+            value = val_d.get('value', '') if isinstance(val_d, dict) else ''
             if not name and not value:
                 continue
-            if role in ('generic', 'none', 'presentation', 'InlineTextBox', 'LineBreak', 'paragraph', 'Section', 'group'):
+            props = {}
+            for p in node.get('properties', []):
+                pn = p.get('name', '')
+                pv = p.get('value', {})
+                props[pn] = pv.get('value', '') if isinstance(pv, dict) else pv
+            el = {'role': role, 'name': name[:200]}
+            if value: el['value'] = value[:100]
+            if props.get('level'): el['level'] = props['level']
+            if props.get('checked'): el['checked'] = props['checked']
+            backend_id = node.get('backendDOMNodeId')
+            if backend_id and with_boxes:
+                try:
+                    box = self._send('DOM.getBoxModel', {'backendNodeId': backend_id})
+                    content = box.get('model', {}).get('content', [])
+                    if len(content) >= 6:
+                        el['box'] = {'x': content[0], 'y': content[1],
+                                     'w': content[4] - content[0], 'h': content[5] - content[1]}
+                except Exception:
+                    pass
+            elements.append(el)
+        return elements
+
+    def find_and_click(self, role, name=None):
+        """Find element by AX role+name, get bounding box via DOM.getBoxModel, click center.
+        More reliable than CSS selectors for dynamic/JS pages. Returns True if clicked."""
+        self._send('Accessibility.enable')
+        self._send('DOM.enable')
+        tree = self._send('Accessibility.getFullAXTree')
+        nodes = tree.get('nodes', [])
+        for node in nodes:
+            r = node.get('role', {}).get('value', '')
+            n = node.get('name', {}).get('value', '')
+            if r != role:
                 continue
-            text = name or value
-            if text in seen: continue
-            seen.add(text)
-            if role == 'heading':
-                level = node.get('properties', [{}])
-                lines.append(f'# {text}')
-            elif role == 'link':
-                lines.append(f'[{text}]')
-            elif role == 'button':
-                lines.append(f'[btn: {text}]')
-            elif role in ('textbox', 'searchbox', 'combobox'):
-                lines.append(f'[input: {text}]')
-            elif role == 'img':
-                lines.append(f'[img: {text}]')
-            elif role in ('StaticText', 'text'):
-                lines.append(text)
-            elif role in ('listitem', 'menuitem', 'option'):
-                lines.append(f'- {text}')
-            elif text.strip():
-                lines.append(text)
-        return '\n'.join(lines)
+            if name and name.lower() not in n.lower():
+                continue
+            backend_id = node.get('backendDOMNodeId')
+            if not backend_id:
+                continue
+            try:
+                box_result = self._send('DOM.getBoxModel', {'backendNodeId': backend_id})
+                content = box_result.get('model', {}).get('content', [])
+                if len(content) < 6:
+                    continue
+                cx = (content[0] + content[4]) / 2
+                cy = (content[1] + content[5]) / 2
+                self._send('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': cx, 'y': cy, 'button': 'left', 'clickCount': 1})
+                time.sleep(0.05)
+                self._send('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': cx, 'y': cy, 'button': 'left', 'clickCount': 1})
+                return True
+            except Exception:
+                continue
+        return False
 
     def markdown(self):
         """Convert current page to clean Markdown."""
@@ -624,6 +951,16 @@ class GhostChrome:
     def key(self, text):
         """Type text via CDP Input.insertText."""
         self._send('Input.insertText', {'text': text})
+
+    def select_all(self):
+        """Select all text in focused element via Ctrl+A."""
+        self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'a', 'code': 'KeyA', 'modifiers': 2, 'windowsVirtualKeyCode': 65})
+        self._send('Input.dispatchKeyEvent', {'type': 'keyUp',   'key': 'a', 'code': 'KeyA', 'modifiers': 2, 'windowsVirtualKeyCode': 65})
+
+    def backspace(self):
+        """Delete selected/last character via Backspace."""
+        self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Backspace', 'code': 'Backspace', 'windowsVirtualKeyCode': 8})
+        self._send('Input.dispatchKeyEvent', {'type': 'keyUp',   'key': 'Backspace', 'code': 'Backspace', 'windowsVirtualKeyCode': 8})
 
     def enter(self):
         self._send('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13, 'text': '\r'})
@@ -709,7 +1046,16 @@ def chrome():
                     f'--user-data-dir={str(ghost_dir)}', '--headless=new', '--no-first-run',
                     '--disable-background-networking', '--disable-dev-shm-usage',
                     '--disable-blink-features=AutomationControlled',
-                    '--window-size=1920,1080', f'--user-agent={CHROME_UA}', 'about:blank'],
+                    '--window-size=1920,1080', f'--user-agent={CHROME_UA}',
+                    # Stealth: reduce fingerprinting surface
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-ipc-flooding-protection',
+                    '--metrics-recording-only',
+                    '--safebrowsing-disable-auto-update',
+                    '--hide-scrollbars', '--mute-audio',
+                    '--no-default-browser-check', '--no-service-autorun',
+                    '--password-store=basic',
+                    'about:blank'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 _chrome_pids.add(proc.pid)
                 # Poll for Chrome to be ready instead of fixed 2s sleep
@@ -751,10 +1097,24 @@ def _sync_session(src_profile, dst_profile):
     dst_cookies = dst_profile / 'Cookies'
     if src_cookies.exists() and src_cookies.stat().st_size > 0:
         try:
-            conn_src = sqlite3.connect(f'file:{src_cookies}?mode=ro&nolock=1', uri=True)
+            # Raw file copy of main DB + WAL + SHM.
+            # sqlite3 backup() with nolock=1 reads only the main DB file and misses the WAL,
+            # which is where Chrome keeps recent writes (e.g. active session tokens) while running.
+            # Raw copy preserves the full WAL, then we checkpoint into dst so Ghost Chrome
+            # gets a clean, self-contained DB with all the latest cookies.
+            shutil.copy2(str(src_cookies), str(dst_cookies))
+            for suffix in ['-wal', '-shm']:
+                src_aux = Path(str(src_cookies) + suffix)
+                dst_aux = Path(str(dst_cookies) + suffix)
+                if src_aux.exists():
+                    shutil.copy2(str(src_aux), str(dst_aux))
+                elif dst_aux.exists():
+                    try: dst_aux.unlink()
+                    except: pass
             conn_dst = sqlite3.connect(str(dst_cookies))
-            # Copy schema first
-            conn_src.backup(conn_dst)
+            # Merge WAL into main DB so Ghost Chrome reads a clean single-file DB
+            try: conn_dst.execute('PRAGMA wal_checkpoint(TRUNCATE)'); conn_dst.commit()
+            except: pass
             if COOKIE_DOMAINS:
                 # Allowlist mode: keep only cookies matching specified domains, delete everything else
                 log(f'Cookie sync: domain allowlist active ({len(COOKIE_DOMAINS)} domains)')
@@ -765,7 +1125,7 @@ def _sync_session(src_profile, dst_profile):
                 ).rowcount
                 count = conn_dst.execute('SELECT COUNT(*) FROM cookies').fetchone()[0]
                 conn_dst.commit()
-                conn_dst.close(); conn_src.close()
+                conn_dst.close()
                 synced.append(f'Cookies ({count} kept, {deleted} outside allowlist removed)')
             else:
                 # Default: exclude Google domains to prevent session invalidation
@@ -776,7 +1136,7 @@ def _sync_session(src_profile, dst_profile):
                 ).rowcount
                 count = conn_dst.execute('SELECT COUNT(*) FROM cookies').fetchone()[0]
                 conn_dst.commit()
-                conn_dst.close(); conn_src.close()
+                conn_dst.close()
                 synced.append(f'Cookies ({count} kept, {deleted} Google excluded)')
         except Exception as e:
             log(f'Cookie sync failed: {e}')
@@ -811,28 +1171,25 @@ def _sync_session(src_profile, dst_profile):
 
 def _resync_cookies():
     """Re-sync cookies from real Chrome profile into running Ghost Chrome via CDP."""
-    import sqlite3
     real_cookies = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome' / PROFILE / 'Cookies'
     if not real_cookies.exists(): return 0
-    d = chrome()
-    try:
-        conn = sqlite3.connect(f'file:{real_cookies}?mode=ro&nolock=1', uri=True)
-        rows = conn.execute(
-            'SELECT host_key, name, path, is_secure, expires_utc, is_httponly FROM cookies'
-        ).fetchall()
-        # We can't read encrypted values directly via SQL, but we CAN
-        # re-sync the cookie DB file and reload the page
-        conn.close()
-    except:
-        pass
-    # Copy fresh cookies DB to ghost profile
+    # Copy fresh cookies DB to ghost profile (raw copy + WAL + checkpoint)
     ghost_cookies = Path.home() / '.neorender' / f'ghost-{os.getpid()}' / 'Default' / 'Cookies'
     try:
-        conn_src = sqlite3.connect(f'file:{real_cookies}?mode=ro&nolock=1', uri=True)
+        import sqlite3
+        shutil.copy2(str(real_cookies), str(ghost_cookies))
+        for suffix in ['-wal', '-shm']:
+            src_aux = Path(str(real_cookies) + suffix)
+            dst_aux = Path(str(ghost_cookies) + suffix)
+            if src_aux.exists(): shutil.copy2(str(src_aux), str(dst_aux))
+            elif dst_aux.exists():
+                try: dst_aux.unlink()
+                except: pass
         conn_dst = sqlite3.connect(str(ghost_cookies))
-        conn_src.backup(conn_dst)
-        conn_dst.close(); conn_src.close()
-        log('Re-synced cookies from real Chrome')
+        try: conn_dst.execute('PRAGMA wal_checkpoint(TRUNCATE)'); conn_dst.commit()
+        except: pass
+        conn_dst.close()
+        log('Re-synced cookies from real Chrome (WAL-aware)')
         return 1
     except Exception as e:
         log(f'Cookie re-sync failed: {e}')
@@ -865,7 +1222,7 @@ def chrome_go(url, wait_s=5):
     while time.time() < deadline:
         time.sleep(0.15)
         if d.js('return document.readyState') == 'complete':
-            time.sleep(0.3)  # Brief settle for JS frameworks
+            time.sleep(0.1)  # Brief settle for JS frameworks
             break
 
     # Check for login wall → resync cookies and retry
@@ -873,7 +1230,7 @@ def chrome_go(url, wait_s=5):
         log(f'Login wall detected, re-syncing cookies...')
         if _resync_cookies():
             # Restart Chrome to pick up new cookies from DB
-            d.go(url); time.sleep(wait_s)
+            d.go_wait(url, timeout_s=min(wait_s, 5))
             if _is_login_wall(d):
                 log('Still on login wall after resync')
     return d
@@ -959,35 +1316,106 @@ def tool_browse(args):
     result_holder = {}
     with _inflight_lock:
         _inflight[url] = (fetch_epoch, result_holder)
-    try:
-        out, ms = fast('see', url)
-        if len(out) > 200:
-            log(f'V1 browse: {ms}ms')
-            result = sanitize_unicode(process_content(out, prompt=user_prompt, force=bool(user_prompt)) if user_prompt else process_content(out))
-            if fetch_epoch == _cache_epoch:  # epoch guard
-                _page_cache.put(url, result)
-            result_holder['result'] = result
-            return result
-        # Try raw HTTP before expensive Chrome fallback
+    # Quick HTTP probe: if URL looks like a JSON/API endpoint, skip V1 subprocess
+    # (V1 is expensive and returns nothing for non-HTML content)
+    # Determine if V1 subprocess is worth trying for this URL
+    _path = url.split('?')[0].lower()
+    _skip_v1 = _path.endswith(('.json', '/get', '/post', '/put', '/delete',
+                                '/headers', '/ip', '/uuid', '/anything')) or \
+               '/status/' in _path or '/api/' in _path
+
+    def _http_fetch(url):
+        """Direct HTTP fetch + content extraction. Returns (text, content_type) or ('', '')."""
         try:
             req = urllib.request.Request(url, headers={'User-Agent': CHROME_UA})
             resp = urllib.request.urlopen(req, timeout=10)
             body = resp.read().decode('utf-8', errors='replace')
+            ct = resp.headers.get('Content-Type', '')
             if _is_cf_challenge(body):
-                log(f'Cloudflare challenge detected, skipping HTTP → Chrome')
-            elif len(body) > 200:
-                text = re.sub(r'<[^>]+>', ' ', body)
-                text = re.sub(r'\s+', ' ', text).strip()
-                if len(text) > 100:
-                    log(f'HTTP fallback: {len(text)} chars')
-                    result = sanitize_unicode(process_content(text[:5000], prompt=user_prompt, force=bool(user_prompt)) if user_prompt else process_content(text[:5000]))
-                    if fetch_epoch == _cache_epoch:
-                        _page_cache.put(url, result)
-                    result_holder['result'] = result
-                    return result
-        except: pass
+                return '', ct
+            if 'json' in ct or 'text/plain' in ct:
+                return body.strip() or f'[HTTP {resp.status}] {url}', ct
+            if not body:
+                return f'[HTTP {resp.status}] {url}', ct
+            text = re.sub(r'<[^>]+>', ' ', body)
+            text = re.sub(r'\s+', ' ', text).strip()
+            if len(text) < 80 and len(body) > 500:
+                return '', ct  # JS-only shell → need Chrome
+            return text, ct
+        except Exception as e:
+            log(f'HTTP fetch error: {type(e).__name__}: {e}')
+            return '', ''
+
+    try:
+        if _skip_v1:
+            # API/JSON endpoints: go directly to HTTP, skip V1 overhead
+            text, ct = _http_fetch(url)
+            if text:
+                log(f'HTTP fallback: {len(text)} chars ({ct.split(";")[0].strip()})')
+                result = sanitize_unicode(process_content(text[:5000], prompt=user_prompt, force=bool(user_prompt)) if user_prompt else process_content(text[:5000]))
+                if fetch_epoch == _cache_epoch:
+                    _page_cache.put(url, result)
+                result_holder['result'] = result
+                return result
+        else:
+            # HTML pages: race V1 and HTTP in parallel, use whichever returns good content first
+            import concurrent.futures as _cf
+            v1_result = [None]
+            http_result = [None]
+
+            def _run_v1():
+                out, ms = fast('see', url)
+                v1_result[0] = (out, ms)
+
+            def _run_http():
+                text, ct = _http_fetch(url)
+                http_result[0] = (text, ct)
+
+            # Don't use context manager — we need shutdown(wait=False) to avoid
+            # blocking on V1 after HTTP already returned good content
+            ex = _cf.ThreadPoolExecutor(max_workers=2)
+            try:
+                fv1 = ex.submit(_run_v1)
+                fhttp = ex.submit(_run_http)
+                for fut in _cf.as_completed([fv1, fhttp]):
+                    try:
+                        fut.result()
+                    except Exception:
+                        pass
+                    # V1 returned good content — use it
+                    if v1_result[0] and len(v1_result[0][0]) > 200:
+                        out, ms = v1_result[0]
+                        log(f'V1 browse: {ms}ms (won race)')
+                        result = sanitize_unicode(process_content(out, prompt=user_prompt, force=bool(user_prompt)) if user_prompt else process_content(out))
+                        if fetch_epoch == _cache_epoch:
+                            _page_cache.put(url, result)
+                        result_holder['result'] = result
+                        ex.shutdown(wait=False)
+                        return result
+                    # HTTP returned good content — use it (don't wait for V1)
+                    if http_result[0] and http_result[0][0]:
+                        text, ct = http_result[0]
+                        log(f'HTTP fallback: {len(text)} chars ({ct.split(";")[0].strip()})')
+                        result = sanitize_unicode(process_content(text[:5000], prompt=user_prompt, force=bool(user_prompt)) if user_prompt else process_content(text[:5000]))
+                        if fetch_epoch == _cache_epoch:
+                            _page_cache.put(url, result)
+                        result_holder['result'] = result
+                        ex.shutdown(wait=False)
+                        return result
+            finally:
+                ex.shutdown(wait=False)
+            # Both completed but neither had good content → Chrome fallback
+            if v1_result[0] and len(v1_result[0][0]) > 200:
+                out, ms = v1_result[0]
+                result = sanitize_unicode(process_content(out, prompt=user_prompt, force=bool(user_prompt)) if user_prompt else process_content(out))
+                if fetch_epoch == _cache_epoch:
+                    _page_cache.put(url, result)
+                result_holder['result'] = result
+                return result
         log('HTTP fallback insufficient, Chrome fallback...')
-        d = chrome_go(url)
+        # Serialize Chrome fallback — concurrent browse calls must not navigate the same tab simultaneously
+        with _browser_lock:
+            d = chrome_go(url)
         raw = d.sanitize()
         result = sanitize_unicode(process_content(raw, prompt=user_prompt, force=True) if user_prompt else process_content(raw))
         if fetch_epoch == _cache_epoch:
@@ -1031,7 +1459,7 @@ def tool_open(args):
     if not validate_url(url):
         log(f'WARNING: navigating to potentially unsafe URL: {url}')
     _cache_epoch += 1  # Invalidate stale in-flight cache writes
-    d = chrome_go(url, int(args.get('wait', 5000)) / 1000)
+    d = chrome_go(url, int(args.get('wait', 3000)) / 1000)
     return process_content(d.sanitize())
 
 SMART_EXTRACTORS = {
@@ -1099,9 +1527,92 @@ SMART_EXTRACTORS = {
             ).join('\\n')
         ).join('\\n\\n');
     ''',
+
+    # ── Fast AI-oriented types (no AX tree, pure JS) ──────────────────────────
+
+    # text: fastest possible read — identical to playwright's inner_text()
+    # Use when: you just need content, don't need structure or links
+    'text': '''
+        return (document.body || document.documentElement).innerText
+            .replace(/\\n{3,}/g, '\\n\\n').trim().substring(0, 8000);
+    ''',
+
+    # main: content area only — strips nav, header, footer, sidebar noise
+    # Use when: you want article/blog/doc content without chrome of the page
+    'main': '''
+        const MAIN = 'main,[role="main"],article,[role="article"],.content,.post-content,.article-body,#content,#main';
+        const el = document.querySelector(MAIN) || document.body;
+        const clone = el.cloneNode(true);
+        ['nav','header','footer','aside','[role="navigation"],[role="banner"],[role="complementary"]',
+         '.nav','.sidebar','.header','.footer','.menu','.ad','.advertisement'].forEach(s => {
+            clone.querySelectorAll(s).forEach(n => n.remove());
+        });
+        return clone.innerText.replace(/\\n{3,}/g, '\\n\\n').trim().substring(0, 8000);
+    ''',
+
+    # headings: page outline — fast structural overview without loading full content
+    # Use when: you need to understand page structure before reading sections
+    'headings': '''
+        return Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+            .map(h => '#'.repeat(parseInt(h.tagName[1])) + ' ' + h.innerText.trim())
+            .filter(h => h.length > 2)
+            .join('\\n') || 'No headings found';
+    ''',
+
+    # meta: title + description + og tags — page context without rendering full body
+    # Use when: you need to quickly classify/understand a page, not read its content
+    'meta': '''
+        const get = sel => document.querySelector(sel)?.content || document.querySelector(sel)?.innerText || '';
+        const title = document.title || get('h1');
+        const desc = get('meta[name="description"]') || get('meta[property="og:description"]');
+        const ogTitle = get('meta[property="og:title"]');
+        const ogType = get('meta[property="og:type"]');
+        const canonical = document.querySelector('link[rel="canonical"]')?.href || location.href;
+        return [
+            title ? 'title: ' + title : '',
+            ogTitle && ogTitle !== title ? 'og:title: ' + ogTitle : '',
+            ogType ? 'type: ' + ogType : '',
+            desc ? 'description: ' + desc : '',
+            'url: ' + canonical,
+        ].filter(Boolean).join('\\n');
+    ''',
+
+    # links: all links with text + URL — for navigation, sitemaps, link extraction
+    # Use when: you need to find URLs to navigate or understand site structure
+    'links': '''
+        const links = Array.from(document.querySelectorAll('a[href]'));
+        return links
+            .map(a => {
+                const text = (a.innerText || a.getAttribute('aria-label') || '').trim();
+                const href = a.href;
+                return text && href ? text + ' → ' + href : href;
+            })
+            .filter((v, i, arr) => v && arr.indexOf(v) === i)  // dedupe
+            .slice(0, 80)
+            .join('\\n') || 'No links found';
+    ''',
 }
 
-@tool_def('read', 'Read current Chrome page content. Modes: tweets (Twitter/X posts), posts (articles), tables (structured data), markdown, a11y (accessibility tree). Without mode, returns page text. Use prompt param to extract only specific info via LLM. Use after open.', {'selector': 'optional CSS selector', 'mode': 'optional: markdown|a11y|tweets|posts|tables', 'prompt': 'optional: what to extract (e.g. "get video duration and title")'}, read_only=True, concurrent=True, max_result=100000)
+@tool_def('read',
+    'Read current Chrome page content. Choose type based on cost vs need:\n'
+    '  FAST (JS only, no AX tree):\n'
+    '    text — raw innerText, like playwright (fastest, ~50ms)\n'
+    '    main — article/content area only, strips nav+footer noise\n'
+    '    headings — h1-h6 outline for quick page structure\n'
+    '    meta — title+description+og tags for page context\n'
+    '    links — all href links with text\n'
+    '  STRUCTURED (more tokens, more context):\n'
+    '    markdown — DOM converted to markdown with links\n'
+    '    tweets|posts|comments|products|table — domain-specific extractors\n'
+    '  EXPENSIVE (full AX tree via CDP):\n'
+    '    accessibility/a11y — semantic tree for complex UIs\n'
+    '    spatial/map — elements with bounding box coordinates (for click-by-position)\n'
+    'Default (no type): semantic AX tree. Use prompt param to LLM-filter any type.',
+    {'selector': 'optional CSS selector',
+     'type': 'optional: text|main|headings|meta|links|markdown|tweets|posts|comments|products|table|accessibility|spatial',
+     'mode': 'alias for type',
+     'prompt': 'optional: what to extract (e.g. "get video duration and title")'},
+    read_only=True, concurrent=True, max_result=100000)
 def tool_read(args):
     url = args.get('url', '')
     selector = args.get('selector', '')
@@ -1124,10 +1635,23 @@ def tool_read(args):
             return process_content(save(d.markdown() or 'No content', 'read-md'))
         if ct == 'accessibility':
             return save(d.accessibility() or 'No content', 'read-a11y')
+        if ct in ('spatial', 'map'):
+            elements = d.spatial_map(with_boxes=True)
+            if not elements:
+                return 'No elements found'
+            lines = []
+            for el in elements:
+                box = el.get('box', {})
+                box_str = f" [{box['x']:.0f},{box['y']:.0f} {box['w']:.0f}×{box['h']:.0f}]" if box else ''
+                val_str = f" = {el['value']}" if el.get('value') else ''
+                lvl_str = f" (h{el['level']})" if el.get('level') else ''
+                chk_str = ' [✓]' if el.get('checked') == 'true' else ''
+                lines.append(f"{el['role']}: {el['name']}{val_str}{lvl_str}{chk_str}{box_str}")
+            return save('\n'.join(lines), 'read-spatial')
         # JS-based extractors
         js = SMART_EXTRACTORS.get(ct)
         if not js:
-            types = list(SMART_EXTRACTORS.keys()) + ['markdown', 'accessibility']
+            types = list(SMART_EXTRACTORS.keys()) + ['markdown', 'accessibility', 'spatial']
             return f'Unknown type: {content_type}. Available: {", ".join(types)}'
         text = d.js(js)
         return save(text or f'No {content_type} found on page', 'read')
@@ -1181,8 +1705,39 @@ def tool_click(args):
             .filter(e=>(e.innerText||'').toLowerCase().includes(ql))}}
         if(els[0]){{els[0].click();return true}}return false;
     ''')
-    if clicked: time.sleep(0.5)  # Brief wait for click handler
+    if clicked:
+        # Detect navigation: if URL changes, wait for new page; else poll readyState
+        url_before = d.js('return location.href') or ''
+        time.sleep(0.15)
+        url_after = d.js('return location.href') or ''
+        if url_before and url_before != url_after:
+            # Navigation to new page — wait for it to settle
+            for _ in range(20):
+                time.sleep(0.1)
+                try:
+                    if d.js('return document.readyState') == 'complete': break
+                except Exception:
+                    pass  # Context briefly destroyed during navigation
+        else:
+            # DOM-only change — short poll
+            for _ in range(5):
+                time.sleep(0.1)
+                if d.js('return document.readyState') == 'complete': break
     return f'Clicked "{text}"\n\n{d.sanitize()}' if clicked else f'Not found: "{text}"'
+
+@tool_def('find_and_click', 'Click element by accessibility role + name. More reliable than CSS for dynamic/React/SPAs. role: button|link|textbox|checkbox|menuitem|tab|combobox. name is substring match.', {'role': 'required: AX role (button, link, textbox, etc.)', 'name': 'optional: substring of element label'}, read_only=False, concurrent=False)
+def tool_find_and_click(args):
+    role = args.get('role', '')
+    name = args.get('name', '')
+    if not role: return 'role required'
+    d = chrome()
+    clicked = d.find_and_click(role, name or None)
+    if clicked:
+        for _ in range(10):
+            time.sleep(0.1)
+            if d.js('return document.readyState') == 'complete': break
+        return f'Clicked {role}[{name}]\n\n{d.sanitize()}'
+    return f'Not found: role={role}, name={name}'
 
 @tool_def('type', 'Type text into the currently focused element. Use after clicking an input field. For filling form fields by selector, use fill instead.', {'text': 'required'}, read_only=False, concurrent=False)
 def tool_type(args):
@@ -1317,7 +1872,10 @@ def tool_submit(args):
         return '';
     ''')
     if not r: return 'No form or submit button found'
-    time.sleep(1)
+    # Poll for load instead of fixed 1s sleep
+    for _ in range(20):
+        time.sleep(0.1)
+        if d.js('return document.readyState') == 'complete': break
     return d.sanitize()
 
 @tool_def('scroll', 'Scroll current page. Direction: up or down. Amount in pixels (default 500). Use to load lazy content or reach elements below the fold.', {'direction': 'optional: up|down', 'amount': 'optional pixels'}, read_only=False, concurrent=False)
@@ -1409,10 +1967,7 @@ class ChatPipeline:
             d = chrome()
             self.d = d
             self.conv_url = None
-            d.go(self.url)
-            for _ in range(20):
-                time.sleep(0.5)
-                if d.js('return document.readyState') == 'complete': break
+            d.go_wait(self.url, timeout_s=10)
             time.sleep(1)
             return True
         except Exception as e:
@@ -1420,9 +1975,10 @@ class ChatPipeline:
             return False
 
     def ensure(self):
-        """Step 1: Navigate default tab to chat platform."""
+        """Step 1: Switch to dedicated tab for this platform (creates it if needed)."""
         self.last_error = None
         d = chrome()
+        d.tab(self.platform, self.url)  # each platform gets its own tab, isolated from default browse tab
         target = self.conv_url or self.url
         domain = self.url.split('/')[2]
         current = d.js('return location.href') or ''
@@ -1430,24 +1986,23 @@ class ChatPipeline:
         # Navigate if not already on the platform
         if domain not in current:
             log(f'{self.platform}: navigating to {target}')
-            d.go(target)
-            for _ in range(30):
-                time.sleep(0.5)
-                if d.js('return document.readyState') == 'complete':
-                    cur = d.js('return location.href') or ''
-                    if domain in cur: break
+            d.go_wait(target, timeout_s=15)
             time.sleep(1)
         elif self.conv_url and self.conv_url not in current:
-            log(f'{self.platform}: navigating to conversation {self.conv_url}')
-            d.go(self.conv_url)
-            time.sleep(3)
+            # Tab drifted (another process navigated away) — go back to our conversation
+            log(f'{self.platform}: tab drifted from {self.conv_url}, restoring')
+            d.go_wait(self.conv_url, timeout_s=10)
+        elif not self.conv_url and '/c/' in current:
+            # Server restarted — adopt existing open conversation rather than starting fresh
+            self.conv_url = current.split('?')[0]
+            log(f'{self.platform}: adopted existing conversation → {self.conv_url}')
 
         # Check for error state
         error = d.js('return document.body?.innerText?.includes("Something went wrong")')
         if error:
             log(f'{self.platform}: error state, navigating fresh')
             self.conv_url = None
-            d.go(self.url); time.sleep(5)
+            d.go_wait(self.url, timeout_s=10)
 
         # Detect login/captcha/rate limit
         page_text = d.js('return document.body?.innerText?.substring(0,500)') or ''
@@ -1476,39 +2031,35 @@ class ChatPipeline:
             self.last_error = error_response('rate_limit', 'Rate limited by platform', suggestion='Wait and retry')
             return False
 
-        # Verify auth status via Sentinel (ChatGPT anti-bot system)
+        # Verify auth status via DOM (Sentinel XHR returns 403 from Ghost Chrome)
         if 'chatgpt.com' in domain:
-            persona = d.js('''
-                try {
-                    const xhr = new XMLHttpRequest();
-                    xhr.open('POST', '/backend-api/sentinel/chat-requirements/prepare', false);
-                    xhr.setRequestHeader('Content-Type', 'application/json');
-                    xhr.withCredentials = true;
-                    xhr.send('{}');
-                    const data = JSON.parse(xhr.responseText);
-                    return data.persona || 'unknown';
-                } catch(e) { return 'error: ' + e.message; }
-            ''') or 'unknown'
-            log(f'{self.platform}: sentinel persona = {persona}')
-            if 'noauth' in persona:
+            authenticated = d.js('''
+                const text = document.body?.innerText || '';
+                const loginSignals = ['log in', 'sign in', 'sign up', 'create account',
+                                      'iniciar sesión', 'inicia sesión', 'registrarse'];
+                const hasLoginBtn = !!document.querySelector(
+                    '[data-testid="login-button"], a[href*="/auth/login"], a[href*="login"]');
+                const lowerText = text.toLowerCase();
+                if (hasLoginBtn) return false;
+                if (loginSignals.some(s => lowerText.includes(s) && !lowerText.includes('logged'))) return false;
+                // Positive signal: sidebar content only visible when logged in
+                return text.length > 100;
+            ''')
+            log(f'{self.platform}: dom auth check = {authenticated}')
+            if not authenticated:
                 log(f'{self.platform}: session not authenticated, attempting re-sync')
                 if self._resync_and_reload(d):
                     d = self.d
-                    # Re-check persona
-                    persona2 = d.js('''
-                        try {
-                            const xhr = new XMLHttpRequest();
-                            xhr.open('POST', '/backend-api/sentinel/chat-requirements/prepare', false);
-                            xhr.setRequestHeader('Content-Type', 'application/json');
-                            xhr.withCredentials = true;
-                            xhr.send('{}');
-                            return JSON.parse(xhr.responseText).persona || 'unknown';
-                        } catch(e) { return 'error'; }
-                    ''') or 'unknown'
-                    log(f'{self.platform}: after re-sync, persona = {persona2}')
-                    if 'noauth' in persona2:
+                    authenticated2 = d.js('''
+                        const text = document.body?.innerText || '';
+                        const hasLoginBtn = !!document.querySelector(
+                            '[data-testid="login-button"], a[href*="/auth/login"]');
+                        return !hasLoginBtn && text.length > 100;
+                    ''')
+                    log(f'{self.platform}: after re-sync, dom auth = {authenticated2}')
+                    if not authenticated2:
                         self.last_error = error_response('auth_expired',
-                            'ChatGPT session expired (sentinel: noauth)',
+                            'ChatGPT session expired',
                             suggestion='Log into chatgpt.com in your real Chrome browser and restart NeoBrowser')
                         return False
 
@@ -1523,21 +2074,30 @@ class ChatPipeline:
         d = self.d
         if not d.js('return typeof window.__neoFind === "function"'):
             d.js(NEOMODE_JS)
-        # Wait for any in-progress streaming to finish
+        # Wait for any in-progress streaming to finish (max 30s)
         if d.js('return !!document.querySelector("[data-testid=stop-button]")'):
-            log(f'{self.platform}: streaming in progress, waiting...')
+            log(f'{self.platform}: streaming in progress, waiting up to 30s...')
             for _ in range(60):
                 time.sleep(0.5)
                 if not d.js('return !!document.querySelector("[data-testid=stop-button]")'): break
-        # Check input exists
+            else:
+                # Still streaming after 30s — abort, do not send on top of a pending response
+                self.last_error = error_response('still_streaming',
+                    f'{self.platform}: previous response still generating after 30s',
+                    suggestion='Use action=read_last to get the current response, then retry.')
+                return False
+        # Check input exists — Check 2: chat box present
         has_input = d.js('return !!(document.getElementById("prompt-textarea") || window.__neoFind?.())')
         if not has_input:
             log(f'{self.platform}: input not found, reloading')
             d.go(self.url); time.sleep(5)
             has_input = d.js('return !!window.__neoFind?.()')
-            if not has_input:
-                log(f'{self.platform}: input still not found after reload')
-        return bool(has_input)
+        if not has_input:
+            self.last_error = error_response('no_input_box',
+                f'{self.platform}: chat input box not found after reload',
+                suggestion='The page may not have loaded correctly. Try again.')
+            return False
+        return True
 
     def send(self, msg):
         """Step 3: Type message and send."""
@@ -1550,22 +2110,38 @@ class ChatPipeline:
             'const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText?.substring(0,200):""'
         ) or ''
         log(f'{self.platform}: before: {self._msg_count_before} msgs, last="{self._last_text_before[:50]}"')
-        # Focus textarea
-        d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
-        time.sleep(0.1)
-        # Type: try CDP insertText, fallback to direct DOM manipulation
-        d.key(msg)
-        typed = d.js('const el=document.activeElement;return(el?.innerText||el?.value||"").length>0')
-        if not typed:
-            log(f'{self.platform}: key() did not populate input, falling back to innerText injection')
-            d.js(f'''const el=document.getElementById("prompt-textarea")||window.__neoFind?.();
-                if(el){{el.focus();el.innerText={json.dumps(msg)};el.dispatchEvent(new Event("input",{{bubbles:true}}))}}''')
+        # Focus textarea via CDP click (establishes real CDP-level focus), then paste message
+        # paste() uses ClipboardEvent which ProseMirror/React handles natively — more reliable than insertText
+        rect = d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();const r=el?.getBoundingClientRect();return r?JSON.stringify({x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}):null')
+        if rect:
+            try:
+                coords = json.loads(rect)
+                cx, cy = coords['x'], coords['y']
+                d._send('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': cx, 'y': cy, 'button': 'left', 'clickCount': 1})
+                d._send('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': cx, 'y': cy, 'button': 'left', 'clickCount': 1})
+                time.sleep(0.1)
+                d.select_all()  # Ctrl+A selects existing content so paste() replaces it
+                time.sleep(0.05)
+            except Exception as e:
+                log(f'{self.platform}: CDP click failed ({e}), using JS focus')
+                d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
+                time.sleep(0.1)
         else:
-            log(f'{self.platform}: key() successfully populated input')
-        time.sleep(0.1)
-        # Verify text is in the input before sending
+            d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();if(el){el.focus();el.click()}')
+            time.sleep(0.1)
+        # Paste message — ClipboardEvent replaces selected content in ProseMirror
+        d.paste(msg)
+        time.sleep(0.15)
+        # Verify text landed correctly
         content = d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();return el?.innerText||""')
-        if not content or len(content) < 3:
+        if not content or msg[:10] not in content:
+            log(f'{self.platform}: paste() missed, falling back to key()')
+            d.select_all(); time.sleep(0.05)
+            d.key(msg)
+            time.sleep(0.1)
+            content = d.js('const el=document.getElementById("prompt-textarea")||window.__neoFind?.();return el?.innerText||""')
+        log(f'{self.platform}: textarea content ({len(content)} chars): "{content[:60]}"')
+        if not content or len(content) < len(msg) // 2:
             log(f'{self.platform}: WARNING — text not in input, send may fail')
         # Send: Enter + send button click (covers all cases)
         user_count_before = int(d.js(
@@ -1587,12 +2163,21 @@ class ChatPipeline:
             if d.js('return !!document.querySelector("[data-testid=stop-button]")'):
                 sent = True
                 break
-        if sent:
-            log(f'{self.platform}: sent verified ({len(msg)} chars)')
-        else:
-            log(f'{self.platform}: WARNING — send not verified, message may not have been sent')
         self._send_verified = sent
-        return True
+        if sent:
+            # Anchor conversation: capture URL so next ensure() stays on this tab
+            current_url = d.js('return location.href') or ''
+            if '/c/' in current_url:
+                self.conv_url = current_url
+                log(f'{self.platform}: conversation anchored → {current_url}')
+            log(f'{self.platform}: Check 3 OK — message sent and appeared in DOM ({len(msg)} chars)')
+            return True
+        # Check 3 failed: message not confirmed in DOM
+        log(f'{self.platform}: Check 3 FAIL — message not in DOM after 3s, aborting')
+        self.last_error = error_response('send_failed',
+            f'{self.platform}: message typed but not confirmed sent (not in DOM after 3s)',
+            suggestion='The send button may be disabled or input was not populated. Try again.')
+        return False
 
     def check_response(self):
         """Check response state. Non-blocking. Returns dict with granular status."""
@@ -1603,11 +2188,25 @@ class ChatPipeline:
             const userMsgs = document.querySelectorAll("[data-message-author-role=user]");
             const count = msgs.length;
             const last = count ? msgs[msgs.length-1] : null;
-            const text = last?.innerText || "";
+
+            // Extract text: clone to avoid UI button text contaminating the result.
+            // For o3 thinking responses, the text lives inside a <details> element
+            // within the assistant div — innerText captures it after thinking ends.
+            let text = "";
+            if (last) {
+                const clone = last.cloneNode(true);
+                // Remove any retry/stop/action buttons that sit inside the assistant div
+                clone.querySelectorAll("button, [role=button], [data-testid*=button]").forEach(e => e.remove());
+                text = clone.innerText?.trim() || "";
+            }
+
             const stopBtn = !!document.querySelector("[data-testid=stop-button]");
             const streaming = !!document.querySelector(".result-streaming,[aria-busy=true]");
             const thinking = !!document.querySelector("[class*=thinking],[data-testid*=thinking]");
-            const hasError = text.includes("Something went wrong") || text.includes("error generating");
+            const UI_NOISE = ["reintentar", "retry", "regenerate", "copy", "something went wrong"];
+            const lc = text.toLowerCase();
+            const hasError = lc.includes("something went wrong") || lc.includes("error generating")
+                || (text.length < 30 && UI_NOISE.some(n => lc.includes(n)));
             const url = location.href;
             const lastUserMsg = userMsgs.length ? userMsgs[userMsgs.length-1].innerText?.substring(0,100) : "";
             return JSON.stringify({count, text: text.substring(0, 50000), stopBtn, streaming, thinking, hasError, url, userCount: userMsgs.length, lastUserMsg});
@@ -1638,9 +2237,9 @@ class ChatPipeline:
             return error_response('send_failed', 'Message may not have been sent',
                                   suggestion='ChatGPT input may have been blocked. Try again.')
 
-        # Poll for up to 30s (60 × 0.5s) to catch most responses
+        # Poll for up to 150s (300 × 0.5s) — covers o3/o4 extended thinking (~60-120s)
         log(f'{self.platform}: waiting for response (before={before} msgs)')
-        for i in range(60):
+        for i in range(300):
             time.sleep(0.5)
             s = self.check_response()
             if not s: continue
@@ -1679,28 +2278,23 @@ class ChatPipeline:
             # Thinking: stop button visible but no text yet
             if stop_btn and chars == 0:
                 no_progress_count += 1
-                # After 20s of 0 chars: likely hung — stop and retry
-                if no_progress_count > 40:  # 20s with no chars
-                    log(f'{self.platform}: hung detected ({no_progress_count} checks, 0 chars) — stopping and retrying')
-                    d.js('const b=document.querySelector("[data-testid=stop-button]");if(b)b.click()')
-                    time.sleep(2)
-                    # Click "Regenerate" or "Try again" if visible
-                    d.js('''
-                        const btns = document.querySelectorAll("button");
-                        for (const b of btns) {
-                            const t = (b.innerText || "").toLowerCase();
-                            if (t.includes("regenerat") || t.includes("try again") || t.includes("reintentar")) {
-                                b.click(); break;
-                            }
-                        }
-                    ''')
-                    log(f'{self.platform}: retrying after hung recovery')
-                    # Reset counters and keep polling
-                    no_progress_count = 0
-                    before = int(d.js(
-                        'return document.querySelectorAll("[data-message-author-role=assistant]").length'
-                    ) or 0)
-                    continue
+
+                # Detect stuck conversation: if after 60s the URL is still the base URL
+                # (no /c/ created), ChatGPT never started the conversation — likely rate-limited.
+                if no_progress_count == 120:  # 60s
+                    current_url = s.get('url', '')
+                    if '/c/' not in current_url:
+                        log(f'{self.platform}: no /c/ URL after 60s — likely rate-limited or stuck')
+                        return json.dumps({'status': 'stuck', 'chars_so_far': 0, 'elapsed_s': round(time.time()-t0, 1),
+                                           'suggestion': 'ChatGPT did not create a conversation after 60s. Possible rate limit. Wait 30-60s and retry, or open chatgpt.com in your real browser to verify.'})
+
+                # After 120s of 0 chars: o3/o4 extended thinking — do NOT click Stop.
+                # Stopping interrupts the reasoning phase. Return thinking status so
+                # the caller can poll with action=read_last at their own pace.
+                if no_progress_count > 240:  # 120s with no chars
+                    log(f'{self.platform}: still thinking after 120s ({no_progress_count} checks) — returning status for caller to poll')
+                    return json.dumps({'status': 'thinking', 'chars_so_far': 0, 'elapsed_s': round(time.time()-t0, 1),
+                                       'suggestion': 'Extended thinking in progress. Use action=read_last to check when ready (may take several minutes).'})
                 if i % 10 == 9:
                     log(f'{self.platform}: thinking... ({time.time()-t0:.0f}s, 0 chars)')
                 continue
@@ -1744,9 +2338,12 @@ class ChatPipeline:
                     if attempt < self.max_retries:
                         log(f'{self.platform}: not ready, retry {attempt+1}')
                         continue
-                    return f'{self.platform}: input not found after retries'
+                    return self.last_error or error_response('no_input_box', f'{self.platform}: input not found after retries')
                 if not self.send(msg):
-                    continue
+                    if attempt < self.max_retries:
+                        log(f'{self.platform}: send failed, retry {attempt+1}')
+                        continue
+                    return self.last_error or error_response('send_failed', f'{self.platform}: could not send message after retries')
                 if not wait: return 'Sent.'
                 return self.wait_response(msg)
             except Exception as e:
@@ -1789,15 +2386,83 @@ def chat_via_api(platform, message, api_key, base_url='https://api.openai.com/v1
     return None
 
 
-@tool_def('gpt', 'Chat with ChatGPT via browser session. Actions: send (default), read_last (get last response), is_streaming (check state: thinking/generating/complete), history (recent messages). Set raw=true to skip file save.', {'message': 'required', 'action': 'optional: send|read_last|is_streaming|history', 'raw': 'optional bool'}, read_only=False, concurrent=False)
+@tool_def('gpt', 'Chat with ChatGPT via browser session. Diagnostic actions run sequentially: check_session (lane 1: verify logged in via Sentinel), check_input (lane 2: verify chat box present), send_only (lane 3: type + confirm sent, no wait). Full send (default) runs all 3 lanes then waits for response. Also: read_last, is_streaming, history.', {'message': 'required for send/send_only', 'action': 'optional: send|check_session|check_input|send_only|read_last|is_streaming|history', 'raw': 'optional bool'}, read_only=False, concurrent=False)
 def tool_gpt(args):
     action = args.get('action', 'send')
 
+    # ── Diagnostic lanes ──────────────────────────────────────────
+    if action == 'check_session':
+        # Lane 1: navigate to chatgpt.com and check login status via DOM
+        if not _gpt.ensure():
+            return _gpt.last_error or error_response('platform_unavailable', 'Could not open ChatGPT')
+        d = _gpt.d
+        result = d.js('''
+            const text = document.body?.innerText || '';
+            const hasLoginBtn = !!document.querySelector(
+                '[data-testid="login-button"], a[href*="/auth/login"]');
+            const loginSignals = ['log in', 'sign in', 'sign up', 'create account',
+                                  'iniciar sesión', 'inicia sesión'];
+            const lowerText = text.toLowerCase();
+            const hasLoginText = loginSignals.some(s => lowerText.includes(s));
+            const snippet = text.substring(0, 150).replace(/\\n/g, ' ');
+            return JSON.stringify({
+                hasLoginBtn,
+                hasLoginText,
+                snippet,
+                authenticated: !hasLoginBtn && !hasLoginText && text.length > 100
+            });
+        ''') or '{}'
+        try:
+            info = json.loads(result)
+        except Exception:
+            info = {}
+        ok = info.get('authenticated', False)
+        return json.dumps({'check': 'session', 'ok': ok,
+                           'dom': info,
+                           'message': 'Session valid' if ok else 'Not authenticated — log into chatgpt.com in real Chrome and restart NeoBrowser'})
+
+    if action == 'check_input':
+        # Lane 2: verify chat input box is visible
+        if not _gpt.ensure():
+            return _gpt.last_error or error_response('platform_unavailable', 'Could not open ChatGPT')
+        if not _gpt.verify_ready():
+            return _gpt.last_error or error_response('no_input_box', 'Chat input box not found')
+        d = _gpt.d
+        selector = d.js('return document.getElementById("prompt-textarea") ? "#prompt-textarea" : (window.__neoFind?.() ? "found via __neoFind" : "not found")')
+        return json.dumps({'check': 'input', 'ok': True, 'selector': selector, 'message': 'Chat input box is present and ready'})
+
+    if action == 'send_only':
+        # Lane 3: type + confirm sent, no wait for response
+        msg = args.get('message', '')
+        if not msg: return 'message required'
+        if not _gpt.ensure():
+            return _gpt.last_error or error_response('platform_unavailable', 'Could not open ChatGPT')
+        if not _gpt.verify_ready():
+            return _gpt.last_error or error_response('no_input_box', 'Chat input box not found')
+        if not _gpt.send(msg):
+            return _gpt.last_error or error_response('send_failed', 'Message not confirmed sent')
+        return json.dumps({'check': 'sent', 'ok': True, 'chars': len(msg), 'message': 'Message sent and confirmed in DOM'})
+
+    # ── Read/status actions ───────────────────────────────────────
     if action in ('read_last', 'is_streaming', 'history'):
         _gpt.ensure()
         d = _gpt.d
         if action == 'read_last':
-            resp = d.js('const m=document.querySelectorAll("[data-message-author-role=assistant]");return m.length?m[m.length-1].innerText:null')
+            # Poll up to 30s for a complete (non-streaming) response
+            resp = None
+            for _ in range(60):
+                s = _gpt.check_response()
+                if s:
+                    resp = s.get('text', '') or None
+                    streaming = s.get('stopBtn', False) or s.get('streaming', False)
+                    if resp and len(resp) > 2 and not streaming:
+                        break  # complete response
+                    if resp and len(resp) > 2:
+                        time.sleep(0.5)  # still streaming, wait for more
+                        continue
+                if not d.js('return !!document.querySelector("[data-testid=stop-button]")'):
+                    break  # not streaming, whatever we have is final
+                time.sleep(0.5)
             return save(resp or 'No messages', 'gpt')
         if action == 'is_streaming':
             s = _gpt.check_response()
@@ -1818,15 +2483,7 @@ def tool_gpt(args):
             try: return '\n'.join(f'> {"YOU" if m["role"]=="user" else "GPT"}: {m["text"][:200]}' for m in json.loads(msgs))
             except: return msgs or 'No messages'
 
-    # API mode: use OpenAI API directly if key is available
-    if action == 'send' and OPENAI_API_KEY:
-        msg = args.get('message', '')
-        if not msg: return 'message required'
-        result = chat_via_api('gpt', msg, OPENAI_API_KEY)
-        if result:
-            return save(result, 'gpt')
-        log('gpt: API failed, falling back to browser')
-
+    # ── Full send (default) ───────────────────────────────────────
     msg = args.get('message', '')
     if not msg: return 'message required'
     return _gpt.run(msg, wait=args.get('wait', True))
