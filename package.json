@@ -1,6 +1,6 @@
 {
   "name": "neobrowser",
-  "version": "3.6.0",
+  "version": "3.7.0",
   "description": "AI Browser MCP Server — give your AI agent a real Chrome browser with session persistence",
   "bin": {
     "neo-browser": "./bin/neo-browser.js"
@@ -11,7 +11,17 @@
     "tools/v3/plugins.py",
     "README.md"
   ],
-  "keywords": ["mcp", "browser", "ai", "chrome", "cdp", "headless", "automation", "claude", "chatgpt"],
+  "keywords": [
+    "mcp",
+    "browser",
+    "ai",
+    "chrome",
+    "cdp",
+    "headless",
+    "automation",
+    "claude",
+    "chatgpt"
+  ],
   "author": "Dani Perez <dani@pitiflautico.com>",
   "license": "MIT",
   "repository": {
