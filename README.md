@@ -19,8 +19,13 @@ Need to read a public page?
   → SPA / JS-heavy / Cloudflare-protected        → open → read
 
 Need to interact with a page?
-  → Fill a form, click, type, scroll             → open → find/fill/click/submit
+  → Fill an entire form in one call              → open → form_fill (NEW)
+  → Click something and know what happened       → open → click (returns outcome)
   → Wait for async content to load               → open → wait → read
+  → Cookie banner / modal blocking you?          → dismiss_overlay (NEW)
+
+Need to know where you are? (cheap, <200 tokens)
+  → page_info  (URL, title, page state, form count, overlay detection)
 
 Need auth-gated content? (Twitter, LinkedIn, GitHub, your apps)
   → open (uses your real Chrome session automatically)
@@ -29,14 +34,17 @@ Need to ask ChatGPT / Grok?
   → gpt / grok (dedicated persistent tab, no API key needed)
 
 Need to extract structure?
-  → read type=tweets          — Twitter/X feed
-  → read type=posts           — blog/Reddit posts
-  → read type=comments        — comment threads
-  → read type=products        — e-commerce listings
-  → read type=table           — HTML tables
-  → read type=links           — all href URLs
-  → read type=markdown        — full page as markdown
-  → read type=accessibility   — semantic a11y tree (most reliable for SPAs)
+  → extract_table               — HTML table → JSON array (NEW)
+  → read type=tweets            — Twitter/X feed
+  → read type=posts             — blog/Reddit posts
+  → read type=comments          — comment threads
+  → read type=products          — e-commerce listings
+  → read type=links             — all href URLs
+  → read type=markdown          — full page as markdown
+  → read type=accessibility     — semantic a11y tree (most reliable for SPAs)
+
+Need content across multiple pages?
+  → paginate (auto-detects next button, accumulates content) (NEW)
 
 Need to debug a page?
   → debug (captures console.log, JS errors, uncaught exceptions)
@@ -89,7 +97,7 @@ NeoBrowser works with zero configuration. These unlock additional features:
 
 ---
 
-## Tools reference (22 tools)
+## Tools reference (26 tools)
 
 ### browse — fast HTTP fetch, no Chrome
 
@@ -375,6 +383,113 @@ plugin(action, name?, code?)
 
 ---
 
+### page_info — quick orientation (NEW in v3.9)
+
+```
+page_info()
+```
+
+Returns current URL, title, page state, interactive element count, form count, and overlay detection — all in under 200 tokens and 200ms. **Use instead of `read()` when you just need to know where you are.**
+
+```json
+{"url": "https://app.example.com/checkout", "title": "Checkout", "page_state": "form_present",
+ "interactive": 12, "forms": 1, "has_overlay": false}
+```
+
+`page_state` values: `content_loaded`, `login_required`, `captcha`, `error`, `form_present`, `rate_limited`
+
+---
+
+### form_fill — fill entire form in one call (NEW in v3.9)
+
+```
+form_fill(fields, submit?, form_selector?)
+```
+
+`fields`: dict of `{label_or_placeholder_or_name: value}` — fuzzy-matched against the form.  
+`submit`: click the submit button after filling (default false).  
+`form_selector`: target a specific form by CSS selector (default: first form).
+
+```json
+{"fields": {"Email": "user@example.com", "Password": "secret", "Remember me": true}, "submit": true}
+```
+
+Returns `{filled, skipped, submitted, fill_count}`. Supports text, email, password, checkbox, and select fields.
+
+**Why use this instead of `fill` × N:** a 3-field login form goes from 8 tool calls to 1.
+
+---
+
+### dismiss_overlay — close cookie banners and popups (NEW in v3.9)
+
+```
+dismiss_overlay(force?)
+```
+
+Auto-detects and dismisses: cookie consent banners, GDPR modals, newsletter popups, and other overlays blocking interaction. Tries in order: Accept button → Close button → Escape key (if `force=true`).
+
+Returns `{dismissed, method, overlay_type}`.
+
+- `force`: also try Escape key and backdrop click (default false)
+- **Use when**: clicks are not working because something is blocking the page
+
+---
+
+### extract_table — HTML table → JSON (NEW in v3.9)
+
+```
+extract_table(selector?, index?)
+```
+
+Extracts an HTML table as a JSON array of objects. First row becomes the keys.
+
+```json
+[{"Name": "Alice", "Score": "92", "Status": "Active"}, {"Name": "Bob", "Score": "87", "Status": "Inactive"}]
+```
+
+`selector`: CSS selector for a specific table (default: first table).  
+`index`: table index if multiple tables are present (default 0).
+
+**Why use this instead of `read type=table`:** returns directly usable JSON, zero parsing needed.
+
+---
+
+### paginate — collect multi-page content (NEW in v3.9)
+
+```
+paginate(next_selector?, max_pages?, extract?)
+```
+
+Automatically follows "next page" links and accumulates content across pages.
+
+`next_selector`: CSS selector for the next-page button (auto-detected if omitted).  
+`max_pages`: how many pages to fetch (default 3, max 10).  
+`extract`: what to collect per page — `text` (default), `links`, or `table`.
+
+Returns `{pages_fetched, stopped_at, content}`.
+
+Auto-detects next buttons by aria-label, rel=next, or text ("Next", "→", "Siguiente").
+
+---
+
+### click — click an element (updated in v3.9)
+
+```
+click(text?, selector?, index?)
+```
+
+Now returns a structured outcome instead of a plain string:
+
+```json
+{"clicked": true, "element": "Submit", "outcome": "navigated", "new_url": "https://example.com/success"}
+```
+
+`outcome` values: `navigated` | `modal_opened` | `page_updated` | `no_change` | `error`
+
+**Why this matters:** you no longer need to call `read()` after every click to check what happened.
+
+---
+
 ### status — show system state
 
 ```
@@ -542,7 +657,7 @@ search("topic") → browse(first_url) or open(first_url)
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q           # 176 unit tests, ~0.2s, no Chrome needed
+python3 -m pytest tests/ -q           # 80 unit tests, ~0.2s, no Chrome needed
 ```
 
 ---
