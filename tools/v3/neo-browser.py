@@ -183,7 +183,7 @@ def _sanitize_safe(text: str, source_url: str = '') -> str:
 # ── Perception-first page state ──
 
 _STATE_PATTERNS = {
-    'login_required': [r'(sign in|log in|login|iniciar sesión|ingresar)', r'(password|contraseña)'],
+    'login_required': [r'(sign in|log in|login|iniciar? sesión|ingresar?|inicia sesión)', r'(password|contraseña)'],
     'captcha': [r'(captcha|i\'m not a robot|cloudflare)', r'(verify|verificar)'],
     'error': [r'(404|not found|error 5\d\d|access denied|forbidden)', r'(page|página)'],
     'form_present': [r'<form|<input', r'(submit|enviar|send)'],
@@ -2032,6 +2032,36 @@ def tool_find(args):
         }})));
     ''') or '[]'
 
+def _click_outcome(snap_before: dict, snap_after: dict) -> tuple:
+    """Pure function: derive click outcome from before/after DOM snapshots.
+    Returns (outcome_str, extra_fields_dict).
+    """
+    url_before = snap_before.get('url', '')
+    url_after  = snap_after.get('url', '')
+    modals_before = snap_before.get('modals', 0)
+    modals_after  = snap_after.get('modals', 0)
+    body_before = snap_before.get('bodyLen', 0)
+    body_after  = snap_after.get('bodyLen', 0)
+    errors = snap_after.get('errors', [])
+
+    extra = {}
+    if url_before != url_after:
+        outcome = 'navigated'
+        extra['new_url'] = url_after
+    elif modals_after > modals_before:
+        outcome = 'modal_opened'
+    elif abs(body_after - body_before) > 500:
+        outcome = 'page_updated'
+    elif errors:
+        outcome = 'error'
+        extra['errors'] = errors
+    else:
+        outcome = 'no_change'
+    if errors and outcome != 'error':
+        extra['errors'] = errors
+    return outcome, extra
+
+
 @tool_def('click', 'Click an element by text content, CSS selector, or index from find results. Triggers navigation, buttons, links, toggles.', {'text': {'type': 'string', 'description': 'Text content of element to click'}, 'selector': {'type': 'string', 'description': 'CSS selector of element to click'}, 'index': {'type': 'integer', 'description': 'Index from find results (0-based)'}}, read_only=False, concurrent=False, risk_tier='medium')
 def tool_click(args):
     text = args.get('text', args.get('selector', ''))
@@ -2092,22 +2122,9 @@ def tool_click(args):
     body_after = snap_after.get('bodyLen', 0)
     errors = snap_after.get('errors', [])
 
-    if url_before != url_after:
-        outcome = 'navigated'
-    elif modals_after > modals_before:
-        outcome = 'modal_opened'
-    elif abs(body_after - body_before) > 500:
-        outcome = 'page_updated'
-    elif errors:
-        outcome = 'error'
-    else:
-        outcome = 'no_change'
-
+    outcome, extra = _click_outcome(snap_before, snap_after)
     result = {'clicked': True, 'element': clicked, 'outcome': outcome}
-    if url_before != url_after:
-        result['new_url'] = url_after
-    if errors:
-        result['errors'] = errors
+    result.update(extra)
     return json.dumps(result)
 
 @tool_def('find_and_click', 'Click element by accessibility role + name. More reliable than CSS for dynamic/React/SPAs. role: button|link|textbox|checkbox|menuitem|tab|combobox. name is substring match.', {'role': {'type': 'string', 'description': 'Accessibility role of element', 'required': True, 'enum': ['button', 'link', 'textbox', 'checkbox', 'menuitem', 'tab', 'combobox', 'radio', 'listitem']}, 'name': {'type': 'string', 'description': 'Substring of element label or name'}}, read_only=False, concurrent=False)
