@@ -4,7 +4,7 @@
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title>NeoBrowser — The First Browser Built for AI</title>
-<meta name="description" content="NeoBrowser is an AI browser MCP server. Give your AI agent a real Chrome browser with your session already loaded. 19 tools, one Python file, zero frameworks."/>
+<meta name="description" content="NeoBrowser is an AI browser MCP server. Give your AI agent a real Chrome browser with your session already loaded. 21 tools, one Python file, zero frameworks."/>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
@@ -127,13 +127,13 @@ body {
   <div class="relative z-10 max-w-5xl mx-auto text-center">
     <div class="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 mb-10 refraction-border">
       <span class="w-2 h-2 rounded-full bg-secondary animate-pulse"></span>
-      <span class="text-xs font-label uppercase tracking-[0.15em] text-on-surface-variant">AI Browser MCP Server &middot; Open Source &middot; v3.3</span>
+      <span class="text-xs font-label uppercase tracking-[0.15em] text-on-surface-variant">AI Browser MCP Server &middot; Open Source &middot; v3.7</span>
     </div>
     <h1 class="text-5xl md:text-7xl lg:text-8xl font-headline font-bold tracking-tighter text-on-surface leading-[0.95] mb-8">
       The First Browser<br/><span class="gradient-text">Built for AI.</span>
     </h1>
     <p class="text-lg md:text-xl text-on-surface-variant max-w-2xl mx-auto mb-12 leading-relaxed">
-      Give your AI agent a real Chrome browser with your session already loaded. 19 tools, one Python file, zero frameworks.
+      Give your AI agent a real Chrome browser with your session already loaded. 21 tools, one Python file, zero frameworks.
     </p>
     <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
       <a href="#get-started" class="w-full sm:w-auto px-10 py-4 bg-primary text-background rounded-xl font-bold text-lg hover:shadow-[0_0_30px_rgba(129,140,248,0.4)] transition-all active:scale-95">
@@ -155,7 +155,7 @@ body {
       <div class="p-5 md:p-6 font-mono text-sm leading-relaxed space-y-1">
         <div class="text-on-surface-variant terminal-line">npx neobrowser</div>
         <div class="text-on-surface-variant terminal-line">neo-browser</div>
-        <div class="text-on-surface-variant/70">[neo] NeoBrowser V3 started — 19 tools, Ghost Chrome headless</div>
+        <div class="text-on-surface-variant/70">[neo] NeoBrowser V3 started — 21 tools, Ghost Chrome headless</div>
         <div class="text-on-surface-variant/70">[neo] Session sync: 5332 cookies, Local Storage, IndexedDB</div>
         <div class="text-secondary">[neo] Ghost Chrome ready (port=52167)</div>
       </div>
@@ -171,7 +171,7 @@ body {
       <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Average per operation</div>
     </div>
     <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
-      <div class="text-4xl md:text-5xl font-headline font-bold text-primary">19</div>
+      <div class="text-4xl md:text-5xl font-headline font-bold text-primary">21</div>
       <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">MCP tools ready</div>
     </div>
     <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
@@ -179,7 +179,7 @@ body {
       <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Cold start time</div>
     </div>
     <div class="text-center p-6 rounded-2xl bg-surface-low/50 refraction-border">
-      <div class="text-4xl md:text-5xl font-headline font-bold text-on-surface">1500</div>
+      <div class="text-4xl md:text-5xl font-headline font-bold text-on-surface">3200</div>
       <div class="text-xs font-label uppercase tracking-widest text-on-surface-variant mt-3">Lines of Python</div>
     </div>
   </div>
@@ -216,7 +216,13 @@ body {
       <h3 class="text-xl font-headline font-bold mb-3">HTTP Fast Path + Chrome CDP</h3>
       <p class="text-on-surface-variant text-sm leading-relaxed">Static pages in 0.11s via HTTP. SPAs and Cloudflare pages in 1s via Chrome DevTools Protocol. Best of both worlds.</p>
     </div>
-    <!-- Medium: 19 Tools -->
+    <!-- Medium: Smart SPA Detection -->
+    <div class="md:col-span-6 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-secondary text-3xl mb-5 block">radar</span>
+      <h3 class="text-xl font-headline font-bold mb-3">Smart SPA Detection</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">Site-specific DOM signals for X/Twitter, LinkedIn, ChatGPT, GitHub. Waits for tweetText, prompt-textarea, feed cards — not just readyState. Unknown sites use content stabilisation.</p>
+    </div>
+    <!-- Medium: 21 Tools -->
     <div class="md:col-span-6 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
       <span class="material-symbols-outlined text-primary text-3xl mb-5 block">construction</span>
       <h3 class="text-xl font-headline font-bold mb-3">Navigate, Click, Fill, Extract</h3>
@@ -228,11 +234,17 @@ body {
       <h3 class="text-xl font-headline font-bold mb-3">Talk to ChatGPT and Grok</h3>
       <p class="text-on-surface-variant text-sm leading-relaxed">Dedicated persistent tabs. Send messages, read responses, check streaming status, get conversation history.</p>
     </div>
+    <!-- Small: Debug Mode -->
+    <div class="md:col-span-4 rounded-2xl bg-surface-low border border-white/5 p-8 transition-all hover:bg-surface-high/60 refraction-border">
+      <span class="material-symbols-outlined text-tertiary text-3xl mb-5 block">bug_report</span>
+      <h3 class="text-xl font-headline font-bold mb-3">Console Log Capture</h3>
+      <p class="text-on-surface-variant text-sm leading-relaxed">Inject a live interceptor to capture console.log, JS errors, uncaught exceptions and promise rejections. Target any tab — debug the ChatGPT tab mid-session.</p>
+    </div>
     <!-- Large: Single File -->
     <div class="md:col-span-8 group relative overflow-hidden rounded-2xl bg-surface-high/40 border border-white/5 p-8 md:p-10 neon-glow-secondary transition-all duration-500 hover:scale-[1.005] refraction-border">
       <span class="material-symbols-outlined text-secondary text-4xl mb-5 block">draft</span>
       <h3 class="text-2xl md:text-3xl font-headline font-bold mb-4">One File. One Dependency.</h3>
-      <p class="text-on-surface-variant text-lg max-w-lg leading-relaxed">neo-browser.py — 1500 lines of Python. Only needs the websockets package. No Selenium, no Playwright, no chromedriver.</p>
+      <p class="text-on-surface-variant text-lg max-w-lg leading-relaxed">neo-browser.py — 3200 lines of Python. Only needs the websockets package. No Selenium, no Playwright, no chromedriver.</p>
     </div>
   </div>
 </section>
@@ -276,6 +288,14 @@ body {
             <span class="material-symbols-outlined text-secondary text-base mt-0.5 flex-shrink-0">hub</span>
             <div><span class="font-semibold text-on-surface">Multi-model orchestration</span> <span class="text-on-surface-variant">— ask GPT or Grok questions via browser session</span></div>
           </li>
+          <li class="flex items-start gap-3">
+            <span class="material-symbols-outlined text-secondary text-base mt-0.5 flex-shrink-0">feed</span>
+            <div><span class="font-semibold text-on-surface">Read your X/Twitter feed</span> <span class="text-on-surface-variant">— open x.com/home and read tweets with your real session, including auth-gated content</span></div>
+          </li>
+          <li class="flex items-start gap-3">
+            <span class="material-symbols-outlined text-secondary text-base mt-0.5 flex-shrink-0">chat</span>
+            <div><span class="font-semibold text-on-surface">Multi-model AI chat</span> <span class="text-on-surface-variant">— send messages to ChatGPT and Grok using your browser session, no API key needed</span></div>
+          </li>
         </ul>
       </div>
       <!-- For Developers -->
@@ -300,6 +320,10 @@ body {
           <li class="flex items-start gap-3">
             <span class="material-symbols-outlined text-tertiary text-base mt-0.5 flex-shrink-0">rocket_launch</span>
             <div><span class="font-semibold text-on-surface">Prototyping</span> <span class="text-on-surface-variant">— quick browser automation in YAML pipelines</span></div>
+          </li>
+          <li class="flex items-start gap-3">
+            <span class="material-symbols-outlined text-tertiary text-base mt-0.5 flex-shrink-0">terminal</span>
+            <div><span class="font-semibold text-on-surface">JS debugging</span> <span class="text-on-surface-variant">— capture console logs, JS exceptions and network errors from any page mid-session</span></div>
           </li>
         </ul>
       </div>
@@ -326,9 +350,9 @@ body {
         <div class="text-sm text-on-surface-variant">Real measured wall-clock time across 19 operations on macOS.</div>
       </div>
       <div class="p-6 rounded-2xl bg-surface-low border border-white/5 refraction-border">
-        <div class="text-3xl font-headline font-bold text-primary mb-2">150</div>
+        <div class="text-3xl font-headline font-bold text-primary mb-2">176</div>
         <div class="text-on-surface font-semibold mb-1">Tests passing</div>
-        <div class="text-sm text-on-surface-variant">128 unit tests (0.1s, no Chrome) + 22 integration tests. CI on every push.</div>
+        <div class="text-sm text-on-surface-variant">176 unit tests (0.2s, no Chrome needed). CI on every push.</div>
       </div>
       <div class="p-6 rounded-2xl bg-surface-low border border-white/5 refraction-border">
         <div class="text-3xl font-headline font-bold text-tertiary mb-2">Real</div>
@@ -336,7 +360,13 @@ body {
         <div class="text-sm text-on-surface-variant">Cookies, localStorage, IndexedDB from your actual Chrome profile. Works on Cloudflare-protected sites.</div>
       </div>
       <div class="p-6 rounded-2xl bg-surface-low border border-white/5 refraction-border">
-        <div class="text-3xl font-headline font-bold text-primary mb-2">19</div>
+        <span class="material-symbols-outlined text-secondary text-2xl mb-2 block">shield</span>
+        <div class="text-3xl font-headline font-bold text-secondary mb-2">0</div>
+        <div class="text-on-surface font-semibold mb-1">Bot detection score</div>
+        <div class="text-sm text-on-surface-variant">User-agent override strips HeadlessChrome marker. Passes standard detection probes: webdriver=undefined, WebGL active, realistic screen.</div>
+      </div>
+      <div class="p-6 rounded-2xl bg-surface-low border border-white/5 refraction-border">
+        <div class="text-3xl font-headline font-bold text-primary mb-2">21</div>
         <div class="text-on-surface font-semibold mb-1">MCP tools</div>
         <div class="text-sm text-on-surface-variant">Browse, interact, extract, chat — everything an agent needs to work the web.</div>
       </div>
@@ -557,9 +587,14 @@ body {
               <td class="px-6 py-4 text-secondary font-semibold">1 (websockets)</td>
               <td class="px-6 py-4 text-on-surface-variant">50+</td>
             </tr>
+            <tr class="border-b border-white/5">
+              <td class="px-6 py-4 text-on-surface-variant">Auth-gated pages (X, LinkedIn)</td>
+              <td class="px-6 py-4 text-secondary font-semibold">Automatic (session sync)</td>
+              <td class="px-6 py-4 text-on-surface-variant">Manual login required</td>
+            </tr>
             <tr>
               <td class="px-6 py-4 text-on-surface-variant">File size</td>
-              <td class="px-6 py-4 text-secondary font-semibold">1 file, 1500 LOC</td>
+              <td class="px-6 py-4 text-secondary font-semibold">1 file, 3200 LOC</td>
               <td class="px-6 py-4 text-on-surface-variant">Framework + drivers</td>
             </tr>
           </tbody>
@@ -619,8 +654,8 @@ body {
     <span class="font-label text-secondary uppercase tracking-[0.25em] text-sm font-semibold">Community</span>
     <h2 class="text-4xl md:text-5xl font-headline font-bold mt-4 mb-6 tracking-tight">Built in the open. MIT Licensed.</h2>
     <div class="flex flex-wrap items-center justify-center gap-4 mb-8">
-      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">19 tools</span>
-      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">150 tests</span>
+      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">21 tools</span>
+      <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">176 tests</span>
       <span class="px-4 py-1.5 rounded-full bg-surface-high/80 border border-white/5 text-sm text-on-surface-variant">1 dependency</span>
     </div>
     <p class="text-lg text-on-surface-variant max-w-2xl mx-auto mb-12 leading-relaxed">
@@ -662,7 +697,7 @@ body {
       <a class="text-xs text-on-surface-variant hover:text-on-surface transition-colors" href="https://github.com/pitiflautico/neobrowser">GitHub</a>
       <a class="text-xs text-on-surface-variant hover:text-on-surface transition-colors" href="#">MIT License</a>
     </div>
-    <p class="text-xs text-on-surface-variant/50">Built with Python, Chrome, and determination.</p>
+    <p class="text-xs text-on-surface-variant/50">Built by Dani Perez and Claude — a human and an AI building a browser for AI agents.</p>
   </div>
 </footer>
 
