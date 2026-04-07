@@ -114,11 +114,112 @@ Install: pip install -e tools/v3/  →  command: neo-browser
 Config:  {"command": "neo-browser", "env": {"NEOBROWSER_PROFILE": "Profile 24"}}
 """
 
-import json, sys, os, time, subprocess, threading, atexit, signal, tempfile, re, urllib.request, urllib.parse
+import json, sys, os, time, subprocess, threading, atexit, signal, tempfile, re, urllib.request, urllib.parse, hashlib
 from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Optional
 
 def log(msg):
     print(f'[neo] {msg}', file=sys.stderr, flush=True)
+
+# ── Structured audit log ──
+
+_audit_log_path = Path(os.environ.get('NEO_AUDIT_LOG', '/tmp/neobrowser-audit.jsonl'))
+
+def _audit(tool: str, url: str, result_type: str, duration_ms: float, error: str = None, args: dict = None):
+    """Write a structured audit entry. Never logs credential values."""
+    try:
+        args_hash = hashlib.sha256(json.dumps(args or {}, sort_keys=True, default=str).encode()).hexdigest()[:12]
+        entry = {
+            't': int(time.time() * 1000),
+            'tool': tool,
+            'url': url or '',
+            'result': result_type,
+            'ms': round(duration_ms, 1),
+            'args_hash': args_hash,
+        }
+        if error:
+            entry['error'] = error[:200]
+        with open(_audit_log_path, 'a') as f:
+            f.write(json.dumps(entry) + '\n')
+    except Exception:
+        pass  # audit must never break execution
+
+# ── Outcome contracts ──
+
+@dataclass
+class ToolResult:
+    success: bool
+    text: str
+    changed: bool = False
+    evidence: str = ''
+    error_type: str = ''
+
+    def __str__(self):
+        if not self.success:
+            return json.dumps({'error': self.error_type, 'message': self.text})
+        return self.text
+
+# ── Prompt injection defense ──
+
+_INJECTION_PATTERNS = [
+    r'ignore (previous|all|prior) instructions',
+    r'you are now',
+    r'<\|.*?\|>',
+    r'\[INST\]|\[/INST\]',
+    r'###\s*(System|Human|Assistant):',
+    r'SYSTEM PROMPT:',
+]
+_INJECTION_RE = re.compile('|'.join(_INJECTION_PATTERNS), re.IGNORECASE)
+
+def _sanitize_safe(text: str, source_url: str = '') -> str:
+    """Wrap page content, flagging potential prompt injection."""
+    if not text:
+        return text
+    if _INJECTION_RE.search(text):
+        return f'[UNTRUSTED CONTENT from {source_url} — potential prompt injection detected]\n{text}'
+    return text
+
+# ── Perception-first page state ──
+
+_STATE_PATTERNS = {
+    'login_required': [r'(sign in|log in|login|iniciar sesión|ingresar)', r'(password|contraseña)'],
+    'captcha': [r'(captcha|i\'m not a robot|cloudflare)', r'(verify|verificar)'],
+    'error': [r'(404|not found|error 5\d\d|access denied|forbidden)', r'(page|página)'],
+    'form_present': [r'<form|<input', r'(submit|enviar|send)'],
+    'rate_limited': [r'(rate limit|too many requests|slow down)', r'(429|retry)'],
+}
+
+def _classify_page_state(text: str) -> str:
+    """Return a semantic label for the current page state."""
+    lower = text.lower()[:3000]
+    for state, patterns in _STATE_PATTERNS.items():
+        if all(re.search(p, lower) for p in patterns):
+            return state
+    return 'content_loaded'
+
+# ── Hybrid routing ──
+
+def _try_http_fetch(url: str):
+    """Try plain HTTP fetch for static pages. Returns None if browser is needed."""
+    import urllib.request
+    import urllib.error
+    if any(x in url for x in ['localhost', '127.0.0.1', '.js', '.css', '.json']):
+        return None
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            ct = resp.headers.get('Content-Type', '')
+            if 'text/html' not in ct:
+                return None
+            html = resp.read().decode('utf-8', errors='replace')
+            if any(x in html for x in ['<script src', 'id="root"', 'id="app"', '__NEXT_DATA__', 'ng-app']):
+                return None
+            text = re.sub(r'<[^>]+>', ' ', html)
+            text = re.sub(r'\s+', ' ', text).strip()
+            return text[:8000] if len(text) > 100 else None
+    except Exception:
+        return None
 
 # ── Config ──
 CHROME_BIN = os.environ.get('NEOBROWSER_CHROME_BIN', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
@@ -1498,7 +1599,7 @@ def process_content(text, prompt=DEFAULT_PROMPT, force=False):
 
 TOOLS = {}
 
-def tool_def(name, description, schema, read_only=True, concurrent=True, max_result=0):
+def tool_def(name, description, schema, read_only=True, concurrent=True, max_result=0, risk_tier='low'):
     """Register a tool with metadata. Decorator."""
     def decorator(fn):
         TOOLS[name] = {
@@ -1508,6 +1609,7 @@ def tool_def(name, description, schema, read_only=True, concurrent=True, max_res
             'read_only': read_only,
             'concurrent': concurrent,
             'max_result': max_result,
+            'risk_tier': risk_tier,
             'fn': fn,
         }
         return fn
@@ -1644,6 +1746,10 @@ def tool_browse(args):
             d = chrome_go(url)
         raw = d.sanitize()
         result = sanitize_unicode(process_content(raw, prompt=user_prompt, force=True) if user_prompt else process_content(raw))
+        result = _sanitize_safe(result, url)
+        state = _classify_page_state(result)
+        if state != 'content_loaded':
+            result = f'[page_state: {state}]\n{result}'
         if fetch_epoch == _cache_epoch:
             _page_cache.put(url, result)
         result_holder['result'] = result
@@ -1926,7 +2032,7 @@ def tool_find(args):
         }})));
     ''') or '[]'
 
-@tool_def('click', 'Click an element by text content, CSS selector, or index from find results. Triggers navigation, buttons, links, toggles.', {'text': {'type': 'string', 'description': 'Text content of element to click'}, 'selector': {'type': 'string', 'description': 'CSS selector of element to click'}, 'index': {'type': 'integer', 'description': 'Index from find results (0-based)'}}, read_only=False, concurrent=False)
+@tool_def('click', 'Click an element by text content, CSS selector, or index from find results. Triggers navigation, buttons, links, toggles.', {'text': {'type': 'string', 'description': 'Text content of element to click'}, 'selector': {'type': 'string', 'description': 'CSS selector of element to click'}, 'index': {'type': 'integer', 'description': 'Index from find results (0-based)'}}, read_only=False, concurrent=False, risk_tier='medium')
 def tool_click(args):
     text = args.get('text', args.get('selector', ''))
     if not text: return 'text or selector required'
@@ -1971,7 +2077,7 @@ def tool_find_and_click(args):
         return f'Clicked {role}[{name}]\n\n{d.sanitize()}'
     return f'Not found: role={role}, name={name}'
 
-@tool_def('type', 'Type text into a form field by CSS selector. Use fill for a single field, use type for direct selector+value input.', {'selector': {'type': 'string', 'description': 'CSS selector of the input field to type into', 'required': True}, 'value': {'type': 'string', 'description': 'Text to type into the field', 'required': True}}, read_only=False, concurrent=False)
+@tool_def('type', 'Type text into a form field by CSS selector. Use fill for a single field, use type for direct selector+value input.', {'selector': {'type': 'string', 'description': 'CSS selector of the input field to type into', 'required': True}, 'value': {'type': 'string', 'description': 'Text to type into the field', 'required': True}}, read_only=False, concurrent=False, risk_tier='medium')
 def tool_type(args):
     """Smart type — uses __neoFind detector."""
     sel = args.get('selector', args.get('text', ''))
@@ -1998,7 +2104,7 @@ def tool_type(args):
     d.key(val)
     return json.dumps({'typed': True, 'value': val, 'field': info})
 
-@tool_def('fill', 'Fill a form field by CSS selector with a value. Combines focus + type. For multiple fields, call fill for each. Use submit after filling.', {'selector': {'type': 'string', 'description': 'CSS selector of the form field'}, 'value': {'type': 'string', 'description': 'Value to fill into the field', 'required': True}}, read_only=False, concurrent=False)
+@tool_def('fill', 'Fill a form field by CSS selector with a value. Combines focus + type. For multiple fields, call fill for each. Use submit after filling.', {'selector': {'type': 'string', 'description': 'CSS selector of the form field'}, 'value': {'type': 'string', 'description': 'Value to fill into the field', 'required': True}}, read_only=False, concurrent=False, risk_tier='medium')
 def tool_fill(args):
     """Smart fill — handles inputs, textareas, selects, checkboxes, radios.
     Finds fields by: name, id, placeholder, label text, aria-label, type."""
@@ -2214,17 +2320,20 @@ def tool_debug(args):
     return '\n'.join(lines)
 
 
-@tool_def('login', 'Navigate to a login-required site and authenticate using stored session cookies from the real Chrome profile. Use when browse or open returns a login wall or 401. Automatically re-syncs cookies from the user\'s real Chrome if needed.', {'url': {'type': 'string', 'description': 'URL of the login-protected site', 'required': True}}, read_only=False, concurrent=False)
+@tool_def('login', 'Navigate to a login-required site and authenticate using stored session cookies from the real Chrome profile. Use when browse or open returns a login wall or 401. Automatically re-syncs cookies from the user\'s real Chrome if needed.', {'url': {'type': 'string', 'description': 'URL of the login-protected site', 'required': True}, 'email': {'type': 'string', 'description': 'Email or username for login'}, 'password': {'type': 'string', 'description': 'Password for login'}}, read_only=False, concurrent=False, risk_tier='high')
 def tool_login(args):
     url, email, pw = args.get('url', ''), args.get('email', ''), args.get('password', '')
-    if not all([url, email, pw]): return 'url, email, password required'
+    if not url: return 'url required'
+    if not url.startswith(('http://', 'https://')): return error_response('invalid_url', 'url must start with http:// or https://')
     d = chrome_go(url, 5)
-    d.js(f'''const e={json.dumps(email)},p={json.dumps(pw)};
-        const ei=document.querySelector('[type=email],[name=email],[name=username],[autocomplete=email]');
-        const pi=document.querySelector('[type=password]');
-        if(ei){{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(s)s.call(ei,e);else ei.value=e;ei.dispatchEvent(new Event('input',{{bubbles:true}}))}}
-        if(pi){{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(s)s.call(pi,p);else pi.value=p;pi.dispatchEvent(new Event('input',{{bubbles:true}}))}}
-    ''')
+    if email and pw:
+        d.js(f'''(function(){{
+            const e={json.dumps(email)},p={json.dumps(pw)};
+            const ei=document.querySelector('[type=email],[name=email],[name=username],[autocomplete=email]');
+            const pi=document.querySelector('[type=password]');
+            if(ei){{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(s)s.call(ei,e);else ei.value=e;ei.dispatchEvent(new Event('input',{{bubbles:true}}))}}
+            if(pi){{const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set;if(s)s.call(pi,p);else pi.value=p;pi.dispatchEvent(new Event('input',{{bubbles:true}}))}}
+        }})();''')
     time.sleep(0.5)
     d.js('document.querySelector("[type=submit],button[type=submit]")?.click()')
     time.sleep(3)
@@ -2853,7 +2962,7 @@ def chat_via_api(platform, message, api_key, base_url='https://api.openai.com/v1
     return None
 
 
-@tool_def('gpt', 'Chat with ChatGPT using the user\'s real browser session (no API key needed). Default action sends a message and waits for the full response. Use read_last to get the latest response, is_streaming to check if still generating, history to get conversation history. Requires user to be logged in to ChatGPT in Chrome.', {'message': {'type': 'string', 'description': 'Message to send to ChatGPT'}, 'action': {'type': 'string', 'description': 'Action to perform (default: send)', 'enum': ['send', 'read_last', 'is_streaming', 'history', 'check_session', 'check_input', 'send_only']}, 'raw': {'type': 'boolean', 'description': 'Return raw response without processing (default false)'}}, read_only=False, concurrent=False)
+@tool_def('gpt', 'Chat with ChatGPT using the user\'s real browser session (no API key needed). Default action sends a message and waits for the full response. Use read_last to get the latest response, is_streaming to check if still generating, history to get conversation history. Requires user to be logged in to ChatGPT in Chrome.', {'message': {'type': 'string', 'description': 'Message to send to ChatGPT'}, 'action': {'type': 'string', 'description': 'Action to perform (default: send)', 'enum': ['send', 'read_last', 'is_streaming', 'history', 'check_session', 'check_input', 'send_only']}, 'raw': {'type': 'boolean', 'description': 'Return raw response without processing (default false)'}}, read_only=False, concurrent=False, risk_tier='high')
 def tool_gpt(args):
     action = args.get('action', 'send')
 
@@ -2902,6 +3011,7 @@ def tool_gpt(args):
         # Lane 3: type + confirm sent, no wait for response
         msg = args.get('message', '')
         if not msg: return 'message required'
+        if len(msg) > 32000: return error_response('message_too_long', f'Message exceeds 32000 char limit ({len(msg)} chars)')
         if not _gpt.ensure():
             return _gpt.last_error or error_response('platform_unavailable', 'Could not open ChatGPT')
         if not _gpt.verify_ready():
@@ -2957,6 +3067,7 @@ def tool_gpt(args):
     # ── Full send (default) ───────────────────────────────────────
     msg = args.get('message', '')
     if not msg: return 'message required'
+    if len(msg) > 32000: return error_response('message_too_long', f'Message exceeds 32000 char limit ({len(msg)} chars)')
     return _gpt.run(msg, wait=args.get('wait', True))
 
 @tool_def('grok', 'Chat with Grok (X.com/Grok) using the user\'s real browser session (no API key needed). Same interface as gpt. Requires user to be logged in to X.com in Chrome.', {'message': {'type': 'string', 'description': 'Message to send to Grok'}, 'action': {'type': 'string', 'description': 'Action to perform (default: send)', 'enum': ['send', 'read_last', 'is_streaming', 'history']}, 'raw': {'type': 'boolean', 'description': 'Return raw response without processing (default false)'}}, read_only=False, concurrent=False)
@@ -3006,6 +3117,7 @@ def tool_grok(args):
 
     msg = args.get('message', '')
     if not msg: return 'message required'
+    if len(msg) > 32000: return error_response('message_too_long', f'Message exceeds 32000 char limit ({len(msg)} chars)')
     return _grok.run(msg, wait=args.get('wait', True))
 
 @tool_def('js', 'Execute JavaScript in a Chrome tab and return the result. Code must use return statement. Has access to full DOM and page APIs.', {'code': {'type': 'string', 'description': 'JavaScript code to execute. Must use return statement to return a value. Has full DOM access.', 'required': True}, 'tab': {'type': 'string', 'description': 'Tab name to run JS in (e.g. "gpt", "grok"). Omit to use the default tab.'}}, read_only=True, concurrent=True)
@@ -3120,18 +3232,36 @@ signal.signal(signal.SIGINT, _signal_handler)
 
 # ── MCP dispatch ──
 
+def chrome_url():
+    try: return chrome().url
+    except Exception: return ''
+
 def dispatch_tool(name, args):
-    """Dispatch tool by name with auto-locking and result persistence."""
+    """Dispatch tool by name with auto-locking, permission check, audit, and result persistence."""
     t = TOOLS.get(name)
     if not t:
         return f'Unknown tool: {name}'
 
-    # Auto sequential lock for mutating tools
-    if not t['concurrent']:
-        with _browser_lock:
+    # Permission tier check
+    allowed_tier = os.environ.get('NEO_MAX_TIER', 'high')
+    tier_order = {'low': 0, 'medium': 1, 'high': 2}
+    tool_tier = t.get('risk_tier', 'low')
+    if tier_order.get(tool_tier, 0) > tier_order.get(allowed_tier, 2):
+        return error_response('permission_denied', f'Tool {name} requires tier={tool_tier}, session allows tier={allowed_tier}')
+
+    _t0 = time.time()
+    try:
+        # Auto sequential lock for mutating tools
+        if not t['concurrent']:
+            with _browser_lock:
+                result = t['fn'](args)
+        else:
             result = t['fn'](args)
-    else:
-        result = t['fn'](args)
+
+        _audit(name, chrome_url(), 'ok', (time.time() - _t0) * 1000, args=args)
+    except Exception as e:
+        _audit(name, '', 'error', (time.time() - _t0) * 1000, error=str(e), args=args)
+        raise
 
     # Auto persist large results
     if t['max_result'] and isinstance(result, str) and len(result) > t['max_result']:

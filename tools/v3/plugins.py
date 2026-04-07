@@ -35,7 +35,11 @@ def resolve_template(text, ctx):
             else:
                 val = ''
                 break
-        return str(val) if val is not None else ''
+        result = str(val) if val is not None else ''
+        # Prevent template re-injection: strip {{ }} from substituted values
+        result = result.replace('{{', '{').replace('}}', '}')
+        # Enforce reasonable per-variable size limit
+        return result[:10000]
 
     return re.sub(r'\{\{(.+?)\}\}', replacer, text)
 
@@ -97,6 +101,28 @@ def list_plugins():
         except:
             plugins.append({'name': f.stem, 'file': str(f), 'error': 'parse failed'})
     return plugins
+
+
+def get_plugin_meta(name: str) -> dict:
+    """Return metadata for a plugin including version and step count."""
+    path = PLUGIN_DIR / f'{name}.yaml'
+    if not path.exists():
+        path = PLUGIN_DIR / f'{name}.yml'
+    if not path.exists():
+        return {}
+    try:
+        if yaml:
+            data = yaml.safe_load(path.read_text())
+            return {
+                'name': name,
+                'version': data.get('version', '1.0.0'),
+                'description': data.get('description', ''),
+                'steps': len(data.get('steps', [])),
+                'inputs': list(data.get('inputs', {}).keys()),
+            }
+        return {'name': name, 'version': 'unknown'}
+    except Exception as e:
+        return {'name': name, 'error': str(e)}
 
 
 def create_plugin(name, description, steps_yaml):
