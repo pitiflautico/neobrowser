@@ -2037,31 +2037,78 @@ def tool_click(args):
     text = args.get('text', args.get('selector', ''))
     if not text: return 'text or selector required'
     d = chrome()
+
+    # Snapshot before click
+    before = d.js('''
+        return JSON.stringify({
+            url: location.href,
+            modals: document.querySelectorAll('[role=dialog],[aria-modal=true]').length,
+            bodyLen: document.body?.innerHTML?.length || 0
+        });
+    ''') or '{}'
+    try:
+        snap_before = json.loads(before)
+    except Exception:
+        snap_before = {}
+
     clicked = d.js(f'''
-        const q={json.dumps(text)};let els=document.querySelectorAll(q);
-        if(!els.length){{const ql=q.toLowerCase();els=Array.from(document.querySelectorAll('a,button,[role=button]'))
-            .filter(e=>(e.innerText||'').toLowerCase().includes(ql))}}
-        if(els[0]){{els[0].click();return true}}return false;
+        const q={json.dumps(text)};
+        let els = Array.from(document.querySelectorAll(q));
+        if (!els.length) {{
+            const ql = q.toLowerCase();
+            els = Array.from(document.querySelectorAll('a,button,[role=button],[role=link],input[type=submit]'))
+                .filter(e => (e.innerText||e.value||'').toLowerCase().includes(ql));
+        }}
+        if (els[0]) {{ els[0].click(); return els[0].innerText?.trim().substring(0,60) || els[0].tagName; }}
+        return null;
     ''')
-    if clicked:
-        # Detect navigation: if URL changes, wait for new page; else poll readyState
-        url_before = d.js('return location.href') or ''
-        time.sleep(0.15)
-        url_after = d.js('return location.href') or ''
-        if url_before and url_before != url_after:
-            # Navigation to new page — wait for it to settle
-            for _ in range(20):
-                time.sleep(0.1)
-                try:
-                    if d.js('return document.readyState') == 'complete': break
-                except Exception:
-                    pass  # Context briefly destroyed during navigation
-        else:
-            # DOM-only change — short poll
-            for _ in range(5):
-                time.sleep(0.1)
-                if d.js('return document.readyState') == 'complete': break
-    return f'Clicked "{text}"\n\n{d.sanitize()}' if clicked else f'Not found: "{text}"'
+
+    if not clicked:
+        return error_response('not_found', f'Element not found: {text}')
+
+    time.sleep(0.6)
+
+    # Snapshot after click
+    after = d.js('''
+        return JSON.stringify({
+            url: location.href,
+            modals: document.querySelectorAll('[role=dialog],[aria-modal=true]').length,
+            bodyLen: document.body?.innerHTML?.length || 0,
+            errors: Array.from(document.querySelectorAll(
+                '[role=alert],[class*=error],[class*=alert]'
+            )).map(e => e.innerText?.trim().substring(0,100)).filter(Boolean).slice(0,3)
+        });
+    ''') or '{}'
+    try:
+        snap_after = json.loads(after)
+    except Exception:
+        snap_after = {}
+
+    url_before = snap_before.get('url', '')
+    url_after = snap_after.get('url', '')
+    modals_before = snap_before.get('modals', 0)
+    modals_after = snap_after.get('modals', 0)
+    body_before = snap_before.get('bodyLen', 0)
+    body_after = snap_after.get('bodyLen', 0)
+    errors = snap_after.get('errors', [])
+
+    if url_before != url_after:
+        outcome = 'navigated'
+    elif modals_after > modals_before:
+        outcome = 'modal_opened'
+    elif abs(body_after - body_before) > 500:
+        outcome = 'page_updated'
+    elif errors:
+        outcome = 'error'
+    else:
+        outcome = 'no_change'
+
+    result = {'clicked': True, 'element': clicked, 'outcome': outcome}
+    if url_before != url_after:
+        result['new_url'] = url_after
+    if errors:
+        result['errors'] = errors
+    return json.dumps(result)
 
 @tool_def('find_and_click', 'Click element by accessibility role + name. More reliable than CSS for dynamic/React/SPAs. role: button|link|textbox|checkbox|menuitem|tab|combobox. name is substring match.', {'role': {'type': 'string', 'description': 'Accessibility role of element', 'required': True, 'enum': ['button', 'link', 'textbox', 'checkbox', 'menuitem', 'tab', 'combobox', 'radio', 'listitem']}, 'name': {'type': 'string', 'description': 'Substring of element label or name'}}, read_only=False, concurrent=False)
 def tool_find_and_click(args):
@@ -2198,6 +2245,92 @@ def tool_fill(args):
         return JSON.stringify({{filled, errors}});
     ''')
 
+@tool_def('form_fill', 'Fill an entire form in one call using fuzzy field matching. Pass a dict of {label_or_placeholder_or_name: value}. Set submit=true to click the submit button after filling. Much more efficient than multiple fill() calls.', {'fields': {'type': 'object', 'description': 'Dict of {field_label_or_placeholder: value}. Supports text, email, password, checkbox (true/false), select (option text).', 'required': True}, 'submit': {'type': 'boolean', 'description': 'Click submit button after filling (default false)'}, 'form_selector': {'type': 'string', 'description': 'CSS selector to target a specific form (default: first form)'}}, read_only=False, concurrent=False)
+def tool_form_fill(args):
+    fields = args.get('fields', {})
+    if not fields: return 'fields required'
+    do_submit = args.get('submit', False)
+    form_sel = args.get('form_selector', '')
+    d = chrome()
+
+    result = d.js(f'''
+        const fields = {json.dumps(fields)};
+        const formSel = {json.dumps(form_sel)};
+        const form = formSel ? document.querySelector(formSel) : document.querySelector('form') || document.body;
+        const inputs = Array.from(form.querySelectorAll('input:not([type=hidden]),select,textarea'));
+
+        function getLabel(el) {{
+            const labels = [];
+            if (el.placeholder) labels.push(el.placeholder.toLowerCase());
+            if (el.name) labels.push(el.name.toLowerCase());
+            if (el.id) labels.push(el.id.toLowerCase());
+            if (el.getAttribute('aria-label')) labels.push(el.getAttribute('aria-label').toLowerCase());
+            const lbl = el.id ? document.querySelector('label[for="'+el.id+'"]') : null;
+            if (lbl) labels.push(lbl.innerText.trim().toLowerCase());
+            return labels;
+        }}
+
+        function fuzzyMatch(labels, key) {{
+            const k = key.toLowerCase().trim();
+            return labels.some(l => l.includes(k) || k.includes(l));
+        }}
+
+        function fillEl(el, value) {{
+            const tag = el.tagName.toLowerCase();
+            const type = (el.type || '').toLowerCase();
+            if (tag === 'select') {{
+                const opt = Array.from(el.options).find(o =>
+                    o.text.toLowerCase().includes(String(value).toLowerCase()) ||
+                    o.value.toLowerCase() === String(value).toLowerCase());
+                if (opt) {{ opt.selected = true; el.dispatchEvent(new Event('change', {{bubbles:true}})); return true; }}
+                return false;
+            }}
+            if (type === 'checkbox' || type === 'radio') {{
+                const checked = value === true || value === 'true' || value === '1';
+                if (el.checked !== checked) {{ el.click(); }} return true;
+            }}
+            const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+            if (s) s.call(el, String(value)); else el.value = String(value);
+            el.dispatchEvent(new Event('input', {{bubbles:true}}));
+            el.dispatchEvent(new Event('change', {{bubbles:true}}));
+            return true;
+        }}
+
+        const filled = [];
+        const skipped = [];
+        for (const [key, value] of Object.entries(fields)) {{
+            let matched = false;
+            for (const input of inputs) {{
+                if (fuzzyMatch(getLabel(input), key)) {{
+                    if (fillEl(input, value)) {{ filled.push(key); matched = true; break; }}
+                }}
+            }}
+            if (!matched) skipped.push(key);
+        }}
+
+        let submitted = false;
+        if ({json.dumps(do_submit)}) {{
+            const btn = form.querySelector('[type=submit],button[type=submit],button:not([type=button])') ||
+                        document.querySelector('[type=submit]');
+            if (btn) {{ btn.click(); submitted = true; }}
+        }}
+
+        return JSON.stringify({{filled, skipped, submitted}});
+    ''') or '{}'
+
+    try:
+        res = json.loads(result)
+    except Exception:
+        return error_response('form_fill_failed', 'Could not parse form fill result')
+
+    time.sleep(0.8 if res.get('submitted') else 0)
+    return json.dumps({
+        'filled': res.get('filled', []),
+        'skipped': res.get('skipped', []),
+        'submitted': res.get('submitted', False),
+        'fill_count': len(res.get('filled', [])),
+    })
+
 @tool_def('submit', 'Submit a form. Clicks submit button or presses Enter. Use after fill to complete form submission.', {'selector': {'type': 'string', 'description': 'Optional CSS selector of submit button. Omit to press Enter or click first submit button found.'}}, read_only=False, concurrent=False)
 def tool_submit(args):
     d = chrome()
@@ -2230,6 +2363,74 @@ def tool_screenshot(args):
     p = '/tmp/neo-screenshot.png'
     chrome().screenshot(p)
     return f'Screenshot: {p}'
+
+@tool_def('dismiss_overlay', 'Detect and dismiss cookie banners, GDPR modals, newsletter popups, and other overlays that block page interaction. Try this if clicks are not working as expected.', {'force': {'type': 'boolean', 'description': 'Try harder: also attempt clicking backdrop and sending Escape (default false)'}}, read_only=False, concurrent=False)
+def tool_dismiss_overlay(args):
+    force = args.get('force', False)
+    d = chrome()
+
+    result = d.js(f'''
+        const ACCEPT_TEXTS = ['accept all','accept','agree','i agree','got it','ok','allow all',
+            'allow','aceptar','acepto','permitir','entendido','continuar','cerrar'];
+        const CLOSE_TEXTS = ['close','dismiss','no thanks','skip','×','✕','✗','x'];
+
+        function tryClick(el) {{
+            try {{ el.scrollIntoView(); el.click(); return true; }} catch(e) {{ return false; }}
+        }}
+
+        function findButtonByText(texts, container) {{
+            const btns = Array.from((container||document).querySelectorAll(
+                'button,a,[role=button],[class*=accept],[class*=agree],[class*=consent],[class*=cookie]'));
+            for (const t of texts) {{
+                const btn = btns.find(b => b.innerText?.trim().toLowerCase() === t ||
+                    b.innerText?.trim().toLowerCase().startsWith(t));
+                if (btn) return btn;
+            }}
+            return null;
+        }}
+
+        // Detect overlays (fixed/sticky, high z-index, visible)
+        const overlays = Array.from(document.querySelectorAll('*')).filter(e => {{
+            const s = window.getComputedStyle(e);
+            return (s.position === 'fixed' || s.position === 'sticky') &&
+                   parseInt(s.zIndex||0) > 50 && e.offsetHeight > 40 && e.offsetWidth > 100;
+        }});
+
+        if (!overlays.length) return JSON.stringify({{dismissed: false, reason: 'no overlay detected'}});
+
+        // Strategy 1: accept button within overlay
+        for (const overlay of overlays) {{
+            const btn = findButtonByText(ACCEPT_TEXTS, overlay);
+            if (btn && tryClick(btn)) {{
+                return JSON.stringify({{dismissed: true, method: 'accept_button',
+                    text: btn.innerText?.trim().substring(0,30)}});
+            }}
+        }}
+
+        // Strategy 2: close/dismiss button
+        for (const overlay of overlays) {{
+            const btn = findButtonByText(CLOSE_TEXTS, overlay);
+            if (btn && tryClick(btn)) {{
+                return JSON.stringify({{dismissed: true, method: 'close_button',
+                    text: btn.innerText?.trim().substring(0,30)}});
+            }}
+        }}
+
+        // Strategy 3 (force only): Escape key + backdrop click
+        if ({json.dumps(force)}) {{
+            document.dispatchEvent(new KeyboardEvent('keydown', {{key:'Escape',bubbles:true}}));
+            const backdrop = document.querySelector('[class*=backdrop],[class*=overlay],[class*=mask]');
+            if (backdrop) tryClick(backdrop);
+            return JSON.stringify({{dismissed: true, method: 'escape_backdrop'}});
+        }}
+
+        return JSON.stringify({{dismissed: false, reason: 'no dismiss button found, try force=true'}});
+    ''') or '{}'
+
+    try:
+        return result
+    except Exception:
+        return error_response('dismiss_failed', 'Could not dismiss overlay')
 
 @tool_def('wait', 'Wait for an element (CSS selector) or text to appear on page. Timeout in ms (default 5000). Use after open for async-loaded content like SPAs.', {'selector': {'type': 'string', 'description': 'CSS selector to wait for'}, 'text': {'type': 'string', 'description': 'Text to wait for on the page'}, 'timeout': {'type': 'integer', 'description': 'Max wait time in milliseconds (default 5000)'}}, read_only=True, concurrent=True)
 def tool_wait(args):
@@ -2355,6 +2556,45 @@ def tool_extract(args):
         return links || "No links found";
     ''') or 'No links found'
     return result
+
+@tool_def('extract_table', 'Extract an HTML table as a JSON array of objects. Headers from first row become keys. Much more useful than extract type=tables for structured data.', {'selector': {'type': 'string', 'description': 'CSS selector for a specific table (default: first table on page)'}, 'index': {'type': 'integer', 'description': 'Table index if multiple tables present (default 0)'}}, read_only=True, concurrent=True)
+def tool_extract_table(args):
+    selector = args.get('selector', '')
+    index = int(args.get('index', 0))
+    d = chrome()
+
+    result = d.js(f'''
+        const sel = {json.dumps(selector)};
+        const idx = {index};
+        const tables = sel ? document.querySelectorAll(sel) : document.querySelectorAll('table');
+        const table = tables[idx];
+        if (!table) return JSON.stringify({{error: 'no table found', tables_found: tables.length}});
+
+        const rows = Array.from(table.querySelectorAll('tr'));
+        if (!rows.length) return JSON.stringify([]);
+
+        const headers = Array.from(rows[0].querySelectorAll('th,td'))
+            .map(c => c.innerText?.trim() || '');
+
+        const data = rows.slice(1).map(row => {{
+            const cells = Array.from(row.querySelectorAll('td,th'));
+            const obj = {{}};
+            headers.forEach((h, i) => {{
+                obj[h || 'col'+i] = cells[i]?.innerText?.trim() || '';
+            }});
+            return obj;
+        }}).filter(row => Object.values(row).some(v => v));
+
+        return JSON.stringify(data);
+    ''') or '[]'
+
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict) and 'error' in parsed:
+            return error_response('table_not_found', parsed['error'])
+        return json.dumps(parsed)
+    except Exception:
+        return error_response('parse_failed', 'Could not parse table')
 
 # ── Chat ──
 
@@ -3141,6 +3381,34 @@ def tool_status(args):
     url = _chrome.js('return location.href') if _chrome else None
     return json.dumps({'chrome': _chrome is not None, 'tabs': tabs, 'active': active, 'url': url, 'pids': list(_chrome_pids)}, indent=2)
 
+@tool_def('page_info', 'Quick orientation: current URL, title, page state, interactive element count. Use instead of read() when you just need to know where you are. Returns <200 tokens in <200ms.', {}, read_only=True, concurrent=True)
+def tool_page_info(args):
+    d = chrome()
+    info = d.js('''
+        const els = document.querySelectorAll('a,button,input,select,textarea,[role=button],[role=link]');
+        const forms = document.querySelectorAll('form');
+        const overlays = Array.from(document.querySelectorAll('*')).filter(e => {
+            const s = window.getComputedStyle(e);
+            return (s.position === 'fixed' || s.position === 'sticky') &&
+                   parseInt(s.zIndex) > 100 && e.offsetHeight > 50;
+        });
+        return JSON.stringify({
+            url: location.href,
+            title: document.title,
+            interactive: els.length,
+            forms: forms.length,
+            has_overlay: overlays.length > 0,
+            overlay_count: overlays.length
+        });
+    ''') or '{}'
+    try:
+        data = json.loads(info)
+    except Exception:
+        data = {'url': '', 'title': '', 'interactive': 0, 'forms': 0, 'has_overlay': False}
+    state = _classify_page_state(d.js('return document.body?.innerText || ""') or '')
+    data['page_state'] = state
+    return json.dumps(data)
+
 # ── Plugins ──
 
 @tool_def('plugin', 'Run a YAML automation pipeline from ~/.neorender/plugins/. Actions: run (default), list (show available), create (new plugin). Plugins chain browser tools in sequence.', {'name': {'type': 'string', 'description': 'Plugin name to run, or "list" to see available plugins', 'required': True}, 'action': {'type': 'string', 'description': 'Action: run (default), list, create', 'enum': ['run', 'list', 'create']}, 'args': {'type': 'string', 'description': 'Optional JSON arguments to pass to the plugin'}}, read_only=False, concurrent=False)
@@ -3524,6 +3792,95 @@ def main():
         log(f'Fatal: {e}')
     finally:
         cleanup()
+
+@tool_def('paginate', 'Collect content across multiple pages automatically. Detects "next page" button/link and iterates. Use for search results, product listings, any paginated content.', {'next_selector': {'type': 'string', 'description': 'CSS selector for the next-page button/link. Auto-detected if omitted.'}, 'max_pages': {'type': 'integer', 'description': 'Maximum pages to fetch (default 3, max 10)'}, 'extract': {'type': 'string', 'description': 'What to extract per page: text (default), links, table', 'enum': ['text', 'links', 'table']}}, read_only=False, concurrent=False)
+def tool_paginate(args):
+    next_sel = args.get('next_selector', '')
+    max_pages = min(int(args.get('max_pages', 3)), 10)
+    extract_type = args.get('extract', 'text')
+    d = chrome()
+
+    def get_page_content():
+        if extract_type == 'links':
+            return d.js('''
+                return Array.from(document.querySelectorAll('a[href]'))
+                    .filter(a => a.innerText?.trim().length > 2)
+                    .slice(0,30).map(a => a.innerText.trim() + ' \u2192 ' + a.href).join('\\n');
+            ''') or ''
+        if extract_type == 'table':
+            return d.js('''
+                const t = document.querySelector('table');
+                if (!t) return '';
+                return Array.from(t.querySelectorAll('tr')).map(r =>
+                    Array.from(r.querySelectorAll('td,th')).map(c => c.innerText?.trim()).join(' | ')
+                ).join('\\n');
+            ''') or ''
+        return d.sanitize()[:3000]
+
+    def find_next():
+        if next_sel:
+            return d.js(f'''
+                const el = document.querySelector({json.dumps(next_sel)});
+                return el && !el.disabled && !el.getAttribute('aria-disabled') ? true : false;
+            ''')
+        return d.js('''
+            const NEXT = ['next','siguiente','\u2192','\u203a','\u00bb','next page','more results'];
+            const candidates = Array.from(document.querySelectorAll('a,button,[role=button]'));
+            const btn = candidates.find(el => {
+                if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                const t = (el.innerText||el.getAttribute('aria-label')||'').toLowerCase().trim();
+                return NEXT.some(n => t === n || t.startsWith(n));
+            });
+            if (btn) { btn._neoNext = true; return btn.tagName + '|' + (btn.innerText||'').trim(); }
+            const relNext = document.querySelector('[rel=next]');
+            return relNext ? 'A|next' : null;
+        ''')
+
+    def click_next():
+        if next_sel:
+            d.js(f'document.querySelector({json.dumps(next_sel)})?.click()')
+            return True
+        return d.js('''
+            const NEXT = ['next','siguiente','\u2192','\u203a','\u00bb','next page','more results'];
+            const candidates = Array.from(document.querySelectorAll('a,button,[role=button],[rel=next]'));
+            const btn = candidates.find(el => {
+                if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                const t = (el.innerText||el.getAttribute('aria-label')||el.getAttribute('rel')||'').toLowerCase().trim();
+                return NEXT.some(n => t === n || t.startsWith(n)) || t === 'next';
+            });
+            if (btn) { btn.click(); return true; } return false;
+        ''')
+
+    pages_content = []
+    stopped_at = 'max_pages'
+
+    for i in range(max_pages):
+        content = get_page_content()
+        if content:
+            pages_content.append(f'--- Page {i+1} ---\n{content}')
+
+        if i < max_pages - 1:
+            url_before = d.js('return location.href')
+            has_next = find_next()
+            if not has_next:
+                stopped_at = 'no_next_button'
+                break
+            clicked = click_next()
+            if not clicked:
+                stopped_at = 'click_failed'
+                break
+            # Wait for DOM to change
+            for _ in range(20):
+                time.sleep(0.3)
+                url_after = d.js('return location.href')
+                if url_after != url_before:
+                    break
+
+    return json.dumps({
+        'pages_fetched': len(pages_content),
+        'stopped_at': stopped_at,
+        'content': '\n\n'.join(pages_content)
+    })
 
 if __name__ == '__main__':
     main()
