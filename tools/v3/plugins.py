@@ -101,9 +101,14 @@ def list_plugins():
 
 def create_plugin(name, description, steps_yaml):
     """Create a new plugin file."""
-    path = PLUGIN_DIR / f'{name}.yaml'
+    # Sanitize name: allow only alphanumeric, hyphens, underscores
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+    path = PLUGIN_DIR / f'{safe_name}.yaml'
+    # Verify path is within PLUGIN_DIR (defense in depth)
+    if not str(path.resolve()).startswith(str(PLUGIN_DIR.resolve())):
+        return 'Error: invalid plugin name'
     if path.exists():
-        return f'Plugin {name} already exists at {path}'
+        return f'Plugin {safe_name} already exists at {path}'
 
     content = steps_yaml if isinstance(steps_yaml, str) else yaml.dump(steps_yaml, default_flow_style=False)
     path.write_text(content)
@@ -128,12 +133,23 @@ def run_plugin(plugin_data, user_inputs, tool_dispatch):
     MAX_STEP = 3000   # max chars per saved step result
     MAX_OUT  = 50000  # max total output (~50KB, well under 1MB websocket limit)
 
+    # continue_on_error: if True, a failing step logs the error and moves on
+    # (default True — pipelines should be resilient to individual step failures)
+    continue_on_error = plugin_data.get('continue_on_error', True)
+
     results = []
     step_data = {}  # save_as storage
 
     def truncate(text, limit=MAX_STEP):
         s = str(text) if text else ''
         return s[:limit] + f'\n... ({len(s)-limit} chars truncated)' if len(s) > limit else s
+
+    def run_step(action, resolved_args, label):
+        """Run a single dispatch call, returning (result, error)."""
+        try:
+            return tool_dispatch(action, resolved_args), None
+        except Exception as e:
+            return None, str(e)
 
     for i, step in enumerate(plugin_data.get('steps', [])):
         action = step.get('action', '')
@@ -153,24 +169,38 @@ def run_plugin(plugin_data, user_inputs, tool_dispatch):
             if isinstance(items, str):
                 items = [x.strip() for x in items.split(',')]
 
+            result = None
             for item in items:
                 loop_ctx = {**ctx, **step_data, loop_as: item}
                 resolved_args = resolve_obj(step_args, loop_ctx)
 
                 for r in range(repeat):
-                    result = tool_dispatch(action, resolved_args)
-                    results.append(f'[step {i+1}/{loop_as}={item}] {action}: {str(result)[:200]}')
+                    result, err = run_step(action, resolved_args, f'step {i+1}/{loop_as}={item}')
+                    if err:
+                        results.append(f'[step {i+1}/{loop_as}={item}] ERROR in {action}: {err}')
+                        if not continue_on_error:
+                            return '\n'.join(results)
+                        result = f'[error: {err}]'
+                    else:
+                        results.append(f'[step {i+1}/{loop_as}={item}] {action}: {str(result)[:200]}')
 
-                if save_as:
+                if save_as and result is not None:
                     resolved_save = resolve_template(save_as, loop_ctx)
                     step_data[resolved_save] = truncate(result)
         else:
             resolved_args = resolve_obj(step_args, {**ctx, **step_data})
+            result = None
             for r in range(repeat):
-                result = tool_dispatch(action, resolved_args)
-                results.append(f'[step {i+1}] {action}: {str(result)[:200]}')
+                result, err = run_step(action, resolved_args, f'step {i+1}')
+                if err:
+                    results.append(f'[step {i+1}] ERROR in {action}: {err}')
+                    if not continue_on_error:
+                        return '\n'.join(results)
+                    result = f'[error: {err}]'
+                else:
+                    results.append(f'[step {i+1}] {action}: {str(result)[:200]}')
 
-            if save_as:
+            if save_as and result is not None:
                 resolved_save = resolve_template(save_as, {**ctx, **step_data})
                 step_data[resolved_save] = truncate(result)
 
