@@ -124,7 +124,10 @@ def log(msg):
 CHROME_BIN = os.environ.get('NEOBROWSER_CHROME_BIN', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
 CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36'
 PROFILE = os.environ.get('NEOBROWSER_PROFILE', 'Profile 24')
-V1_BIN = 'neobrowser'
+# V1 fast-path binary: prefer bundled Rust binary in tools/v3/rust/target/release/,
+# fall back to system 'neobrowser' (e.g. installed via npm install -g neobrowser)
+_V1_BUNDLED = Path(__file__).parent / 'rust' / 'target' / 'release' / 'neobrowser_rs'
+V1_BIN = str(_V1_BUNDLED) if _V1_BUNDLED.exists() else os.environ.get('NEOBROWSER_V1_BIN', 'neobrowser')
 RESPONSE_DIR = Path.home() / '.neorender' / 'responses'
 RESPONSE_DIR.mkdir(parents=True, exist_ok=True)
 PID_FILE = Path.home() / '.neorender' / 'neo-browser-pids.json'
