@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="es">
+<head><title>NeoRender Hydration Stress Test</title></head>
+<body>
+<div id="app">
+  <nav><a href="/">Home</a><a href="/chat">Chat</a></nav>
+  <main>
+    <h1>Server Rendered Content</h1>
+    <div id="prompt-textarea" contenteditable="true">Type here...</div>
+    <button id="send-btn">Send</button>
+  </main>
+</div>
+
+<!-- SSR Context with streaming (ChatGPT pattern) -->
+<script>
+  window.__reactRouterContext = {
+    basename: "/",
+    ssr: true,
+    isSpaMode: false,
+    future: { unstable_optimizeDeps: false },
+    routeDiscovery: { mode: "lazy", manifestPath: "/__manifest" },
+    streamController: null,
+  };
+  // Create stream with pipeThrough (the pattern that caused deadlock)
+  window.__reactRouterContext.stream = new ReadableStream({
+    start(controller) {
+      window.__reactRouterContext.streamController = controller;
+      controller.enqueue('[{"_1":2},"loaderData",{"root":{"user":"test"}}]');
+      controller.enqueue('\nP21:[{}]');
+      controller.close();
+    }
+  }).pipeThrough(new TextEncoderStream());
+
+  window.__reactRouterManifest = {
+    entry: { module: "/vendor.js" },
+    routes: {
+      "root": { id: "root", path: "/" },
+      "routes/chat": { id: "routes/chat", path: "/chat" }
+    }
+  };
+  window.__oai_SSR_HTML = Date.now();
+</script>
+
+<!-- Inline module (ChatGPT pattern: imports + routeModules + dynamic import) -->
+<script type="module">
+  import "/vendor.js";
+  import * as route0 from "/route-root.js";
+  import * as route1 from "/route-chat.js";
+
+  window.__reactRouterRouteModules = {
+    "root": route0,
+    "routes/chat": route1
+  };
+
+  import("/entry.js");
+</script>
+
+<!-- Simulated streamed data scripts (Suspense boundaries) -->
+<script>
+  // These would normally be injected by React's streaming SSR
+  if (window.__reactRouterContext.streamController) {
+    try { window.__reactRouterContext.streamController.close(); } catch {}
+  }
+</script>
+</body>
+</html>

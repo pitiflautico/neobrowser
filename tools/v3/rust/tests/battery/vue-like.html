@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html><head><title>Vue-like SPA</title></head>
+<body>
+<div id="app">{{ message }}</div>
+<script>
+// Simulate Vue-like reactivity
+const app = {
+  data: { message: 'Hello from Vue-like app', items: ['Item 1', 'Item 2', 'Item 3'] },
+  mount(selector) {
+    const el = document.querySelector(selector);
+    el.innerHTML = '<h1>' + this.data.message + '</h1>' +
+      '<ul>' + this.data.items.map(i => '<li>' + i + '</li>').join('') + '</ul>' +
+      '<form id="vue-form"><input type="text" name="newItem" placeholder="Add item"><button type="submit">Add</button></form>';
+    return this;
+  }
+};
+app.mount('#app');
+</script>
+</body></html>

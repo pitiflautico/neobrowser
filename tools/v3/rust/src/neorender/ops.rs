@@ -1,0 +1,533 @@
+//! NeoRender ops — Rust functions callable from JavaScript via deno_core.
+//!
+//! ALL OPS ARE SYNC to avoid deno_core 0.311 RefCell panic with concurrent async ops.
+//! HTTP fetches run on dedicated threads. Timers use thread::sleep.
+
+use deno_core::op2;
+use deno_core::OpState;
+use deno_core::error::AnyError;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+/// Fetch a URL. SYNC op — runs HTTP on a dedicated thread to avoid async conflicts.
+/// Delegates to BrowserNetwork for proper Fetch Standard headers (Sec-Fetch-*, Referer, Origin).
+/// Falls back to a fresh client if BrowserNetwork is not in OpState.
+#[op2]
+#[string]
+pub fn op_neorender_fetch(
+    state: Rc<RefCell<OpState>>,
+    #[string] url: String,
+    #[string] method: String,
+    #[string] body: String,
+    #[string] headers_json: String,
+) -> Result<String, AnyError> {
+    // Dedup: skip repeated fetches to the same URL (SPA polling, feature flag SDKs, etc.)
+    // These block V8 with sync HTTP and produce the same response. Cache first hit, return cached for repeats.
+    thread_local! {
+        static FETCH_CACHE: std::cell::RefCell<std::collections::HashMap<String, String>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+        // Global fetch budget: limits total HTTP requests per page to prevent infinite fetch loops
+        // during SPA factory execution (React + polyfills can trigger hundreds of sync fetches).
+        // Resets on each new page via __neo_reset_fetch_budget() called from session goto().
+        static FETCH_BUDGET: std::cell::Cell<i32> = std::cell::Cell::new(50);
+    }
+
+    // Budget check: after N fetches, return empty responses (fast no-op)
+    let budget = FETCH_BUDGET.with(|b| {
+        let current = b.get();
+        if current > 0 { b.set(current - 1); }
+        current
+    });
+    if budget <= 0 {
+        return Ok(r#"{"status":200,"body":"","headers":{}}"#.to_string());
+    }
+
+    // Only cache GET requests to known polling patterns (feature flags, config endpoints)
+    let is_cacheable = method == "GET" && (url.contains("featureflags") || url.contains("unleash")
+        || url.contains("launchdarkly") || url.contains("flagsmith") || url.contains("configcat")
+        || url.contains("split.io") || url.contains("optimizely"));
+    if is_cacheable {
+        let cached = FETCH_CACHE.with(|c| c.borrow().get(&url).cloned());
+        if let Some(resp) = cached {
+            return Ok(resp);
+        }
+    }
+
+    // Skip telemetry/analytics/logging — these block V8 with sync HTTP
+    if url.contains("telemetry") || url.contains("analytics") || url.contains("tracking")
+        || url.contains("beacon") || url.contains("sentry") || url.contains("newrelic")
+        || url.contains("amplitude") || url.contains("segment.") || url.contains("hotjar")
+        || url.contains("googletagmanager") || url.contains("doubleclick")
+        || url.contains("apfc")
+        || url.contains("/rgstr") || url.contains("/ces/") || url.contains("ab.chatgpt")
+        || url.contains("/v1/m") || url.contains("statsig") || url.contains("featuregates")
+        || url.contains("datadoghq") || url.contains("browser-intake") || url.contains("oai/log")
+        || url.contains("cdn.mxpnl.com") || url.contains("sentry.io") || url.contains("fullstory")
+        || url.contains("launchdarkly")
+        // Google services
+        || url.contains("ogads-pa.") || url.contains("play.google.com/log")
+        || url.contains("google.com/$rpc") || url.contains("googleads")
+        || url.contains("/gen_204") || url.contains("/client_204")
+        // Common ad/tracking patterns
+        || url.contains("/log?") || url.contains("/pixel") || url.contains("/collect")
+        || url.contains("/events") || url.contains("adservice") || url.contains("adserver")
+        || url.contains("facebook.com/tr") || url.contains("bat.bing.com")
+        || url.contains("linkedin.com/li/track") || url.contains("/api/v1/events")
+        // Feature flag metrics (POST — don't need response, blocks V8 with sync HTTP)
+        || (method == "POST" && (url.contains("/client/metrics") || url.contains("/metrics")))
+        // Video/media (not needed for data extraction)
+        || url.contains(".mp4") || url.contains(".webm") || url.contains(".m3u8") {
+        return Ok(r#"{"status":200,"body":"","headers":{}}"#.to_string());
+    }
+
+    eprintln!("[NEORENDER:FETCH] {} {}", method, &url[..url.len().min(100)]);
+
+    // Rate limiting — per-domain token bucket (lazy-init if not in OpState)
+    if let Some(domain) = url::Url::parse(&url).ok().and_then(|u| u.host_str().map(|s| s.to_string())) {
+        let handle: super::rate_limit::RateLimiterHandle = {
+            let s = state.borrow();
+            match s.try_borrow::<super::rate_limit::RateLimiterHandle>() {
+                Some(h) => h.clone(),
+                None => {
+                    drop(s);
+                    let h: super::rate_limit::RateLimiterHandle =
+                        std::sync::Arc::new(std::sync::Mutex::new(super::rate_limit::RateLimiter::new()));
+                    let cloned = h.clone();
+                    state.borrow_mut().put::<super::rate_limit::RateLimiterHandle>(h);
+                    cloned
+                }
+            }
+        };
+        let mut limiter = handle.lock().unwrap();
+        limiter.wait_if_needed(&domain);
+    }
+
+    // Extract cookie jar handle from OpState (for storing Set-Cookie from responses)
+    let cookie_jar: Option<super::cookie_jar::CookieJarHandle> = {
+        let s = state.borrow();
+        s.try_borrow::<CookieJarOpHandle>().map(|h| h.0.clone())
+    };
+
+    // Extract BrowserNetwork snapshot from OpState (borrow scope limited)
+    // We clone the Arc<Client> and the origin/url strings — BrowserNetwork itself is not Send.
+    let (client, net_origin, net_url, referrer_policy) = {
+        let s = state.borrow();
+        if let Some(net) = s.try_borrow::<super::net::BrowserNetworkHandle>() {
+            (
+                Some(net.client.clone()),
+                net.origin.clone(),
+                net.url.clone(),
+                net.referrer_policy.clone(),
+            )
+        } else if let Some(c) = s.try_borrow::<super::session::SharedClient>() {
+            // Backward compat: old SharedClient + PageOrigin
+            let po = s.try_borrow::<super::session::PageOrigin>().cloned();
+            (
+                Some(c.clone()),
+                po.as_ref().map(|p| p.origin.clone()).unwrap_or_default(),
+                po.as_ref().map(|p| p.url.clone()).unwrap_or_default(),
+                super::net::ReferrerPolicy::StrictOriginWhenCrossOrigin,
+            )
+        } else {
+            (None, String::new(), String::new(), super::net::ReferrerPolicy::StrictOriginWhenCrossOrigin)
+        }
+    };
+
+    let url_for_cache = url.clone(); // Keep a copy before url moves into the thread
+    let body_opt = if body.is_empty() { None } else { Some(body) };
+    let headers_opt = if headers_json.is_empty() { None } else { Some(headers_json) };
+
+    // Run HTTP on a dedicated thread (avoids deno_core async conflicts)
+    // Hard timeout of 3s per fetch — prevents SPA factories from blocking forever on sync HTTP.
+    let url_for_timeout_log = url_for_cache.clone();
+    let result = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("Runtime: {e}"))?;
+
+        rt.block_on(async {
+            // Wrap entire fetch in a 3s timeout — even if the HTTP client has a 30s timeout,
+            // we cut at 3s to keep SPA rendering fast. Pages that need longer fetches
+            // will get empty responses (graceful degradation for AI rendering).
+            match tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let client = match client {
+                Some(c) => c,
+                None => {
+                    std::sync::Arc::new(
+                        crate::http_client::chrome136_quick(1)
+                            .map_err(|e| format!("Client: {e}"))?
+                    )
+                }
+            };
+
+            let network = super::net::BrowserNetwork::from_parts(
+                client,
+                &net_origin,
+                &net_url,
+                referrer_policy,
+            );
+
+            let resp = network.fetch(
+                &url,
+                &method,
+                body_opt.as_deref(),
+                headers_opt.as_deref(),
+                super::net::RequestMode::Cors,
+                super::net::RequestDestination::Empty,
+            ).await?;
+
+            eprintln!("[NEORENDER:FETCH] → {} ({}B)", resp.status, resp.body.len());
+
+            // Store Set-Cookie headers in the unified jar
+            if let Some(ref jar) = cookie_jar {
+                if let Some(set_cookie) = resp.headers.get("set-cookie") {
+                    // May contain multiple cookies separated by newlines (from multi-value header)
+                    for cookie_str in set_cookie.split('\n') {
+                        let cookie_str = cookie_str.trim();
+                        if !cookie_str.is_empty() {
+                            jar.store_from_header(&url, cookie_str);
+                        }
+                    }
+                }
+            }
+
+            let resp_headers: serde_json::Map<String, serde_json::Value> = resp.headers.into_iter()
+                .map(|(k, v)| (k, serde_json::Value::String(v)))
+                .collect();
+
+            Ok::<String, String>(serde_json::json!({
+                "status": resp.status,
+                "body": resp.body,
+                "headers": resp_headers,
+            }).to_string())
+            }).await {
+                Ok(inner) => inner,
+                Err(_) => {
+                    eprintln!("[NEORENDER:FETCH] TIMEOUT (3s)");
+                    Ok(r#"{"status":0,"body":"","headers":{}}"#.to_string())
+                }
+            }
+        })
+    }).join().unwrap_or_else(|_| Err("Thread panicked".to_string()));
+
+    // Cache successful responses for polling endpoints
+    if is_cacheable {
+        if let Ok(ref resp) = result {
+            // url was moved into the thread — reconstruct from the args
+            let cache_url = url_for_cache.clone();
+            FETCH_CACHE.with(|c| {
+                c.borrow_mut().insert(cache_url, resp.clone());
+            });
+        }
+    }
+
+    result.map_err(|e| deno_core::error::generic_error(e))
+}
+
+/// Timer — SYNC with minimal delay. Returns void. JS wrapper creates the Promise.
+/// 1ms floor prevents infinite CPU loops from setTimeout(fn, 0) chains.
+/// Max 10ms cap keeps things fast while allowing V8 to yield.
+#[op2(fast)]
+pub fn op_neorender_timer(#[smi] ms: u32) {
+    thread_local! {
+        static TIMER_COUNT: std::cell::Cell<u32> = std::cell::Cell::new(0);
+    }
+    let count = TIMER_COUNT.with(|c| { let v = c.get() + 1; c.set(v); v });
+    if count <= 5 || count % 100 == 0 {
+        eprintln!("[NEORENDER:TIMER] #{} ms={}", count, ms);
+    }
+    // Hard budget: after 200 timer invocations, become a no-op.
+    // This prevents infinite polling loops (feature flag SDKs, heartbeats) from blocking V8.
+    if count > 200 { return; }
+    let delay = if ms == 0 { 0 } else { ms.min(10).max(1) };
+    if delay > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(delay as u64));
+    }
+}
+
+/// SHA-256 proof-of-work solver — native speed (~10M hash/s vs ~100K in JS).
+/// Returns the nonce that produces a hash starting with `difficulty` prefix.
+#[op2]
+#[string]
+pub fn op_neorender_pow(#[string] seed: String, #[string] difficulty: String, #[smi] max_iters: u32) -> Result<String, AnyError> {
+    use std::fmt::Write;
+    eprintln!("[NEORENDER:POW] seed={}... diff={} max={}", &seed[..seed.len().min(10)], difficulty, max_iters);
+    let t0 = std::time::Instant::now();
+
+    for i in 0..max_iters {
+        let input = format!("{}{}", seed, i);
+        // SHA-256
+        let hash = {
+            use std::collections::hash_map::DefaultHasher;
+            // Use ring or manual SHA-256
+            // Actually, let's use the sha2 crate... but it's not in deps.
+            // Manual SHA-256 is complex. Use a simpler approach: call the system.
+            // Actually, deno_core has crypto available. Let's just use a basic impl.
+
+            // Inline SHA-256 (same algorithm as our JS version)
+            sha256_hex(input.as_bytes())
+        };
+
+        // ChatGPT PoW: hash hex prefix must be <= difficulty (comparison, not exact match)
+        if hash[..difficulty.len()] <= *difficulty {
+            let elapsed = t0.elapsed();
+            eprintln!("[NEORENDER:POW] Found nonce {} in {:?} ({} iters)", i, elapsed, i);
+            return Ok(serde_json::json!({
+                "found": true,
+                "nonce": i,
+                "hash": hash,
+                "elapsed_ms": elapsed.as_millis() as u64,
+            }).to_string());
+        }
+    }
+
+    let elapsed = t0.elapsed();
+    eprintln!("[NEORENDER:POW] Not found in {} iters ({:?})", max_iters, elapsed);
+    Ok(serde_json::json!({
+        "found": false,
+        "elapsed_ms": elapsed.as_millis() as u64,
+    }).to_string())
+}
+
+// Minimal SHA-256 implementation (no external crate needed)
+fn sha256_hex(data: &[u8]) -> String {
+    let hash = sha256(data);
+    let mut hex = String::with_capacity(64);
+    for b in &hash {
+        use std::fmt::Write;
+        write!(hex, "{:02x}", b).unwrap();
+    }
+    hex
+}
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    let k: [u32; 64] = [
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+
+    // Padding
+    let bit_len = (data.len() as u64) * 8;
+    let pad_len = ((56u64.wrapping_sub(data.len() as u64 + 1) % 64) + 64) % 64;
+    let total = data.len() as u64 + 1 + pad_len + 8;
+    let mut padded = vec![0u8; total as usize];
+    padded[..data.len()].copy_from_slice(data);
+    padded[data.len()] = 0x80;
+    padded[total as usize - 8..].copy_from_slice(&bit_len.to_be_bytes());
+
+    // Process blocks
+    for chunk in padded.chunks(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([chunk[i*4], chunk[i*4+1], chunk[i*4+2], chunk[i*4+3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i-15].rotate_right(7) ^ w[i-15].rotate_right(18) ^ (w[i-15] >> 3);
+            let s1 = w[i-2].rotate_right(17) ^ w[i-2].rotate_right(19) ^ (w[i-2] >> 10);
+            w[i] = w[i-16].wrapping_add(s0).wrapping_add(w[i-7]).wrapping_add(s1);
+        }
+        let mut a = h[0]; let mut b = h[1]; let mut c = h[2]; let mut d = h[3];
+        let mut e = h[4]; let mut f = h[5]; let mut g = h[6]; let mut hh = h[7];
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(k[i]).wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            hh = g; g = f; f = e; e = d.wrapping_add(t1); d = c; c = b; b = a; a = t1.wrapping_add(t2);
+        }
+        h[0]=h[0].wrapping_add(a); h[1]=h[1].wrapping_add(b); h[2]=h[2].wrapping_add(c); h[3]=h[3].wrapping_add(d);
+        h[4]=h[4].wrapping_add(e); h[5]=h[5].wrapping_add(f); h[6]=h[6].wrapping_add(g); h[7]=h[7].wrapping_add(hh);
+    }
+
+    let mut result = [0u8; 32];
+    for i in 0..8 {
+        result[i*4..i*4+4].copy_from_slice(&h[i].to_be_bytes());
+    }
+    result
+}
+
+/// Log from JS console.
+#[op2(fast)]
+pub fn op_neorender_log(#[string] msg: String) {
+    eprintln!("[NEORENDER:JS] {}", msg);
+}
+
+// ─── Cookie ops (UnifiedCookieJar) ───
+
+/// Shared handle to UnifiedCookieJar — stored in OpState.
+pub struct CookieJarOpHandle(pub super::cookie_jar::CookieJarHandle);
+
+#[op2]
+#[string]
+pub fn op_cookie_get(state: Rc<RefCell<OpState>>) -> Result<String, AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<CookieJarOpHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No cookie jar"))?;
+    Ok(handle.0.js_cookie_string(&domain))
+}
+
+#[op2(fast)]
+pub fn op_cookie_set(state: Rc<RefCell<OpState>>, #[string] cookie_str: String) -> Result<(), AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<CookieJarOpHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No cookie jar"))?;
+    handle.0.store_from_js(&domain, &cookie_str);
+    Ok(())
+}
+
+// ─── Storage ops (SQLite-backed localStorage) ───
+
+/// Domain for storage ops — stored in OpState, set on navigation.
+#[derive(Clone)]
+pub struct StorageDomain(pub String);
+
+/// Shared handle to BrowserStorage — stored in OpState.
+pub struct StorageHandle(pub std::sync::Arc<super::storage::BrowserStorage>);
+
+#[op2]
+#[string]
+pub fn op_storage_get(state: Rc<RefCell<OpState>>, #[string] key: String) -> Result<String, AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<StorageHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
+    Ok(handle.0.get(&domain, &key).unwrap_or_default())
+}
+
+#[op2(fast)]
+pub fn op_storage_set(state: Rc<RefCell<OpState>>, #[string] key: String, #[string] value: String) -> Result<(), AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<StorageHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
+    handle.0.set(&domain, &key, &value).map_err(|e| deno_core::error::generic_error(e))
+}
+
+#[op2(fast)]
+pub fn op_storage_remove(state: Rc<RefCell<OpState>>, #[string] key: String) -> Result<(), AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<StorageHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
+    handle.0.remove(&domain, &key).map_err(|e| deno_core::error::generic_error(e))
+}
+
+#[op2(fast)]
+pub fn op_storage_clear(state: Rc<RefCell<OpState>>) -> Result<(), AnyError> {
+    let s = state.borrow();
+    let domain = s.try_borrow::<StorageDomain>().map(|d| d.0.clone()).unwrap_or_default();
+    let handle = s.try_borrow::<StorageHandle>()
+        .ok_or_else(|| deno_core::error::generic_error("No storage"))?;
+    handle.0.clear(&domain).map_err(|e| deno_core::error::generic_error(e))
+}
+
+// ─── ChatGPT Sentinel: SHA3-512 Proof-of-Work solver ───
+
+/// ChatGPT-specific PoW solver using SHA3-512.
+/// Takes: seed, difficulty (hex), config JSON array (19 elements).
+/// Returns: 'gAAAAAC' + base64(solution) — the complete proof token.
+///
+/// The config array has slots 3 and 9 that get replaced with (i, i>>1) per iteration.
+/// Each iteration: JSON-encode config, base64 it, SHA3-512(seed + base64), check prefix.
+#[op2]
+#[string]
+pub fn op_chatgpt_pow(
+    #[string] seed: String,
+    #[string] difficulty: String,
+    #[string] config_json: String,
+) -> Result<String, AnyError> {
+    use sha3::{Sha3_512, Digest};
+    use base64::Engine;
+
+    let max_iters: u32 = 500_000;
+    eprintln!("[SENTINEL:POW] seed={}... diff={}", &seed[..seed.len().min(16)], difficulty);
+    let t0 = std::time::Instant::now();
+
+    // Parse config array
+    let config: Vec<serde_json::Value> = serde_json::from_str(&config_json)
+        .map_err(|e| deno_core::error::generic_error(format!("Bad config JSON: {e}")))?;
+    if config.len() < 12 {
+        return Err(deno_core::error::generic_error(format!("Config too short: {} elements", config.len())));
+    }
+
+    // Pre-build static JSON parts (everything except slots 3 and 9)
+    // Format: [config[0], config[1], config[2], <nonce>, config[4]...config[8], <elapsed_ms>, config[10]...]
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let sep = serde_json::to_string(&config[..3]).unwrap_or_default();
+    let part1 = format!("{},", &sep[..sep.len()-1]); // "[c0,c1,c2,"
+
+    let mid: Vec<&serde_json::Value> = config[4..9].iter().collect();
+    let mid_str = serde_json::to_string(&mid).unwrap_or_default();
+    let part2 = format!(",{},", &mid_str[1..mid_str.len()-1]); // ",c4,c5,c6,c7,c8,"
+
+    let tail: Vec<&serde_json::Value> = config[10..].iter().collect();
+    let tail_str = serde_json::to_string(&tail).unwrap_or_default();
+    let part3 = format!(",{}]", &tail_str[1..]); // ",c10,c11,...,c18]"
+
+    let difficulty_bytes = decode_hex(&difficulty);
+    if difficulty_bytes.is_empty() {
+        eprintln!("[SENTINEL:POW] Warning: could not decode difficulty hex");
+    }
+
+    let seed_bytes = seed.as_bytes();
+
+    for i in 0u32..max_iters {
+        let elapsed_ms = t0.elapsed().as_millis() as u64;
+        // Build JSON: part1 + nonce + part2 + elapsed_ms + part3
+        let json_bytes = format!("{}{}{}{}{}", part1, i, part2, elapsed_ms, part3);
+
+        // Base64 encode
+        let encoded = b64.encode(json_bytes.as_bytes());
+
+        // SHA3-512(seed + base64)
+        let mut hasher = Sha3_512::new();
+        hasher.update(seed_bytes);
+        hasher.update(encoded.as_bytes());
+        let hash = hasher.finalize();
+
+        // Check if hash prefix <= difficulty
+        let hash_bytes = &hash[..difficulty_bytes.len().min(hash.len())];
+        if hash_bytes <= difficulty_bytes.as_slice() {
+            let elapsed = t0.elapsed();
+            eprintln!("[SENTINEL:POW] Solved in {} iters ({:?})", i, elapsed);
+            let token = format!("gAAAAAB{}", encoded);
+            return Ok(serde_json::json!({
+                "token": token,
+                "found": true,
+                "iters": i,
+                "elapsed_ms": elapsed.as_millis() as u64,
+            }).to_string());
+        }
+    }
+
+    // Fallback token
+    let elapsed = t0.elapsed();
+    eprintln!("[SENTINEL:POW] Not found in {} iters ({:?})", max_iters, elapsed);
+    let fallback = format!("wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D{}",
+        b64.encode(format!("\"{}\"", seed).as_bytes()));
+    Ok(serde_json::json!({
+        "token": format!("gAAAAAC{}", fallback),
+        "found": false,
+        "elapsed_ms": elapsed.as_millis() as u64,
+    }).to_string())
+}
+
+/// Decode hex string to bytes (no external crate needed).
+fn decode_hex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .filter_map(|i| u8::from_str_radix(&s[i..i+2.min(s.len()-i)], 16).ok())
+        .collect()
+}

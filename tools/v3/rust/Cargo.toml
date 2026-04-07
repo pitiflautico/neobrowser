@@ -1,0 +1,61 @@
+[package]
+name = "neobrowser_rs"
+version = "0.4.0"
+description = "AI-native browser engine. Raw CDP over WebSocket/Pipe, semantic compression, stealth."
+license = "MIT"
+repository = "https://github.com/pitiflautico/neobrowser"
+keywords = ["mcp", "browser", "cdp", "ai", "automation"]
+categories = ["web-programming", "command-line-utilities"]
+edition = "2021"
+
+[dependencies]
+# HTTP client — Chrome TLS fingerprint (BoringSSL), cookies, compression
+rquest = { version = "5.1", features = ["cookies", "gzip", "brotli", "json", "webpki-roots"] }
+rquest-util = "2.2"
+
+# HTML parser — Servo's (spec-compliant, fast)
+html5ever = "0.38"
+markup5ever_rcdom = "0.38.0+unofficial"
+markup5ever = "0.38"
+
+# WebSocket for raw CDP
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures = "0.3"
+
+# Base64 for screenshot decoding
+base64 = "0.22"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# CLI + serde
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+url = "2"
+urlencoding = "2"
+
+# Auth & session management
+keyring = { version = "3", features = ["apple-native", "linux-native"] }
+totp-rs = { version = "5", features = ["gen_secret"] }
+dirs = "6"
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+os_pipe = "1"
+libc = "0.2"
+regex-lite = "0.1"
+
+# NeoRender — V8 engine for SPA rendering (AI's own browser)
+deno_core = "0.311"
+
+# SHA3 for ChatGPT proof-of-work (SHA3-512 hashcash)
+sha3 = "0.10"
+
+# HTTP date parsing (for cache headers)
+httpdate = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
