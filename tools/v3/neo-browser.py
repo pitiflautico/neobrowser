@@ -481,6 +481,8 @@ _chrome = None
 _chrome_lock = threading.Lock()
 _chrome_pids = set()
 _chrome_prewarm_thread = None  # Background pre-warm thread
+_ghost_lock_fh = None          # fcntl lock on ghost-default; None = per-pid profile
+_ghost_dir = None              # active Chrome profile path
 
 
 def prewarm_chrome():
@@ -1084,10 +1086,25 @@ def chrome():
             try:
                 if attempt > 0: _kill_pids(); time.sleep(2)
                 log('Launching Ghost Chrome...')
-                import socket
+                import socket, fcntl
+                global _ghost_lock_fh, _ghost_dir
 
-                # Each MCP instance gets its own Chrome profile (no collisions)
-                ghost_dir = Path.home() / '.neorender' / f'ghost-{os.getpid()}'
+                # Prefer a persistent profile so Chrome's HTTP cache survives across sessions.
+                # Fall back to a per-pid profile if the default is locked by another instance.
+                _neorender = Path.home() / '.neorender'
+                _neorender.mkdir(parents=True, exist_ok=True)
+                _lock_path = _neorender / 'ghost-default.lock'
+                _fh = open(_lock_path, 'w')
+                try:
+                    fcntl.flock(_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    _ghost_lock_fh = _fh
+                    _ghost_dir = _neorender / 'ghost-default'
+                    log('[chrome] using persistent profile (HTTP cache preserved)')
+                except OSError:
+                    _fh.close()
+                    _ghost_dir = _neorender / f'ghost-{os.getpid()}'
+                    log('[chrome] persistent profile locked, using per-pid profile')
+                ghost_dir = _ghost_dir
                 ghost_default = ghost_dir / 'Default'
                 ghost_default.mkdir(parents=True, exist_ok=True)
 
@@ -1233,7 +1250,8 @@ def _resync_cookies():
     real_cookies = Path.home() / 'Library' / 'Application Support' / 'Google' / 'Chrome' / PROFILE / 'Cookies'
     if not real_cookies.exists(): return 0
     # Copy fresh cookies DB to ghost profile (raw copy + WAL + checkpoint)
-    ghost_cookies = Path.home() / '.neorender' / f'ghost-{os.getpid()}' / 'Default' / 'Cookies'
+    _base = _ghost_dir if _ghost_dir else (Path.home() / '.neorender' / f'ghost-{os.getpid()}')
+    ghost_cookies = _base / 'Default' / 'Cookies'
     try:
         import sqlite3
         shutil.copy2(str(real_cookies), str(ghost_cookies))
@@ -1303,7 +1321,8 @@ def _inject_cookies_cdp(d):
     the in-memory store is immediately updated without restarting Chrome.
     """
     import sqlite3
-    ghost_cookies = Path.home() / '.neorender' / f'ghost-{os.getpid()}' / 'Default' / 'Cookies'
+    _base = _ghost_dir if _ghost_dir else (Path.home() / '.neorender' / f'ghost-{os.getpid()}')
+    ghost_cookies = _base / 'Default' / 'Cookies'
     if not ghost_cookies.exists():
         return
     try:
@@ -1335,11 +1354,40 @@ def _inject_cookies_cdp(d):
         log(f'CDP cookie injection failed: {e}')
 
 
+# Per-domain JS that returns a positive integer when real content has loaded.
+# Used by chrome_go Phase 2 instead of the generic body-length fallback.
+# JS must use 'return' and return a number (0 = not ready, >0 = ready).
+_SITE_READY: dict = {
+    'x.com':        'return document.querySelectorAll("[data-testid=tweetText],[data-testid=cellInnerDiv]").length',
+    'twitter.com':  'return document.querySelectorAll("[data-testid=tweetText],[data-testid=cellInnerDiv]").length',
+    'linkedin.com': 'return document.querySelectorAll(".scaffold-layout__main,.feed-shared-update-v2,.artdeco-card").length',
+    'chatgpt.com':  'return document.querySelector("#prompt-textarea,textarea[data-id],div[contenteditable]") ? 1 : 0',
+    'claude.ai':    'return document.querySelector("[data-testid=chat-input],div[contenteditable]") ? 1 : 0',
+    'github.com':   'return document.querySelectorAll("article,main,[role=main],#files").length',
+    'reddit.com':   'return document.querySelectorAll("[data-testid=post-container],shreddit-post,article").length',
+    'youtube.com':  'return document.querySelectorAll("ytd-video-renderer,ytd-rich-item-renderer").length',
+    'gmail.com':    'return document.querySelectorAll(".zA,[data-thread-id]").length',
+}
+
+
+def _site_ready_js(url: str) -> str | None:
+    """Return site-specific ready JS for a URL, or None for generic fallback."""
+    import urllib.parse
+    try:
+        host = urllib.parse.urlparse(url).hostname or ''
+    except Exception:
+        return None
+    for pattern, js in _SITE_READY.items():
+        if host.endswith(pattern):
+            return js
+    return None
+
+
 def chrome_go(url, wait_s=5):
     """Navigate default tab to URL. Chat tabs stay untouched."""
     d = chrome()
     d.go(url)
-    # Poll readyState instead of fixed sleep
+    # Phase 1: wait for readyState === 'complete'
     deadline = time.time() + wait_s
     while time.time() < deadline:
         time.sleep(0.15)
@@ -1347,14 +1395,48 @@ def chrome_go(url, wait_s=5):
             time.sleep(0.1)  # Brief settle for JS frameworks
             break
 
-    # Check for login wall → resync cookies + inject via CDP, then retry
+    # Phase 2: SPA content poll — React/Vue frameworks render AFTER readyState.
+    # Strategy A: site-specific DOM selector (X, LinkedIn, ChatGPT, etc.)
+    # Strategy B: generic stabilization — body length stops growing across 2 polls.
+    spa_budget = min(max(wait_s * 0.5, 3.0), 8.0)
+    spa_deadline = time.time() + spa_budget
+    ready_js = _site_ready_js(url)
+
+    if ready_js:
+        # Strategy A: wait for site-specific content element
+        while time.time() < spa_deadline:
+            count = d.js(ready_js)
+            if int(count or 0) > 0:
+                log(f'[SPA] site-specific ready: {int(count)} elements ({url})')
+                break
+            time.sleep(0.3)
+        else:
+            log(f'[SPA] site-specific ready timed out, using current DOM ({url})')
+    else:
+        # Strategy B: content stabilization — stop when body length is stable
+        prev_len = -1
+        stable_count = 0
+        while time.time() < spa_deadline:
+            body_len = int(d.js('return document.body?.innerText?.length||0') or 0)
+            if body_len > 200:
+                if body_len == prev_len:
+                    stable_count += 1
+                    if stable_count >= 2:
+                        log(f'[SPA] content stable at {body_len} chars ({url})')
+                        break
+                else:
+                    stable_count = 0
+                prev_len = body_len
+            time.sleep(0.3)
+
+    # Phase 3: login wall check → resync cookies + inject via CDP, then retry
     if _is_login_wall(d):
         log('Login wall detected, re-syncing cookies...')
         if _resync_cookies():
-            _inject_cookies_cdp(d)  # push updated cookies into Chrome's in-memory store
+            _inject_cookies_cdp(d)
             d.go_wait(url, timeout_s=min(wait_s, 5))
             if _is_login_wall(d):
-                log('Still on login wall after resync')
+                log('Still on login wall after resync — open a real browser to re-authenticate')
     return d
 
 def save(text, tag='response'):
@@ -1433,7 +1515,6 @@ def tool_def(name, description, schema, read_only=True, concurrent=True, max_res
 
 # ── Tool implementations ──
 
-@tool_def('browse', 'Fast HTTP fetch + parse (0.1–0.5s). Best for static/server-rendered pages. Auto-falls back to Chrome for JS-heavy pages. If the page requires login or returns empty, use login then open instead. Use prompt param to extract specific data via LLM.', {'url': {'type': 'string', 'description': 'HTTP/HTTPS URL to fetch', 'required': True}, 'prompt': {'type': 'string', 'description': 'What to extract from the page (e.g. "get the pricing table"). Processed via small LLM.'}, 'selector': {'type': 'string', 'description': 'Optional CSS selector to extract a specific element'}}, read_only=True, concurrent=True, max_result=100000)
 def _sanitize_extraction_prompt(raw: str) -> str:
     """Sanitize a user-supplied extraction prompt before passing it to the claude subprocess.
     Strips control chars and limits length to prevent prompt injection."""
@@ -1443,6 +1524,7 @@ def _sanitize_extraction_prompt(raw: str) -> str:
     sanitized = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', raw)
     return sanitized[:200].strip()
 
+@tool_def('browse', 'Fast HTTP fetch + parse (0.1–0.5s). Best for static/server-rendered pages. Auto-falls back to Chrome for JS-heavy pages. If the page requires login or returns empty, use login then open instead. Use prompt param to extract specific data via LLM.', {'url': {'type': 'string', 'description': 'HTTP/HTTPS URL to fetch', 'required': True}, 'prompt': {'type': 'string', 'description': 'What to extract from the page (e.g. "get the pricing table"). Processed via small LLM.'}, 'selector': {'type': 'string', 'description': 'Optional CSS selector to extract a specific element'}}, read_only=True, concurrent=True, max_result=100000)
 def tool_browse(args):
     global _cache_epoch
     url = args.get('url', '')
@@ -1603,6 +1685,14 @@ def tool_open(args):
     if not url: return 'url required'
     if not validate_url(url):
         return error_response('url_blocked', f'URL blocked by security policy: {url}', suggestion='Only public HTTP/HTTPS URLs are allowed')
+    # Fast path: Chrome already on this URL — skip navigation entirely
+    if _chrome:
+        try:
+            current = _chrome.js('return location.href') or ''
+            if current.rstrip('/') == url.rstrip('/'):
+                return process_content(_chrome.sanitize())
+        except Exception:
+            pass
     _cache_epoch += 1  # Invalidate stale in-flight cache writes
     d = chrome_go(url, int(args.get('wait', 3000)) / 1000)
     return process_content(d.sanitize())
@@ -2045,6 +2135,84 @@ def tool_wait(args):
         if found: return d.sanitize()
         time.sleep(0.5)
     return f'Not found after {int(time.time()-start)}s: "{sel}"'
+
+_INTERCEPTOR_JS = '''
+    window.__neoCons = window.__neoCons || [];
+    if (!window.__neoConsHooked) {
+        window.__neoConsHooked = true;
+        const _orig = {log: console.log, warn: console.warn, error: console.error, info: console.info};
+        ['log','warn','error','info'].forEach(m => {
+            console[m] = function(...a) {
+                window.__neoCons.push({level: m, ts: Date.now(), msg: a.map(x => {
+                    try { return typeof x === 'object' ? JSON.stringify(x) : String(x); }
+                    catch(e) { return String(x); }
+                }).join(' ')});
+                _orig[m].apply(console, a);
+            };
+        });
+        window.addEventListener('error', e => {
+            window.__neoCons.push({level:'uncaught', ts: Date.now(),
+                msg: e.message + ' @ ' + (e.filename||'?') + ':' + e.lineno});
+        });
+        window.addEventListener('unhandledrejection', e => {
+            window.__neoCons.push({level:'promise', ts: Date.now(), msg: String(e.reason)});
+        });
+    }
+'''
+
+
+@tool_def('debug', 'Capture browser console logs and JS errors from current page. Use to diagnose SPA issues, runtime errors, and polymorphic failures. Pass tab="gpt" to inspect the GPT tab, tab="grok" for Grok, etc.', {'clear': {'type': 'boolean', 'description': 'Clear captured logs after returning (default false)'}, 'url': {'type': 'string', 'description': 'Navigate to URL first, then capture logs'}, 'tab': {'type': 'string', 'description': 'Tab to debug: "gpt", "grok", or omit for default tab'}}, read_only=True, concurrent=True)
+def tool_debug(args):
+    d = chrome()
+    tab_name = args.get('tab', '')
+    if tab_name:
+        d.tab(tab_name)  # switch to named tab without navigating
+    url = args.get('url', '')
+    if url:
+        # Inject console interceptor BEFORE navigating so we catch all logs
+        d.js(_INTERCEPTOR_JS)
+        chrome_go(url, 5)
+    else:
+        # Inject interceptor on current page if not already there
+        already = d.js('return !!window.__neoConsHooked')
+        if not already:
+            d.js(_INTERCEPTOR_JS)
+            return f'Console interceptor injected on {tab_name or "default"} tab. Interact with the page, then call debug again to see logs.'
+
+    # Gather logs
+    raw = d.js('return JSON.stringify(window.__neoCons || [])')
+    if args.get('clear'):
+        d.js('window.__neoCons = []')
+
+    try:
+        entries = json.loads(raw or '[]')
+    except Exception:
+        entries = []
+
+    if not entries:
+        return 'No console logs captured. (Interceptor may not have been active before page load — pass url param to debug a fresh navigation.)'
+
+    lines = []
+    errors = [e for e in entries if e.get('level') in ('error', 'uncaught', 'promise')]
+    warnings = [e for e in entries if e.get('level') == 'warn']
+    info = [e for e in entries if e.get('level') in ('log', 'info')]
+
+    lines.append(f'## Console summary: {len(entries)} total, {len(errors)} errors, {len(warnings)} warnings, {len(info)} logs\n')
+    if errors:
+        lines.append('### Errors / Exceptions')
+        for e in errors[-20:]:
+            lines.append(f'  [{e["level"].upper()}] {e["msg"]}')
+    if warnings:
+        lines.append('\n### Warnings')
+        for e in warnings[-10:]:
+            lines.append(f'  [WARN] {e["msg"]}')
+    if info:
+        lines.append('\n### Logs (last 20)')
+        for e in info[-20:]:
+            lines.append(f'  [LOG] {e["msg"]}')
+
+    return '\n'.join(lines)
+
 
 @tool_def('login', 'Navigate to a login-required site and authenticate using stored session cookies from the real Chrome profile. Use when browse or open returns a login wall or 401. Automatically re-syncs cookies from the user\'s real Chrome if needed.', {'url': {'type': 'string', 'description': 'URL of the login-protected site', 'required': True}}, read_only=False, concurrent=False)
 def tool_login(args):
@@ -2573,14 +2741,18 @@ class ChatPipeline:
                 thinking_count += 1
                 stall_count = 0  # reset stall counter when in pure thinking phase
 
-                # Detect stuck conversation: if after 60s the URL is still the base URL
-                # (no /c/ created), ChatGPT never started the conversation — likely rate-limited.
+                # Detect stuck conversation: after 60s of 0 chars check for real signs of life.
+                # NOTE: ChatGPT no longer always navigates to /c/ immediately — some models
+                # keep the base URL and stream in place. So we check for DOM progress instead.
                 if thinking_count == 120:  # 60s
                     current_url = s.get('url', '')
-                    if '/c/' not in current_url:
-                        log(f'{self.platform}: no /c/ URL after 60s — likely rate-limited or stuck')
+                    user_msgs_now = int(d.js(f'return document.querySelectorAll({json.dumps(user_sel)}).length') or 0)
+                    has_stop = d.js('return !!document.querySelector("[data-testid=stop-button]")')
+                    # Only bail if: no user message in DOM AND no stop button AND no /c/ URL
+                    if '/c/' not in current_url and not user_msgs_now and not has_stop:
+                        log(f'{self.platform}: no activity after 60s — likely rate-limited or stuck')
                         return json.dumps({'status': 'stuck', 'chars_so_far': 0, 'elapsed_s': round(time.time()-t0, 1),
-                                           'suggestion': 'ChatGPT did not create a conversation after 60s. Possible rate limit. Wait 30-60s and retry, or open chatgpt.com in your real browser to verify.'})
+                                           'suggestion': 'ChatGPT did not start generating after 60s. Possible rate limit. Wait 30-60s and retry, or open chatgpt.com in your real browser to verify.'})
 
                 # After 120s of 0 chars: o3/o4 extended thinking — do NOT click Stop.
                 # Stopping interrupts the reasoning phase. Return thinking status so
@@ -2921,16 +3093,20 @@ def tool_plugin(args):
 
 # ── Cleanup ──
 def cleanup():
-    global _chrome
+    global _chrome, _ghost_lock_fh, _ghost_dir
     run_all_cleanups()  # Drain cleanup registry first
     if _chrome: _chrome.quit(); _chrome = None
     _kill_pids(); PID_FILE.unlink(missing_ok=True)
-    # Clean up our per-process profile
-    import shutil
-    ghost_dir = Path.home() / '.neorender' / f'ghost-{os.getpid()}'
-    if ghost_dir.exists():
-        try: shutil.rmtree(str(ghost_dir))
+    import shutil, fcntl
+    # Only delete per-pid profiles (not the persistent ghost-default)
+    if _ghost_dir and _ghost_lock_fh is None and _ghost_dir.exists():
+        try: shutil.rmtree(str(_ghost_dir))
         except: pass
+    # Release persistent profile lock
+    if _ghost_lock_fh:
+        try: fcntl.flock(_ghost_lock_fh, fcntl.LOCK_UN); _ghost_lock_fh.close()
+        except: pass
+        _ghost_lock_fh = None
     log('Cleanup')
 
 atexit.register(cleanup)
@@ -3206,6 +3382,7 @@ def main():
         sys.exit(0)
 
     log(f'NeoBrowser V3 started — {len(TOOLS)} tools, Ghost Chrome headless, CF bypass')
+    prewarm_chrome()
     try:
         for line in sys.stdin:
             line = line.strip()

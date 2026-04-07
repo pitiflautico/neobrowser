@@ -589,6 +589,12 @@ impl Session {
             "--no-first-run".to_string(),
             "--no-default-browser-check".to_string(),
             "--window-size=1440,900".to_string(),
+            // Strip "HeadlessChrome" from the UA string at launch level.
+            // Chrome appends " HeadlessChrome/N" when launched with --headless.
+            // Setting --user-agent here overrides it before ANY request is made,
+            // unlike CDP Network.setUserAgentOverride which fires post-launch.
+            // A real Chrome 136 macOS UA — no Headless marker.
+            "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string(),
         ];
         if headless {
             args.push("--headless=new".to_string());
@@ -641,6 +647,100 @@ impl Session {
         // Cloudflare Turnstile detects early CDP modifications.
         // Stealth is applied AFTER the first navigation via apply_stealth().
         eprintln!("[ENGINE] Ready (clean, no stealth yet) — target={}, session={}", &target_id[..8], &session_id[..8]);
+
+        Ok(Self {
+            cdp,
+            target_id,
+            page_session_id: session_id,
+            last_url: String::new(),
+            chrome_process: Some(child),
+            connected_mode: false,
+            active_frame_session_id: None,
+            active_frame_id: None,
+            cdp_network_entries: Arc::new(TokioMutex::new(Vec::new())),
+            cdp_network_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            intercept_rules: Arc::new(TokioMutex::new(Vec::new())),
+            active_workflow: None,
+        })
+    }
+
+    /// Launch Chrome against a virtual display (headed mode, undetectable).
+    ///
+    /// Called by `virtual_display::launch_undetectable`. Accepts extra Chrome
+    /// args (GPU flags, window position) and an optional DISPLAY env var from
+    /// the virtual display module.
+    pub async fn launch_with_display(
+        user_data_dir: Option<&str>,
+        extra_args: &[String],
+        display_env: Option<(String, String)>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let chrome = find_chrome()?;
+        let profile_dir = match user_data_dir {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => default_profile_dir(),
+        };
+        std::fs::create_dir_all(&profile_dir)?;
+        let profile_str = profile_dir.to_string_lossy().to_string();
+        Self::kill_zombies(&profile_str);
+        let lock_file = profile_dir.join("SingletonLock");
+        if lock_file.exists() { let _ = std::fs::remove_file(&lock_file); }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+
+        // Base args — NO --headless flag. extra_args supply GPU + window-position.
+        let mut args = vec![
+            format!("--remote-debugging-port={port}"),
+            format!("--user-data-dir={profile_str}"),
+            "--disable-dev-shm-usage".to_string(),
+            "--no-first-run".to_string(),
+            "--no-default-browser-check".to_string(),
+        ];
+        args.extend_from_slice(extra_args);
+
+        eprintln!("[ENGINE] launch_with_display (headed, no --headless) port={port}");
+
+        let mut cmd = tokio::process::Command::new(chrome);
+        cmd.args(&args)
+           .stdout(std::process::Stdio::null())
+           .stderr(std::process::Stdio::piped());
+
+        // Set DISPLAY for Linux Xvfb
+        if let Some((key, val)) = display_env {
+            cmd.env(key, val);
+        }
+
+        let child = cmd.spawn()?;
+
+        // Poll for readiness
+        let client = crate::http_client::local(2)?;
+        let mut ws_url = String::new();
+        for _ in 0..40 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let url = format!("http://127.0.0.1:{port}/json/version");
+            if let Ok(resp) = client.get(&url).send().await {
+                if let Ok(data) = resp.json::<serde_json::Value>().await {
+                    if let Some(ws) = data["webSocketDebuggerUrl"].as_str() {
+                        ws_url = ws.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+        if ws_url.is_empty() {
+            return Err("Chrome (headed/virtual) didn't start in time".into());
+        }
+
+        let cdp = CdpSession::connect(&ws_url).await?;
+        let target_id = target::create_target(&cdp, "about:blank", None, None, None, None, None, None)
+            .await.map_err(cdp_err)?;
+        let session_id = target::attach_to_target(&cdp, &target_id, Some(true))
+            .await.map_err(cdp_err)?;
+        let scoped = ScopedTransport::new(&cdp, &session_id);
+        page::enable(&scoped).await.map_err(cdp_err)?;
+        runtime::enable(&scoped).await.map_err(cdp_err)?;
+        eprintln!("[ENGINE] Headed/virtual Chrome ready — target={}, session={}", &target_id[..8], &session_id[..8]);
 
         Ok(Self {
             cdp,

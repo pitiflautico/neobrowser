@@ -20,6 +20,7 @@ mod runner;
 mod semantic;
 mod stealth;
 mod trace;
+mod virtual_display;
 mod vision;
 mod wom;
 
@@ -110,6 +111,22 @@ enum Command {
         /// Use Chrome user-data-dir (gets all cookies/sessions from profile)
         #[arg(long)]
         profile: Option<String>,
+    },
+    /// Probe browser detectability — scores how visible we are to bot detection.
+    /// Launches Chrome (headless by default, or --headed for virtual display mode)
+    /// and runs the detection probe JS. Prints a JSON report with score + issues.
+    Probe {
+        /// Use virtual display (headed mode) instead of --headless=new.
+        /// On Linux requires Xvfb. On macOS uses off-screen window.
+        #[arg(long)]
+        headed: bool,
+    },
+    /// Open URL in headed Chrome via virtual display (undetectable mode).
+    /// Use for sites that block --headless: X/Twitter, LinkedIn, Cloudflare.
+    VirtualBrowse {
+        url: String,
+        #[arg(short, long, default_value = "80")]
+        lines: usize,
     },
 }
 
@@ -670,5 +687,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Session {
             cookies, url, lines, port, connect, profile,
         } => run_session(cookies, url, lines, port, connect, profile).await,
+        Command::Probe { headed } => run_probe(headed).await,
+        Command::VirtualBrowse { url, lines } => run_virtual_browse(&url, lines).await,
     }
+}
+
+/// Run the detection probe — score how visible Chrome is to bot detection.
+async fn run_probe(headed: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use virtual_display::DETECTION_PROBE_JS;
+
+    let mut session = if headed {
+        eprintln!("[PROBE] Launching via virtual display (headed, undetectable mode)...");
+        let us = virtual_display::launch_undetectable(None).await?;
+        us.session
+    } else {
+        eprintln!("[PROBE] Launching headless Chrome for baseline comparison...");
+        engine::Session::launch(None).await?
+    };
+
+    eprintln!("[PROBE] Navigating to example.com...");
+    session.goto("https://example.com").await?;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    let result = session.eval(DETECTION_PROBE_JS).await?;
+    println!("{result}");
+
+    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result) {
+        let score   = data["score"].as_u64().unwrap_or(99);
+        let verdict = data["verdict"].as_str().unwrap_or("UNKNOWN");
+        let mode    = if headed { "headed/virtual" } else { "headless" };
+        eprintln!("\n[PROBE] Mode={mode}  Score={score}  Verdict={verdict}");
+        if let Some(issues) = data["issues"].as_array() {
+            if !issues.is_empty() {
+                eprintln!("[PROBE] Issues detected:");
+                for issue in issues {
+                    eprintln!("  - {}", issue.as_str().unwrap_or("?"));
+                }
+            } else {
+                eprintln!("[PROBE] No detection signals — clean");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Browse a URL via virtual display (headed mode).
+async fn run_virtual_browse(url: &str, _lines: usize) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("[VBROWSE] Launching headed Chrome via virtual display...");
+    let us = virtual_display::launch_undetectable(None).await?;
+    let mut session = us.session;
+
+    eprintln!("[VBROWSE] Navigating to {url}...");
+    session.goto(url).await?;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    let page_view = session.see().await?;
+    println!("{}", vision::format_view(&page_view, _lines));
+    Ok(())
 }

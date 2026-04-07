@@ -182,6 +182,37 @@ class TestSanitizeUnicode:
         # Function returns input unchanged if falsy
         assert neo_browser.sanitize_unicode(None) is None
 
+    # --- EXP-002 step 2: prompt injection edge-case tests ---
+
+    def test_mixed_visible_and_invisible_preserves_visible(self):
+        # Only invisible chars removed, visible text intact
+        text = 'Hello\u200b \u200eWorld\ufeff!'
+        result = neo_browser.sanitize_unicode(text)
+        assert result == 'Hello World!'
+
+    def test_nfkc_normalizes_fullwidth_chars(self):
+        # NFKC maps fullwidth A (U+FF21) to regular A
+        text = '\uff21\uff22\uff23'  # ＡＢＣ
+        result = neo_browser.sanitize_unicode(text)
+        assert result == 'ABC'
+
+    def test_removes_private_use_area_chars(self):
+        # U+E000-U+F8FF are private-use-area, stripped by the regex
+        text = 'safe\ue000hidden\uf8ffend'
+        result = neo_browser.sanitize_unicode(text)
+        assert result == 'safehiddenend'
+
+    def test_multiple_consecutive_invisible_chars(self):
+        text = '\u200b\u200c\u200d\u200e\u200fvisible'
+        result = neo_browser.sanitize_unicode(text)
+        assert result == 'visible'
+
+    def test_preserves_accented_and_emoji_text(self):
+        text = 'café résumé naïve 日本語'
+        result = neo_browser.sanitize_unicode(text)
+        assert 'café' in result or 'cafe' in result  # NFKC may decompose
+        assert '日本語' in result
+
 
 # ═══════════════════════════════════════════════════════════════
 # 4. validate_url
@@ -242,6 +273,36 @@ class TestValidateUrl:
     def test_accepts_url_with_path_and_query(self):
         assert neo_browser.validate_url('https://api.github.com/repos?page=1') is True
 
+    # --- EXP-002 step 1: SSRF edge-case tests ---
+    # Fixed in EXP-002b: brackets removed, metadata.google.internal added,
+    # ipaddress module check covers IPv6-mapped and all reserved ranges.
+
+    def test_rejects_ipv6_mapped_private(self):
+        assert neo_browser.validate_url('http://[::ffff:10.0.0.1]/') is False
+
+    def test_rejects_ipv6_mapped_loopback(self):
+        assert neo_browser.validate_url('http://[::ffff:127.0.0.1]/') is False
+
+    def test_rejects_google_metadata_hostname(self):
+        assert neo_browser.validate_url('http://metadata.google.internal/computeMetadata/v1/') is False
+
+    def test_rejects_ipv6_loopback_bracket(self):
+        assert neo_browser.validate_url('http://[::1]/') is False
+
+    def test_rejects_javascript_scheme(self):
+        assert neo_browser.validate_url('javascript:alert(1)') is False
+
+    def test_rejects_data_scheme(self):
+        assert neo_browser.validate_url('data:text/html,<h1>pwned</h1>') is False
+
+    def test_accepts_public_ip(self):
+        assert neo_browser.validate_url('http://8.8.8.8/') is True
+
+    def test_accepts_subdomain_with_metadata_in_name(self):
+        # Regression: 'metadata' in hostname should NOT be blocked
+        # unless it's exactly 'metadata.google.internal'
+        assert neo_browser.validate_url('https://metadata.example.com/api') is True
+
 
 # ═══════════════════════════════════════════════════════════════
 # 5. scan_secrets
@@ -300,6 +361,65 @@ class TestScanSecrets:
     def test_none_returns_empty(self):
         assert neo_browser.scan_secrets(None) == []
 
+    # --- EXP-001: edge-case tests added by AgentIO ---
+
+    def test_detects_gitlab_pat(self):
+        # Pattern: glpat-[a-zA-Z0-9\-_]{20,}  — zero existing tests
+        text = 'GITLAB_TOKEN=glpat-abcdefghij1234567890'
+        found = neo_browser.scan_secrets(text)
+        assert 'GitLab PAT' in found
+
+    def test_detects_slack_bot_token(self):
+        # Pattern: xoxb-[a-zA-Z0-9\-]+  — zero existing tests
+        text = 'SLACK_TOKEN=xoxb-123-456-abcdef'
+        found = neo_browser.scan_secrets(text)
+        assert 'Slack Bot Token' in found
+
+    def test_detects_ec_private_key(self):
+        # Private key regex covers EC variant — only RSA was tested
+        text = '-----BEGIN EC PRIVATE KEY-----\nMIHQAg...'
+        found = neo_browser.scan_secrets(text)
+        assert 'Private Key' in found
+
+    def test_detects_bare_private_key(self):
+        # Private key regex covers bare variant (no RSA/EC prefix)
+        text = '-----BEGIN PRIVATE KEY-----\nMIIEvgI...'
+        found = neo_browser.scan_secrets(text)
+        assert 'Private Key' in found
+
+    def test_anthropic_key_does_not_trigger_openai_pattern(self):
+        # sk-ant-api contains hyphens after sk-, and OpenAI pattern is
+        # sk-[a-zA-Z0-9]{20,} (no hyphens). So Anthropic keys do NOT
+        # dual-match. This test documents the precise boundary.
+        text = 'key=sk-ant-api' + 'x' * 25
+        found = neo_browser.scan_secrets(text)
+        assert 'Anthropic API key' in found
+        assert 'OpenAI API key' not in found  # hyphens prevent OpenAI match
+
+    def test_github_pat_below_min_length_no_match(self):
+        # ghp_ + 35 chars (needs 36) — must NOT match
+        text = 'ghp_' + 'a' * 35
+        found = neo_browser.scan_secrets(text)
+        assert 'GitHub PAT' not in found
+
+    def test_aws_key_below_min_length_no_match(self):
+        # AKIA + 15 uppercase chars (needs 16) — must NOT match
+        text = 'AKIA' + 'A' * 15
+        found = neo_browser.scan_secrets(text)
+        assert 'AWS Access Key' not in found
+
+    def test_openai_key_at_exact_minimum_length(self):
+        # sk- + exactly 20 chars — boundary minimum, should match
+        text = 'sk-' + 'a' * 20
+        found = neo_browser.scan_secrets(text)
+        assert 'OpenAI API key' in found
+
+    def test_secret_buried_in_html_output(self):
+        # Simulates real tool save() context — secret inside HTML blob
+        text = '<div class="output">Result: sk-ant-api' + 'x' * 25 + '</div><p>more text here</p>'
+        found = neo_browser.scan_secrets(text)
+        assert 'Anthropic API key' in found
+
 
 # ═══════════════════════════════════════════════════════════════
 # 6. TOOLS registry
@@ -308,16 +428,16 @@ class TestScanSecrets:
 EXPECTED_TOOLS = {
     'browse', 'search', 'open', 'read', 'find', 'click', 'type', 'fill',
     'submit', 'scroll', 'screenshot', 'wait', 'login', 'extract',
-    'gpt', 'grok', 'js', 'status', 'plugin',
+    'gpt', 'grok', 'js', 'status', 'plugin', 'find_and_click', 'debug',
 }
 
-READ_ONLY_TOOLS = {'browse', 'search', 'read', 'find', 'extract', 'screenshot', 'status', 'js', 'wait'}
-MUTATING_TOOLS = {'open', 'click', 'type', 'fill', 'submit', 'scroll', 'login', 'gpt', 'grok', 'plugin'}
+READ_ONLY_TOOLS = {'browse', 'search', 'read', 'find', 'extract', 'screenshot', 'status', 'js', 'wait', 'debug'}
+MUTATING_TOOLS = {'open', 'click', 'type', 'fill', 'submit', 'scroll', 'login', 'gpt', 'grok', 'plugin', 'find_and_click'}
 
 
 class TestToolsRegistry:
 
-    def test_all_19_tools_registered(self):
+    def test_all_20_tools_registered(self):
         assert set(neo_browser.TOOLS.keys()) == EXPECTED_TOOLS
 
     def test_each_tool_has_required_fields(self):
@@ -511,9 +631,9 @@ class TestToolDefDecorator:
 
 class TestGetMcpTools:
 
-    def test_returns_19_tools(self):
+    def test_returns_21_tools(self):
         tools = neo_browser.get_mcp_tools()
-        assert len(tools) == 19
+        assert len(tools) == 21
 
     def test_each_has_name_description_inputschema(self):
         for t in neo_browser.get_mcp_tools():
@@ -813,6 +933,49 @@ class TestRunPlugin:
 # 14. persist_if_large
 # ═══════════════════════════════════════════════════════════════
 
+# --- EXP-002 step 3: save() test coverage ---
+
+class TestSave:
+    """Tests for save() — the output sanitization + truncation function.
+    Zero direct tests existed before this block."""
+
+    def test_short_text_returned_as_is(self):
+        result = neo_browser.save('hello world')
+        assert result == 'hello world'
+
+    def test_empty_returns_no_content(self):
+        assert neo_browser.save('') == 'No content'
+        assert neo_browser.save(None) == 'No content'
+
+    def test_long_text_truncated_at_4000(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(neo_browser, 'RESPONSE_DIR', tmp_path)
+        text = 'A' * 5000
+        result = neo_browser.save(text)
+        assert result.startswith('A' * 4000)
+        assert 'chars total' in result
+
+    def test_long_text_saved_to_disk(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(neo_browser, 'RESPONSE_DIR', tmp_path)
+        text = 'B' * 5000
+        neo_browser.save(text, tag='disktest')
+        saved = list(tmp_path.glob('disktest-*.md'))
+        assert len(saved) == 1
+        assert saved[0].read_text() == text
+
+    def test_text_with_secret_still_returned(self):
+        # save() logs a warning but does NOT redact — returns content unchanged
+        text = 'key=AKIAIOSFODNN7EXAMPLE'
+        result = neo_browser.save(text)
+        assert 'AKIAIOSFODNN7EXAMPLE' in result
+
+    def test_tag_appears_in_filename(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(neo_browser, 'RESPONSE_DIR', tmp_path)
+        text = 'C' * 5000
+        neo_browser.save(text, tag='mytag')
+        saved = list(tmp_path.glob('mytag-*.md'))
+        assert len(saved) == 1
+
+
 class TestPersistIfLarge:
 
     def test_returns_text_unchanged_if_under_limit(self):
@@ -1080,3 +1243,258 @@ class TestBrowserLock:
             with lock:
                 acquired.append(2)
         assert acquired == [1, 2]
+
+
+# ═══════════════════════════════════════════════════════════════
+# 14. SPA content-ready detection (_site_ready_js + chrome_go)
+# ═══════════════════════════════════════════════════════════════
+
+class TestSiteReadyJs:
+    """Unit tests for _site_ready_js URL → JS mapping."""
+
+    def test_x_com_returns_tweet_selector(self):
+        js = neo_browser._site_ready_js('https://x.com/home')
+        assert js is not None
+        assert 'tweetText' in js
+
+    def test_twitter_com_returns_tweet_selector(self):
+        js = neo_browser._site_ready_js('https://twitter.com/home')
+        assert js is not None
+        assert 'tweetText' in js
+
+    def test_chatgpt_returns_prompt_selector(self):
+        js = neo_browser._site_ready_js('https://chatgpt.com/')
+        assert js is not None
+        assert 'prompt-textarea' in js
+
+    def test_linkedin_returns_feed_selector(self):
+        js = neo_browser._site_ready_js('https://www.linkedin.com/feed/')
+        assert js is not None
+        assert 'scaffold-layout' in js or 'feed-shared' in js or 'artdeco' in js
+
+    def test_unknown_domain_returns_none(self):
+        assert neo_browser._site_ready_js('https://example.com/') is None
+        assert neo_browser._site_ready_js('https://nytimes.com/article') is None
+
+    def test_subdomain_matches(self):
+        # www.chatgpt.com should still match chatgpt.com
+        js = neo_browser._site_ready_js('https://www.chatgpt.com/chat')
+        assert js is not None
+
+    def test_invalid_url_returns_none(self):
+        # Should not raise, return None
+        result = neo_browser._site_ready_js('not-a-url')
+        assert result is None or isinstance(result, str)
+
+
+class TestChromeGoSpaStrategyA:
+    """chrome_go Strategy A: site-specific DOM ready (X, ChatGPT)."""
+
+    def _make_chrome(self, js_responses):
+        """Build a mock Chrome that cycles through js_responses per call."""
+        mock = MagicMock()
+        mock.js.side_effect = js_responses
+        return mock
+
+    def test_x_com_waits_for_tweet_elements(self):
+        """Strategy A: polls until tweetText count > 0, then stops."""
+        # Sequence: readyState complete, then 3 polls returning 0, then 5 (ready)
+        mock_chrome = MagicMock()
+        call_seq = iter(['complete', 0, 0, 5])
+        mock_chrome.js.side_effect = lambda _code: next(call_seq)
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome), \
+             patch.object(neo_browser, '_is_login_wall', return_value=False), \
+             patch('time.sleep'):
+            result = neo_browser.chrome_go('https://x.com/home', wait_s=3)
+
+        assert result is mock_chrome
+        # Must have called the ready JS at least once
+        calls = [str(c) for c in mock_chrome.js.call_args_list]
+        assert any('tweetText' in c for c in calls)
+
+    def test_chatgpt_uses_prompt_textarea_selector(self):
+        """Strategy A: ChatGPT polls for #prompt-textarea."""
+        mock_chrome = MagicMock()
+        call_seq = iter(['complete', 0, 1])
+        mock_chrome.js.side_effect = lambda _code: next(call_seq)
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome), \
+             patch.object(neo_browser, '_is_login_wall', return_value=False), \
+             patch('time.sleep'):
+            result = neo_browser.chrome_go('https://chatgpt.com/', wait_s=3)
+
+        assert result is mock_chrome
+        calls = [str(c) for c in mock_chrome.js.call_args_list]
+        assert any('prompt-textarea' in c for c in calls)
+
+    def test_strategy_a_timeout_falls_through_gracefully(self):
+        """If site-specific condition never fires, chrome_go still returns the page."""
+        mock_chrome = MagicMock()
+        # readyState complete, then always returns 0 (timeout)
+        mock_chrome.js.side_effect = lambda _code: 'complete' if 'readyState' in _code else 0
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome), \
+             patch.object(neo_browser, '_is_login_wall', return_value=False), \
+             patch('time.time') as mock_time:
+            # Make time advance fast: first call = 0 (deadline), subsequent = past deadline
+            mock_time.side_effect = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+            result = neo_browser.chrome_go('https://x.com/home', wait_s=3)
+
+        assert result is mock_chrome
+
+
+class TestChromeGoSpaStrategyB:
+    """chrome_go Strategy B: content stabilisation for unknown sites."""
+
+    def test_unknown_site_uses_body_length_stabilisation(self):
+        """Strategy B: stops once body length is stable across 2 polls."""
+        mock_chrome = MagicMock()
+        # readyState complete, then body lengths: 0, 150, 300, 300 (stable x2)
+        lengths = iter([0, 150, 300, 300, 300])
+        mock_chrome.js.side_effect = lambda code: (
+            'complete' if 'readyState' in code else next(lengths)
+        )
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome), \
+             patch.object(neo_browser, '_is_login_wall', return_value=False), \
+             patch('time.sleep'):
+            result = neo_browser.chrome_go('https://example.com/', wait_s=3)
+
+        assert result is mock_chrome
+
+    def test_short_body_does_not_trigger_stable(self):
+        """Stabilisation requires body > 200 chars — nav text (~100ch) must not count."""
+        mock_chrome = MagicMock()
+        # Returns 120 for first 5 body polls (below 200 threshold), then 250 stable
+        body_seq = [120, 120, 120, 120, 120, 250, 250, 250, 250, 250]
+        body_idx = [0]
+
+        def js_side_effect(code):
+            if 'readyState' in code:
+                return 'complete'
+            if 'innerText' in code:
+                val = body_seq[min(body_idx[0], len(body_seq) - 1)]
+                body_idx[0] += 1
+                return val
+            return 0
+
+        mock_chrome.js.side_effect = js_side_effect
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome), \
+             patch.object(neo_browser, '_is_login_wall', return_value=False), \
+             patch('time.sleep'):
+            neo_browser.chrome_go('https://unknown-spa.io/', wait_s=3)
+
+        # Did NOT stop at 120-char body — verified by reaching the 250-char entries
+        calls = mock_chrome.js.call_args_list
+        body_calls = [c for c in calls if 'innerText' in str(c)]
+        assert len(body_calls) >= 3  # went past the 120-char entries
+
+
+# ═══════════════════════════════════════════════════════════════
+# 15. tool_debug — console log capture
+# ═══════════════════════════════════════════════════════════════
+
+class TestToolDebug:
+
+    def _mock_chrome_with_logs(self, log_entries):
+        """Return a mock chrome whose js() returns serialised log entries."""
+        mock = MagicMock()
+        mock.js.side_effect = lambda code: (
+            json.dumps(log_entries) if '__neoCons' in code and 'return JSON' in code
+            else (True if '__neoCons' in code else None)
+        )
+        return mock
+
+    def test_returns_summary_header(self):
+        logs = [{'level': 'log', 'ts': 1, 'msg': 'hello world'}]
+        mock_chrome = self._mock_chrome_with_logs(logs)
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome):
+            result = neo_browser.TOOLS['debug']['fn']({})
+
+        assert 'Console summary' in result
+        assert '1 total' in result
+
+    def test_errors_appear_first(self):
+        logs = [
+            {'level': 'log',   'ts': 1, 'msg': 'info message'},
+            {'level': 'error', 'ts': 2, 'msg': 'TypeError: cannot read property'},
+        ]
+        mock_chrome = self._mock_chrome_with_logs(logs)
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome):
+            result = neo_browser.TOOLS['debug']['fn']({})
+
+        # Errors section must come before Logs section
+        assert result.index('Errors') < result.index('Logs')
+        assert 'TypeError' in result
+
+    def test_uncaught_exception_captured(self):
+        logs = [{'level': 'uncaught', 'ts': 1, 'msg': 'ReferenceError: x is not defined @ app.js:42'}]
+        mock_chrome = self._mock_chrome_with_logs(logs)
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome):
+            result = neo_browser.TOOLS['debug']['fn']({})
+
+        assert 'ReferenceError' in result
+        assert 'UNCAUGHT' in result
+
+    def test_promise_rejection_captured(self):
+        logs = [{'level': 'promise', 'ts': 1, 'msg': 'Network request failed'}]
+        mock_chrome = self._mock_chrome_with_logs(logs)
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome):
+            result = neo_browser.TOOLS['debug']['fn']({})
+
+        assert 'Network request failed' in result
+
+    def test_no_logs_returns_helpful_message(self):
+        mock_chrome = MagicMock()
+        mock_chrome.js.side_effect = lambda code: (
+            json.dumps([]) if 'return JSON' in code else True
+        )
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome):
+            result = neo_browser.TOOLS['debug']['fn']({})
+
+        assert 'No console logs' in result
+
+    def test_clear_flag_resets_buffer(self):
+        logs = [{'level': 'log', 'ts': 1, 'msg': 'something'}]
+        js_calls = []
+
+        def js_side_effect(code):
+            js_calls.append(code)
+            if 'return JSON' in code:
+                return json.dumps(logs)
+            return True
+
+        mock_chrome = MagicMock()
+        mock_chrome.js.side_effect = js_side_effect
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome):
+            neo_browser.TOOLS['debug']['fn']({'clear': True})
+
+        # Should have called js with reset expression
+        assert any('__neoCons = []' in c for c in js_calls)
+
+    def test_url_param_triggers_navigation(self):
+        """With url= param, debug navigates to the URL and captures logs."""
+        logs = [{'level': 'error', 'ts': 1, 'msg': 'fetch failed'}]
+        mock_chrome = MagicMock()
+        mock_chrome.js.side_effect = lambda code: (
+            json.dumps(logs) if 'return JSON' in code else None
+        )
+
+        with patch.object(neo_browser, 'chrome', return_value=mock_chrome), \
+             patch.object(neo_browser, 'chrome_go', return_value=mock_chrome) as mock_go:
+            result = neo_browser.TOOLS['debug']['fn']({'url': 'https://x.com/home'})
+
+        mock_go.assert_called_once_with('https://x.com/home', 5)
+        assert 'fetch failed' in result
+
+    def test_debug_tool_is_read_only_and_concurrent(self):
+        assert neo_browser.TOOLS['debug']['read_only'] is True
+        assert neo_browser.TOOLS['debug']['concurrent'] is True

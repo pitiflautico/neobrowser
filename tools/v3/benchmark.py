@@ -65,8 +65,7 @@ def section(title):
     print(f'\033[1m{"─"*60}\033[0m')
 
 def main():
-    import importlib
-    nb = importlib.import_module('neo-browser')
+    import neo_browser as nb
 
     all_results = []
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')

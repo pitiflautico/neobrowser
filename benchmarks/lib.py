@@ -33,7 +33,7 @@ def get_process_resources(pid=None):
                 'ram_mb': int(parts[1]) / 1024,
                 'fd_count': -1,
             }
-    except:
+    except Exception:
         pass
     return {'cpu_percent': 0, 'ram_mb': 0, 'fd_count': -1}
 
@@ -46,9 +46,12 @@ class ResourceMonitor:
         self.samples = []
         self._stop = threading.Event()
         self._thread = None
+        self._start_time = None
+        self._end_time = None
 
     def start(self):
         self._stop.clear()
+        self._start_time = time.perf_counter()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
@@ -60,8 +63,16 @@ class ResourceMonitor:
 
     def stop(self):
         self._stop.set()
+        self._end_time = time.perf_counter()
         if self._thread:
             self._thread.join(timeout=2)
+
+    def duration_ms(self):
+        """Return monitoring duration in ms, or 0 if not stopped yet."""
+        if self._start_time is None:
+            return 0
+        end = self._end_time if self._end_time is not None else time.perf_counter()
+        return round((end - self._start_time) * 1000, 1)
 
     def stats(self):
         if not self.samples:
@@ -113,8 +124,8 @@ def log_result(test_name, tool, success, duration_ms, **extra):
         **extra,
     }
     _results.append(entry)
-    status = '✓' if success else '✗'
-    print(f'  {status} [{tool}] {test_name}: {duration_ms:.0f}ms', file=sys.stderr)
+    status = 'OK' if success else 'FAIL'
+    print(f'  [{status}] [{tool}] {test_name}: {duration_ms:.0f}ms', file=sys.stderr)
     return entry
 
 
@@ -147,7 +158,7 @@ def compute_stats(results, key='duration_ms'):
 
 
 def print_comparison(test_name, tools_results):
-    """Print side-by-side comparison table."""
+    """Print side-by-side comparison table. Works for 1+ tools."""
     print(f'\n{"="*60}')
     print(f'  {test_name}')
     print(f'{"="*60}')
