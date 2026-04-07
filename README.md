@@ -89,7 +89,7 @@ NeoBrowser works with zero configuration. These unlock additional features:
 
 ---
 
-## Tools reference (21 tools)
+## Tools reference (22 tools)
 
 ### browse — fast HTTP fetch, no Chrome
 
@@ -248,14 +248,20 @@ scroll(direction, amount?)
 
 ---
 
-### wait — wait for element or text
+### wait — wait for a condition before proceeding
 
 ```
-wait(selector?, text?, timeout?)
+wait(condition, selector?, text?, timeout?)
 ```
 
-- Polls until selector or text appears (default 5000ms timeout)
-- Returns page content when ready
+Conditions:
+- `element_visible` — polls until a CSS selector appears in the DOM (requires `selector`)
+- `text_present` — polls until text appears on the page (requires `text`)
+- `dom_stable` — waits until DOM size stops changing (good for SPAs finishing render)
+- `network_idle` — waits until no pending XHR/fetch for 1s
+
+- `timeout`: max wait in seconds (default 15, max 60)
+- Returns a status string when condition is met, or proceeds after timeout
 - **Use after**: `open` for pages where content loads asynchronously after navigation
 
 ---
@@ -429,6 +435,41 @@ These sites work automatically via session sync (no login needed if you're alrea
 - Change profile: `NEOBROWSER_PROFILE=Profile 3` (find your profile name at `chrome://version`)
 - Sync only specific domains: `NEOBROWSER_COOKIE_DOMAINS=github.com,x.com`
 - Add more excluded domains: set `EXCLUDED_DOMAINS` in `neo-browser.py`
+
+**Tool permission tiers (v3.8+):**
+
+Set `NEO_MAX_TIER` env var to restrict what an agent can call:
+
+| Tier | Tools |
+|------|-------|
+| `high` (default) | login, js, gpt, grok |
+| `medium` | click, type, fill + all high-tier |
+| `low` | browse, search, open, read, find, scroll, screenshot + all |
+
+```bash
+NEO_MAX_TIER=low npx neobrowser   # read-only agent
+NEO_MAX_TIER=medium npx neobrowser  # no credentials, no external AI
+```
+
+**Prompt injection defense (v3.8+):**
+
+Page content returned by `browse` is scanned for common injection patterns (`ignore previous instructions`, LLM token boundaries, etc.). Suspicious content is returned with an `[UNTRUSTED CONTENT]` header so the agent can handle it appropriately.
+
+**Page state detection (v3.8+):**
+
+`browse` automatically prepends `[page_state: X]` when it detects a non-content state:
+- `login_required` — auth wall detected
+- `captcha` — Cloudflare or CAPTCHA challenge
+- `error` — 404 / 5xx / access denied
+- `rate_limited` — too many requests
+
+**Audit log (v3.8+):**
+
+Every tool call is logged to `/tmp/neobrowser-audit.jsonl` (override with `NEO_AUDIT_LOG`):
+```json
+{"t":1712345678000,"tool":"browse","url":"https://example.com","result":"ok","ms":312.4,"args_hash":"a3f9c1"}
+```
+Credentials are never logged (args are hashed).
 
 ---
 
