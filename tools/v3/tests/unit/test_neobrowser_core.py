@@ -56,7 +56,7 @@ class TestGetMcpTools:
         return get_mcp_tools()
 
     def test_tool_count(self, tools):
-        assert len(tools) == 26
+        assert len(tools) == 27
 
     def test_required_fields_present(self, tools):
         for t in tools:
@@ -100,7 +100,7 @@ class TestMcpHandler:
         assert response['id'] == 1
         assert 'result' in response
         tools = response['result']['tools']
-        assert len(tools) == 26
+        assert len(tools) == 27
 
     def test_initialize_response(self, capsys):
         import json

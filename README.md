@@ -49,7 +49,8 @@ Need content across multiple pages?
 Need to debug a page?
   → debug (captures console.log, JS errors, uncaught exceptions)
 
-Not sure what's on a page?
+Not sure what's on a page / about to act on an unknown page?
+  → analyze (forms + submit buttons + actions by context + overlays — use BEFORE click/type)
   → read (no type = full a11y tree, most informative)
 ```
 
@@ -97,7 +98,7 @@ NeoBrowser works with zero configuration. These unlock additional features:
 
 ---
 
-## Tools reference (26 tools)
+## Tools reference (27 tools)
 
 ### browse — fast HTTP fetch, no Chrome
 
@@ -211,14 +212,15 @@ find_and_click(text?, role?, selector?)
 
 ---
 
-### type — type into a field
+### type — type into a field (updated in v3.10)
 
 ```
 type(selector, value)
 ```
 
-- Types into a specific input by CSS selector
-- Uses clipboard paste for ProseMirror/contenteditable fields (React-safe)
+- **Exact selector match first** — `document.querySelector(sel)` before fuzzy fallback. Prevents capturing wrong inputs when multiple fields exist (e.g. search bar vs message compose box).
+- **Auto-detects contenteditable** — uses `execCommand('insertText')` for React/ProseMirror/Quill editors, `nativeInputValueSetter` for standard inputs. Both paths update framework state correctly.
+- Works on: LinkedIn messaging, ChatGPT, Gmail compose, Slack, standard HTML forms.
 
 ---
 
@@ -472,13 +474,46 @@ Auto-detects next buttons by aria-label, rel=next, or text ("Next", "→", "Sigu
 
 ---
 
-### click — click an element (updated in v3.9)
+### analyze — semantic page map (NEW in v3.10)
+
+```
+analyze()
+```
+
+Returns a structured map of everything interactive on the page — **use before acting on unknown pages** to avoid ambiguity:
+
+```json
+{
+  "url": "https://linkedin.com/posts/...",
+  "forms": [
+    {
+      "selector": "form.comments-comment-box__form",
+      "inputs": [{"type": "textbox", "label": "Editor de texto", "selector": "div.ql-editor"}],
+      "submit": {"label": "comentar", "selector": "#ember45", "disabled": false}
+    }
+  ],
+  "actions": [
+    {"label": "comentar", "selector": "#feed-shared-social-action-bar-comment-ember45", "context": "button", "disabled": false},
+    {"label": "enviar en un mensaje privado", "selector": "#ember60", "context": "feed-shared-social-action-bar__action-button", "disabled": false}
+  ],
+  "overlays": [{"selector": "#msg-overlay", "label": "Mensajes"}],
+  "active_input": null
+}
+```
+
+**Why this matters:** pages like LinkedIn have multiple "Enviar" and "Comentar" buttons — `analyze` tells you which belongs to which context before you act. The `context` field prevents clicking the messaging overlay's send button when you want to submit a comment.
+
+**Auto-fallback:** `click()` calls `analyze()` automatically when the element is not found on first attempt. You don't need to call it manually unless you want to inspect the map before acting.
+
+---
+
+### click — click an element (updated in v3.10)
 
 ```
 click(text?, selector?, index?)
 ```
 
-Now returns a structured outcome instead of a plain string:
+Returns a structured outcome:
 
 ```json
 {"clicked": true, "element": "Submit", "outcome": "navigated", "new_url": "https://example.com/success"}
@@ -486,7 +521,9 @@ Now returns a structured outcome instead of a plain string:
 
 `outcome` values: `navigated` | `modal_opened` | `page_updated` | `no_change` | `error`
 
-**Why this matters:** you no longer need to call `read()` after every click to check what happened.
+**React SPA support:** if the target button is `disabled` (e.g. LinkedIn send before text is typed), waits up to 2s for it to become enabled before clicking. No manual polling needed.
+
+**Auto-fallback:** if the element is not found by selector/text, automatically calls `analyze()` to find the correct scoped selector and retries. Eliminates "not found" errors on dynamic pages.
 
 ---
 

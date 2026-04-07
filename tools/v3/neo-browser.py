@@ -2032,6 +2032,56 @@ def tool_find(args):
         }})));
     ''') or '[]'
 
+_ANALYZE_JS = '''
+    function _sel(el) {
+        if (!el) return null;
+        if (el.id) return '#' + el.id;
+        const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/).slice(0,2).join('.') : '';
+        return el.tagName.toLowerCase() + (cls ? '.' + cls : '');
+    }
+    function _label(el) {
+        return (el.getAttribute('aria-label') || el.innerText?.trim().substring(0,40) || el.getAttribute('placeholder') || el.getAttribute('name') || '').toLowerCase();
+    }
+    const forms = [...document.querySelectorAll('form')].map(form => {
+        const inputs = [...form.querySelectorAll('input:not([type=hidden]),textarea,[contenteditable=true],[role=textbox]')]
+            .map(i => ({type: i.type || 'contenteditable', label: _label(i), selector: _sel(i)}));
+        const sub = form.querySelector('button[type=submit],input[type=submit]');
+        return {selector: _sel(form), inputs, submit: sub ? {label: _label(sub), selector: _sel(sub), disabled: sub.disabled} : null};
+    }).filter(f => f.inputs.length);
+    const actions = [...document.querySelectorAll('button,[role=button]')]
+        .filter(e => e.offsetParent !== null)
+        .map(e => {
+            const ctx = e.closest('form,[role=dialog],[class*=overlay],[class*=modal],[class*=messaging],[class*=comment],[class*=feed]');
+            return {label: _label(e), selector: _sel(e), context: ctx ? (ctx.className.trim().split(/\s+/)[0] || ctx.getAttribute('role')) : 'page', disabled: e.disabled || false};
+        }).filter(a => a.label);
+    const overlays = [...document.querySelectorAll('[role=dialog],[aria-modal=true],[class*=overlay]')]
+        .filter(e => e.offsetParent !== null).map(e => _sel(e));
+    return JSON.stringify({forms, actions, overlays});
+'''
+
+def _analyze_page(d) -> dict:
+    """Internal: returns semantic page map {forms, actions, overlays}. Used as fallback in click/find."""
+    raw = d.js(_ANALYZE_JS) or '{}'
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {'forms': [], 'actions': [], 'overlays': []}
+
+def _find_action(page_map: dict, query: str):
+    """Find best matching action selector from page_map given a text query."""
+    q = query.lower().strip()
+    actions = page_map.get('actions', [])
+    # Exact label match first
+    for a in actions:
+        if a['label'] == q and not a['disabled']:
+            return a['selector']
+    # Partial match
+    for a in actions:
+        if q in a['label'] and not a['disabled']:
+            return a['selector']
+    return None
+
+
 def _click_outcome(snap_before: dict, snap_after: dict) -> tuple:
     """Pure function: derive click outcome from before/after DOM snapshots.
     Returns (outcome_str, extra_fields_dict).
@@ -2081,17 +2131,49 @@ def tool_click(args):
     except Exception:
         snap_before = {}
 
-    clicked = d.js(f'''
+    # Store element reference in window for polling
+    found = d.js(f'''
         const q={json.dumps(text)};
         let els = Array.from(document.querySelectorAll(q));
         if (!els.length) {{
             const ql = q.toLowerCase();
             els = Array.from(document.querySelectorAll('a,button,[role=button],[role=link],input[type=submit]'))
-                .filter(e => (e.innerText||e.value||'').toLowerCase().includes(ql));
+                .filter(e => (e.innerText||e.value||e.getAttribute('aria-label')||'').toLowerCase().includes(ql));
         }}
-        if (els[0]) {{ els[0].click(); return els[0].innerText?.trim().substring(0,60) || els[0].tagName; }}
-        return null;
+        if (!els[0]) return null;
+        window.__neoClickTarget = els[0];
+        return JSON.stringify({{
+            label: els[0].innerText?.trim().substring(0,60) || els[0].getAttribute('aria-label') || els[0].tagName,
+            disabled: els[0].disabled || false
+        }});
     ''')
+    if not found:
+        # Auto-fallback: analyze page and find matching action
+        page_map = _analyze_page(d)
+        sel = _find_action(page_map, text)
+        if sel:
+            found = d.js(f'''
+                const el = document.querySelector({json.dumps(sel)});
+                if (!el) return null;
+                window.__neoClickTarget = el;
+                return JSON.stringify({{label: {json.dumps(text)}, disabled: el.disabled||false, via_analyze: true}});
+            ''')
+        if not found:
+            return error_response('not_found', f'Element not found: {text}')
+    try:
+        info = json.loads(found)
+    except Exception:
+        info = {'label': found, 'disabled': False}
+
+    # Wait up to 2s for disabled button (React SPAs enable after state update)
+    if info.get('disabled'):
+        for _ in range(20):
+            time.sleep(0.1)
+            still_disabled = d.js('return window.__neoClickTarget ? window.__neoClickTarget.disabled : true')
+            if not still_disabled:
+                break
+
+    clicked = d.js('if(window.__neoClickTarget){window.__neoClickTarget.click();return window.__neoClickTarget.innerText?.trim().substring(0,60)||"clicked";}return null;')
 
     if not clicked:
         return error_response('not_found', f'Element not found: {text}')
@@ -2133,39 +2215,71 @@ def tool_find_and_click(args):
     name = args.get('name', '')
     if not role: return 'role required'
     d = chrome()
-    clicked = d.find_and_click(role, name or None)
-    if clicked:
-        for _ in range(10):
-            time.sleep(0.1)
-            if d.js('return document.readyState') == 'complete': break
-        return f'Clicked {role}[{name}]\n\n{d.sanitize()}'
-    return f'Not found: role={role}, name={name}'
+    # Find element via JS for disabled-wait support
+    found = d.js(f'''
+        const role={json.dumps(role)}, name={json.dumps(name.lower())};
+        const sel = name
+            ? `[role="${{role}}"]`
+            : `[role="${{role}}"]`;
+        let els = Array.from(document.querySelectorAll(`[role="${{role}}"]`));
+        if (name) els = els.filter(e =>
+            (e.innerText||e.getAttribute('aria-label')||e.getAttribute('name')||'').toLowerCase().includes(name));
+        if (!els[0]) return null;
+        window.__neoClickTarget = els[0];
+        return JSON.stringify({{label: els[0].innerText?.trim().substring(0,60)||name, disabled: els[0].disabled||false}});
+    ''')
+    if not found:
+        # Fallback to DrissionPage native
+        clicked = d.find_and_click(role, name or None)
+        if not clicked: return f'Not found: role={role}, name={name}'
+    else:
+        info = json.loads(found)
+        if info.get('disabled'):
+            for _ in range(20):
+                time.sleep(0.1)
+                if not d.js('return window.__neoClickTarget?.disabled'):
+                    break
+        d.js('window.__neoClickTarget?.click()')
+    for _ in range(10):
+        time.sleep(0.1)
+        if d.js('return document.readyState') == 'complete': break
+    return f'Clicked {role}[{name}]\n\n{d.sanitize()}'
 
 @tool_def('type', 'Type text into a form field by CSS selector. Use fill for a single field, use type for direct selector+value input.', {'selector': {'type': 'string', 'description': 'CSS selector of the input field to type into', 'required': True}, 'value': {'type': 'string', 'description': 'Text to type into the field', 'required': True}}, read_only=False, concurrent=False, risk_tier='medium')
 def tool_type(args):
-    """Smart type — uses __neoFind detector."""
+    """Smart type — exact selector first, then fuzzy. Uses execCommand for contenteditable (React/ProseMirror)."""
     sel = args.get('selector', args.get('text', ''))
     val = args.get('value', '')
     if not sel or not val: return 'selector and value required'
     d = chrome()
-    found = d.js(f'''
-        const el = window.__neoFind?.({json.dumps(sel)}) || document.querySelector({json.dumps(sel)});
-        if (el) {{
-            el.focus(); el.click();
-            // Clear only standard inputs, not contentEditable (ProseMirror)
-            if (el.tagName==='INPUT'||el.tagName==='TEXTAREA') el.value = '';
-            el.dispatchEvent(new Event('focus', {{bubbles:true}}));
-            return JSON.stringify({{found: true, tag: el.tagName, name: el.name||''}});
+    result = d.js(f'''
+        // Exact match first, fuzzy fallback — prevents capturing wrong inputs
+        const el = document.querySelector({json.dumps(sel)}) || window.__neoFind?.({json.dumps(sel)});
+        if (!el) return JSON.stringify({{found: false}});
+        el.focus(); el.click();
+        el.dispatchEvent(new Event('focus', {{bubbles:true}}));
+        const isContentEditable = el.isContentEditable || el.getAttribute('contenteditable') === 'true';
+        if (isContentEditable) {{
+            // execCommand works for React/ProseMirror contenteditable — updates framework state
+            document.execCommand('insertText', false, {json.dumps(val)});
+            return JSON.stringify({{found: true, tag: el.tagName, name: el.name||'', method: 'execCommand'}});
+        }} else {{
+            // Native value setter for regular inputs/textareas
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+                        || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+            if (setter) setter.call(el, {json.dumps(val)});
+            else el.value = {json.dumps(val)};
+            el.dispatchEvent(new Event('input', {{bubbles:true}}));
+            el.dispatchEvent(new Event('change', {{bubbles:true}}));
+            return JSON.stringify({{found: true, tag: el.tagName, name: el.name||'', method: 'nativeSetter'}});
         }}
-        return JSON.stringify({{found: false}});
     ''')
-    try: info = json.loads(found) if found else {'found': False}
+    try: info = json.loads(result) if result else {'found': False}
     except: info = {'found': False}
 
     if not info.get('found'):
         return f'Not found: "{sel}"'
 
-    d.key(val)
     return json.dumps({'typed': True, 'value': val, 'field': info})
 
 @tool_def('fill', 'Fill a form field by CSS selector with a value. Combines focus + type. For multiple fields, call fill for each. Use submit after filling.', {'selector': {'type': 'string', 'description': 'CSS selector of the form field'}, 'value': {'type': 'string', 'description': 'Value to fill into the field', 'required': True}}, read_only=False, concurrent=False, risk_tier='medium')
@@ -3425,6 +3539,56 @@ def tool_page_info(args):
     state = _classify_page_state(d.js('return document.body?.innerText || ""') or '')
     data['page_state'] = state
     return json.dumps(data)
+
+# ── Analyze ──
+
+@tool_def('analyze', 'Semantic map of the current page: forms with their submit buttons, all actions grouped by context, active overlays, active input. Use BEFORE acting to know exactly what is available and avoid ambiguity.', {}, read_only=True, concurrent=True)
+def tool_analyze(args):
+    d = chrome()
+    data = d.js('''
+        function sel(el) {
+            if (!el) return null;
+            if (el.id) return '#' + el.id;
+            if (el.className && typeof el.className === 'string') {
+                const cls = el.className.trim().split(/\s+/).slice(0,2).join('.');
+                if (cls) return el.tagName.toLowerCase() + '.' + cls;
+            }
+            return el.tagName.toLowerCase();
+        }
+        function label(el) {
+            return el.getAttribute('aria-label') || el.innerText?.trim().substring(0,40) || el.getAttribute('placeholder') || el.getAttribute('name') || '';
+        }
+
+        // Forms
+        const forms = [...document.querySelectorAll('form')].map(form => {
+            const inputs = [...form.querySelectorAll('input:not([type=hidden]),textarea,[contenteditable=true],[role=textbox]')]
+                .map(i => ({type: i.type || i.getAttribute('role') || 'contenteditable', label: label(i), selector: sel(i)}));
+            const submitBtn = form.querySelector('button[type=submit], input[type=submit]');
+            return {selector: sel(form), inputs, submit: submitBtn ? {label: label(submitBtn), selector: sel(submitBtn), disabled: submitBtn.disabled} : null};
+        }).filter(f => f.inputs.length > 0);
+
+        // Actions grouped by container context
+        const actionEls = [...document.querySelectorAll('button,[role=button]')].filter(e => e.offsetParent !== null);
+        const actions = actionEls.map(e => {
+            const container = e.closest('form,[role=dialog],[role=complementary],header,nav,[class*=overlay],[class*=modal],[class*=messaging],[class*=feed],[class*=comment],[class*=post]');
+            return {label: label(e), selector: sel(e), context: container ? (container.getAttribute('role') || container.className.trim().split(/\s+/)[0]) : 'page', disabled: e.disabled};
+        }).filter(a => a.label);
+
+        // Overlays
+        const overlays = [...document.querySelectorAll('[role=dialog],[aria-modal=true],[class*=overlay],[class*=modal]')]
+            .filter(e => e.offsetParent !== null)
+            .map(e => ({selector: sel(e), label: label(e) || e.className.trim().split(/\s+/)[0]}));
+
+        // Active / focused input
+        const active = document.activeElement;
+        const activeInput = (active && active !== document.body) ? {tag: active.tagName, label: label(active), selector: sel(active), hasText: !!active.value || !!active.textContent?.trim()} : null;
+
+        return JSON.stringify({url: location.href, forms, actions, overlays, active_input: activeInput});
+    ''') or '{}'
+    try:
+        return data
+    except Exception:
+        return '{}'
 
 # ── Plugins ──
 

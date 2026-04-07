@@ -206,4 +206,4 @@ class TestNewToolSchemas:
         assert 'click' in tools_by_name
 
     def test_total_tool_count(self, tools_by_name):
-        assert len(tools_by_name) == 26
+        assert len(tools_by_name) == 27
