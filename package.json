@@ -1,6 +1,6 @@
 {
   "name": "neobrowser",
-  "version": "3.9.1",
+  "version": "3.10.0",
   "description": "AI Browser MCP Server — give your AI agent a real Chrome browser with session persistence",
   "bin": {
     "neo-browser": "./bin/neo-browser.js"
