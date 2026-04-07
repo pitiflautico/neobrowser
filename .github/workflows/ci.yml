@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [neorender-v2, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-rust:
+    name: Rust check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/v3/rust
+      - name: Check
+        working-directory: tools/v3/rust
+        run: cargo check
+      - name: Test
+        working-directory: tools/v3/rust
+        run: cargo test --lib
+
+  check-python:
+    name: Python syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: |
+          python -c "import ast; ast.parse(open('tools/v3/neo-browser.py').read()); print('neo-browser.py OK')"
+          python -c "import ast; ast.parse(open('tools/v3/plugins.py').read()); print('plugins.py OK')"

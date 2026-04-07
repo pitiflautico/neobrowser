@@ -126,8 +126,13 @@ CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 
 PROFILE = os.environ.get('NEOBROWSER_PROFILE', 'Profile 24')
 # V1 fast-path binary: prefer bundled Rust binary in tools/v3/rust/target/release/,
 # fall back to system 'neobrowser' (e.g. installed via npm install -g neobrowser)
+# Resolution order:
+# 1. NEOBROWSER_V1_BIN env var (set by bin/neo-browser.js with bundled binary path)
+# 2. Bundled binary next to this file in rust/target/release/ (local dev build)
+# 3. 'neobrowser' in PATH (npm global install fallback)
 _V1_BUNDLED = Path(__file__).parent / 'rust' / 'target' / 'release' / 'neobrowser_rs'
-V1_BIN = str(_V1_BUNDLED) if _V1_BUNDLED.exists() else os.environ.get('NEOBROWSER_V1_BIN', 'neobrowser')
+V1_BIN = (os.environ.get('NEOBROWSER_V1_BIN') or
+          (str(_V1_BUNDLED) if _V1_BUNDLED.exists() else 'neobrowser'))
 RESPONSE_DIR = Path.home() / '.neorender' / 'responses'
 RESPONSE_DIR.mkdir(parents=True, exist_ok=True)
 PID_FILE = Path.home() / '.neorender' / 'neo-browser-pids.json'

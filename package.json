@@ -8,6 +8,7 @@
   "files": [
     "bin/",
     "tools/v3/neo-browser.py",
+    "tools/v3/plugins.py",
     "README.md"
   ],
   "keywords": ["mcp", "browser", "ai", "chrome", "cdp", "headless", "automation", "claude", "chatgpt"],
