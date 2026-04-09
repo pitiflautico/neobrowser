@@ -114,13 +114,40 @@ Install: pip install -e tools/v3/  →  command: neo-browser
 Config:  {"command": "neo-browser", "env": {"NEOBROWSER_PROFILE": "Profile 24"}}
 """
 
-import json, sys, os, time, subprocess, threading, atexit, signal, tempfile, re, urllib.request, urllib.parse, hashlib
+import json, sys, os, time, subprocess, threading, atexit, signal, tempfile, re, urllib.request, urllib.parse, hashlib, queue
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
+_debug_log_path = Path(os.environ.get('NEO_DEBUG_LOG', '/tmp/neo-debug.log'))
+
 def log(msg):
-    print(f'[neo] {msg}', file=sys.stderr, flush=True)
+    """Log to stderr AND to /tmp/neo-debug.log for tail -f debugging."""
+    try:
+        print(f'[neo] {msg}', file=sys.stderr, flush=True)
+    except Exception:
+        pass
+    try:
+        _debug_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(_debug_log_path, 'a', encoding='utf-8') as f:
+            f.write(f'{time.strftime("%H:%M:%S")} {msg}\n')
+    except Exception:
+        pass
+
+def dlog(layer: str, action: str, req_id: str = '', **fields):
+    """Structured per-layer debug log → /tmp/neo-debug.log (always on)."""
+    try:
+        import datetime
+        entry = {'ts': datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3],
+                 'layer': layer, 'action': action}
+        if req_id:
+            entry['req'] = req_id
+        entry.update(fields)
+        _debug_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(_debug_log_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
 
 # ── Structured audit log ──
 
@@ -803,6 +830,7 @@ class GhostChrome:
         self._id_lock = threading.Lock()
         self._recv_lock = threading.RLock()  # RLock: keepalive pings call js()→_send() while holding lock
         self._keepalive = None         # background thread for chat keepalive
+        self._event_queue = queue.Queue()  # buffered CDP events (Runtime.bindingCalled, etc.)
 
     @property
     def ws(self):
@@ -833,7 +861,7 @@ class GhostChrome:
             if ws_url: break
         if not ws_url:
             raise RuntimeError(f'No WS for target {target_id}')
-        ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=None)
+        ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=20, ping_timeout=10)
         self._tabs[name] = ws
         with self._active_lock:
             self._active = name
@@ -843,6 +871,11 @@ class GhostChrome:
         # (already started), but WILL apply to future navigations in this tab.
         self._send('Page.addScriptToEvaluateOnNewDocument', {'source': NEOMODE_JS})
         self._send('Emulation.setDeviceMetricsOverride', {'width': 1920, 'height': 1080, 'deviceScaleFactor': 1, 'mobile': False})
+        if name in ('gpt', 'grok'):
+            # Register Runtime.addBinding so JS can push response-ready events to Python
+            self._send('Runtime.enable')
+            self._send('Runtime.addBinding', {'name': 'neoResponseReady'})
+            log(f'[{name}] Runtime binding neoResponseReady registered')
         # Wait for page load
         for _ in range(30):
             time.sleep(0.5)
@@ -936,6 +969,12 @@ class GhostChrome:
                     else:
                         log(f'[CDP] ← {method} OK')
                     return data.get('result', {})
+                # Not our response — buffer CDP events so they're not lost
+                if 'method' in data:
+                    try:
+                        self._event_queue.put_nowait(data)
+                    except Exception:
+                        pass  # queue full? discard oldest
 
     def js(self, code):
         expr = f'(function(){{{code}}})()' if 'return ' in code else code
@@ -1228,7 +1267,6 @@ def chrome():
                     '--safebrowsing-disable-auto-update',
                     '--hide-scrollbars', '--mute-audio',
                     '--no-default-browser-check', '--no-service-autorun',
-                    '--password-store=basic',
                     'about:blank'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 _chrome_pids.add(proc.pid)
@@ -1244,7 +1282,7 @@ def chrome():
                 log(f'[chrome] targets: {[t.get("type") for t in targets]}')
                 ws_url = [t['webSocketDebuggerUrl'] for t in targets if t['type'] == 'page'][0]
                 log(f'[chrome] connecting WS: {ws_url}')
-                ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=None)
+                ws = ws_sync.connect(ws_url, max_size=10_000_000, ping_interval=20, ping_timeout=10)
                 log(f'[chrome] WS connected OK')
                 _chrome = GhostChrome(proc, port, ws)
                 _chrome._send('Page.enable'); _chrome._send('Network.enable')
@@ -1253,6 +1291,7 @@ def chrome():
 
                 PID_FILE.parent.mkdir(parents=True, exist_ok=True)
                 PID_FILE.write_text(json.dumps(list(_chrome_pids)))
+                (PID_FILE.parent / 'neo-browser-port.txt').write_text(str(port))
                 log(f'Ghost Chrome ready (port={port}, pid={proc.pid})')
                 return _chrome
             except Exception as e:
@@ -2837,6 +2876,7 @@ class ChatPipeline:
         self.d = None
         self.max_retries = 2
         self.last_error = None
+        self._send_verified = False  # True while we're waiting for a response (suppress error-nav)
         self._lock = threading.Lock()  # Serializes concurrent run() calls on the same instance
 
     def _resync_and_reload(self, browser):
@@ -2865,16 +2905,19 @@ class ChatPipeline:
             log(f'{self.platform}: restart failed: {e}')
             return False
 
-    def ensure(self):
+    def ensure(self, req_id: str = ''):
         """Step 1: Switch to dedicated tab for this platform (creates it if needed)."""
         self.last_error = None
+        dlog('ensure', 'enter', req_id=req_id, platform=self.platform, conv_url=self.conv_url)
         log(f'[ensure:{self.platform}] entry — conv_url={self.conv_url}')
         d = chrome()
+        dlog('ensure', 'chrome_ok', req_id=req_id, tabs=list(d._tabs.keys()))
         log(f'[ensure:{self.platform}] chrome() OK, tabs={list(d._tabs.keys())}')
         d.tab(self.platform, self.url)  # each platform gets its own tab, isolated from default browse tab
         target = self.conv_url or self.url
         domain = self.url.split('/')[2]
         current = d.js('return location.href') or ''
+        dlog('ensure', 'current_url', req_id=req_id, url=current, target=target)
         log(f'[ensure:{self.platform}] current_url={current}')
 
         # Navigate if not already on the platform
@@ -2891,19 +2934,24 @@ class ChatPipeline:
             self.conv_url = current.split('?')[0]
             log(f'{self.platform}: adopted existing conversation → {self.conv_url}')
 
-        # Check for error state
-        error = d.js('return document.body?.innerText?.includes("Something went wrong")')
-        if error:
-            log(f'{self.platform}: error state, navigating fresh')
-            self.conv_url = None
-            d.go_wait(self.url, timeout_s=10)
+        # Check for error state — but NOT if we just sent a message (thinking model may still be running,
+        # or the error text is from a previous message in the thread, not from the whole page).
+        if not self._send_verified:
+            error = d.js('return document.body?.innerText?.includes("Something went wrong")')
+            if error:
+                log(f'{self.platform}: error state, navigating fresh')
+                self.conv_url = None
+                d.go_wait(self.url, timeout_s=10)
 
         # Detect login/captcha/rate limit
         page_text = d.js('return document.body?.innerText?.substring(0,500)') or ''
         login_signals = ['log in', 'sign in', 'sign up', 'create account', 'iniciar sesión', 'inicia sesión']
+        _resynced = False  # guard: only one resync per ensure() call
         if any(s in page_text.lower() for s in login_signals):
             log(f'{self.platform}: login wall detected, attempting cookie re-sync')
             if self._resync_and_reload(d):
+                _resynced = True
+                d = self.d  # ← use new browser after resync (old d is quit)
                 # Check again after re-sync
                 time.sleep(3)
                 page_text = d.js('return document.body?.innerText?.substring(0,500)') or ''
@@ -2951,6 +2999,12 @@ class ChatPipeline:
             ''')
             log(f'{self.platform}: dom auth check = {authenticated}')
             if not authenticated:
+                if _resynced:
+                    # Already resynced once this ensure() call — skip second resync to avoid cascade
+                    log(f'{self.platform}: auth check failed but already resynced this call, skipping second resync')
+                    self.last_error = error_response('auth_expired', 'ChatGPT session expired',
+                        suggestion='Log into chatgpt.com in your real Chrome browser and restart NeoBrowser')
+                    return False
                 log(f'{self.platform}: session not authenticated, attempting re-sync')
                 if self._resync_and_reload(d):
                     d = self.d
@@ -2973,6 +3027,8 @@ class ChatPipeline:
         self.d = d
         # Discover/validate selectors after auth confirmed
         _discover_selectors(self.platform, d)
+        final_url = d.js('return location.href') or ''
+        dlog('ensure', 'ok', req_id=getattr(self, '_req_id', ''), url=final_url)
         return True
 
     def verify_ready(self):
@@ -2987,11 +3043,17 @@ class ChatPipeline:
                 time.sleep(0.5)
                 if not d.js('return !!document.querySelector("[data-testid=stop-button]")'): break
             else:
-                # Still streaming after 30s — abort, do not send on top of a pending response
-                self.last_error = error_response('still_streaming',
-                    f'{self.platform}: previous response still generating after 30s',
-                    suggestion='Use action=read_last to get the current response, then retry.')
-                return False
+                # Still streaming after 30s — navigate to fresh chat and continue
+                log(f'{self.platform}: still streaming after 30s, navigating to fresh chat')
+                self.conv_url = None
+                d.go_wait(self.url, timeout_s=10)
+                time.sleep(2)
+                # Check if stream cleared after fresh nav
+                if d.js('return !!document.querySelector("[data-testid=stop-button]")'):
+                    self.last_error = error_response('still_streaming',
+                        f'{self.platform}: previous response still generating after 30s',
+                        suggestion='Use action=read_last to get the current response, then retry.')
+                    return False
         # Check input exists — Check 2: chat box present
         input_sel = sel(self.platform, 'input', '#prompt-textarea')
         has_input = d.js(f'return !!document.querySelector({json.dumps(input_sel)})')
@@ -3096,6 +3158,48 @@ class ChatPipeline:
             suggestion='The send button may be disabled or input was not populated. Try again.')
         return False
 
+    def _fetch_conv_text(self):
+        """For thinking models: fetch last assistant message from backend API.
+        Returns text string or None."""
+        d = self.d
+        if not d: return None
+        url = d.js('return location.href') or ''
+        conv_id = ''
+        if '/c/' in url:
+            conv_id = url.split('/c/')[-1].split('?')[0].split('/')[0].strip()
+        if not conv_id:
+            return None
+        result = d.js(f'''
+            const r = await fetch('/backend-api/conversation/{conv_id}');
+            if (!r.ok) return null;
+            const data = await r.json();
+            const msgs = Object.values(data.mapping || {{}}).filter(m =>
+                m.message?.author?.role === 'assistant' && m.message?.status === 'finished_successfully');
+            if (!msgs.length) return null;
+            msgs.sort((a,b) => (a.message?.create_time||0) - (b.message?.create_time||0));
+            const last = msgs[msgs.length-1];
+            return (last.message?.content?.parts || []).filter(p => typeof p === 'string').join('');
+        ''')
+        # js() doesn't await promises — use js_async
+        if not hasattr(d, 'js_async'):
+            return None
+        try:
+            result = d.js_async(f'''
+                const r = await fetch('/backend-api/conversation/{conv_id}');
+                if (!r.ok) return null;
+                const data = await r.json();
+                const msgs = Object.values(data.mapping || {{}}).filter(m =>
+                    m.message?.author?.role === 'assistant' && m.message?.status === 'finished_successfully');
+                if (!msgs.length) return null;
+                msgs.sort((a,b) => (a.message?.create_time||0) - (b.message?.create_time||0));
+                const last = msgs[msgs.length-1];
+                return (last.message?.content?.parts || []).filter(p => typeof p === 'string').join('');
+            ''')
+            return result if result and isinstance(result, str) and len(result) > 0 else None
+        except Exception as e:
+            dlog('pipeline', 'fetch_conv_error', error=str(e)[:100])
+            return None
+
     def check_response(self):
         """Check response state. Non-blocking. Returns dict with granular status."""
         d = self.d
@@ -3114,26 +3218,45 @@ class ChatPipeline:
             const msgs = assistantSel ? document.querySelectorAll(assistantSel) : [];
             const userMsgs = userSel ? document.querySelectorAll(userSel) : [];
             const count = msgs.length;
-            const last = count ? msgs[msgs.length-1] : null;
 
-            // Extract text: clone to avoid UI button text contaminating the result.
-            // For o3 thinking responses, the text lives inside a <details> element
-            // within the assistant div — innerText captures it after thinking ends.
+            // Extract text: search backwards for last non-empty element.
+            // GPT-5 "Instruments" widget: answer is in <textarea>, not innerText.
+            // Last element is often an empty placeholder — skip it.
             let text = "";
-            if (last) {{
-                const clone = last.cloneNode(true);
-                // Remove any retry/stop/action buttons that sit inside the assistant div
-                clone.querySelectorAll("button, [role=button], [data-testid*=button]").forEach(e => e.remove());
-                text = clone.innerText?.trim() || "";
+            for (let i = msgs.length - 1; i >= 0; i--) {{
+                const el = msgs[i];
+                // 1. Prose/markdown text (clone, strip Instruments widget + buttons)
+                const prose = el.querySelector('.prose, .markdown');
+                if (prose) {{
+                    const clone = prose.cloneNode(true);
+                    clone.querySelectorAll('.puik-root, .not-prose, .not-markdown, button, [role=button], [data-testid*=button]')
+                         .forEach(e => e.remove());
+                    const pt = (clone.innerText || '').trim();
+                    if (pt.length > 0) {{ text = pt; break; }}
+                }}
+                // 2. Instruments textarea result (GPT-5)
+                const tas = el.querySelectorAll('textarea');
+                if (tas.length) {{
+                    const val = [...tas].map(t => (t.value || t.textContent || '').trim())
+                                       .filter(s => s.length > 0).join(' ').trim();
+                    if (val.length > 0) {{ text = val; break; }}
+                }}
+                // 3. Raw innerText fallback
+                const it = (el.innerText || '').trim();
+                if (it.length > 0) {{ text = it; break; }}
             }}
 
             const stopBtn = !!document.querySelector("[data-testid=stop-button]");
-            const streaming = !!document.querySelector(".result-streaming,[aria-busy=true]");
+            const streamingRaw = !!document.querySelector(".result-streaming,[aria-busy=true]");
             const thinking = !!document.querySelector("[class*=thinking],[data-testid*=thinking]");
-            const UI_NOISE = ["reintentar", "retry", "regenerate", "copy", "something went wrong"];
+            // Extended-thinking models (gpt-5-4-thinking etc.) use result-thinking class while
+            // generating — treat as streaming when thinking div present but no text yet.
+            const streaming = streamingRaw || (thinking && !text);
             const lc = text.toLowerCase();
+            // Only flag real GPT errors — avoid false positives from UI buttons like
+            // "retry", "copy", "regenerate" that always appear in the DOM.
             const hasError = lc.includes("something went wrong") || lc.includes("error generating")
-                || (text.length < 30 && UI_NOISE.some(n => lc.includes(n)));
+                || lc.includes("network error") || lc.includes("too many requests");
             const cfChallenge = document.title === 'Just a moment...' ||
                                 !!document.querySelector('#challenge-form') ||
                                 !!document.querySelector('.cf-browser-verification') ||
@@ -3147,153 +3270,104 @@ class ChatPipeline:
         except:
             return None
 
-    def wait_response(self, user_msg, max_wait=90):
-        """Step 4: Smart wait with granular state detection.
+    def wait_response(self, user_msg, max_wait=30):
+        """Step 4: Wait for stop button to disappear, then read text.
 
-        States: send_failed → thinking → generating → complete | hung | error
-        Quick responses (<15s): returned immediately.
-        Slow responses: returns status with state so agent can poll intelligently.
+        Simple approach: ChatGPT shows stop button while generating (thinking + streaming).
+        When stop button disappears, the response is complete — read text from DOM.
+        If not done within 30s, return 'thinking' status so caller can poll via read_last.
         """
         d = self.d
         before = getattr(self, '_msg_count_before', 0)
-        last_text_before = getattr(self, '_last_text_before', '')
         send_verified = getattr(self, '_send_verified', False)
 
-        t0 = time.time()
-        last_chars = 0  # track progress to detect hung state
-        thinking_count = 0  # consecutive checks while thinking (no chars, stop_btn)
-        stall_count = 0   # consecutive checks while streaming with no new chars
-
-        # If send wasn't verified, report immediately
         if not send_verified:
             return error_response('send_failed', 'Message may not have been sent',
                                   suggestion='ChatGPT input may have been blocked. Try again.')
 
-        # Poll for up to 150s (300 × 0.5s) — covers o3/o4 extended thinking (~60-120s)
+        t0 = time.time()
         log(f'{self.platform}: waiting for response (before={before} msgs)')
-        for i in range(300):
+        dlog('wait', 'start', platform=self.platform, before=before)
+
+        for i in range(max_wait * 2):  # poll every 0.5s up to max_wait seconds
             time.sleep(0.5)
+
+            # Capture URL if it changed to /c/ (happens after first response on new chat)
+            url = d.js('return location.href') or ''
+            if '/c/' in url and not self.conv_url:
+                self.conv_url = url.split('?')[0]
+                dlog('wait', 'conv_url_captured', url=self.conv_url)
+
+            # CF challenge check
+            cf = d.js("return document.title === 'Just a moment...' || !!document.querySelector('#challenge-form')")
+            if cf:
+                return error_response('cf_challenge', 'Cloudflare challenge detected',
+                    suggestion='Open chatgpt.com in your real Chrome browser and solve the challenge.')
+
+            stop = d.js('return !!document.querySelector("[data-testid=stop-button]")')
+            if stop:
+                if i % 10 == 0:
+                    dlog('wait', 'generating', i=i, elapsed=round(time.time()-t0, 1))
+                continue  # still generating — keep waiting
+
+            # Stop button gone: response complete, read text
             s = self.check_response()
-            if not s: continue
-
-            count = s.get('count', 0)
-            text = s.get('text', '')
-            stop_btn = s.get('stopBtn', False)
-            streaming = s.get('streaming', False)
-            has_error = s.get('hasError', False)
-            cf_challenge = s.get('cfChallenge', False)
-            chars = len(text)
-
-            new_msg = count > before or (count == before and count > 0 and text != last_text_before and chars > 5)
-
-            # Cloudflare challenge — bail immediately
-            if cf_challenge:
-                log(f'{self.platform}: Cloudflare challenge detected — aborting wait')
-                return error_response('cf_challenge',
-                    f'{self.platform.upper()} tab hit a Cloudflare challenge page',
-                    suggestion='Open chatgpt.com in your real Chrome browser, solve the challenge, then retry.')
-
-            # Error state
-            if has_error:
-                return error_response('gpt_error', 'ChatGPT returned an error', suggestion='Try again')
-
-            # Complete: new message, not streaming, has content
-            if new_msg and not stop_btn and not streaming and chars > 2:
+            if s:
+                text = s.get('text', '')
+                count = s.get('count', 0)
+                has_error = s.get('hasError', False)
                 url = s.get('url', '')
-                if '/c/' in url: self.conv_url = url
-                log(f'{self.platform}: complete at {time.time()-t0:.1f}s ({chars} chars)')
-                return save(text, self.platform)
+                if '/c/' in url: self.conv_url = url.split('?')[0]
 
-            # Generating: new text appearing
-            if new_msg and chars > last_chars:
-                stall_count = 0  # new chars — reset stall
-                thinking_count = 0
-                last_chars = chars
-                # If we have substantial content and it's been >60s, return status
-                if time.time() - t0 > 60 and chars > 50:
-                    log(f'{self.platform}: generating at {time.time()-t0:.1f}s ({chars} chars)')
-                    return json.dumps({'status': 'generating', 'chars_so_far': chars,
-                                       'suggestion': 'Response is being generated. Use action=read_last when ready, or action=is_streaming to check.'})
-                continue
+                if has_error and not text:
+                    return error_response('gpt_error', 'ChatGPT returned an error', suggestion='Try again')
 
-            # Thinking: stop button visible but no text yet
-            if stop_btn and chars == 0:
-                thinking_count += 1
-                stall_count = 0  # reset stall counter when in pure thinking phase
+                if text and count > before:
+                    dlog('wait', 'complete', elapsed=round(time.time()-t0, 1), chars=len(text))
+                    self._send_verified = False
+                    return save(text, self.platform)
 
-                # Detect stuck conversation: after 60s of 0 chars check for real signs of life.
-                # NOTE: ChatGPT no longer always navigates to /c/ immediately — some models
-                # keep the base URL and stream in place. So we check for DOM progress instead.
-                if thinking_count == 120:  # 60s
-                    current_url = s.get('url', '')
-                    user_msgs_now = int(d.js(f'return document.querySelectorAll({json.dumps(user_sel)}).length') or 0)
-                    has_stop = d.js('return !!document.querySelector("[data-testid=stop-button]")')
-                    # Only bail if: no user message in DOM AND no stop button AND no /c/ URL
-                    if '/c/' not in current_url and not user_msgs_now and not has_stop:
-                        log(f'{self.platform}: no activity after 60s — likely rate-limited or stuck')
-                        return json.dumps({'status': 'stuck', 'chars_so_far': 0, 'elapsed_s': round(time.time()-t0, 1),
-                                           'suggestion': 'ChatGPT did not start generating after 60s. Possible rate limit. Wait 30-60s and retry, or open chatgpt.com in your real browser to verify.'})
+        # 30s timeout — stop button still visible (still generating)
+        dlog('wait', 'timeout', elapsed=round(time.time()-t0, 1))
+        return json.dumps({'status': 'thinking', 'chars_so_far': 0, 'elapsed_s': round(time.time()-t0, 1),
+                           'suggestion': 'Use action=read_last to get the response when ready.'})
 
-                # After 120s of 0 chars: o3/o4 extended thinking — do NOT click Stop.
-                # Stopping interrupts the reasoning phase. Return thinking status so
-                # the caller can poll with action=read_last at their own pace.
-                if thinking_count > 240:  # 120s with no chars
-                    log(f'{self.platform}: still thinking after 120s ({no_progress_count} checks) — returning status for caller to poll')
-                    return json.dumps({'status': 'thinking', 'chars_so_far': 0, 'elapsed_s': round(time.time()-t0, 1),
-                                       'suggestion': 'Extended thinking in progress. Use action=read_last to check when ready (may take several minutes).'})
-                if i % 10 == 9:
-                    log(f'{self.platform}: thinking... ({time.time()-t0:.0f}s, 0 chars)')
-                continue
-
-            # Streaming but no new chars
-            if stop_btn and chars > 0 and chars == last_chars:
-                stall_count += 1
-                if stall_count > 20:  # 10s no progress while streaming
-                    log(f'{self.platform}: stalled at {chars} chars for {no_progress_count} checks')
-                    return json.dumps({'status': 'generating', 'chars_so_far': chars,
-                                       'suggestion': 'Response may be stalled. Use action=read_last to get partial content.'})
-
-        # 30s timeout — report final state
-        s = self.check_response()
-        if s:
-            text = s.get('text', '')
-            stop_btn = s.get('stopBtn', False)
-            chars = len(text)
-            count = s.get('count', 0)
-            new_msg = count > before or chars > 5
-
-            if new_msg and chars > 2 and not stop_btn:
-                url = s.get('url', '')
-                if '/c/' in url: self.conv_url = url
-                return save(text, self.platform)
-
-            if stop_btn or chars > 0:
-                state = 'generating' if chars > 0 else 'thinking'
-                return json.dumps({'status': state, 'chars_so_far': chars, 'elapsed_s': round(time.time()-t0, 1),
-                                   'suggestion': 'Use action=read_last to get the response when ready, or action=is_streaming to check.'})
-
-        return error_response('no_response', 'No response after 30s', suggestion='ChatGPT may be overloaded or message was not sent.')
-
-    def run(self, msg, wait=True):
+    def run(self, msg, wait=True, req_id: str = ''):
         """Full pipeline: ensure → verify → send → wait. Serialized per instance."""
+        import uuid
+        if not req_id:
+            req_id = uuid.uuid4().hex[:8]
         with self._lock:
             for attempt in range(self.max_retries + 1):
                 try:
-                    if not self.ensure():
-                        return self.last_error or error_response('platform_unavailable', 'Could not open chat platform')
+                    dlog('pipeline', 'ensure_start', req_id=req_id, attempt=attempt, platform=self.platform)
+                    if not self.ensure(req_id=req_id):
+                        err = self.last_error or error_response('platform_unavailable', 'Could not open chat platform')
+                        dlog('pipeline', 'ensure_fail', req_id=req_id, error=str(err)[:100])
+                        return err
+                    dlog('pipeline', 'ensure_ok', req_id=req_id, url=self.d.js('return location.href') if self.d else '?')
                     if not self.verify_ready():
                         if attempt < self.max_retries:
                             log(f'{self.platform}: not ready, retry {attempt+1}')
                             continue
-                        return self.last_error or error_response('no_input_box', f'{self.platform}: input not found after retries')
+                        err = self.last_error or error_response('no_input_box', f'{self.platform}: input not found after retries')
+                        dlog('pipeline', 'verify_fail', req_id=req_id, error=str(err)[:100])
+                        return err
+                    dlog('pipeline', 'verify_ok', req_id=req_id)
                     if not self.send(msg):
                         if attempt < self.max_retries:
                             log(f'{self.platform}: send failed, retry {attempt+1}')
                             continue
-                        return self.last_error or error_response('send_failed', f'{self.platform}: could not send message after retries')
+                        err = self.last_error or error_response('send_failed', f'{self.platform}: could not send message after retries')
+                        dlog('pipeline', 'send_fail', req_id=req_id, error=str(err)[:100])
+                        return err
+                    dlog('pipeline', 'send_ok', req_id=req_id, chars=len(msg))
                     if not wait: return 'Sent.'
-                    return self.wait_response(msg)
+                    result = self.wait_response(msg)
+                    dlog('pipeline', 'done', req_id=req_id, result_len=len(str(result)))
+                    return result
                 except Exception as e:
+                    dlog('pipeline', 'exception', req_id=req_id, error=str(e)[:200])
                     log(f'{self.platform}: pipeline error: {e}')
                     if attempt < self.max_retries:
                         time.sleep(1)
@@ -3336,6 +3410,9 @@ def chat_via_api(platform, message, api_key, base_url='https://api.openai.com/v1
 @tool_def('gpt', 'Chat with ChatGPT using the user\'s real browser session (no API key needed). Default action sends a message and waits for the full response. Use read_last to get the latest response, is_streaming to check if still generating, history to get conversation history. Requires user to be logged in to ChatGPT in Chrome.', {'message': {'type': 'string', 'description': 'Message to send to ChatGPT'}, 'action': {'type': 'string', 'description': 'Action to perform (default: send)', 'enum': ['send', 'read_last', 'is_streaming', 'history', 'check_session', 'check_input', 'send_only']}, 'raw': {'type': 'boolean', 'description': 'Return raw response without processing (default false)'}}, read_only=False, concurrent=False, risk_tier='high')
 def tool_gpt(args):
     action = args.get('action', 'send')
+    import uuid
+    req_id = uuid.uuid4().hex[:8]
+    dlog('gpt', 'call', req_id=req_id, gpt_action=action, msg_len=len(args.get('message','') or ''))
 
     # ── Diagnostic lanes ──────────────────────────────────────────
     if action == 'check_session':
@@ -3396,22 +3473,33 @@ def tool_gpt(args):
         _gpt.ensure()
         d = _gpt.d
         if action == 'read_last':
-            # Poll up to 30s for a complete (non-streaming) response
-            resp = None
-            for _ in range(60):
-                s = _gpt.check_response()
-                if s:
-                    resp = s.get('text', '') or None
-                    streaming = s.get('stopBtn', False) or s.get('streaming', False)
-                    if resp and len(resp) > 2 and not streaming:
-                        break  # complete response
-                    if resp and len(resp) > 2:
-                        time.sleep(0.5)  # still streaming, wait for more
-                        continue
-                if not d.js('return !!document.querySelector("[data-testid=stop-button]")'):
-                    break  # not streaming, whatever we have is final
+            # Wait up to 30s for stop button to disappear, then read text.
+            before = getattr(_gpt, '_msg_count_before', 0)
+            for _ in range(60):  # 30s
                 time.sleep(0.5)
-            return save(resp or 'No messages', 'gpt')
+                # Capture conv URL if available
+                url = d.js('return location.href') or ''
+                if '/c/' in url and not _gpt.conv_url:
+                    _gpt.conv_url = url.split('?')[0]
+                stop = d.js('return !!document.querySelector("[data-testid=stop-button]")')
+                if not stop:
+                    break
+            # Stop button gone (or never appeared) — read text
+            s = _gpt.check_response()
+            if s:
+                text = s.get('text', '')
+                count = s.get('count', 0)
+                url = s.get('url', '')
+                if '/c/' in url: _gpt.conv_url = url.split('?')[0]
+                if text and count > before:
+                    _gpt._send_verified = False
+                    return save(text, 'gpt')
+            # Still generating after 30s
+            stop_now = d.js('return !!document.querySelector("[data-testid=stop-button]")')
+            if stop_now:
+                return json.dumps({'status': 'thinking', 'suggestion': 'Still generating. Try action=read_last again in a minute.'})
+            _gpt._send_verified = False
+            return save('No messages', 'gpt')
         if action == 'is_streaming':
             s = _gpt.check_response()
             if s:
@@ -3456,9 +3544,9 @@ def tool_grok(args):
                 if s:
                     resp = s.get('text', '') or None
                     streaming = s.get('stopBtn', False) or s.get('streaming', False)
-                    if resp and len(resp) > 2 and not streaming:
+                    if resp and len(resp) > 0 and not streaming:
                         break
-                    if resp and len(resp) > 2:
+                    if resp and len(resp) > 0:
                         time.sleep(0.5)
                         continue
                 if not d.js('return !!document.querySelector("[class*=streaming],[class*=typing]")'):
@@ -3651,6 +3739,482 @@ def tool_plugin(args):
             return f'Plugin error: {e}'
 
     return f'Unknown plugin action: {action}. Use: run, list, create'
+
+# ── Watch ──
+
+WATCHERS_FILE = Path.home() / '.neorender' / 'watchers.json'
+_watchers: dict = {}       # id → {thread, config, stop_event, last_value, last_check, log}
+_watchers_lock = threading.Lock()
+
+
+def _load_watchers():
+    """Load persisted watchers from disk and restart their threads."""
+    if not WATCHERS_FILE.exists():
+        return
+    try:
+        with open(WATCHERS_FILE) as f:
+            data = json.load(f)
+        for wid, entry in data.items():
+            config = entry.get('config', {})
+            last_value = entry.get('last_value')
+            last_check = entry.get('last_check')
+            log = entry.get('log', [])
+            _start_watcher_thread(wid, config, last_value, last_check, log)
+    except Exception:
+        pass
+
+
+def _save_watchers():
+    """Persist watcher state (no thread/event objects) to disk."""
+    try:
+        WATCHERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        snapshot = {}
+        with _watchers_lock:
+            for wid, entry in _watchers.items():
+                snapshot[wid] = {
+                    'config': entry['config'],
+                    'last_value': entry.get('last_value'),
+                    'last_check': entry.get('last_check'),
+                    'log': entry.get('log', [])[-50:],  # keep last 50 log entries
+                }
+        with open(WATCHERS_FILE, 'w') as f:
+            json.dump(snapshot, f, indent=2)
+    except Exception:
+        pass
+
+
+class _WatchCDPTab:
+    """Dedicated CDP WebSocket connection for a single watcher tab.
+    Fully isolated — never shares a socket with the main thread."""
+
+    def __init__(self, watcher_id: str):
+        self.watcher_id  = watcher_id
+        self._ws         = None
+        self._target_id  = None
+        self._msg_id     = 0
+        self._lock       = threading.Lock()
+
+    def _next_id(self):
+        self._msg_id += 1
+        return self._msg_id
+
+    def open(self):
+        import websockets.sync.client as _ws
+        port = chrome().port
+        req  = urllib.request.Request(f'http://127.0.0.1:{port}/json/new?about:blank', method='PUT')
+        resp = urllib.request.urlopen(req, timeout=5)
+        tab  = json.loads(resp.read())
+        self._target_id = tab['id']
+        self._ws = _ws.connect(tab['webSocketDebuggerUrl'], max_size=10_000_000, ping_interval=None)
+        self._send('Page.enable')
+        self._send('Runtime.enable')
+        log(f'[watch:{self.watcher_id}] cdp tab opened ({self._target_id[:16]})')
+
+    def close(self):
+        try:
+            if self._ws:
+                self._ws.close()
+        except Exception:
+            pass
+        if self._target_id:
+            try:
+                port = chrome().port
+                urllib.request.urlopen(f'http://127.0.0.1:{port}/json/close/{self._target_id}', timeout=3)
+            except Exception:
+                pass
+        self._ws = self._target_id = None
+
+    def _send(self, method, params=None):
+        with self._lock:
+            mid = self._next_id()
+            self._ws.send(json.dumps({'id': mid, 'method': method, 'params': params or {}}))
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                data = json.loads(self._ws.recv())
+                if data.get('id') == mid:
+                    if 'error' in data:
+                        raise RuntimeError(f'CDP {method}: {data["error"]}')
+                    return data.get('result', {})
+            raise TimeoutError(f'CDP timeout: {method}')
+
+    def navigate(self, url, wait_s=3):
+        self._send('Page.navigate', {'url': url})
+        time.sleep(wait_s)
+
+    def js(self, expr):
+        res = self._send('Runtime.evaluate', {
+            'expression': expr, 'returnByValue': True, 'awaitPromise': False,
+        })
+        if res.get('exceptionDetails'):
+            raise RuntimeError(f'JS exception: {res["exceptionDetails"]}')
+        return res.get('result', {}).get('value')
+
+    def wait_selector(self, sel_js, timeout_s=10):
+        """Poll until selector matches; returns LAST matched element's text."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            val = self.js(
+                f'(() => {{ const els = document.querySelectorAll({sel_js}); '
+                f'const el = els[els.length - 1]; '
+                f'return el ? el.innerText.trim() : null; }})()'
+            )
+            if val is not None:
+                return val
+            time.sleep(0.5)
+        return None
+
+    def ping(self):
+        try:
+            self.js('1')
+            return True
+        except Exception:
+            return False
+
+
+def _detect_change(old_value, new_value, condition: str) -> bool:
+    """Return True when the condition is met comparing old vs new value."""
+    if old_value is None:
+        # First check — never trigger on first poll
+        return False
+
+    if condition == 'any_change':
+        return old_value != new_value
+
+    if condition == 'text_changed':
+        return str(old_value).strip() != str(new_value).strip()
+
+    if condition == 'element_appeared':
+        # element was absent (None/empty) and now has content
+        return (not old_value) and bool(new_value)
+
+    if condition == 'new_content':
+        # new_value is longer than old_value (new items appended)
+        return new_value and len(str(new_value)) > len(str(old_value or ''))
+
+    if condition == 'price_drop':
+        # extract first number-like token from each string and compare
+        import re as _re
+        def _parse_price(s):
+            if s is None:
+                return None
+            m = _re.search(r'[\d]+(?:[.,]\d+)*', str(s).replace(',', '.'))
+            if not m:
+                return None
+            try:
+                return float(m.group().replace(',', '.'))
+            except ValueError:
+                return None
+        old_p = _parse_price(old_value)
+        new_p = _parse_price(new_value)
+        if old_p is None or new_p is None:
+            return False
+        return new_p < old_p
+
+    # fallback
+    return old_value != new_value
+
+
+def _execute_action(action: str, watcher_id: str, old_value, new_value, config: dict,
+                    cdp_tab: '_WatchCDPTab' = None):
+    """Execute the configured action when a change is detected."""
+    if action == 'notify':
+        return
+
+    if action == 'llm_reply':
+        persona = config.get('persona',
+            'Eres NeoBrowser, un agente de IA creado por Daniel Perez para gestionar conversaciones. '
+            'Daniel está ocupado y has recibido un mensaje nuevo en su LinkedIn. '
+            'Responde de forma breve, natural y amistosa. '
+            'Si alguien pregunta, puedes decir que eres el asistente de Daniel.')
+        prompt = (
+            f"{persona}\n\n"
+            f"Mensaje recibido en LinkedIn: {new_value}\n\n"
+            f"Mensaje anterior en la conversación: {old_value or '(inicio de conversación)'}\n\n"
+            "Escribe únicamente el texto de respuesta. Sin comillas, sin explicaciones."
+        )
+        try:
+            result = subprocess.run(
+                ['claude', '-p', prompt, '--model', 'claude-haiku-4-5-20251001'],
+                capture_output=True, text=True, timeout=60
+            )
+            reply_text = result.stdout.strip()
+            if not reply_text:
+                return
+            log(f'[watch:{watcher_id}] llm_reply: "{reply_text[:80]}"')
+
+            tab = cdp_tab
+            tab.navigate(config['url'], wait_s=4)
+
+            reply_sel = json.dumps(config.get('reply_selector', '.msg-form__contenteditable'))
+            send_sel  = json.dumps('button.msg-form__send-button')
+
+            # Wait for message input then type
+            box = tab.wait_selector(reply_sel, timeout_s=10)
+            if box is None:
+                log(f'[watch:{watcher_id}] llm_reply: input not found')
+                return
+
+            typed = tab.js(f'''
+                (() => {{
+                    const el = document.querySelector({reply_sel});
+                    if (!el) return null;
+                    el.focus(); el.click();
+                    document.execCommand('selectAll', false, null);
+                    document.execCommand('insertText', false, {json.dumps(reply_text)});
+                    return 'typed';
+                }})()
+            ''')
+            if not typed:
+                log(f'[watch:{watcher_id}] llm_reply: type failed')
+                return
+
+            # Wait for send button enabled then click
+            for _ in range(30):
+                disabled = tab.js(f'(() => {{ const b = document.querySelector({send_sel}); return b ? b.disabled : true; }})()')
+                if not disabled:
+                    tab.js(f'document.querySelector({send_sel})?.click()')
+                    log(f'[watch:{watcher_id}] reply sent ✓')
+                    break
+                time.sleep(0.1)
+        except Exception as e:
+            with _watchers_lock:
+                if watcher_id in _watchers:
+                    _watchers[watcher_id]['log'].append({'ts': time.time(), 'error': f'llm_reply: {e}'})
+        return
+
+    if action.startswith('js:'):
+        js_code = action[3:]
+        try:
+            if cdp_tab:
+                cdp_tab.navigate(config['url'], wait_s=2)
+                cdp_tab.js(js_code)
+        except Exception:
+            pass
+        return
+
+    if action.startswith('plugin:'):
+        plugin_name = action[7:]
+        try:
+            dispatch_tool('plugin', {'name': plugin_name, 'action': 'run'})
+        except Exception:
+            pass
+        return
+
+
+def _watcher_loop(watcher_id: str, config: dict, stop_event: threading.Event):
+    """Background thread — opens its own CDP tab, never touches the user's tab."""
+    selector_js = json.dumps(config['selector'])
+    interval_s  = config.get('interval_minutes', 5) * 60
+
+    # Open dedicated CDP tab (own WebSocket — no shared state with main thread)
+    tab = _WatchCDPTab(watcher_id)
+    try:
+        tab.open()
+    except Exception as e:
+        log(f'[watch:{watcher_id}] FATAL: could not open tab: {e}')
+        return
+
+    while True:
+        if stop_event.is_set():
+            break
+        try:
+            if not tab.ping():
+                log(f'[watch:{watcher_id}] tab lost, reopening...')
+                try: tab.close()
+                except: pass
+                time.sleep(2)
+                tab = _WatchCDPTab(watcher_id)
+                tab.open()
+
+            tab.navigate(config['url'], wait_s=3)
+
+            # LinkedIn SPA: thread content only renders after clicking the conversation.
+            # If selector returns nothing after 3s, click the conversation link and retry.
+            value = tab.wait_selector(selector_js, timeout_s=3)
+            if value is None:
+                # Extract thread ID from URL to click the right conversation card
+                url_part = config['url'].rstrip('/').split('/')[-1]
+                tab.js(
+                    f'(document.querySelector(\'a[href*="{url_part}"]\') '
+                    f'|| document.querySelector(".msg-conversation-listitem__link"))?.click()'
+                )
+                time.sleep(3)
+                value = tab.wait_selector(selector_js, timeout_s=8)
+
+            with _watchers_lock:
+                entry = _watchers.get(watcher_id)
+            if entry is None:
+                break
+
+            last      = entry.get('last_value')
+            condition = config.get('condition', 'any_change')
+            changed   = _detect_change(last, value, condition)
+
+            if changed:
+                with _watchers_lock:
+                    _watchers[watcher_id]['log'].append({'ts': time.time(), 'old': last, 'new': value})
+                _execute_action(config.get('action', 'notify'), watcher_id, last, value, config, cdp_tab=tab)
+
+            with _watchers_lock:
+                _watchers[watcher_id]['last_value'] = value
+                _watchers[watcher_id]['last_check'] = time.time()
+            _save_watchers()
+            log(f'[watch:{watcher_id}] poll ok | value={repr(value)[:80] if value else None} | changed={changed}')
+
+        except Exception as e:
+            log(f'[watch:{watcher_id}] poll error: {e}')
+            with _watchers_lock:
+                if watcher_id in _watchers:
+                    _watchers[watcher_id]['log'].append({'ts': time.time(), 'error': str(e)})
+
+        stop_event.wait(interval_s)
+
+    tab.close()
+
+
+def _start_watcher_thread(watcher_id: str, config: dict,
+                          last_value=None, last_check=None, log=None):
+    """Create the stop event, register in _watchers, and start the daemon thread."""
+    stop_event = threading.Event()
+    with _watchers_lock:
+        _watchers[watcher_id] = {
+            'config': config,
+            'stop_event': stop_event,
+            'last_value': last_value,
+            'last_check': last_check,
+            'log': log or [],
+        }
+    t = threading.Thread(
+        target=_watcher_loop,
+        args=(watcher_id, config, stop_event),
+        daemon=True,
+        name=f'neo-watch-{watcher_id}',
+    )
+    with _watchers_lock:
+        _watchers[watcher_id]['thread'] = t
+    t.start()
+
+
+@tool_def(
+    'watch',
+    'Create a persistent background watcher that monitors a CSS selector on a URL at a given interval. '
+    'Triggers an action when the condition is met. '
+    'action: "notify" (log only), "llm_reply" (claude subprocess), "js:<code>", "plugin:<name>". '
+    'condition: "any_change" (default), "price_drop", "new_content", "text_changed", "element_appeared". '
+    'State persists in ~/.neorender/watchers.json.',
+    {
+        'id': {'type': 'string', 'description': 'Unique identifier for this watcher', 'required': True},
+        'url': {'type': 'string', 'description': 'URL to monitor', 'required': True},
+        'selector': {'type': 'string', 'description': 'CSS selector of the element to watch', 'required': True},
+        'interval_minutes': {'type': 'number', 'description': 'Polling interval in minutes (default 5)'},
+        'action': {'type': 'string', 'description': 'Action on change: notify | llm_reply | js:<code> | plugin:<name>'},
+        'condition': {
+            'type': 'string',
+            'description': 'Change condition (default any_change)',
+            'enum': ['any_change', 'price_drop', 'new_content', 'text_changed', 'element_appeared'],
+        },
+    },
+    read_only=False, concurrent=False,
+)
+def tool_watch(args):
+    watcher_id = args.get('id', '').strip()
+    url = args.get('url', '').strip()
+    selector = args.get('selector', '').strip()
+    if not watcher_id:
+        return 'id required'
+    if not url:
+        return 'url required'
+    if not selector:
+        return 'selector required'
+
+    with _watchers_lock:
+        if watcher_id in _watchers:
+            return f"Watcher '{watcher_id}' already exists. Use watch_stop first to replace it."
+
+    config = {
+        'url': url,
+        'selector': selector,
+        'interval_minutes': args.get('interval_minutes', 5),
+        'action': args.get('action', 'notify'),
+        'condition': args.get('condition', 'any_change'),
+    }
+    _start_watcher_thread(watcher_id, config)
+    _save_watchers()
+    return (
+        f"Watcher '{watcher_id}' started.\n"
+        f"URL: {url}\n"
+        f"Selector: {selector}\n"
+        f"Interval: {config['interval_minutes']} min\n"
+        f"Action: {config['action']}\n"
+        f"Condition: {config['condition']}"
+    )
+
+
+@tool_def(
+    'watch_list',
+    'List all active background watchers with their id, url, selector, interval, last_check timestamp, '
+    'last observed value, and status.',
+    {},
+    read_only=True, concurrent=True,
+)
+def tool_watch_list(args):
+    with _watchers_lock:
+        entries = dict(_watchers)
+    if not entries:
+        return 'No active watchers.'
+    lines = ['# Active Watchers\n']
+    for wid, entry in entries.items():
+        cfg = entry.get('config', {})
+        t = entry.get('thread')
+        status = 'running' if (t and t.is_alive()) else 'stopped'
+        last_check = entry.get('last_check')
+        last_check_str = (
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_check))
+            if last_check else 'never'
+        )
+        lines.append(f'**{wid}** [{status}]')
+        lines.append(f'  URL: {cfg.get("url", "")}')
+        lines.append(f'  Selector: {cfg.get("selector", "")}')
+        lines.append(f'  Interval: {cfg.get("interval_minutes", 5)} min')
+        lines.append(f'  Condition: {cfg.get("condition", "any_change")}')
+        lines.append(f'  Action: {cfg.get("action", "notify")}')
+        lines.append(f'  Last check: {last_check_str}')
+        lines.append(f'  Last value: {str(entry.get("last_value", ""))[:120]}')
+        log = entry.get('log', [])
+        lines.append(f'  Log entries: {len(log)}')
+        lines.append('')
+    return '\n'.join(lines)
+
+
+@tool_def(
+    'watch_stop',
+    'Stop and remove a background watcher by id. The watcher state is removed from '
+    '~/.neorender/watchers.json.',
+    {
+        'id': {'type': 'string', 'description': 'Watcher id to stop', 'required': True},
+    },
+    read_only=False, concurrent=False,
+)
+def tool_watch_stop(args):
+    watcher_id = args.get('id', '').strip()
+    if not watcher_id:
+        return 'id required'
+
+    with _watchers_lock:
+        entry = _watchers.pop(watcher_id, None)
+
+    if entry is None:
+        return f"No watcher with id '{watcher_id}'."
+
+    stop_event = entry.get('stop_event')
+    if stop_event:
+        stop_event.set()
+    _save_watchers()
+    return f"Watcher '{watcher_id}' stopped and removed."
+
+
+# Load any previously persisted watchers on module startup
+_load_watchers()
 
 # ── Cleanup ──
 def cleanup():
