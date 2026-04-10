@@ -1466,9 +1466,21 @@ def dispatch_tool(name: str, args: dict) -> Any:
 
     elif name == "network_log":
         tab = _get_tab()
-        if not tab._network_enabled:
-            tab.enable_network()
-        reqs = b.network_log(tab)
+        # enable_network() may not be on _AcquiredTab proxy — call via send() directly
+        try:
+            if not getattr(tab, "_network_enabled", False):
+                tab.enable_network()
+        except AttributeError:
+            try:
+                tab.send("Network.enable", {})
+            except Exception:
+                pass
+        try:
+            reqs = b.network_log(tab)
+        except AttributeError:
+            # fallback: access inner tab if proxy wraps it
+            inner = getattr(tab, "_tab", tab)
+            reqs = getattr(inner, "_network_requests", [])
         pattern = args.get("url_pattern")
         if pattern:
             reqs = [r for r in reqs if pattern in r.get("url", "")]
@@ -1705,28 +1717,48 @@ def dispatch_tool(name: str, args: dict) -> Any:
         return json.dumps({"filled": results})
 
     elif name == "submit":
+        import time as _time
         tab = _get_tab()
         selector = args.get("selector")
+        max_wait_s = float(args.get("wait_s", 5.0))
+        url_before = tab.js("return location.href") or ""
+
         if selector:
-            result = tab.js(f'''
-                return (function() {{
-                    var el = document.querySelector({json.dumps(selector)});
-                    if (!el) return JSON.stringify({{ok: false, error: "selector not found"}});
-                    el.click();
-                    return JSON.stringify({{ok: true, clicked: {json.dumps(selector)}}});
-                }})()
-            ''') or '{"ok": false}'
+            tab.js(f'''
+                var el = document.querySelector({json.dumps(selector)});
+                if (el) el.click();
+            ''')
+            method = selector
         else:
-            result = tab.js('''
+            method = tab.js('''
                 return (function() {
-                    var btn = document.querySelector('button[type=submit],input[type=submit],[role=button]');
-                    if (btn) { btn.click(); return JSON.stringify({ok: true, method: "button_click"}); }
+                    var btn = document.querySelector('button[type=submit],input[type=submit]');
+                    if (btn) { btn.click(); return "button_click"; }
+                    var btn2 = document.querySelector('[aria-label*="submit" i],[aria-label*="send" i]');
+                    if (btn2) { btn2.click(); return "aria_button"; }
                     var form = document.querySelector('form');
-                    if (form) { form.submit(); return JSON.stringify({ok: true, method: "form_submit"}); }
-                    return JSON.stringify({ok: false, error: "no submit button or form found"});
+                    if (form) { form.submit(); return "form_submit"; }
+                    return null;
                 })()
-            ''') or '{"ok": false}'
-        return result
+            ''') or ""
+            if not method:
+                return json.dumps({"ok": False, "error": "no submit button or form found"})
+
+        # Wait for navigation or readyState=complete (replaces hardcoded sleep)
+        t0 = _time.time()
+        url_after = url_before
+        for _ in range(int(max_wait_s * 10)):
+            _time.sleep(0.1)
+            try:
+                ready = tab.js("return document.readyState")
+                url_now = tab.js("return location.href") or url_before
+                if url_now != url_before or ready == "complete":
+                    url_after = url_now
+                    break
+            except Exception:
+                break
+        waited_ms = round((_time.time() - t0) * 1000)
+        return json.dumps({"ok": True, "method": method, "url": url_after, "waited_ms": waited_ms})
 
     elif name == "find_and_click":
         tab = _get_tab()
