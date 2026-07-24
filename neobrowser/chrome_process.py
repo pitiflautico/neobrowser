@@ -13,6 +13,9 @@ Fixes V3 bugs:
 from __future__ import annotations
 
 import os
+import platform as _platform
+import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -24,20 +27,101 @@ from pathlib import Path
 
 PROFILES_BASE = Path.home() / '.neorender' / 'profiles'
 
-CHROME_BIN = os.environ.get(
-    'NEOBROWSER_CHROME_BIN',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-)
-CHROME_UA = (
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-    'AppleWebKit/537.36 (KHTML, like Gecko) '
-    'Chrome/124.0.0.0 Safari/537.36'
-)
+def _discover_chrome_bin() -> str:
+    """
+    Locate a Chrome/Chromium binary cross-platform.
 
+    Honors NEOBROWSER_CHROME_BIN first, then probes the usual macOS app-bundle
+    paths, the PATH (Linux), and the standard Windows install locations. Falls
+    back to the macOS default so a failure names a concrete, fixable path.
+    """
+    env = os.environ.get('NEOBROWSER_CHROME_BIN')
+    if env:
+        return env
+    mac_paths = [
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    ]
+    for p in mac_paths:
+        if os.path.exists(p):
+            return p
+    for name in ('google-chrome', 'google-chrome-stable', 'chromium',
+                 'chromium-browser', 'chrome'):
+        found = shutil.which(name)
+        if found:
+            return found
+    for p in (r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+              r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'):
+        if os.path.exists(p):
+            return p
+    return mac_paths[0]
+
+
+CHROME_BIN = _discover_chrome_bin()
+
+_chrome_ua_cache: "str | None" = None
+
+
+def _detect_chrome_major(chrome_bin: str) -> str:
+    """Return the installed Chrome major version (e.g. '150'), or '' if unknown."""
+    try:
+        out = subprocess.run(
+            [chrome_bin, '--version'],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        m = re.search(r'(\d+)\.\d', out)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return ''
+
+
+def _chrome_user_agent() -> "str | None":
+    """
+    Build a User-Agent matching the REAL installed Chrome, kept consistent with
+    the browser's genuine Client Hints (Sec-CH-UA).
+
+    Modern Chrome freezes the UA: the platform token and the 'MAJOR.0.0.0' version
+    shape are fixed, so this reproduces exactly what a real Chrome of the same
+    major version reports on this OS. Applied via the --user-agent launch flag
+    (which, unlike CDP Network.setUserAgentOverride, does NOT blank Client Hints),
+    it turns the only remaining headless tell ('HeadlessChrome' in the UA) into a
+    clean, self-consistent identity. Cached after first computation.
+    """
+    global _chrome_ua_cache
+    if _chrome_ua_cache is None:
+        major = _detect_chrome_major(CHROME_BIN)
+        if not major:
+            _chrome_ua_cache = ''
+        else:
+            sysname = _platform.system()
+            if sysname == 'Windows':
+                token = 'Windows NT 10.0; Win64; x64'
+            elif sysname == 'Linux':
+                token = 'X11; Linux x86_64'
+            else:  # Darwin and anything else -> frozen macOS token
+                token = 'Macintosh; Intel Mac OS X 10_15_7'
+            _chrome_ua_cache = (
+                f'Mozilla/5.0 ({token}) AppleWebKit/537.36 '
+                f'(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36'
+            )
+    return _chrome_ua_cache or None
+
+
+# Headless launch flags. Kept deliberately minimal and free of automation tells:
+#   * NO spoofed --user-agent — a fake UA string never matches the real binary's
+#     Client Hints (Sec-CH-UA / navigator.userAgentData) and is a one-request
+#     giveaway. Genuine Chrome's own UA has zero mismatch, which is the whole
+#     point of driving a real browser.
+#   * --disable-blink-features=AutomationControlled suppresses navigator.webdriver
+#     (this was previously only on the visible path, leaking webdriver in headless).
+#   * --disable-gpu is NOT here: under --headless=new the GPU works and software
+#     WebGL (SwiftShader) is itself a headless fingerprint. Opt in via
+#     NEOBROWSER_DISABLE_GPU for GPU-less CI hosts (see ChromeProcess.launch).
 DEFAULT_CHROME_FLAGS = [
     '--headless=new',
     '--no-sandbox',
-    '--disable-gpu',
     '--disable-dev-shm-usage',
     '--no-first-run',
     '--no-default-browser-check',
@@ -45,7 +129,8 @@ DEFAULT_CHROME_FLAGS = [
     '--disable-sync',
     '--disable-translate',
     '--mute-audio',
-    f'--user-agent={CHROME_UA}',
+    '--window-size=1920,1080',
+    '--disable-blink-features=AutomationControlled',
 ]
 
 # Visible mode: real Chrome window, no headless, no fake UA.
@@ -147,6 +232,18 @@ class ChromeProcess:
             f'--remote-debugging-port={port}',
             f'--user-data-dir={profile_dir}',
         ] + DEFAULT_CHROME_FLAGS
+
+        # Rewrite the UA to drop the 'HeadlessChrome' tell, matching the real
+        # installed version so it stays consistent with genuine Client Hints.
+        ua = _chrome_user_agent()
+        if ua:
+            flags.append(f'--user-agent={ua}')
+
+        # GPU-less hosts (headless Linux CI, some containers) need software
+        # rendering. Opt in rather than default it on — software WebGL is a
+        # headless fingerprint we don't want on real machines.
+        if os.environ.get('NEOBROWSER_DISABLE_GPU'):
+            flags.append('--disable-gpu')
 
         proc = subprocess.Popen(
             flags,

@@ -27,6 +27,52 @@ import time
 import urllib.request
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Stealth patch injected into every new document of tabs WE own (not attached
+# real-Chrome tabs, which are already genuine). This is belt-and-suspenders on
+# top of the launch flag --disable-blink-features=AutomationControlled: it only
+# corrects values that headless Chrome actually gets wrong, and deliberately
+# does NOT fake WebGL/hardware (we run with a real GPU under --headless=new, so
+# those values are already genuine — faking them would create a mismatch, which
+# is exactly what modern anti-bot systems detect).
+# ---------------------------------------------------------------------------
+_STEALTH_JS = """
+(() => {
+  try {
+    // navigator.webdriver: force undefined even if a Chrome build still exposes it.
+    Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => undefined });
+  } catch (e) {}
+  try { if (!window.chrome) { window.chrome = {}; } } catch (e) {}
+  try { if (window.chrome && !window.chrome.runtime) { window.chrome.runtime = {}; } } catch (e) {}
+  try {
+    // Only fill these if headless actually left them empty — never overwrite genuine values.
+    if (!navigator.languages || navigator.languages.length === 0) {
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    }
+  } catch (e) {}
+  try {
+    if (navigator.plugins && navigator.plugins.length === 0) {
+      const fake = [
+        { name: 'PDF Viewer' },
+        { name: 'Chrome PDF Viewer' },
+        { name: 'Chromium PDF Viewer' },
+      ];
+      Object.defineProperty(navigator, 'plugins', { get: () => fake });
+    }
+  } catch (e) {}
+  try {
+    // Headless returns permission state that contradicts Notification.permission.
+    const perms = window.navigator.permissions;
+    if (perms && perms.query) {
+      const original = perms.query.bind(perms);
+      perms.query = (p) => (p && p.name === 'notifications')
+        ? Promise.resolve({ state: Notification.permission })
+        : original(p);
+    }
+  } catch (e) {}
+})();
+"""
+
 
 class ChromeTab:
     """
@@ -116,11 +162,12 @@ class ChromeTab:
         self._net_watchers: list = []  # list of (pattern: str, q: queue.Queue)
         self._net_watchers_lock = threading.Lock()
 
-        # F09-fix: active stream URL map — NOT size-limited.
-        # _network_requests evicts entries at 200, so data/done/error events lose
-        # the URL when the entry is evicted. This dict maps req_id → url for ALL
-        # in-flight requests, cleared only on done/error. Watchers always see the URL.
+        # F09-fix: active stream URL map. _network_requests evicts entries at 200,
+        # so data/done/error events would lose the URL; this dict maps req_id → url
+        # for in-flight requests, cleared on done/error. Bounded (below) so requests
+        # that never fire a terminal event can't leak entries forever.
         self._active_streams: dict = {}  # req_id → url
+        self._MAX_ACTIVE_STREAMS = 512
 
     # ------------------------------------------------------------------
     # Factory
@@ -202,6 +249,13 @@ class ChromeTab:
         self._send_sync("Page.enable", {})
         self._send_sync("Network.enable", {})
         self._network_enabled = True
+
+        # Stealth: correct headless tells, but ONLY for tabs we own. Attached
+        # tabs are the user's real, genuine Chrome — patching them would replace
+        # real values with fakes and create the very mismatch anti-bot looks for.
+        if not self._is_attached:
+            self._apply_stealth()
+
         self._reader_running = True
         self._listener_running = True  # alias
         t = threading.Thread(
@@ -213,10 +267,31 @@ class ChromeTab:
         self._reader_thread = t
         self._listener_thread = t  # alias for close()
 
-        # LOW: register atexit so unclean shutdown (SIGTERM, Ctrl+C mid-send)
-        # doesn't block for 30s waiting on an empty response queue.
+        # Register atexit so unclean shutdown (SIGTERM, Ctrl+C mid-send) doesn't
+        # block for 30s waiting on an empty response queue.
         import atexit
         atexit.register(self.close)
+
+    def _apply_stealth(self) -> None:
+        """
+        Patch JS-level headless tells on every new document of a tab we launched.
+
+        Covers webdriver, plugins, languages, and the permissions/Notification
+        contradiction. The 'HeadlessChrome' User-Agent tell is handled earlier,
+        at launch, via the --user-agent flag (see chrome_process._chrome_user_agent)
+        — done there rather than via Network.setUserAgentOverride because the CDP
+        override blanks Client Hints (Sec-CH-UA), whereas the launch flag leaves
+        Chrome's genuine Client Hints intact and consistent with the UA string.
+
+        Best-effort: on any failure the genuine values remain, which is still
+        safer than a spoof that mismatches.
+        """
+        try:
+            self._send_sync(
+                "Page.addScriptToEvaluateOnNewDocument", {"source": _STEALTH_JS}
+            )
+        except Exception:
+            pass
 
     def _send_sync(self, method: str, params: dict) -> dict:
         """
@@ -284,6 +359,30 @@ class ChromeTab:
                 # CDP event — enqueue for test compat and handle
                 self._event_queue.put_nowait(msg)
                 self._handle_page_event(msg)
+
+        # Reader is exiting — either close() cleared _reader_running, or the
+        # websocket died mid-session. Either way, mark ourselves stopped and
+        # wake every send() caller still blocked on a response queue so none of
+        # them hangs out the full send timeout waiting on a dead socket.
+        self._reader_running = False
+        self._drain_pending("chrome tab reader stopped (websocket closed)")
+
+    def _drain_pending(self, reason: str) -> None:
+        """
+        Push an error sentinel into every pending per-request response queue.
+
+        send() treats any message containing "error" as a failed CDP command and
+        raises immediately, so draining unblocks blocked callers the instant the
+        tab or its websocket goes away — instead of leaving each one to time out.
+        """
+        sentinel = {"error": {"message": reason}}
+        with self._rq_lock:
+            queues = list(self._response_queues.values())
+        for q in queues:
+            try:
+                q.put_nowait(sentinel)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Core CDP send
@@ -554,7 +653,11 @@ class ChromeTab:
                     oldest_key = next(iter(self._network_requests))
                     self._network_requests.pop(oldest_key)
                 self._network_requests[req_id] = entry
-                # F09-fix: track URL in eviction-free map for watcher URL lookups
+                # Track URL for watcher lookups after the request entry is evicted.
+                # Bounded eviction guards against requests that never fire a
+                # terminal event (aborted / navigated away) leaking entries.
+                if len(self._active_streams) >= self._MAX_ACTIVE_STREAMS:
+                    self._active_streams.pop(next(iter(self._active_streams)), None)
                 self._active_streams[req_id] = entry["url"]
             # F09: notify watchers
             self._notify_watchers("request", req_id, entry["url"], None)
@@ -972,10 +1075,18 @@ class ChromeTab:
 
         Tab removal uses GET /json/close/{id} per the CDP HTTP API.
         Errors are suppressed — close() should never raise.
+        Idempotent: safe to call more than once.
         """
+        # Drop the process-lifetime atexit reference so closed tabs don't
+        # accumulate forever (unregister is a no-op if never/already removed).
+        import atexit
+        atexit.unregister(self.close)
+
         # F03: stop reader/listener thread before closing WS
         self._reader_running = False
         self._listener_running = False
+        # Wake any send() caller blocked on a response before we tear the WS down.
+        self._drain_pending("chrome tab closed")
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)
 
