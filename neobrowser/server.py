@@ -44,7 +44,6 @@ log = logging.getLogger(__name__)
 
 _browser = None  # type: ignore[assignment]
 _current_tab = None  # type: ignore[assignment]
-_chat_pipelines: dict = {}  # platform → ChatPipeline instance
 _cookies_injected: bool = False  # guard: inject real-Chrome cookies once per Browser
 _cookie_injection_attempts: int = 0  # bounded retry budget, reset when the Browser is replaced
 
@@ -453,945 +452,7 @@ TOOLS = {
             "action": {"type": "string", "description": "Action: start (install interceptor), flush (get buffered logs), stop", "enum": ["start", "flush", "stop"]},
         },
     },
-    "gpt": {
-        "description": "Chat with ChatGPT using the user's real Chrome session (no API key). Requires user to be logged into chatgpt.com in Chrome. Actions: send (default), read_last, is_streaming, history, check_session.",
-        "schema": {
-            "message": {"type": "string",  "description": "Message to send to ChatGPT"},
-            "action":  {"type": "string",  "description": "Action: send (default), read_last, is_streaming, history, check_session, debug_network, debug_watch", "enum": ["send", "read_last", "is_streaming", "history", "check_session", "debug_network", "debug_watch"]},
-            "wait":    {"type": "boolean", "description": "Wait for full response before returning (default true)"},
-        },
-    },
-    "grok": {
-        "description": "Chat with Grok (X.com) using the user's real Chrome session (no API key). Same interface as gpt. Requires login to X.com in Chrome.",
-        "schema": {
-            "message": {"type": "string",  "description": "Message to send to Grok"},
-            "action":  {"type": "string",  "description": "Action: send (default), read_last, is_streaming, history", "enum": ["send", "read_last", "is_streaming", "history"]},
-        },
-    },
 }
-
-
-# ---------------------------------------------------------------------------
-# Chat pipeline — full port of v3 ChatPipeline to v4 primitives
-# ---------------------------------------------------------------------------
-
-class ChatPipeline:
-    """
-    Closed pipeline for chat platforms (ChatGPT, Grok).
-    Mirrors v3 ChatPipeline but uses v4 tab.js() / tab.send() primitives.
-
-    Key design:
-    - Input/send button are discovered dynamically via FormFinder (LLM+heuristics),
-      not hardcoded CSS selectors that break on every UI update.
-    - Auth state is checked via local LLM (Gemma 4 at localhost:8080), not text regex.
-    - Discovered selectors are cached per session to avoid re-discovery overhead.
-
-    Steps: ensure → verify_ready → send → wait_response
-    """
-
-    # Platform metadata — only stable semantic selectors here (data-attributes).
-    # Input/send button are discovered dynamically. These are fallbacks only.
-    PLATFORMS: dict = {
-        "gpt": {
-            "url": "https://chatgpt.com",
-            "input_hint": "message input textarea",
-            "send_hint": "send message button",
-            "input_fallback": "#prompt-textarea",
-            "send_fallback": "[data-testid=send-button]",
-            "assistant": "[data-message-author-role=assistant]",
-            "user": "[data-message-author-role=user]",
-            "stop_btn": "[data-testid=stop-button]",
-        },
-        "grok": {
-            "url": "https://x.com/i/grok",
-            "input_hint": "message input textarea",
-            "send_hint": "send message button",
-            "input_fallback": "textarea",
-            "send_fallback": "button[type=submit]",
-            "assistant": "div.prose, .markdown",
-            "user": None,
-            "stop_btn": None,
-        },
-    }
-
-    # Local LLM endpoint (llama.cpp / Gemma 4 E2B)
-    _LLM_URL = "http://localhost:8080/v1/chat/completions"
-
-    def __init__(self, platform: str) -> None:
-        import threading
-        self.platform = platform
-        self.conv_url: str | None = None
-        self._tab = None
-        self._last_error: str = ""
-        self._msg_count_before: int = 0
-        self._last_text_before: str = ""
-        self._send_verified: bool = False
-        self._lock = threading.Lock()
-        # Cached discovered selectors (reset when tab navigates to new URL)
-        self._sel_cache: dict = {}  # {"input": "css...", "send_btn": "css..."}
-        self._sel_cache_url: str = ""
-        # Network watcher queue registered in send(), consumed in wait_response()
-        self._net_watcher_q = None
-
-    @property
-    def _cfg(self) -> dict:
-        return self.PLATFORMS[self.platform]
-
-    @property
-    def _log(self):
-        return logging.getLogger(f"neo.chat.{self.platform}")
-
-    def _js(self, code: str):
-        return self._tab.js(code)
-
-    def _cdp(self, method: str, params: dict):
-        return self._tab.send(method, params)
-
-    # ── LLM helpers ───────────────────────────────────────────────────────────
-
-    def _llm_ask(self, prompt: str, max_tokens: int = 20) -> str:
-        """Ask local Gemma 4 a question. Returns text or '' on failure."""
-        import urllib.request as _ur
-        try:
-            body = json.dumps({
-                "model": "local",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": 0,
-            }).encode()
-            req = _ur.Request(self._LLM_URL, data=body,
-                              headers={"Content-Type": "application/json"})
-            resp = json.loads(_ur.urlopen(req, timeout=8).read())
-            return resp["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            self._log.debug("_llm_ask failed: %s", e)
-            return ""
-
-    def _is_logged_in(self) -> bool:
-        """
-        Ask local LLM whether the current page shows an authenticated session.
-        Falls back to DOM check (login button present) if LLM is unavailable.
-        """
-        log = self._log
-        page_text = self._js("return document.body?.innerText?.substring(0,800)") or ""
-
-        answer = self._llm_ask(
-            f"Page text from a browser tab:\n---\n{page_text[:600]}\n---\n"
-            f"Is the user currently logged into a chat service (not seeing a login/signup page)? "
-            f"Answer only YES or NO.",
-            max_tokens=5,
-        )
-        if answer:
-            logged_in = answer.upper().startswith("Y")
-            log.info("[auth] LLM says logged_in=%s (answer=%r)", logged_in, answer)
-            return logged_in
-
-        # LLM unavailable — fall back to DOM: login button absent = logged in
-        has_login = bool(self._js(
-            "return !!(document.querySelector('[data-testid=\"login-button\"]') || "
-            "document.querySelector('a[href*=\"/auth/login\"]'))"
-        ))
-        log.info("[auth] LLM unavailable, DOM fallback: has_login_btn=%s", has_login)
-        return not has_login
-
-    # ── Dynamic selector discovery ────────────────────────────────────────────
-
-    def _discover_selectors(self) -> dict:
-        """
-        Use FormFinder (LLM + heuristics + AX tree) to find input and send button.
-        Results are cached per URL so discovery only runs once per page load.
-        Returns {"input": str, "send_btn": str}.
-        """
-        log = self._log
-        cfg = self._cfg
-        current_url = (self._js("return location.href") or "").split("?")[0]
-
-        if self._sel_cache and self._sel_cache_url == current_url:
-            log.debug("[discover] cache hit for %s", current_url[:60])
-            return self._sel_cache
-
-        log.info("[discover] running FormFinder for input + send_btn")
-        try:
-            from neobrowser.page_analyzer import FormFinder
-            finder = FormFinder(self._tab)
-
-            result_input = finder.find(cfg["input_hint"])
-            result_send = finder.find(cfg["send_hint"])
-
-            sel_input = (result_input.selector if result_input else None) or cfg["input_fallback"]
-            sel_send = (result_send.selector if result_send else None) or cfg["send_fallback"]
-
-            # Validate input: must be contenteditable (ProseMirror) or a textarea,
-            # NOT a search/filter input. ChatGPT's search box (#search-ui-input-*)
-            # can be mistakenly picked by FormFinder.
-            if sel_input and sel_input != cfg["input_fallback"]:
-                is_valid = self._js(f"""
-                    const el = document.querySelector({json.dumps(sel_input)});
-                    if (!el) return false;
-                    const ce = el.getAttribute('contenteditable');
-                    const tag = el.tagName;
-                    const typ = (el.getAttribute('type') || '').toLowerCase();
-                    // Reject search inputs; accept contenteditable or submit-adjacent textarea
-                    return ce !== null || (tag === 'TEXTAREA' && typ !== 'search');
-                """)
-                if not is_valid:
-                    log.warning("[discover] input %s rejected (not contenteditable), using fallback %s",
-                                sel_input, cfg["input_fallback"])
-                    sel_input = cfg["input_fallback"]
-
-            log.info("[discover] input=%s (confidence=%s) send=%s (confidence=%s)",
-                     sel_input, getattr(result_input, "confidence", "?"),
-                     sel_send, getattr(result_send, "confidence", "?"))
-        except Exception as e:
-            log.warning("[discover] FormFinder failed (%s), using fallbacks", e)
-            sel_input = cfg["input_fallback"]
-            sel_send = cfg["send_fallback"]
-
-        self._sel_cache = {"input": sel_input, "send_btn": sel_send}
-        self._sel_cache_url = current_url
-        return self._sel_cache
-
-    def _invalidate_sel_cache(self) -> None:
-        self._sel_cache = {}
-        self._sel_cache_url = ""
-
-    # ── Tab discovery ─────────────────────────────────────────────────────────
-
-    def _find_existing_tab(self, domain: str):
-        """
-        Scan Chrome's open tabs via /json/list and attach to the first one
-        that already has the platform's domain loaded.
-
-        Returns a ChromeTab or None. This avoids cold-starting a new tab when
-        the user already has chatgpt.com open from a previous session.
-        """
-        try:
-            import urllib.request as _ur
-            b = _get_browser()
-            # Resolve Chrome port from the browser's session
-            port = getattr(getattr(b, "_session", None), "_port", None)
-            if port is None:
-                return None
-            resp = _ur.urlopen(f"http://localhost:{port}/json/list", timeout=3)
-            tabs = json.loads(resp.read())
-            for t in tabs:
-                url = t.get("url", "")
-                if domain in url and t.get("webSocketDebuggerUrl"):
-                    from neobrowser.chrome_tab import ChromeTab
-                    tab = ChromeTab.attach(t["webSocketDebuggerUrl"], t["id"], port)
-                    self._log.info("reusing existing tab id=%s url=%s", t["id"][:8], url[:60])
-                    return tab
-        except Exception as e:
-            self._log.debug("_find_existing_tab failed: %s", e)
-        return None
-
-    # ── Step 1: ensure tab, navigate, auth check ─────────────────────────────
-
-    def ensure(self) -> bool:
-        import time
-        cfg = self._cfg
-        log = self._log
-
-        t0 = time.time()
-        domain = cfg["url"].split("/")[2]
-
-        # ── 1a. Get or reuse tab ──────────────────────────────────────────────
-        if self._tab is None:
-            existing = self._find_existing_tab(domain)
-            if existing:
-                self._tab = existing
-                log.info("[ensure] reused existing tab (%.0fms)", (time.time()-t0)*1000)
-            else:
-                log.info("[ensure] opening new dedicated tab for %s", self.platform)
-                self._tab = _get_browser().open("about:blank", wait_s=0)
-                log.info("[ensure] tab opened (%.0fms)", (time.time()-t0)*1000)
-
-        # ── 1b. Navigate if not on platform ───────────────────────────────────
-        current_url = self._js("return location.href") or ""
-        log.info("[ensure] current_url=%s", current_url[:80])
-
-        if domain not in current_url:
-            target = self.conv_url or cfg["url"]
-            log.info("[ensure] navigating → %s", target)
-            self._tab.navigate(target, wait_s=3.0)
-            current_url = self._js("return location.href") or ""
-            log.info("[ensure] post-nav url=%s (%.0fms)", current_url[:80], (time.time()-t0)*1000)
-        elif self.conv_url and self.conv_url not in current_url:
-            log.info("[ensure] tab drifted, restoring conv_url=%s", self.conv_url)
-            self._tab.navigate(self.conv_url, wait_s=3.0)
-            current_url = self._js("return location.href") or ""
-        elif not self.conv_url and "/c/" in current_url:
-            self.conv_url = current_url.split("?")[0]
-            log.info("[ensure] adopted conversation url=%s", self.conv_url)
-
-        # ── 1c. DOM readiness — wait for complete before proceeding ──────────────
-        deadline_ready = time.time() + 10
-        while time.time() < deadline_ready:
-            ready_state = self._js("return document.readyState")
-            if ready_state == "complete":
-                break
-            time.sleep(0.3)
-        log.info("[ensure] readyState=%s (%.0fms)", ready_state, (time.time()-t0)*1000)
-
-        # Invalidate selector cache on navigation (URL changed)
-        if self._sel_cache_url and self._sel_cache_url not in current_url:
-            log.info("[ensure] URL changed, invalidating selector cache")
-            self._invalidate_sel_cache()
-
-        # ── 1d. Error / Cloudflare / auth guards ──────────────────────────────
-        if self._js("return !!(document.body?.innerText?.includes('Something went wrong'))"):
-            log.warning("[ensure] error state, navigating fresh")
-            self.conv_url = None
-            self._invalidate_sel_cache()
-            self._tab.navigate(cfg["url"], wait_s=4.0)
-
-        cf = self._js("""return !!(document.querySelector('#challenge-form') ||
-            document.querySelector('.cf-browser-verification') ||
-            document.title === 'Just a moment...')""")
-        if cf:
-            log.warning("[ensure] Cloudflare challenge")
-            self._last_error = json.dumps({"status": "error", "error": "cf_challenge",
-                "suggestion": "Solve Cloudflare in real Chrome, then retry."})
-            return False
-
-        # ── 1e. Auth check via local LLM ──────────────────────────────────────
-        logged_in = self._is_logged_in()
-        log.info("[ensure] is_logged_in=%s (%.0fms)", logged_in, (time.time()-t0)*1000)
-        if not logged_in:
-            log.warning("[ensure] not authenticated")
-            self._last_error = json.dumps({"status": "error", "error": "login_wall",
-                "suggestion": "Log into the platform in your real Chrome browser, then retry."})
-            return False
-
-        log.info("[ensure] OK (%.0fms total)", (time.time()-t0)*1000)
-        return True
-
-    # ── Step 2: verify no streaming in progress, input available ─────────────
-
-    def verify_ready(self) -> bool:
-        import time
-        cfg = self._cfg
-        log = self._log
-        t0 = time.time()
-        stop_sel = cfg.get("stop_btn")
-
-        log.info("[verify_ready] checking stop_btn=%s", stop_sel)
-        if stop_sel and self._js(f"return !!document.querySelector({json.dumps(stop_sel)})"):
-            log.info("[verify_ready] streaming in progress, waiting up to 30s")
-            for i in range(60):
-                time.sleep(0.5)
-                if not self._js(f"return !!document.querySelector({json.dumps(stop_sel)})"):
-                    log.info("[verify_ready] streaming stopped after %.0fs", i*0.5)
-                    break
-            else:
-                log.warning("[verify_ready] still streaming after 30s")
-                self._last_error = json.dumps({"status": "error", "error": "still_streaming",
-                    "suggestion": "Use action=read_last to get current response, then retry."})
-                return False
-
-        # Discover input dynamically (FormFinder + LLM), fallback to hardcoded
-        sels = self._discover_selectors()
-        input_sel = sels["input"]
-        has_input = self._js(f"return !!document.querySelector({json.dumps(input_sel)})")
-        log.info("[verify_ready] input_sel=%s found=%s (%.0fms)", input_sel, has_input, (time.time()-t0)*1000)
-
-        if not has_input:
-            log.warning("[verify_ready] input not found, reloading and re-discovering")
-            self._invalidate_sel_cache()
-            self._tab.navigate(cfg["url"], wait_s=4.0)
-            sels = self._discover_selectors()
-            input_sel = sels["input"]
-            has_input = self._js(f"return !!document.querySelector({json.dumps(input_sel)})")
-            log.info("[verify_ready] after reload: input_sel=%s found=%s", input_sel, has_input)
-        if not has_input:
-            self._last_error = json.dumps({"status": "error", "error": "no_input_box",
-                "suggestion": "Chat input not found after reload. Try again."})
-            return False
-
-        log.info("[verify_ready] OK (%.0fms)", (time.time()-t0)*1000)
-        return True
-
-    # ── Step 3: type message and send ─────────────────────────────────────────
-
-    def send(self, msg: str) -> bool:
-        import time
-        cfg = self._cfg
-        log = self._log
-        t0 = time.time()
-        sels = self._discover_selectors()
-        input_sel = sels["input"]
-        send_sel = sels["send_btn"]
-        asst_sel = cfg["assistant"]
-        user_sel = cfg.get("user")
-        log.info("[send] using input=%s send=%s", input_sel, send_sel)
-
-        # Register network watcher BEFORE sending — catches /backend-api/f/conversation
-        # Pattern broad enough to match the stream URL, filtering in wait_response()
-        self._net_watcher_q = self._tab.watch_requests("backend-api")
-        log.info("[send] network watcher registered for backend-api requests")
-
-        # Snapshot before send
-        self._msg_count_before = int(self._js(
-            f"return document.querySelectorAll({json.dumps(asst_sel)}).length"
-        ) or 0)
-        self._last_text_before = self._js(
-            f"const m=document.querySelectorAll({json.dumps(asst_sel)});"
-            f"return m.length?m[m.length-1].innerText?.substring(0,200):''"
-        ) or ""
-        log.info("[send] snapshot: %d assistant msgs, last=%r", self._msg_count_before, self._last_text_before[:40])
-
-        # Focus: CDP mouse click (real browser-level focus, more reliable than JS .focus())
-        rect_json = self._js(f"""
-            const el = document.querySelector({json.dumps(input_sel)});
-            const r = el?.getBoundingClientRect();
-            return r ? JSON.stringify({{x: Math.round(r.left+r.width/2), y: Math.round(r.top+r.height/2)}}) : null
-        """)
-        if rect_json:
-            try:
-                coords = json.loads(rect_json)
-                cx, cy = coords["x"], coords["y"]
-                self._cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1})
-                self._cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1})
-                log.info("[send] CDP mouse click at (%d,%d) (%.0fms)", cx, cy, (time.time()-t0)*1000)
-                time.sleep(0.1)
-            except Exception as e:
-                log.warning("[send] CDP click failed (%s), JS focus fallback", e)
-                self._js(f"const el=document.querySelector({json.dumps(input_sel)});if(el){{el.focus();el.click()}}")
-        else:
-            log.warning("[send] no rect for %s, JS focus fallback", input_sel)
-            self._js(f"const el=document.querySelector({json.dumps(input_sel)});if(el){{el.focus();el.click()}}")
-
-        time.sleep(0.05)
-
-        # Ctrl+A to clear existing content
-        self._cdp("Input.dispatchKeyEvent", {"type": "keyDown", "modifiers": 2, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65})
-        self._cdp("Input.dispatchKeyEvent", {"type": "keyUp",   "modifiers": 2, "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65})
-        time.sleep(0.05)
-        log.info("[send] ctrl+a done, pasting msg len=%d (%.0fms)", len(msg), (time.time()-t0)*1000)
-
-        # Primary input: ClipboardEvent paste — ProseMirror handles this natively
-        self._js(f"""
-            const dt = new DataTransfer();
-            dt.setData('text/plain', {json.dumps(msg)});
-            const el = document.activeElement;
-            if (el) el.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true}}));
-        """)
-        time.sleep(0.2)
-
-        content = self._js(f"return document.querySelector({json.dumps(input_sel)})?.innerText||''") or ""
-        log.info("[send] content after paste: len=%d preview=%r (%.0fms)", len(content), content[:40], (time.time()-t0)*1000)
-
-        # Fallback: insertText (if paste didn't land)
-        if not content or msg[:15] not in content:
-            log.info("[send] ClipboardEvent missed, trying insertText fallback")
-            self._cdp("Input.insertText", {"text": msg})
-            time.sleep(0.2)
-            content = self._js(f"return document.querySelector({json.dumps(input_sel)})?.innerText||''") or ""
-            log.info("[send] content after insertText: len=%d preview=%r (%.0fms)", len(content), content[:40], (time.time()-t0)*1000)
-
-        if not content or len(content) < len(msg) // 2:
-            log.error("textarea empty after paste+insertText. content=%r", content[:80])
-            self._last_error = json.dumps({"status": "error", "error": "textarea empty after input"})
-            self._send_verified = False
-            return False
-
-        # Count user messages before firing send
-        user_count_before = 0
-        if user_sel:
-            user_count_before = int(self._js(f"return document.querySelectorAll({json.dumps(user_sel)}).length") or 0)
-        log.info("[send] firing: Enter + btn click (user_msgs_before=%d) (%.0fms)", user_count_before, (time.time()-t0)*1000)
-
-        # Send: Enter key ONLY — button click after Enter hits stop-button (visible after ~100ms)
-        # which aborts the stream. Enter alone is sufficient for ProseMirror to submit.
-        self._cdp("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13, "text": "\r"})
-        self._cdp("Input.dispatchKeyEvent", {"type": "keyUp",   "key": "Enter", "code": "Enter"})
-        log.info("[send] Enter key fired (no button click)")
-
-        # Verify: user message appeared in DOM or stop button shown
-        stop_sel = cfg.get("stop_btn")
-        sent = False
-        for i in range(6):
-            time.sleep(0.5)
-            if stop_sel and self._js(f"return !!document.querySelector({json.dumps(stop_sel)})"):
-                log.info("[send] stop_btn appeared at check %d (%.0fms) — send confirmed", i, (time.time()-t0)*1000)
-                sent = True
-                break
-            if user_sel:
-                uc = int(self._js(f"return document.querySelectorAll({json.dumps(user_sel)}).length") or 0)
-                if uc > user_count_before:
-                    log.info("[send] user msg in DOM at check %d (%.0fms) — send confirmed", i, (time.time()-t0)*1000)
-                    sent = True
-                    break
-
-        self._send_verified = sent
-        if sent:
-            cur_url = self._js("return location.href") or ""
-            if "/c/" in cur_url:
-                self.conv_url = cur_url.split("?")[0]
-                log.info("[send] conversation anchored: %s", self.conv_url)
-            log.info("[send] OK (%d chars, %.0fms total)", len(msg), (time.time()-t0)*1000)
-        else:
-            log.warning("[send] FAIL — message not confirmed in DOM after 3s (%.0fms)", (time.time()-t0)*1000)
-            self._last_error = json.dumps({"status": "error", "error": "message typed but not confirmed sent (not in DOM after 3s)"})
-        return sent
-
-    # ── MutationObserver watcher ──────────────────────────────────────────────
-
-    def _inject_watcher(self) -> None:
-        """Inject a MutationObserver into the page that tracks GPT state in
-        window.__gptWatcher — stop button visibility, last text, hash stability,
-        and error banners. Avoids heavy DOM polling in wait_response()."""
-        cfg = self._cfg
-        asst_sel = cfg["assistant"]
-        stop_sel = cfg.get("stop_btn") or ""
-        log = self._log
-
-        js = f"""
-        (function() {{
-            if (window.__gptWatcherObs) {{ window.__gptWatcherObs.disconnect(); }}
-            window.__gptWatcher = {{
-                stopVisible: !!({('document.querySelector(' + repr(stop_sel) + ')') if stop_sel else 'null'}),
-                lastMsgCount: document.querySelectorAll({repr(asst_sel)}).length,
-                lastText: '',
-                lastHash: 0,
-                stableCount: 0,
-                streaming: false,
-                done: false,
-                errors: [],
-                ts: Date.now()
-            }};
-            function _hash(s) {{
-                let h = 0;
-                const n = Math.min(s.length, 500);
-                for (let i = 0; i < n; i++) {{ h = (Math.imul(31, h) + s.charCodeAt(i)) | 0; }}
-                return h;
-            }}
-            function _readLast() {{
-                const msgs = document.querySelectorAll({repr(asst_sel)});
-                if (!msgs.length) return '';
-                for (let i = msgs.length - 1; i >= 0; i--) {{
-                    const el = msgs[i];
-                    const prose = el.querySelector('.prose, .markdown');
-                    if (prose) {{
-                        const clone = prose.cloneNode(true);
-                        clone.querySelectorAll('.puik-root,.not-prose,.not-markdown,button,[role=button]').forEach(e => e.remove());
-                        const pt = (clone.innerText || '').trim();
-                        if (pt.length > 0) return pt.substring(0, 50000);
-                    }}
-                    const tas = el.querySelectorAll('textarea');
-                    if (tas.length) {{
-                        const val = [...tas].map(t => (t.value || t.textContent || '').trim()).filter(s => s.length > 0).join(' ').trim();
-                        if (val.length > 0) return val.substring(0, 50000);
-                    }}
-                    const it = (el.innerText || '').trim();
-                    if (it.length > 0) return it.substring(0, 50000);
-                }}
-                return '';
-            }}
-            function _update() {{
-                const w = window.__gptWatcher;
-                const stop = {('!!document.querySelector(' + repr(stop_sel) + ')') if stop_sel else 'false'};
-                const msgs = document.querySelectorAll({repr(asst_sel)});
-                w.stopVisible = stop;
-                w.lastMsgCount = msgs.length;
-                if (stop) w.streaming = true;
-                const text = _readLast();
-                if (text) {{
-                    const h = _hash(text);
-                    if (h !== w.lastHash) {{ w.stableCount = 0; w.lastHash = h; }}
-                    else {{ w.stableCount++; }}
-                    w.lastText = text;
-                }}
-                if (w.streaming && !stop && text) w.done = true;
-                // Error banner detection
-                const errSels = ['[class*="error-message"]','[data-testid*="error"]','.text-red-500:not(button)','[role="alert"]'];
-                for (const sel of errSels) {{
-                    const el = document.querySelector(sel);
-                    if (el) {{
-                        const t = (el.innerText || '').trim();
-                        if (t && t.length > 3 && !w.errors.includes(t)) w.errors.push(t.substring(0,200));
-                    }}
-                }}
-                w.ts = Date.now();
-            }}
-            const obs = new MutationObserver(_update);
-            obs.observe(document.body, {{ childList: true, subtree: true, characterData: true }});
-            window.__gptWatcherObs = obs;
-            _update();
-        }})();
-        """
-        try:
-            self._js(js)
-            log.info("[watcher] MutationObserver injected")
-        except Exception as e:
-            log.warning("[watcher] inject failed: %s", e)
-
-    def _watcher_state(self) -> dict:
-        """Read current watcher state from page. Returns empty dict on error."""
-        try:
-            raw = self._js("return window.__gptWatcher ? JSON.stringify(window.__gptWatcher) : null")
-            return json.loads(raw) if raw else {}
-        except Exception:
-            return {}
-
-    # ── Step 4: wait for complete response ────────────────────────────────────
-
-    def wait_response(self, timeout_s: int = 150) -> str:
-        """
-        Wait for the ChatGPT assistant response.
-
-        Uses MutationObserver (window.__gptWatcher) for event-driven detection:
-          1. Wait for page navigation / stream start (watcher: stopVisible or msgCount change)
-          2. Wait for readyState=complete
-          3. Wait for stop button to appear  (watcher: stopVisible=true or early response)
-          4. Wait for stop button to go away (watcher: done=true)
-          5. Stability window: same text hash for STABLE_NEEDED consecutive observer ticks
-
-        Falls back to direct DOM polling if watcher unavailable.
-        """
-        import time
-        cfg = self._cfg
-        log = self._log
-
-        if not self._send_verified:
-            return self._last_error or json.dumps({"status": "error", "error": "send not verified"})
-
-        asst_sel = cfg["assistant"]
-        stop_sel = cfg.get("stop_btn") or ""
-        t0 = time.time()
-        STABLE_NEEDED = 2   # same hash N times = response stable
-
-        # Drain the net watcher (not needed for DOM/observer polling)
-        if self._net_watcher_q:
-            try:
-                self._tab.unwatch_requests(self._net_watcher_q)
-            except Exception:
-                pass
-            self._net_watcher_q = None
-
-        # Inject MutationObserver so phases 3+4 read lightweight watcher state
-        self._inject_watcher()
-
-        def _elapsed_ms() -> int:
-            return int((time.time() - t0) * 1000)
-
-        def _read_last() -> str:
-            return self._js(f"""
-                const msgs = document.querySelectorAll({json.dumps(asst_sel)});
-                if (!msgs.length) return '';
-                for (let i = msgs.length - 1; i >= 0; i--) {{
-                    const el = msgs[i];
-                    const prose = el.querySelector('.prose, .markdown');
-                    if (prose) {{
-                        const clone = prose.cloneNode(true);
-                        clone.querySelectorAll('.puik-root, .not-prose, .not-markdown, button, [role=button]')
-                             .forEach(e => e.remove());
-                        const pt = (clone.innerText || '').trim();
-                        if (pt.length > 0) return pt.substring(0, 50000);
-                    }}
-                    const tas = el.querySelectorAll('textarea');
-                    if (tas.length) {{
-                        const val = [...tas].map(t => (t.value || t.textContent || '').trim())
-                                           .filter(s => s.length > 0).join(' ').trim();
-                        if (val.length > 0) return val.substring(0, 50000);
-                    }}
-                    const it = (el.innerText || '').trim();
-                    if (it.length > 0) return it.substring(0, 50000);
-                }}
-                return '';
-            """) or ""
-
-        def _stop_visible() -> bool:
-            if not stop_sel:
-                return False
-            return bool(self._js(f"return !!document.querySelector({json.dumps(stop_sel)})"))
-
-        def _page_state() -> dict:
-            return json.loads(self._js(f"""
-                return JSON.stringify({{
-                    url: location.href,
-                    ready: document.readyState,
-                    asst: document.querySelectorAll({json.dumps(asst_sel)}).length,
-                    stop: {'!!document.querySelector(' + json.dumps(stop_sel) + ')' if stop_sel else 'false'},
-                    title: document.title.substring(0,40)
-                }});
-            """) or '{}')
-
-        def _classify_error(errors: list) -> str:
-            if not errors:
-                return "unknown"
-            text = " ".join(errors).lower()
-            if any(k in text for k in ("rate limit", "too many", "slow down")):
-                return "rate_limit"
-            if any(k in text for k in ("log in", "sign in", "auth", "session")):
-                return "auth"
-            if any(k in text for k in ("network", "connection", "offline")):
-                return "network"
-            if any(k in text for k in ("unavailable", "overloaded", "capacity")):
-                return "model_unavailable"
-            return "ui_error"
-
-        def _anchor_url():
-            cur_url = self._js("return location.href") or ""
-            if "/c/" in cur_url:
-                self.conv_url = cur_url.split("?")[0]
-
-        # ── Phase 1: wait for navigation / stream start (max 15s) ──────────
-        log.info("[wait] phase1: waiting for nav to /c/ or stop button (%dms)", _elapsed_ms())
-        nav_deadline = t0 + 15.0
-        nav_done = False
-        while time.time() < nav_deadline:
-            try:
-                st = _page_state()
-            except Exception:
-                time.sleep(0.3)
-                continue
-            url = st.get("url", "")
-            stop = st.get("stop", False)
-            asst = st.get("asst", 0)
-            log.debug("[wait] p1 url=%s stop=%s asst=%d (%dms)", url[:60], stop, asst, _elapsed_ms())
-            if "/c/" in url or stop or asst > self._msg_count_before:
-                log.info("[wait] phase1 OK: url=%s stop=%s asst=%d (%dms)", url[:60], stop, asst, _elapsed_ms())
-                nav_done = True
-                break
-            time.sleep(0.3)
-
-        if not nav_done:
-            log.warning("[wait] phase1 timeout — no nav/stop after 15s. Checking DOM anyway.")
-            text = _read_last()
-            if text:
-                log.info("[wait] phase1 fallback: found text (%d chars, %dms)", len(text), _elapsed_ms())
-                _anchor_url()
-                return text
-
-        # ── Phase 2: wait for readyState=complete (new page) ──────────────
-        log.info("[wait] phase2: waiting for readyState=complete (%dms)", _elapsed_ms())
-        rdy_deadline = t0 + 20.0
-        while time.time() < rdy_deadline:
-            try:
-                ready = self._js("return document.readyState")
-                if ready == "complete":
-                    log.info("[wait] phase2 readyState=complete (%dms)", _elapsed_ms())
-                    break
-            except Exception:
-                pass
-            time.sleep(0.3)
-
-        # ── Phase 3: wait for stop button / stream start (max 30s) ────────
-        log.info("[wait] phase3: waiting for stop button (%dms)", _elapsed_ms())
-        stop_deadline = t0 + 30.0
-        stop_appeared = False
-        while time.time() < stop_deadline:
-            try:
-                w = self._watcher_state()
-                if w:
-                    stop = w.get("stopVisible", False)
-                    asst = w.get("lastMsgCount", 0)
-                    errs = w.get("errors", [])
-                    if errs:
-                        kind = _classify_error(errs)
-                        log.warning("[wait] p3 error banner: %s — %s", kind, errs[0])
-                        return json.dumps({"status": "error", "error": kind, "detail": errs[0]})
-                else:
-                    stop = _stop_visible()
-                    asst = int(self._js(f"return document.querySelectorAll({json.dumps(asst_sel)}).length") or 0)
-                log.debug("[wait] p3 stop=%s asst=%d (%dms)", stop, asst, _elapsed_ms())
-                if stop:
-                    log.info("[wait] phase3 stop_btn appeared (%dms)", _elapsed_ms())
-                    stop_appeared = True
-                    break
-                if asst > self._msg_count_before:
-                    # Fast / cached reply — already done
-                    text = (w.get("lastText") or "") if w else _read_last()
-                    if not text:
-                        text = _read_last()
-                    if text:
-                        log.info("[wait] phase3 early response (%d chars, %dms)", len(text), _elapsed_ms())
-                        _anchor_url()
-                        return text
-            except Exception as e:
-                log.debug("[wait] p3 err: %s", e)
-            time.sleep(0.3)
-
-        if not stop_appeared:
-            log.warning("[wait] phase3: stop btn never appeared. Checking DOM.")
-            text = _read_last()
-            if text:
-                log.info("[wait] phase3 fallback text (%d chars)", len(text))
-                return text
-
-        # ── Phase 4: wait for stop button gone + stability window ─────────
-        log.info("[wait] phase4: waiting for done + stability (%dms)", _elapsed_ms())
-        done_deadline = t0 + timeout_s
-        stable_hits = 0
-        last_hash = 0
-        while time.time() < done_deadline:
-            try:
-                w = self._watcher_state()
-                if w:
-                    stop = w.get("stopVisible", False)
-                    asst_count = w.get("lastMsgCount", 0)
-                    watcher_text = w.get("lastText", "")
-                    watcher_hash = w.get("lastHash", 0)
-                    stable_count = w.get("stableCount", 0)
-                    errs = w.get("errors", [])
-
-                    if errs:
-                        kind = _classify_error(errs)
-                        log.warning("[wait] p4 error banner: %s — %s", kind, errs[0])
-                        return json.dumps({"status": "error", "error": kind, "detail": errs[0]})
-
-                    log.debug("[wait] p4 stop=%s asst=%d stable=%d hash=%d (%dms)",
-                              stop, asst_count, stable_count, watcher_hash, _elapsed_ms())
-
-                    if not stop and asst_count > self._msg_count_before and watcher_text:
-                        # Track hash stability across our own polling ticks too
-                        if watcher_hash != last_hash:
-                            last_hash = watcher_hash
-                            stable_hits = 0
-                        else:
-                            stable_hits += 1
-
-                        if stable_hits >= STABLE_NEEDED or stable_count >= STABLE_NEEDED:
-                            elapsed = round(time.time()-t0, 1)
-                            log.info("[wait] DONE: stable (self=%d obs=%d) %d chars, %.1fs",
-                                     stable_hits, stable_count, len(watcher_text), elapsed)
-                            _anchor_url()
-                            return watcher_text
-                else:
-                    # Watcher unavailable — direct DOM poll
-                    stop = _stop_visible()
-                    asst_count = int(self._js(f"return document.querySelectorAll({json.dumps(asst_sel)}).length") or 0)
-                    if not stop and asst_count > self._msg_count_before:
-                        text = _read_last()
-                        if text:
-                            elapsed = round(time.time()-t0, 1)
-                            log.info("[wait] DONE (no watcher): %d chars, %.1fs", len(text), elapsed)
-                            _anchor_url()
-                            return text
-            except Exception as e:
-                log.debug("[wait] p4 err: %s", e)
-            time.sleep(0.5)
-
-        # Final fallback: whatever is in DOM right now
-        elapsed = round(time.time()-t0, 1)
-        log.warning("[wait] timeout after %.1fs, final DOM read", elapsed)
-        text = _read_last()
-        if text:
-            _anchor_url()
-            return text
-        return json.dumps({"status": "error", "error": f"no_response after {timeout_s}s"})
-
-    # ── read_last helper ──────────────────────────────────────────────────────
-
-    def read_last(self) -> str:
-        import time
-        cfg = self._cfg
-        asst_sel = cfg["assistant"]
-        stop_sel = cfg.get("stop_btn")
-        for _ in range(60):
-            text = self._js(f"""
-                const msgs = document.querySelectorAll({json.dumps(asst_sel)});
-                if (!msgs.length) return '';
-                const last = msgs[msgs.length-1];
-                const clone = last.cloneNode(true);
-                clone.querySelectorAll('button,[role=button]').forEach(e=>e.remove());
-                return clone.innerText?.trim().substring(0,50000)||'';
-            """) or ""
-            streaming = bool(stop_sel and self._js(f"return !!document.querySelector({json.dumps(stop_sel)})"))
-            if text and len(text) > 2 and not streaming:
-                return text
-            if text and len(text) > 2:
-                time.sleep(0.5)
-                continue
-            if not streaming:
-                break
-            time.sleep(0.5)
-        result = self._js(f"""
-            const msgs = document.querySelectorAll({json.dumps(asst_sel)});
-            if (!msgs.length) return '';
-            return msgs[msgs.length-1].innerText?.trim().substring(0,50000)||'';
-        """) or ""
-        return result if result else "No messages"
-
-    # ── is_streaming helper ───────────────────────────────────────────────────
-
-    def is_streaming_state(self) -> str:
-        cfg = self._cfg
-        asst_sel = cfg["assistant"]
-        stop_sel = cfg.get("stop_btn")
-        streaming = bool(stop_sel and self._js(f"return !!document.querySelector({json.dumps(stop_sel)})"))
-        chars = len(self._js(f"""
-            const msgs = document.querySelectorAll({json.dumps(asst_sel)});
-            return msgs.length ? msgs[msgs.length-1].innerText?.trim()||'' : '';
-        """) or "")
-        state = ("thinking" if (streaming and chars == 0) else
-                 "generating" if streaming else
-                 "complete" if chars > 0 else "idle")
-        return json.dumps({"state": state, "streaming": streaming, "chars": chars, "open": True})
-
-    # ── history helper ────────────────────────────────────────────────────────
-
-    def history(self) -> str:
-        cfg = self._cfg
-        asst_sel = cfg["assistant"]
-        user_sel = cfg.get("user")
-        if user_sel:
-            msgs_json = self._js(f"""
-                const m = [];
-                document.querySelectorAll('[data-message-author-role]').forEach(e => {{
-                    const r = e.getAttribute('data-message-author-role');
-                    const t = e.innerText?.trim()?.substring(0,300);
-                    if (t) m.push({{role: r, text: t}});
-                }});
-                return JSON.stringify(m.slice(-5));
-            """) or "[]"
-        else:
-            msgs_json = "[]"
-        try:
-            msgs = json.loads(msgs_json)
-            return "\n".join(f'> {"YOU" if m["role"]=="user" else self.platform.upper()}: {m["text"][:200]}' for m in msgs)
-        except Exception:
-            return msgs_json or "No messages"
-
-    # ── Full pipeline ─────────────────────────────────────────────────────────
-
-    def run(self, msg: str, wait: bool = True) -> str:
-        import time
-        log = self._log
-        with self._lock:
-            for attempt in range(2):
-                try:
-                    if not self.ensure():
-                        return self._last_error or json.dumps({"status": "error", "error": "platform_unavailable"})
-                    if not self.verify_ready():
-                        if attempt == 0:
-                            log.info("not ready, retry %d", attempt + 1)
-                            continue
-                        return self._last_error or json.dumps({"status": "error", "error": "not_ready"})
-                    if not self.send(msg):
-                        if attempt == 0:
-                            log.info("send failed, retry %d", attempt + 1)
-                            continue
-                        return self._last_error or json.dumps({"status": "error", "error": "send_failed"})
-                    if not wait:
-                        return json.dumps({"status": "sent", "chars": len(msg),
-                            "message": "Message sent. Use action=read_last to get response."})
-                    return self.wait_response()
-                except Exception as e:
-                    log.exception("pipeline error attempt %d", attempt)
-                    if attempt == 0:
-                        time.sleep(1)
-                    else:
-                        return json.dumps({"status": "error", "error": str(e)})
-        return json.dumps({"status": "error", "error": "no_response"})
-
-
-def _get_chat_pipeline(platform: str) -> "ChatPipeline":
-    global _chat_pipelines
-    if platform not in _chat_pipelines:
-        _chat_pipelines[platform] = ChatPipeline(platform)
-    return _chat_pipelines[platform]
 
 
 # ---------------------------------------------------------------------------
@@ -1399,103 +460,57 @@ def _get_chat_pipeline(platform: str) -> "ChatPipeline":
 # ---------------------------------------------------------------------------
 
 
-def _handle_chat(platform: str, args: dict) -> str:
-    """Thin shim — routes to ChatPipeline. Ensures tab exists first."""
-    p = _get_chat_pipeline(platform)
-    # ChatPipeline needs a tab to operate on. Ensure browser is up.
-    _get_browser()
-    action = args.get("action", "send")
+_AUTH_WALL_JS = r"""
+return (function(){
+    const path = location.pathname.toLowerCase();
+    const hasPassword = !!document.querySelector('input[type=password]');
+    const loginPath = /(^|\/)(login|signin|sign-in|sign_in|auth|sso|account\/login)(\/|$)/.test(path);
+    const body = (document.body ? document.body.innerText : '').toLowerCase().slice(0, 3000);
+    const signals = ['verify you are human','are you a robot','are you human','i am not a robot',
+        'checking your browser','cloudflare','captcha','hcaptcha','recaptcha',
+        'access denied','unusual traffic','confirm you are not a robot'];
+    let challenge = null;
+    for (const s of signals) { if (body.includes(s)) { challenge = s; break; } }
+    return JSON.stringify({hasPassword: hasPassword, loginPath: loginPath, challenge: challenge});
+})()
+"""
 
-    if action == "send":
-        msg = args.get("message", "")
-        if not msg:
-            return json.dumps({"error": "message required"})
-        if len(msg) > 32000:
-            return json.dumps({"error": f"message too long ({len(msg)} chars, max 32000)"})
-        return p.run(msg, wait=args.get("wait", True))
 
-    elif action == "read_last":
-        if not p._tab:
-            if not p.ensure():
-                return p._last_error or json.dumps({"status": "error", "error": "platform_unavailable"})
-        return p.read_last()
-
-    elif action == "is_streaming":
-        if not p._tab:
-            if not p.ensure():
-                return p._last_error or json.dumps({"status": "error", "error": "platform_unavailable"})
-        return p.is_streaming_state()
-
-    elif action == "history":
-        if not p._tab:
-            if not p.ensure():
-                return p._last_error or json.dumps({"status": "error", "error": "platform_unavailable"})
-        return p.history()
-
-    elif action == "check_session":
-        if not p.ensure():
-            return p._last_error or json.dumps({"status": "error", "error": "platform_unavailable"})
-        authenticated = p._js("""
-            const text = document.body?.innerText || '';
-            const hasLoginBtn = !!document.querySelector('[data-testid="login-button"], a[href*="/auth/login"]');
-            const loginSignals = ['log in', 'sign in', 'sign up', 'create account', 'iniciar sesión'];
-            const lowerText = text.toLowerCase();
-            return JSON.stringify({
-                authenticated: !hasLoginBtn && !loginSignals.some(s => lowerText.includes(s)) && text.length > 100,
-                url: location.href
-            });
-        """) or "{}"
-        try:
-            info = json.loads(authenticated)
-        except Exception:
-            info = {}
-        return json.dumps({"check": "session", **info})
-
-    elif action == "debug_network":
-        # Dump recent network requests so we can find the real conversation API URL
-        if not p._tab:
-            if not p.ensure():
-                return p._last_error or json.dumps({"status": "error", "error": "platform_unavailable"})
-        reqs = p._tab.get_network_requests()
-        # Show last 30, filter to just URLs + status
-        entries = [{"url": r["url"][:120], "method": r.get("method","?"), "status": r.get("status")}
-                   for r in reqs[-30:]]
-        return json.dumps({"network_requests": entries, "total": len(reqs)}, indent=2)
-
-    elif action == "debug_watch":
-        # Watch ALL backend-api network events for 20s and return them raw.
-        # Shows EXACTLY what the watcher sees: req_id, url, event type.
-        import time as _t
-        if not p._tab:
-            if not p.ensure():
-                return p._last_error or json.dumps({"status": "error", "error": "platform_unavailable"})
-        q = p._tab.watch_requests("backend-api")
-        events = []
-        deadline = _t.time() + 20.0
-        try:
-            while _t.time() < deadline:
-                remaining = deadline - _t.time()
-                try:
-                    evt = q.get(timeout=min(remaining, 2.0))
-                    event, req_id, url, data = evt
-                    events.append({"event": event, "req_id": req_id[:8], "url": url[:120], "data": str(data)[:30] if data else None})
-                except Exception:
-                    pass  # queue.Empty — keep waiting
-        finally:
-            p._tab.unwatch_requests(q)
-        return json.dumps({"watched_events": events, "count": len(events)}, indent=2)
-
-    return json.dumps({"error": f"unknown action: {action}"})
+def _detect_auth_wall(tab):
+    """
+    Heuristically detect a login wall or bot challenge on the current page, so
+    the model knows it is blocked instead of silently acting on a logged-out
+    page. Returns a small dict, or None if the page looks accessible. Never raises.
+    """
+    try:
+        raw = tab.js(_AUTH_WALL_JS)
+        d = json.loads(raw) if raw else {}
+    except Exception:
+        return None
+    if d.get("challenge"):
+        return {"kind": "bot_challenge", "signal": d["challenge"],
+                "hint": "A bot/CAPTCHA challenge is showing — real-session mode (NEOBROWSER_REAL_PROFILE) or a visible login may be needed."}
+    if d.get("hasPassword") and d.get("loginPath"):
+        return {"kind": "login_wall",
+                "hint": "This looks like a login page — set NEOBROWSER_REAL_PROFILE to reuse a logged-in session, or use the login tool."}
+    return None
 
 
 def dispatch_tool(name: str, args: dict) -> Any:
+    if name in _PLUGIN_HANDLERS:
+        return _PLUGIN_HANDLERS[name](args)
+
     b = _get_browser()
 
     if name == "navigate":
         url = args["url"]
         wait_s = float(args.get("wait_s", 3.0))
         tab = _get_tab(url, wait_s=wait_s)
-        return f"Navigated to {tab.current_url()}"
+        msg = f"Navigated to {tab.current_url()}"
+        wall = _detect_auth_wall(tab)
+        if wall:
+            msg += f"\n⚠️ {wall['kind']}: {wall['hint']}"
+        return msg
 
     elif name == "screenshot":
         tab = _get_tab()
@@ -1665,9 +680,6 @@ def dispatch_tool(name: str, args: dict) -> Any:
         # tab.js() already wraps in IIFE when "return " is present — pass code directly
         result = tab.js(code)
         return json.dumps(result) if not isinstance(result, str) else result
-
-    elif name in ("gpt", "grok"):
-        return _handle_chat(name, args)
 
     elif name == "page_info":
         tab = _get_tab()
@@ -2158,6 +1170,33 @@ def dispatch_tool(name: str, args: dict) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Plugin system — optional private extensions (e.g. gpt/grok chat)
+#
+# Absent in the public repo (no _private_chat.py present) this is a no-op:
+# TOOLS simply lacks the plugin-provided entries and dispatch_tool never
+# matches them. When neobrowser/_private_chat.py is present, its register()
+# is called and gpt/grok become available like any other tool.
+# ---------------------------------------------------------------------------
+
+_PLUGIN_HANDLERS: dict = {}
+
+
+def _register_plugin_tool(name, spec, handler) -> None:
+    TOOLS[name] = spec
+    _PLUGIN_HANDLERS[name] = handler
+
+
+def _load_plugins() -> None:
+    try:
+        from neobrowser import _private_chat
+        _private_chat.register(_register_plugin_tool, _get_browser)
+    except ImportError:
+        pass
+    except Exception as exc:
+        log.warning("plugin load failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # MCP Protocol (JSON-RPC 2.0 over stdin/stdout)
 # ---------------------------------------------------------------------------
 
@@ -2249,6 +1288,11 @@ def _handle(req: dict) -> None:
 
     elif req_id is not None:
         _respond_error(req_id, -32601, f"Unknown method: {method}")
+
+
+# Load optional private plugins now — everything they may need
+# (_get_browser, TOOLS, dispatch_tool) is already defined above.
+_load_plugins()
 
 
 # ---------------------------------------------------------------------------

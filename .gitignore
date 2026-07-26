@@ -23,3 +23,6 @@ htmlcov/
 *.cookies.json
 sessions/
 profiles/
+
+# Private optional plugins (e.g. gpt/grok chat) — never part of the public repo
+neobrowser/_private_*.py
