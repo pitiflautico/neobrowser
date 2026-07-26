@@ -4,7 +4,7 @@ tools/v4/tests/test_lifecycle.py
 Unit tests for F11 — DataLifecycleManager.
 
 All tests use tmp_path (pytest fixture) — no ~/.neorender/ touched.
-We monkey-patch NEORENDER_BASE, PROFILES_BASE, COOKIES_BASE, and PLAYBOOKS_BASE
+We monkey-patch NEOBROWSER_HOME, PROFILES_BASE, COOKIES_BASE, and PLAYBOOKS_BASE
 inside DataLifecycleManager so tests are fully isolated.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from neobrowser.lifecycle import CompactionReport, DataLifecycleManager
 def base(tmp_path, monkeypatch):
     """
     Redirect all lifecycle paths to a tmp directory.
-    Returns the fake NEORENDER_BASE.
+    Returns the fake NEOBROWSER_HOME.
     """
     fake_base = tmp_path / "neorender"
     fake_base.mkdir()
@@ -41,7 +41,7 @@ def base(tmp_path, monkeypatch):
     for d in (fake_playbooks, fake_cookies, fake_profiles, fake_logs):
         d.mkdir()
 
-    monkeypatch.setattr(lifecycle_mod, "NEORENDER_BASE", fake_base)
+    monkeypatch.setattr(lifecycle_mod, "NEOBROWSER_HOME", fake_base)
     monkeypatch.setattr(lifecycle_mod, "PLAYBOOKS_BASE", fake_playbooks)
     monkeypatch.setattr(lifecycle_mod, "LOGS_BASE", fake_logs)
 
@@ -267,7 +267,7 @@ def test_run_all_continues_after_error(base, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 10. Path outside NEORENDER_BASE raises ValueError
+# 10. Path outside NEOBROWSER_HOME raises ValueError
 # ---------------------------------------------------------------------------
 
 

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neobrowser"
+version = "1.0.0"
+description = "A fast, stealthy MCP browser-automation server that drives real Chrome with real logged-in sessions — built for AI models to navigate autonomously."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Daniel Perez Pinazo" }]
+keywords = ["mcp", "browser", "automation", "chrome", "cdp", "ai-agents", "llm", "stealth"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+]
+dependencies = [
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+# LLM-assisted semantic element finding (PageAnalyzer's Layer-3 fallback).
+llm = ["anthropic>=0.40"]
+dev = ["pytest>=7.0", "pytest-timeout>=2.0"]
+
+[project.urls]
+Homepage = "https://github.com/danielperezpinazo/neobrowser"
+Repository = "https://github.com/danielperezpinazo/neobrowser"
+Issues = "https://github.com/danielperezpinazo/neobrowser/issues"
+
+[project.scripts]
+neobrowser = "neobrowser.server:main"
+
+[tool.setuptools]
+packages = ["neobrowser"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 60

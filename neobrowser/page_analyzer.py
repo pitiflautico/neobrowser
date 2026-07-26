@@ -1,7 +1,7 @@
 """
-tools/v4/page_analyzer.py
+page_analyzer.py
 
-T3.5 — PageAnalyzer + FormFinder: cognitive navigation layer for NeoBrowser V4.
+T3.5 — PageAnalyzer + FormFinder: cognitive navigation layer.
 
 Uses CDP Accessibility tree + JS enrichment + optional LLM (Claude Haiku) to locate
 UI elements semantically, eliminating brittle CSS selector probing.

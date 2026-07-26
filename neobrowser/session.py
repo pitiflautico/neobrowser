@@ -1,13 +1,13 @@
 """
-tools/v4/session.py
+session.py
 
 Tier 2: Session — manages one ChromeProcess per named profile.
 
-Fixes V3 bugs:
+Design notes:
 - Zombie Chrome: ensure() health-checks before reusing, kills zombie and
   relaunches if dead. V3 reused a stale handle with no health check.
 - Stale port file: Session is the authoritative source of the port.
-  No ~/.neorender/neo-browser-port.txt shared global state.
+  No ~/.neobrowser/neo-browser-port.txt shared global state.
 - Cookie re-sync: set_cookies() / get_cookies() on ChromeTab can be called
   any time, not only once at startup (V3 bug).
 - profile_name path traversal: sanitized before constructing profile_dir.
@@ -23,13 +23,13 @@ from neobrowser.chrome_process import PROFILES_BASE, ChromeProcess, wait_for_chr
 from neobrowser.chrome_tab import ChromeTab
 
 # Allow alphanumeric, hyphens, and underscores only. This profile_name is the
-# ghost profile dir under ~/.neorender/profiles/, never the real Chrome
+# ghost profile dir under ~/.neobrowser/profiles/, never the real Chrome
 # profile name, so spaces are not needed and are an unnecessary filesystem/
 # shell footgun.
 _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,63}$')
 
 CHROME_READY_TIMEOUT = 10.0  # seconds to wait for Chrome to start
-COOKIES_BASE = Path.home() / ".neorender" / "cookies"
+from neobrowser.paths import COOKIES_BASE
 
 
 def _validate_cookie_path(path: Path) -> None:
@@ -93,7 +93,7 @@ class Session:
         If the current chrome is alive and port-responsive, reuse it.
         If dead (zombie), kill it cleanly and launch a fresh one.
 
-        V3 bug: chrome() returned a stale GhostChrome with no health check.
+        chrome() returned a stale GhostChrome with no health check.
         """
         with self._lock:
             if self._chrome is not None and self._chrome.health_check():
@@ -164,7 +164,7 @@ class Session:
     # Cookie persistence (F06)
     #
     # NOTE: This is a separate, low-level on-disk store from the
-    # cookie_sync module's session flow (~/.neorender/sessions/{profile}/,
+    # cookie_sync module's session flow (~/.neobrowser/sessions/{profile}/,
     # save_session()/restore()). ensure()/open_tab() only auto-sync via
     # cookie_sync (pre_launch_sync/post_launch_restore) — the methods below
     # are never called automatically and must be invoked explicitly by
@@ -174,7 +174,7 @@ class Session:
     def save_cookies(self, tab: ChromeTab, path: Path | None = None) -> None:
         """
         Save all cookies from tab to disk as JSON.
-        Default path: ~/.neorender/cookies/{profile_name}.json
+        Default path: ~/.neobrowser/cookies/{profile_name}.json
         File permissions: 0600 (owner read/write only).
         Does NOT log cookie values — only counts.
 

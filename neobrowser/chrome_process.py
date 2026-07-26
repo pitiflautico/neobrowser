@@ -1,9 +1,9 @@
 """
-tools/v4/chrome_process.py
+chrome_process.py
 
 Tier 0: Clean Chrome process manager.
 
-Fixes V3 bugs:
+Design notes:
 - No shared PID file that kills sibling processes
 - ChromeProcess only kills self.pid (the pid it launched)
 - health_check() prevents zombie GhostChrome
@@ -25,7 +25,7 @@ import urllib.request
 import json
 from pathlib import Path
 
-PROFILES_BASE = Path.home() / '.neorender' / 'profiles'
+from neobrowser.paths import PROFILES_BASE  # re-exported for callers that import it here
 
 def _discover_chrome_bin() -> str:
     """
@@ -184,7 +184,7 @@ def open_new_tab(port: int) -> dict:
     Open a new tab via Chrome DevTools Protocol.
 
     IMPORTANT: Must use PUT not GET. GET returns HTTP 405.
-    V3 bug: used GET → always got 405.
+    used GET → always got 405.
     """
     _validate_port(port)
     url = f'http://127.0.0.1:{port}/json/new'
@@ -219,7 +219,7 @@ class ChromeProcess:
         Does NOT read or write any shared PID file.
         Does NOT kill any existing process.
         Returns a ChromeProcess bound to the spawned PID.
-        profile_dir must be under PROFILES_BASE (~/.neorender/profiles/).
+        profile_dir must be under PROFILES_BASE (~/.neobrowser/profiles/).
         """
         port = find_free_port()
         profile_dir = Path(profile_dir)
@@ -319,7 +319,7 @@ class ChromeProcess:
         """
         Returns True only if BOTH the process is alive AND the port responds.
 
-        V3 bug: chrome() returned a zombie GhostChrome without checking.
+        chrome() returned a zombie GhostChrome without checking.
         This method prevents that: callers can verify before using.
         """
         return self.is_alive() and self.port_alive()

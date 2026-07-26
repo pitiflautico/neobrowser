@@ -1,7 +1,7 @@
 """
-tools/v4/cookie_sync.py
+cookie_sync.py
 
-Three-layer session persistence for V4.
+Three-layer session persistence.
 
 Layer 1 — Pre-launch sync (cookies decrypted to JSON; storage file-copied)
     Cookies are decrypted from the real Chrome profile's SQLite DB via the
@@ -11,19 +11,19 @@ Layer 1 — Pre-launch sync (cookies decrypted to JSON; storage file-copied)
     into the ghost profile dir, BEFORE ChromeProcess.launch(), so Chrome
     reads them natively at startup.
     Source: ~/Library/Application Support/Google/Chrome/{REAL_PROFILE}/
-    Dest:   ~/.neorender/profiles/{name}/Default/
+    Dest:   ~/.neobrowser/profiles/{name}/Default/
 
 Layer 2 — Post-launch CDP inject (JSON → Network.setCookies)
     After Chrome starts, inject persisted cookies into the running tab
     via CDP. No Chrome restart needed. Uses the JSON session cache.
-    Source: ~/.neorender/sessions/{name}/cookies.json
+    Source: ~/.neobrowser/sessions/{name}/cookies.json
     Target: running ChromeTab via Network.setCookies
 
 Layer 3 — Auto-save (tab → JSON session cache)
     Save all live tab cookies + localStorage to the session cache.
     Called explicitly via save_session(tab, profile_name).
     Source: running ChromeTab
-    Dest:   ~/.neorender/sessions/{name}/{cookies,local_storage,manifest}.json
+    Dest:   ~/.neobrowser/sessions/{name}/{cookies,local_storage,manifest}.json
 
 Excluded session-identity cookies (Google, LinkedIn, Microsoft):
     These sites detect duplicate sessions when a second Chrome instance
@@ -211,7 +211,7 @@ def decrypt_real_chrome_cookies(domains: list[str] | None = None) -> list[dict]:
 _REAL_CHROME_BASE = (
     Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
 )
-_SESSIONS_BASE = Path.home() / ".neorender" / "sessions"
+from neobrowser.paths import SESSIONS_BASE as _SESSIONS_BASE
 
 # Real Chrome profile folder names look like "Profile 24" or "Default" —
 # allow letters, digits, spaces, hyphens, underscores. This also rejects path
@@ -594,7 +594,7 @@ def save_session(tab: "ChromeTab", profile_name: str) -> dict:
     Save all live tab cookies + localStorage to the JSON session cache.
 
     Cookies are retrieved via CDP (already decrypted by Chrome) and saved
-    as JSON. On next V4 startup, post_launch_restore() injects them back
+    as JSON. On next startup, post_launch_restore() injects them back
     without needing the real Chrome profile to be present.
 
     Returns stats dict: {cookies: int, domains: [...], saved_at: float}

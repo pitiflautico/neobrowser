@@ -1,5 +1,5 @@
 """
-tools/v4/tab_pool.py
+tab_pool.py
 
 F07: TabPool — thread-safe pool of ChromeTab instances for a Session.
 

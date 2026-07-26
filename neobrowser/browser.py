@@ -1,5 +1,5 @@
 """
-tools/v4/browser.py
+browser.py
 
 F09 — Browser Facade
 
@@ -76,8 +76,8 @@ class Browser:
                 tab = b.open("https://linkedin.com/messaging/")
                 b.record_task("linkedin.com", "reply_dm")
                 node_id = b.find(tab, "message input box")
-                tab.send("Input.insertText", {"text": "Hello from V4"})
-                b.record_step(Step("type", {"text": "Hello from V4"}))
+                tab.send("Input.insertText", {"text": "Hello"})
+                b.record_step(Step("type", {"text": "Hello"}))
                 b.stop_recording()
         """
         b = cls.__new__(cls)
@@ -224,7 +224,7 @@ class Browser:
     # ------------------------------------------------------------------
 
     def save_cookies(self, tab: "ChromeTab", path: "Path | None" = None) -> None:
-        """Save all tab cookies to disk (~/.neorender/cookies/{profile}.json)."""
+        """Save all tab cookies to disk (~/.neobrowser/cookies/{profile}.json)."""
         self._session.save_cookies(tab, path=path)
 
     def restore_cookies(self, tab: "ChromeTab", path: "Path | None" = None) -> int:
@@ -233,8 +233,8 @@ class Browser:
 
     def save_session(self, tab: "ChromeTab") -> dict:
         """
-        Full session save: cookies + localStorage → ~/.neorender/sessions/{profile}/.
-        Persists the authenticated state so future V4 startups restore it automatically.
+        Full session save: cookies + localStorage → ~/.neobrowser/sessions/{profile}/.
+        Persists the authenticated state so future startups restore it automatically.
         Returns stats dict: {cookies, domains, saved_at}.
         """
         from neobrowser.cookie_sync import save_session

@@ -1,5 +1,5 @@
 """
-tools/v4/playbook.py
+playbook.py
 
 F10 — ActionRecorder + Playbook Engine
 
@@ -9,7 +9,7 @@ replay them on subsequent visits — zero AX discovery cost on replay.
 If a step fails during replay, PlaybookRunner falls back to PageAnalyzer
 re-discovery, updates the stale backendNodeId, and continues.
 
-Storage: ~/.neorender/playbooks/{domain}/{task}.json  perms 0600
+Storage: ~/.neobrowser/playbooks/{domain}/{task}.json  perms 0600
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-PLAYBOOKS_BASE = Path.home() / ".neorender" / "playbooks"
+from neobrowser.paths import PLAYBOOKS_BASE
 
 # Only allow simple alphanumeric names with hyphens/underscores (path traversal guard).
 _SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_\-\.]{0,127}$')
@@ -114,7 +114,7 @@ class ActionRecorder:
 
 class PlaybookStore:
     """
-    Persist and load playbooks as JSON under ~/.neorender/playbooks/.
+    Persist and load playbooks as JSON under ~/.neobrowser/playbooks/.
 
     Path structure: {base}/{domain}/{task}.json
     File permissions: 0600 (owner read/write only).

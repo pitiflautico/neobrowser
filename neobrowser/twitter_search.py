@@ -1,7 +1,7 @@
 """
-tools/v4/twitter_search.py
+twitter_search.py
 
-Twitter/X video search for NeoBrowser V4.
+Twitter/X video search.
 
 Searches Twitter via https://x.com/search for tweets containing video.
 Uses its OWN visible Chrome instance (not headless) to avoid bot detection.
@@ -42,7 +42,8 @@ log = logging.getLogger(__name__)
 # Visible browser singleton
 # ---------------------------------------------------------------------------
 
-_PORT_FILE = Path.home() / ".neorender" / "twitter-chrome-port.txt"
+from neobrowser.paths import NEOBROWSER_HOME
+_PORT_FILE = NEOBROWSER_HOME / "twitter-chrome-port.txt"
 _visible_tab: "ChromeTab | None" = None
 _visible_pid: int | None = None
 
@@ -86,9 +87,9 @@ def _get_visible_tab() -> "ChromeTab":
             _visible_tab = _open_tab(p)
             return _visible_tab
 
-    # 4. Scan for any running neorender visible Chrome
+    # 4. Scan for any running NeoBrowser visible Chrome
     for candidate_file in [
-        Path.home() / ".neorender" / "neo-browser-port.txt",
+        NEOBROWSER_HOME / "neo-browser-port.txt",
     ]:
         try:
             p = int(candidate_file.read_text().strip())

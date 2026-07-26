@@ -1,37 +1,26 @@
 """
-tools/v4/server.py
+NeoBrowser — MCP server (stdin/stdout JSON-RPC 2.0).
 
-NeoBrowser V4 — MCP Server (stdin/stdout JSON-RPC 2.0)
+Exposes a real, stealth-hardened Chrome (driven over the Chrome DevTools
+Protocol) as MCP tools so AI models can navigate the web autonomously —
+optionally reusing the user's real logged-in Chrome sessions.
 
-Exposes the Browser facade as MCP tools. Separate entry point from V3
-so both can run simultaneously for A/B comparison.
-
-Tools exposed:
-  navigate      — open URL in Chrome (tab pool reuse)
-  screenshot    — capture page as PNG base64
-  read          — extract page text via JS
-  find          — find element by intent (AX tree + LLM)
-  click         — click element by backendNodeId or selector
-  type          — type text into focused element (CDP Input.insertText)
-  console_logs  — get captured console log entries
-  network_log   — get captured network requests
-  metrics       — get Chrome performance metrics
-  save_cookies  — persist session cookies to disk
-  restore_cookies — inject saved cookies into tab
-  record_task   — start recording a playbook
-  stop_recording — stop recording, save playbook
-  replay        — replay a saved playbook
+Tool groups:
+  navigation      navigate, scroll, wait, page_info
+  observation     read, screenshot, extract, extract_table, console_logs,
+                  network_log, metrics, analyze, find
+  interaction     click, type, fill, form_fill, submit, find_and_click, login
+  session         save_cookies, restore_cookies, save_session, session_info
+  playbooks       record_task, stop_recording, replay
+  web/search      browse, search, search_images, search_videos
 
 Usage:
-  python3 tools/v4/server.py             # start MCP server
-  python3 tools/v4/server.py --version   # print version
-  python3 tools/v4/server.py doctor      # check deps
+  neobrowser              # start the MCP server (reads JSON-RPC from stdin)
+  neobrowser --version    # print version
+  neobrowser doctor       # check dependencies and Chrome
 
-Claude Code config (alongside V3):
-  {
-    "neo-browser-v3": {"command": "python3", "args": ["tools/v3/neo-browser.py"]},
-    "neo-browser-v4": {"command": "python3", "args": ["tools/v4/server.py"]}
-  }
+MCP client config:
+  { "neobrowser": { "command": "neobrowser" } }
 """
 from __future__ import annotations
 
@@ -45,8 +34,8 @@ from typing import Any
 # Ensure repo root (parent of the neobrowser package) on path when run directly
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-VERSION = "4.0.0"
-SERVER_NAME = "neo-browser-v4"
+VERSION = "1.0.0"
+SERVER_NAME = "neobrowser"
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -86,7 +75,7 @@ def _resolve_attach_port() -> int | None:
     """
     Resolve which Chrome port to attach to, in priority order:
     1. NEOBROWSER_ATTACH_PORT env var (explicit override)
-    2. ~/.neorender/neo-browser-port.txt written by V3 (dynamic, read at call time)
+    2. The port handoff file under NEOBROWSER_HOME (dynamic, read at call time)
     Returns None if no reachable Chrome is found.
     """
     import urllib.request as _ur
@@ -113,8 +102,9 @@ def _resolve_attach_port() -> int | None:
         if _reachable(p):
             return p
 
-    # 2. V3 port file (re-read every time — V3 Chrome may have restarted)
-    port_file = os.path.expanduser("~/.neorender/neo-browser-port.txt")
+    # 2. Port handoff file (re-read every time — an attached Chrome may restart)
+    from neobrowser.paths import PORT_FILE
+    port_file = str(PORT_FILE)
     if os.path.exists(port_file):
         try:
             p = int(open(port_file).read().strip())
@@ -229,14 +219,14 @@ def _get_tab(url: str | None = None, wait_s: float = 3.0):
 
 TOOLS = {
     "navigate": {
-        "description": "Open URL in Chrome (V4: tab pool reuse, AX cache, thread-safe). Required for SPAs, JS-heavy sites, and login-required pages.",
+        "description": "Open URL in Chrome (tab pool reuse, AX cache, thread-safe). Required for SPAs, JS-heavy sites, and login-required pages.",
         "schema": {
             "url":    {"type": "string",  "description": "HTTP/HTTPS URL to open", "required": True},
             "wait_s": {"type": "number",  "description": "Seconds to wait for page render (default 3.0)"},
         },
     },
     "screenshot": {
-        "description": "Capture current page viewport as base64 PNG. V4: also supports JPEG.",
+        "description": "Capture current page viewport as base64 PNG. also supports JPEG.",
         "schema": {
             "format":  {"type": "string", "description": "Image format: png (default) or jpeg"},
             "quality": {"type": "integer","description": "JPEG quality 0-100 (default 80, ignored for PNG)"},
@@ -268,54 +258,54 @@ TOOLS = {
         },
     },
     "console_logs": {
-        "description": "Get captured browser console log entries (log/warning/error/exception). V4 only.",
+        "description": "Get captured browser console log entries (log/warning/error/exception).",
         "schema": {
             "level": {"type": "string", "description": "Filter by level: log, info, warning, error (default: all)"},
             "limit": {"type": "integer","description": "Max entries to return (default 50)"},
         },
     },
     "network_log": {
-        "description": "Get captured network requests with status, duration, size. V4 only.",
+        "description": "Get captured network requests with status, duration, size.",
         "schema": {
             "url_pattern": {"type": "string", "description": "Filter by URL substring (default: all)"},
             "limit":       {"type": "integer","description": "Max entries (default 50)"},
         },
     },
     "metrics": {
-        "description": "Get Chrome performance metrics: JSHeapUsedSize, Nodes, Documents, etc. V4 only.",
+        "description": "Get Chrome performance metrics: JSHeapUsedSize, Nodes, Documents, etc.",
         "schema": {
             "key": {"type": "string", "description": "Return only this metric (default: all)"},
         },
     },
     "save_cookies": {
-        "description": "Save current session cookies to ~/.neorender/cookies/{profile}.json (0600 perms). V4 only.",
+        "description": "Save current session cookies to ~/.neobrowser/cookies/{profile}.json (0600 perms).",
         "schema": {},
     },
     "restore_cookies": {
-        "description": "Inject saved cookies from disk into current tab. Returns count restored. V4 only.",
+        "description": "Inject saved cookies from disk into current tab. Returns count restored.",
         "schema": {},
     },
     "save_session": {
-        "description": "Full session save: cookies + localStorage → ~/.neorender/sessions/. Persists authenticated state so future V4 restarts are pre-authenticated. V4 only.",
+        "description": "Full session save: cookies + localStorage → ~/.neobrowser/sessions/. Persists authenticated state so future restarts are pre-authenticated.",
         "schema": {},
     },
     "session_info": {
-        "description": "Show session persistence state: last sync time, cookie count, domains, file paths. V4 only.",
+        "description": "Show session persistence state: last sync time, cookie count, domains, file paths.",
         "schema": {},
     },
     "record_task": {
-        "description": "Start recording interaction steps as a playbook for future replay. V4 only.",
+        "description": "Start recording interaction steps as a playbook for future replay.",
         "schema": {
             "domain":    {"type": "string", "description": "Domain key, e.g. 'linkedin.com'", "required": True},
             "task_name": {"type": "string", "description": "Task identifier, e.g. 'send_message'", "required": True},
         },
     },
     "stop_recording": {
-        "description": "Stop recording and save playbook to disk. Returns step count. V4 only.",
+        "description": "Stop recording and save playbook to disk. Returns step count.",
         "schema": {},
     },
     "replay": {
-        "description": "Replay a saved playbook. Returns {ok, first_failed_step}. V4 only.",
+        "description": "Replay a saved playbook. Returns {ok, first_failed_step}.",
         "schema": {
             "domain":    {"type": "string", "description": "Domain key", "required": True},
             "task_name": {"type": "string", "description": "Task name", "required": True},
@@ -2267,7 +2257,7 @@ def _handle(req: dict) -> None:
 
 
 def _doctor() -> None:
-    print(f"NeoBrowser V4 — {VERSION}")
+    print(f"NeoBrowser — {VERSION}")
     print()
 
     # Python
@@ -2293,10 +2283,10 @@ def _doctor() -> None:
     chrome_ok = os.path.exists(CHROME_BIN)
     print(f"Chrome: {'OK' if chrome_ok else 'NOT FOUND'} ({CHROME_BIN})")
 
-    # Browser
+    # Modules
     print()
-    print("V4 modules: tools/v4/browser.py, session.py, tab_pool.py, page_analyzer.py,")
-    print("            chrome_tab.py, chrome_process.py, playbook.py, lifecycle.py")
+    print("Modules: browser, session, tab_pool, page_analyzer, chrome_tab,")
+    print("         chrome_process, cookie_sync, playbook, lifecycle")
 
     print()
     if chrome_ok:

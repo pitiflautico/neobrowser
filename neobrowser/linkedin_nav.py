@@ -1,5 +1,5 @@
 """
-tools/v4/linkedin_nav.py
+linkedin_nav.py
 
 Tier 3: LinkedIn SPA navigation helper.
 

@@ -1,16 +1,16 @@
 """
-tools/v4/lifecycle.py
+lifecycle.py
 
 F11 — Data Lifecycle Manager (Deletion + Compaction)
 
-Manages all persistent data under ~/.neorender/:
-  - Playbooks:      ~/.neorender/playbooks/{domain}/{task}.json
-  - Cookies:        ~/.neorender/cookies/{profile}.json
-  - Chrome profiles:~/.neorender/profiles/{name}/
-  - Log exports:    ~/.neorender/logs/*.jsonl (rotation)
+Manages all persistent data under ~/.neobrowser/:
+  - Playbooks:      ~/.neobrowser/playbooks/{domain}/{task}.json
+  - Cookies:        ~/.neobrowser/cookies/{profile}.json
+  - Chrome profiles:~/.neobrowser/profiles/{name}/
+  - Log exports:    ~/.neobrowser/logs/*.jsonl (rotation)
 
 Safety invariants:
-  - No deletion outside NEORENDER_BASE (is_relative_to() guard)
+  - No deletion outside NEOBROWSER_HOME (is_relative_to() guard)
   - active_profiles set prevents live-session profiles from being deleted
   - Per-file errors are collected, not raised (non-fatal)
   - dry_run=True logs what would happen, touches nothing
@@ -29,9 +29,7 @@ from neobrowser.session import COOKIES_BASE
 
 log = logging.getLogger(__name__)
 
-NEORENDER_BASE = Path.home() / ".neorender"
-PLAYBOOKS_BASE = NEORENDER_BASE / "playbooks"
-LOGS_BASE = NEORENDER_BASE / "logs"
+from neobrowser.paths import NEOBROWSER_HOME, PLAYBOOKS_BASE, LOGS_BASE
 
 _DEFAULT_PLAYBOOK_TTL_DAYS = 30
 _DEFAULT_COOKIE_TTL_DAYS = 7
@@ -63,7 +61,7 @@ class CompactionReport:
 
 class DataLifecycleManager:
     """
-    Manages deletion and compaction of all ~/.neorender/ persistent data.
+    Manages deletion and compaction of all ~/.neobrowser/ persistent data.
 
     Usage:
         mgr = DataLifecycleManager(active_profiles={"linkedin", "default"})
@@ -97,11 +95,11 @@ class DataLifecycleManager:
 
     def _safe_path(self, path: Path) -> Path:
         """
-        Resolve path and assert it is under NEORENDER_BASE.
+        Resolve path and assert it is under NEOBROWSER_HOME.
         Raises ValueError on path traversal attempt.
         """
         resolved = path.resolve()
-        base = NEORENDER_BASE.resolve()
+        base = NEOBROWSER_HOME.resolve()
         if not resolved.is_relative_to(base):
             raise ValueError(
                 f"Path traversal detected: {path!r} resolves to {resolved!r} "

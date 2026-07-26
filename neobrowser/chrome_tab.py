@@ -1,22 +1,21 @@
 """
-tools/v4/chrome_tab.py
+chrome_tab.py
 
 Tier 1: Isolated CDP connection to a single Chrome tab.
 
-Fixes V3 bugs:
-- V3 _active race condition: V3's GhostChrome.ws returns self._tabs[self._active];
-  any thread can change _active between the read and the send. V4: each ChromeTab
-  owns its own WebSocket — no shared _active pointer.
-- V3 _recv_lock shared across all tabs: one RLock for ALL tabs blocks Tab B while
-  Tab A is waiting for a response. V4: each ChromeTab has its own _lock.
-- V3 querySelector returns FIRST element: for "latest message" semantics we need
-  the LAST element. V4 wait_last() uses querySelectorAll + els[els.length-1].
-- V3 no health check: if WS dies mid-session there is no detection. V4 exposes ping().
-
-F03 additions:
-- Background reader thread owns all ws.recv() calls; routes CDP responses to
-  per-request queues and events to the page-event handler.
-- current_url(), page_title(), navigation_history(), is_at() from Page events.
+Design notes:
+- Each tab owns its own WebSocket — no shared "active tab" pointer that another
+  thread could change between a read and a send.
+- Each tab has its own lock, so one tab waiting on a response never blocks a send
+  on a different tab.
+- wait_last() uses querySelectorAll + els[els.length-1] to target the LAST
+  matching element (e.g. the latest chat message), not the first.
+- ping() health-checks the socket so a dead WebSocket is detected, not silently
+  used.
+- A background reader thread owns all ws.recv() calls, routing CDP command
+  responses to per-request queues and CDP events to the page-event handler; this
+  is what lets current_url()/page_title()/navigation_history()/is_at() stay
+  current from Page events.
 """
 from __future__ import annotations
 
@@ -79,7 +78,7 @@ class ChromeTab:
     Isolated CDP connection to a single Chrome tab.
 
     Each instance has its own WebSocket, lock, and ID counter.
-    No shared state with other tabs — fixes V3's _active race condition.
+    No shared state with other tabs.
 
     F03: A background reader thread owns all ws.recv() calls, routing CDP
     command responses to per-request queues and CDP events to the page
@@ -525,7 +524,7 @@ class ChromeTab:
 
         Returns the LAST matched element's innerText.
 
-        V3 bug fix: V3 used querySelector which returns the FIRST element.
+        V3 used querySelector which returns the FIRST element.
         V4 uses querySelectorAll + els[els.length-1] to return the LAST,
         which gives "most recent message" semantics in chat interfaces.
         """
@@ -1037,7 +1036,7 @@ class ChromeTab:
         """
         Inject cookies into the browser via CDP Network.setCookies.
 
-        V3 bug: cookies were synced once at startup from a Chromium profile
+        cookies were synced once at startup from a Chromium profile
         copy. V4: call this method any time — before navigation, mid-session,
         or after re-auth.
 

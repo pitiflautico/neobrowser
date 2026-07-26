@@ -1,7 +1,7 @@
 """
-tools/v4/google_search.py
+google_search.py
 
-Google Images and Videos search for NeoBrowser V4.
+Google Images and Videos search.
 
 Two public functions designed to be called from the MCP server tools:
 
