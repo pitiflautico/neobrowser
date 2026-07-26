@@ -496,6 +496,83 @@ def _detect_auth_wall(tab):
     return None
 
 
+def _record_if_recording(action: str, params: dict, fallback: dict | None = None) -> None:
+    """If a playbook recording is active, append this action as a step so
+    record_task -> ...actions... -> stop_recording actually captures them."""
+    if _browser is None or not getattr(_browser, "_recording_domain", None):
+        return
+    try:
+        from neobrowser.playbook import Step
+        _browser.record_step(Step(action, params, fallback))
+    except Exception:
+        pass
+
+
+def _search_google(tab, query: str, limit: int) -> list:
+    """
+    Text search via Google, using the real stealth browser. Returns [] if Google
+    shows its /sorry/ bot wall (clean profiles) — the caller then falls back to
+    DuckDuckGo. With NEOBROWSER_REAL_PROFILE set, the user's logged-in Google
+    session sails past that wall and this returns real results.
+    """
+    import urllib.parse as _parse
+    from neobrowser.google_search import _dismiss_consent
+    tab.navigate(f"https://www.google.com/search?q={_parse.quote_plus(query)}&hl=en&num=20", wait_s=3.0)
+    try:
+        _dismiss_consent(tab)
+    except Exception:
+        pass
+    url = tab.js("return location.href") or ""
+    if "/sorry/" in url or "consent.google" in url:
+        return []
+    raw = tab.js(r"""return JSON.stringify((function(limit){
+        const out = [], seen = new Set();
+        document.querySelectorAll('a h3').forEach(function(h3){
+            if (out.length >= limit) return;
+            const a = h3.closest('a[href]'); if (!a) return;
+            let href = a.href || '';
+            if (!href || href.indexOf('https://www.google.') === 0 || seen.has(href)) return;
+            seen.add(href);
+            let snip = '';
+            const c = a.closest('div.g, div.MjjYud, div[data-hveid]');
+            if (c) { const s = c.querySelector('.VwiC3b, div[data-sncf], span'); if (s) snip = s.textContent.slice(0,220); }
+            out.push({title: h3.textContent.trim(), url: href, snippet: snip.trim()});
+        });
+        return out;
+    })(%d))""" % limit)
+    try:
+        return json.loads(raw) if raw else []
+    except Exception:
+        return []
+
+
+def _search_duckduckgo(tab, query: str, limit: int) -> list:
+    """Text search via DuckDuckGo's no-JS endpoint through the real browser
+    (its genuine Chrome headers aren't blocked, unlike a raw HTTP fetch)."""
+    import urllib.parse as _parse
+    tab.navigate(f"https://html.duckduckgo.com/html/?q={_parse.quote_plus(query)}", wait_s=3.0)
+    raw = tab.js(r"""return JSON.stringify((function(limit){
+        const out = [], seen = new Set();
+        document.querySelectorAll('.result__body, .result').forEach(function(r){
+            if (out.length >= limit) return;
+            if ((r.className || '').indexOf('result--ad') !== -1) return;   // skip sponsored
+            const a = r.querySelector('.result__a'); if (!a) return;
+            let href = a.href || '';
+            if (href.indexOf('/y.js') !== -1 || href.indexOf('ad_domain') !== -1) return;  // ad redirect
+            try { const u = new URL(href); if (u.searchParams.get('uddg')) href = u.searchParams.get('uddg'); } catch(e){}
+            if (!href || seen.has(href)) return;
+            seen.add(href);
+            const sn = r.querySelector('.result__snippet');
+            out.push({title: a.textContent.trim(), url: href, snippet: sn ? sn.textContent.trim() : ''});
+        });
+        return out;
+    })(%d))""" % limit)
+    try:
+        return json.loads(raw) if raw else []
+    except Exception:
+        return []
+
+
 def dispatch_tool(name: str, args: dict) -> Any:
     if name in _PLUGIN_HANDLERS:
         return _PLUGIN_HANDLERS[name](args)
@@ -506,6 +583,7 @@ def dispatch_tool(name: str, args: dict) -> Any:
         url = args["url"]
         wait_s = float(args.get("wait_s", 3.0))
         tab = _get_tab(url, wait_s=wait_s)
+        _record_if_recording("navigate", {"url": url})
         msg = f"Navigated to {tab.current_url()}"
         wall = _detect_auth_wall(tab)
         if wall:
@@ -548,6 +626,7 @@ def dispatch_tool(name: str, args: dict) -> Any:
                     "functionDeclaration": "function(){this.click()}",
                     "returnByValue": True,
                 })
+                _record_if_recording("click_node", {"backend_node_id": int(node_id)})
                 return f"Clicked node {node_id}"
             return f"Node {node_id} not found in DOM"
         elif selector:
@@ -559,6 +638,7 @@ def dispatch_tool(name: str, args: dict) -> Any:
         tab = _get_tab()
         text = args["text"]
         tab.send("Input.insertText", {"text": text})
+        _record_if_recording("type", {"text": text})
         return f"Typed {len(text)} chars"
 
     elif name == "console_logs":
@@ -1079,33 +1159,19 @@ def dispatch_tool(name: str, args: dict) -> Any:
             return json.dumps({"ok": False, "error": str(e), "url": url_arg})
 
     elif name == "search":
-        import urllib.parse as _parse
-        import urllib.request as _req
-        import re as _re
         query = args["query"]
         limit = int(args.get("limit", 10))
-        encoded = _parse.quote_plus(query)
-        url_ddg = f"https://html.duckduckgo.com/html/?q={encoded}"
-        try:
-            request = _req.Request(url_ddg, headers={"User-Agent": "Mozilla/5.0 (compatible; neo-browser/4)"})
-            with _req.urlopen(request, timeout=15) as resp:
-                html = resp.read(512 * 1024).decode("utf-8", errors="replace")
-            results = []
-            # split on result__body (class may have extra tokens like "links_main links_deep result__body")
-            blocks = html.split('result__body')
-            for block in blocks[1:limit+1]:
-                title_m = _re.search(r'<a[^>]*class="result__a"[^>]*>(.+?)</a>', block, _re.DOTALL)
-                # DDG wraps URLs in redirect: uddg=<encoded_url>
-                url_m   = _re.search(r'uddg=([^&"]+)', block)
-                snip_m  = _re.search(r'class="result__snippet"[^>]*>(.+?)</a>', block, _re.DOTALL)
-                title   = _re.sub(r'<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
-                href    = _parse.unquote(url_m.group(1)) if url_m else ""
-                snippet = _re.sub(r'<[^>]+>', '', snip_m.group(1)).strip() if snip_m else ""
-                if title:
-                    results.append({"title": title, "url": href, "snippet": snippet})
-            return json.dumps({"query": query, "results": results[:limit]})
-        except Exception as e:
-            return json.dumps({"ok": False, "error": str(e)})
+        tab = _get_tab()
+        # Drive the real stealth browser (a raw HTTP fetch gets bot-blocked).
+        # Try Google first — it works when NEOBROWSER_REAL_PROFILE is set (the
+        # user's logged-in session avoids Google's /sorry/ wall). Fall back to
+        # DuckDuckGo, which serves results to any genuine browser.
+        engine = "google"
+        results = _search_google(tab, query, limit)
+        if not results:
+            engine = "duckduckgo"
+            results = _search_duckduckgo(tab, query, limit)
+        return json.dumps({"query": query, "engine": engine, "results": results[:limit]})
 
     elif name == "search_images":
         from neobrowser import google_search as _gs

@@ -242,7 +242,7 @@ return (function(count) {
                 if (parts.length >= 2 && !channel) {
                     const candidate = parts[1] || parts[0] || '';
                     // Reject if it looks like metadata ("1 year ago", "1.4M views", etc.)
-                    if (candidate.length < 60 && !/\d+\s*(year|month|day|view|ago)/i.test(candidate)) {
+                    if (candidate.length < 60 && !/\\d+\\s*(year|month|day|view|ago)/i.test(candidate)) {
                         channel = candidate;
                     }
                 }
