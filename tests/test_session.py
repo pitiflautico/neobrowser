@@ -226,10 +226,11 @@ class TestSessionSecurityFixes:
 
 class TestSessionOpenTab:
 
+    @patch("neobrowser.cookie_sync.post_launch_restore", return_value=0)
     @patch("neobrowser.session.wait_for_chrome", return_value=True)
     @patch("neobrowser.session.ChromeProcess.launch")
     @patch("neobrowser.chrome_tab.ChromeTab.open")
-    def test_open_tab_returns_chrome_tab(self, mock_tab_open, mock_launch, mock_wait):
+    def test_open_tab_returns_chrome_tab(self, mock_tab_open, mock_launch, mock_wait, mock_restore):
         """open_tab() returns a ChromeTab instance."""
         chrome = _make_healthy_chrome(port=9222)
         mock_launch.return_value = chrome
@@ -241,10 +242,11 @@ class TestSessionOpenTab:
         mock_tab_open.assert_called_once_with(9222)
         assert isinstance(tab, ChromeTab)
 
+    @patch("neobrowser.cookie_sync.post_launch_restore", return_value=0)
     @patch("neobrowser.session.wait_for_chrome", return_value=True)
     @patch("neobrowser.session.ChromeProcess.launch")
     @patch("neobrowser.chrome_tab.ChromeTab.open")
-    def test_open_tab_calls_ensure_first(self, mock_tab_open, mock_launch, mock_wait):
+    def test_open_tab_calls_ensure_first(self, mock_tab_open, mock_launch, mock_wait, mock_restore):
         """open_tab() calls ensure() to guarantee Chrome is healthy."""
         dead = _make_dead_chrome()
         fresh = _make_healthy_chrome(port=8888)

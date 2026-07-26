@@ -56,7 +56,30 @@ log = logging.getLogger(__name__)
 _browser = None  # type: ignore[assignment]
 _current_tab = None  # type: ignore[assignment]
 _chat_pipelines: dict = {}  # platform → ChatPipeline instance
-_cookies_injected: bool = False  # guard: inject real-Chrome cookies once per server lifetime
+_cookies_injected: bool = False  # guard: inject real-Chrome cookies once per Browser
+_cookie_injection_attempts: int = 0  # bounded retry budget, reset when the Browser is replaced
+
+
+def _drop_browser() -> None:
+    """
+    Close and forget the current Browser, resetting its per-Browser state.
+
+    Recovery paths (dead Chrome / stale WebSocket) replace the Browser; without
+    closing the old one first its spawned Chrome process is orphaned on every
+    cycle. Also resets the cookie-injection guard so real-Chrome cookies are
+    re-injected into the fresh Browser.
+    """
+    global _browser, _current_tab, _cookies_injected, _cookie_injection_attempts
+    old = _browser
+    _browser = None
+    _current_tab = None
+    _cookies_injected = False
+    _cookie_injection_attempts = 0
+    if old is not None:
+        try:
+            old.close()
+        except Exception:
+            pass
 
 
 def _resolve_attach_port() -> int | None:
@@ -69,9 +92,17 @@ def _resolve_attach_port() -> int | None:
     import urllib.request as _ur
 
     def _reachable(port: int) -> bool:
+        # Verify it's genuinely a Chrome DevTools endpoint, not just any HTTP 200
+        # process that happens to hold the port.
         try:
-            _ur.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1.0)
-            return True
+            with _ur.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1.0) as resp:
+                info = json.loads(resp.read().decode())
+            browser = info.get("Browser", "")
+            return (
+                browser.startswith("Chrome/")
+                or browser.startswith("Chromium/")
+                or browser.startswith("HeadlessChrome/")
+            )
         except Exception:
             return False
 
@@ -108,8 +139,7 @@ def _get_browser():
         except Exception:
             # Chrome died or changed port — force full re-resolution
             log.warning("Cached browser port unreachable, re-resolving Chrome...")
-            _browser = None
-            _current_tab = None
+            _drop_browser()
 
     if _browser is None:
         from neobrowser.browser import Browser
@@ -127,9 +157,15 @@ def _get_browser():
 
 
 def _inject_real_chrome_cookies_once(tab) -> None:
-    """Inject decrypted real-Chrome cookies into tab (once per server lifetime)."""
-    global _cookies_injected
-    if _cookies_injected:
+    """
+    Inject decrypted real-Chrome cookies into tab, once per Browser.
+
+    Only marks the guard done on SUCCESS. A failure (e.g. a transient CDP
+    timeout) is retried on the next tab acquisition, up to a small budget,
+    instead of permanently disabling real-session auth for the whole run.
+    """
+    global _cookies_injected, _cookie_injection_attempts
+    if _cookies_injected or _cookie_injection_attempts >= 3:
         return
     try:
         from neobrowser.cookie_sync import inject_from_real_chrome
@@ -139,8 +175,11 @@ def _inject_real_chrome_cookies_once(tab) -> None:
         _cookies_injected = True
         log.info("_inject_real_chrome_cookies_once: injected %d cookies (profile=%s)", injected, profile_name)
     except Exception as exc:
-        log.warning("_inject_real_chrome_cookies_once failed (non-fatal): %s", exc)
-        _cookies_injected = True  # don't retry on every call
+        _cookie_injection_attempts += 1
+        log.warning(
+            "_inject_real_chrome_cookies_once failed (attempt %d/3, non-fatal): %s",
+            _cookie_injection_attempts, exc,
+        )
 
 
 def _get_tab(url: str | None = None, wait_s: float = 3.0):
@@ -148,9 +187,8 @@ def _get_tab(url: str | None = None, wait_s: float = 3.0):
     global _current_tab, _browser
 
     def _fresh_browser():
-        """Re-resolve Chrome port and create new Browser instance."""
-        global _browser
-        _browser = None
+        """Close the dead Browser, re-resolve Chrome, and create a fresh one."""
+        _drop_browser()
         return _get_browser()
 
     b = _get_browser()
@@ -1851,11 +1889,16 @@ def dispatch_tool(name: str, args: dict) -> Any:
 
     elif name == "login":
         import time as _time
-        tab = _get_tab()
+        from urllib.parse import urlparse as _urlparse
         url_arg = args["url"]
         email = args["email"]
         password = args["password"]
-        tab.open(url_arg, wait_s=3.0)
+        # Never send credentials over plaintext, and never to a non-web scheme.
+        if _urlparse(url_arg).scheme != "https":
+            return json.dumps({"ok": False, "error": "login requires an https:// URL"})
+        # _get_tab(url) navigates the pooled tab (the old tab.open() call was a
+        # classmethod and crashed on every invocation).
+        tab = _get_tab(url_arg, wait_s=3.0)
         _time.sleep(1)
         # fill email
         tab.js(f'''
@@ -1894,7 +1937,16 @@ def dispatch_tool(name: str, args: dict) -> Any:
         _time.sleep(3)
         final_url = tab.js("return location.href") or ""
         title = tab.js("return document.title") or ""
-        return json.dumps({"ok": True, "url": final_url, "title": title})
+        # Honest success signal: a lingering password field usually means the
+        # login did not complete (bad credentials, an extra step, or a challenge)
+        # — report that instead of a blind ok:True.
+        still_login = bool(tab.js("return !!document.querySelector('input[type=password]')"))
+        return json.dumps({
+            "ok": not still_login,
+            "url": final_url,
+            "title": title,
+            "still_has_password_field": still_login,
+        })
 
     elif name == "extract":
         tab = _get_tab()
@@ -1998,9 +2050,13 @@ def dispatch_tool(name: str, args: dict) -> Any:
 
     elif name == "browse":
         import urllib.request as _req
-        import urllib.error as _uerr
+        from urllib.parse import urlparse as _urlparse
         url_arg = args["url"]
         headers = args.get("headers", {})
+        # Only fetch over http(s) — block file://, ftp://, data:, etc.
+        # (arbitrary local-file read / SSRF via a caller- or page-supplied URL).
+        if _urlparse(url_arg).scheme.lower() not in ("http", "https"):
+            return json.dumps({"ok": False, "error": "browse only supports http(s) URLs", "url": url_arg})
         try:
             request = _req.Request(url_arg, headers={"User-Agent": "Mozilla/5.0 (compatible; neo-browser/4)", **headers})
             with _req.urlopen(request, timeout=15) as resp:
@@ -2016,7 +2072,8 @@ def dispatch_tool(name: str, args: dict) -> Any:
                 text = _re.sub(r'<[^>]+>', ' ', text)
                 text = _re.sub(r'\s+', ' ', text).strip()
                 return json.dumps({"url": url_arg, "text": text[:8000], "content_type": content_type})
-        except _uerr.URLError as e:
+        except (OSError, UnicodeDecodeError) as e:
+            # OSError covers URLError, socket.timeout, and TimeoutError.
             return json.dumps({"ok": False, "error": str(e), "url": url_arg})
 
     elif name == "search":
@@ -2049,8 +2106,7 @@ def dispatch_tool(name: str, args: dict) -> Any:
             return json.dumps({"ok": False, "error": str(e)})
 
     elif name == "search_images":
-        import importlib, neobrowser.google_search as _gs
-        importlib.reload(_gs)
+        from neobrowser import google_search as _gs
         tab = _get_tab()
         query = args["query"]
         count = int(args.get("count", 10))
@@ -2058,8 +2114,7 @@ def dispatch_tool(name: str, args: dict) -> Any:
         return json.dumps({"query": query, "count": len(results), "results": results}, ensure_ascii=False)
 
     elif name == "search_videos":
-        import importlib, neobrowser.google_search as _gs
-        importlib.reload(_gs)
+        from neobrowser import google_search as _gs
         tab = _get_tab()
         query = args["query"]
         count = int(args.get("count", 10))
@@ -2067,8 +2122,7 @@ def dispatch_tool(name: str, args: dict) -> Any:
         return json.dumps({"query": query, "count": len(results), "results": results}, ensure_ascii=False)
 
     elif name == "search_twitter_videos":
-        import importlib, neobrowser.twitter_search as _ts
-        importlib.reload(_ts)
+        from neobrowser import twitter_search as _ts
         query = args["query"]
         count = int(args.get("count", 10))
         # twitter_search manages its own visible Chrome (no headless tab)
@@ -2179,6 +2233,17 @@ def _handle(req: dict) -> None:
             result = dispatch_tool(tool_name, tool_args)
             if result is None:
                 result = ""
+            # Screenshots are binary base64 — return them as MCP image content so
+            # they are never corrupted by the text length cap below (a mid-base64
+            # slice both breaks the image and can emit invalid JSON).
+            if tool_name == "screenshot":
+                try:
+                    shot = json.loads(result) if isinstance(result, str) else result
+                    mime = "image/jpeg" if shot.get("format") == "jpeg" else "image/png"
+                    _respond(req_id, {"content": [{"type": "image", "data": shot["data"], "mimeType": mime}]})
+                    return
+                except Exception:
+                    pass  # fall through to text handling on any unexpected shape
             text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             if len(text) > 500_000:
                 text = text[:500_000] + f"\n... (truncated from {len(text)} chars)"
@@ -2254,17 +2319,28 @@ def main() -> None:
             return
 
     # MCP server mode — read JSON-RPC from stdin
-    _log_level = os.environ.get("NEO_LOG_LEVEL", "DEBUG").upper()
+    _log_level = os.environ.get(
+        "NEOBROWSER_LOG_LEVEL", os.environ.get("NEO_LOG_LEVEL", "INFO")
+    ).upper()
     logging.basicConfig(
-        level=getattr(logging, _log_level, logging.DEBUG),
+        level=getattr(logging, _log_level, logging.INFO),
         stream=sys.stderr,
-        format="[neo-v4] %(levelname)s %(name)s: %(message)s",
+        format="[neobrowser] %(levelname)s %(name)s: %(message)s",
     )
-    # Also write to file for debugging (readable by developer tools)
-    _fh = logging.FileHandler("/tmp/neo_v4_debug.log", mode="a")
-    _fh.setLevel(logging.DEBUG)
-    _fh.setFormatter(logging.Formatter("[neo-v4] %(asctime)s %(levelname)s %(name)s: %(message)s"))
-    logging.getLogger().addHandler(_fh)
+    # Optional rotating debug log — opt in via NEOBROWSER_DEBUG_LOG (=1 for a
+    # tempdir file, or an absolute path). Off by default; bounded when on.
+    _debug_log = os.environ.get("NEOBROWSER_DEBUG_LOG")
+    if _debug_log:
+        import tempfile
+        from logging.handlers import RotatingFileHandler
+        log_path = (
+            _debug_log if os.path.isabs(_debug_log)
+            else os.path.join(tempfile.gettempdir(), "neobrowser_debug.log")
+        )
+        _fh = RotatingFileHandler(log_path, maxBytes=10 * 1024 * 1024, backupCount=3)
+        _fh.setLevel(getattr(logging, _log_level, logging.INFO))
+        _fh.setFormatter(logging.Formatter("[neobrowser] %(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(_fh)
     for line in sys.stdin:
         line = line.strip()
         if not line:

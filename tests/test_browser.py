@@ -64,7 +64,7 @@ def test_browser_constructs_components():
         MockPool.return_value.stats.return_value = {"total": 0, "idle": 0, "in_use": 0}
         b = Browser(profile="myprofile", pool_size=4, ax_cache_ttl_s=10.0)
 
-    MockSession.assert_called_once_with("myprofile")
+    MockSession.assert_called_once_with("myprofile", visible=False)
     MockPool.assert_called_once()
     MockAnalyzer.assert_called_once_with(cache_ttl_s=10.0)
 

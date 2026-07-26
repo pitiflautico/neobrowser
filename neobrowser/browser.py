@@ -121,8 +121,14 @@ class Browser:
         tab = self._pool.acquire(url=url)
         # TabPool.acquire only does URL-aware reuse (checks tab.is_at(url)).
         # If the returned tab is not already at url, navigate now.
-        if not tab.is_at(url):
-            tab.navigate(url, wait_s=wait_s)
+        try:
+            if not tab.is_at(url):
+                tab.navigate(url, wait_s=wait_s)
+        except Exception:
+            # Don't leak the pool slot if navigation fails — release the tab
+            # back to the pool before propagating the error.
+            self._pool.release(tab)
+            raise
         return tab  # type: ignore[return-value]  # _AcquiredTab proxies ChromeTab
 
     def close_tab(self, tab: "ChromeTab") -> None:

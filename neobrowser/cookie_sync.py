@@ -3,9 +3,13 @@ tools/v4/cookie_sync.py
 
 Three-layer session persistence for V4.
 
-Layer 1 — Pre-launch file sync (SQLite + Local Storage + IndexedDB)
-    Copy from the real Chrome profile to the ghost profile dir BEFORE
-    ChromeProcess.launch(). Chrome reads them natively at startup.
+Layer 1 — Pre-launch sync (cookies decrypted to JSON; storage file-copied)
+    Cookies are decrypted from the real Chrome profile's SQLite DB via the
+    macOS Keychain AES key and persisted as JSON — the Cookies SQLite file
+    itself is never copied (see decrypt_real_chrome_cookies()). Local
+    Storage / Session Storage / IndexedDB ARE copied directory-to-directory
+    into the ghost profile dir, BEFORE ChromeProcess.launch(), so Chrome
+    reads them natively at startup.
     Source: ~/Library/Application Support/Google/Chrome/{REAL_PROFILE}/
     Dest:   ~/.neorender/profiles/{name}/Default/
 
@@ -21,11 +25,13 @@ Layer 3 — Auto-save (tab → JSON session cache)
     Source: running ChromeTab
     Dest:   ~/.neorender/sessions/{name}/{cookies,local_storage,manifest}.json
 
-Excluded domains (Google):
-    Google detects duplicate sessions from headless Chrome and logs out
-    the real browser. These domains are never synced file-to-file.
-    CDP injection: excluded only during pre-launch; fine to save/restore
-    post-launch because they come from the tab's own session.
+Excluded session-identity cookies (Google, LinkedIn, Microsoft):
+    These sites detect duplicate sessions when a second Chrome instance
+    shares the same session-identity cookies and log out the real browser.
+    Their session-identity cookie names (see _SESSION_AUTH_EXCLUSIONS) are
+    never decrypted/synced file-to-file. CDP injection: excluded only
+    during pre-launch; fine to save/restore post-launch because they come
+    from the tab's own session.
 
 Environment:
     NEOBROWSER_REAL_PROFILE  — Chrome profile subfolder name (default: "Profile 24")
@@ -36,9 +42,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -102,8 +110,14 @@ def _decrypt_chrome_value(encrypted: bytes, key: bytes) -> str | None:
         cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
         decryptor = cipher.decryptor()
         plaintext = decryptor.update(ciphertext) + decryptor.finalize()
-        # PKCS7 unpad
+        if not plaintext:
+            return None
+        # PKCS7 unpad — validate before slicing so a garbage decrypt (wrong
+        # key, corrupted ciphertext) is dropped instead of yielding a bogus
+        # empty-ish value that gets stored as if it were a real cookie.
         pad_len = plaintext[-1]
+        if pad_len < 1 or pad_len > 16 or len(plaintext) < 32 + pad_len:
+            return None
         unpadded = plaintext[:-pad_len]
         # Skip the 32-byte internal prefix Chrome prepends to every plaintext
         return unpadded[32:].decode("utf-8", errors="replace")
@@ -135,18 +149,10 @@ def decrypt_real_chrome_cookies(domains: list[str] | None = None) -> list[dict]:
         return []
 
     try:
-        # Open read-only without WAL lock
-        conn = sqlite3.connect(f"file:{src}?mode=ro&nolock=1", uri=True)
-        rows = conn.execute(
-            "SELECT host_key, name, value, path, expires_utc, is_secure, "
-            "is_httponly, samesite, encrypted_value FROM cookies"
-        ).fetchall()
-        conn.close()
+        rows = _read_cookies_rows_safely(src)
     except Exception as exc:
         log.warning("cookie_sync: could not read real Chrome Cookies: %s", exc)
         return []
-
-    _google_domains = _FILE_SYNC_EXCLUDED_DOMAINS  # shorthand
 
     cdp_cookies: list[dict] = []
     skipped = 0
@@ -155,9 +161,14 @@ def decrypt_real_chrome_cookies(domains: list[str] | None = None) -> list[dict]:
             continue
         if domains and not any(host_key.endswith(d) for d in domains):
             continue
-        # For Google domains: allow preference/search cookies, block auth session cookies
-        is_google = any(host_key.endswith(d) for d in _google_domains)
-        if is_google and name in _GOOGLE_AUTH_COOKIE_NAMES:
+        # Skip session-identity cookies for domains known to log out the real
+        # browser on duplicate-session detection (see _SESSION_AUTH_EXCLUSIONS).
+        # Preference/consent/search cookies for these same domains are safe
+        # and are NOT in these sets, so they're still decrypted/synced.
+        if any(
+            name in auth_names and any(host_key.endswith(d) for d in domain_suffixes)
+            for domain_suffixes, auth_names in _SESSION_AUTH_EXCLUSIONS.values()
+        ):
             continue
 
         # Prefer decrypted value
@@ -175,7 +186,7 @@ def decrypt_real_chrome_cookies(domains: list[str] | None = None) -> list[dict]:
         if expires_utc and expires_utc > 0:
             expires_unix = int((expires_utc - 11644473600_000_000) / 1_000_000)
 
-        samesite_map = {0: "Strict", 1: "Lax", 2: "None", -1: "Unspecified"}
+        samesite_map = {-1: "Unspecified", 0: "None", 1: "Lax", 2: "Strict"}
         cdp_cookies.append({
             "name": name,
             "value": cookie_value,
@@ -202,31 +213,61 @@ _REAL_CHROME_BASE = (
 )
 _SESSIONS_BASE = Path.home() / ".neorender" / "sessions"
 
-REAL_PROFILE = os.environ.get("NEOBROWSER_REAL_PROFILE", "Profile 24")
+# Real Chrome profile folder names look like "Profile 24" or "Default" —
+# allow letters, digits, spaces, hyphens, underscores. This also rejects path
+# separators, "..", and null bytes since none of those are in the allowed set.
+_SAFE_REAL_PROFILE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$')
+
+
+def _validate_real_profile(name: str) -> str:
+    """Raise ValueError if NEOBROWSER_REAL_PROFILE is unsafe to use in a filesystem path."""
+    if not _SAFE_REAL_PROFILE_RE.match(name):
+        raise ValueError(
+            f"Invalid NEOBROWSER_REAL_PROFILE {name!r}. Only letters, digits, "
+            "spaces, hyphens, and underscores are allowed (max 64 chars)."
+        )
+    return name
+
+
+REAL_PROFILE = _validate_real_profile(os.environ.get("NEOBROWSER_REAL_PROFILE", "Profile 24"))
 SYNC_TTL_S = float(os.environ.get("NEOBROWSER_SYNC_TTL", "300"))  # 5 min default
+
+# Centralized map of (domain suffixes) -> session-identity cookie names to
+# exclude from file-to-file sync / CDP inject. These sites detect duplicate
+# sessions when a second Chrome instance shares the same session-identity
+# cookies and log out the real browser. Preference/consent/search cookies
+# for these same domains are NOT in these sets, so they still sync normally.
+_SESSION_AUTH_EXCLUSIONS: dict[str, tuple[tuple[str, ...], frozenset[str]]] = {
+    "google": (
+        (".google.com", ".google.es", ".googleapis.com", ".gstatic.com",
+         ".youtube.com", ".accounts.google.com", ".gmail.com"),
+        frozenset({
+            "SID", "HSID", "SSID", "APISID", "SAPISID",
+            "__Secure-1PSID", "__Secure-3PSID",
+            "__Secure-1PAPISID", "__Secure-3PAPISID",
+            "__Secure-1PSIDCC", "__Secure-3PSIDCC",
+            "__Secure-1PSIDTS", "__Secure-3PSIDTS",
+            "SIDCC", "LSID",
+        }),
+    ),
+    "linkedin": (
+        (".linkedin.com",),
+        frozenset({"li_at", "JSESSIONID"}),
+    ),
+    "microsoft": (
+        (".login.microsoftonline.com", ".login.live.com", ".login.windows.net",
+         ".microsoftonline.com"),
+        frozenset({"ESTSAUTH", "ESTSAUTHPERSISTENT", "ESTSAUTHLIGHT", "buid"}),
+    ),
+}
 
 # Domains excluded from SQLite file-level sync (legacy path, kept for _exclude_google_from_db).
 # File-level copy is no longer used (replaced by Keychain decrypt + CDP inject),
 # but the list is still used if someone calls _exclude_google_from_db directly.
-_FILE_SYNC_EXCLUDED_DOMAINS = (
-    ".google.com", ".google.es", ".googleapis.com", ".gstatic.com",
-    ".youtube.com", ".accounts.google.com", ".gmail.com",
-)
+_FILE_SYNC_EXCLUDED_DOMAINS = _SESSION_AUTH_EXCLUSIONS["google"][0]
 
 # Alias used by legacy code paths that reference _EXCLUDED_DOMAINS directly.
 _EXCLUDED_DOMAINS = _FILE_SYNC_EXCLUDED_DOMAINS
-
-# Google auth cookie names to skip during CDP inject.
-# These session-identity cookies could cause Google to flag a duplicate login.
-# Preference/consent/search cookies (NID, CONSENT, AEC, SOCS, ANID…) are safe to inject.
-_GOOGLE_AUTH_COOKIE_NAMES = frozenset({
-    "SID", "HSID", "SSID", "APISID", "SAPISID",
-    "__Secure-1PSID", "__Secure-3PSID",
-    "__Secure-1PAPISID", "__Secure-3PAPISID",
-    "__Secure-1PSIDCC", "__Secure-3PSIDCC",
-    "__Secure-1PSIDTS", "__Secure-3PSIDTS",
-    "SIDCC", "LSID",
-})
 
 _sync_lock = threading.Lock()  # one sync at a time across all threads
 
@@ -288,6 +329,45 @@ def _copy_with_wal(src: Path, dst: Path) -> None:
         conn.close()
     except Exception as exc:
         log.debug("WAL checkpoint failed (non-fatal): %s", exc)
+
+
+def _read_cookies_rows_safely(src: Path, retries: int = 3) -> list[tuple]:
+    """
+    Read all rows from the real Chrome Cookies SQLite DB without touching the
+    live file while Chrome may be writing to it.
+
+    Copies the DB (+ -wal/-shm sidecars) to a private temp file via
+    _copy_with_wal(), then opens that copy read-only. Retries a few times on
+    'database is locked' since the copy can race with an in-flight write from
+    the real Chrome process.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        with tempfile.TemporaryDirectory(prefix="neobrowser_cookies_") as tmp_dir:
+            tmp_db = Path(tmp_dir) / "Cookies"
+            try:
+                _copy_with_wal(src, tmp_db)
+                conn = sqlite3.connect(f"file:{tmp_db}?mode=ro", uri=True)
+                try:
+                    return conn.execute(
+                        "SELECT host_key, name, value, path, expires_utc, is_secure, "
+                        "is_httponly, samesite, encrypted_value FROM cookies"
+                    ).fetchall()
+                finally:
+                    conn.close()
+            except sqlite3.OperationalError as exc:
+                last_exc = exc
+                if "locked" in str(exc).lower() and attempt < retries:
+                    log.debug(
+                        "cookie_sync: Cookies DB locked, retry %d/%d: %s",
+                        attempt, retries, exc,
+                    )
+                    time.sleep(0.2 * attempt)
+                    continue
+                raise
+    if last_exc:
+        raise last_exc
+    return []
 
 
 def _exclude_google_from_db(cookies_db: Path) -> tuple[int, int]:
@@ -405,6 +485,46 @@ def pre_launch_sync(profile_dir: Path, profile_name: str, force: bool = False) -
 # Layer 2: Post-launch CDP inject
 # ---------------------------------------------------------------------------
 
+# Chrome's CDP handler can stall for the full send timeout when handed a
+# large (or odd) cookie set in a single Network.setCookies call (observed:
+# "No response for Network.setCookies within 30s", blocking session open for
+# the whole timeout). Inject in small batches with a short per-batch timeout
+# so no single call can ever block for the full default 30s, and a bad batch
+# is skipped instead of aborting the rest.
+_COOKIE_INJECT_BATCH_SIZE = 25
+_COOKIE_INJECT_TIMEOUT_S = 8.0
+
+
+def _inject_cookies_safely(tab: "ChromeTab", cookies: list[dict]) -> int:
+    """
+    Inject cookies into a running tab via CDP Network.setCookies, in bounded
+    batches with a short per-batch timeout. A batch that errors or times out
+    is logged and skipped (not retried) so one bad batch can't block the rest
+    or hold up session open. Returns the number of cookies actually injected.
+    """
+    injected = 0
+    for i in range(0, len(cookies), _COOKIE_INJECT_BATCH_SIZE):
+        batch = cookies[i:i + _COOKIE_INJECT_BATCH_SIZE]
+        try:
+            tab.send("Network.setCookies", {"cookies": batch}, timeout=_COOKIE_INJECT_TIMEOUT_S)
+            injected += len(batch)
+        except TimeoutError as exc:
+            # A timeout means the socket isn't answering. Hammering the remaining
+            # batches would waste timeout*N seconds, so stop injecting entirely.
+            log.warning(
+                "cookie_sync: setCookies timed out, aborting injection after %d cookies: %s",
+                injected, exc,
+            )
+            break
+        except Exception as exc:
+            # A single malformed batch shouldn't block the rest — skip just it.
+            log.warning(
+                "cookie_sync: skipped a batch of %d cookies (inject failed): %s",
+                len(batch), exc,
+            )
+    return injected
+
+
 def post_launch_restore(tab: "ChromeTab", profile_name: str) -> int:
     """
     Inject persisted cookies from the JSON session cache into a running tab.
@@ -420,9 +540,9 @@ def post_launch_restore(tab: "ChromeTab", profile_name: str) -> int:
         cookies = json.loads(cookies_path.read_text(encoding="utf-8"))
         if not cookies:
             return 0
-        tab.set_cookies(cookies)
-        log.info("cookie_sync: injected %d cookies into tab for %s", len(cookies), profile_name)
-        return len(cookies)
+        injected = _inject_cookies_safely(tab, cookies)
+        log.info("cookie_sync: injected %d cookies into tab for %s", injected, profile_name)
+        return injected
     except Exception as exc:
         log.warning("cookie_sync: CDP inject failed for %s: %s", profile_name, exc)
         return 0
@@ -457,9 +577,9 @@ def inject_from_real_chrome(tab: "ChromeTab", profile_name: str) -> int:
         log.warning("cookie_sync: could not persist cookies JSON: %s", exc)
 
     try:
-        tab.set_cookies(cdp_cookies)
-        log.info("cookie_sync: injected %d decrypted cookies via CDP for %s", len(cdp_cookies), profile_name)
-        return len(cdp_cookies)
+        injected = _inject_cookies_safely(tab, cdp_cookies)
+        log.info("cookie_sync: injected %d decrypted cookies via CDP for %s", injected, profile_name)
+        return injected
     except Exception as exc:
         log.warning("cookie_sync: CDP set_cookies failed: %s", exc)
         return 0

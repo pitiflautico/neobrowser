@@ -124,60 +124,109 @@ class TabPool:
         ----------------
         1. If *url* is given, scan idle tabs for one where ``tab.is_at(url)``
            returns True — return it immediately without a new navigation.
-        2. Return the first idle tab (any URL).
+        2. Return the first healthy idle tab (any URL).
         3. If the pool has not reached *size*, open a new tab via
            ``session.open_tab()`` and add it to the pool.
         4. Block on a Condition until a tab becomes available or the timeout
            expires; raise ``TimeoutError`` on timeout.
 
+        Idle candidates are snapshotted under the pool lock and then
+        health-checked (``is_at()``/``ping()``) OUTSIDE the lock — no
+        blocking CDP I/O ever happens while the lock is held. A candidate
+        that raises during the check is treated as dead: it is evicted from
+        the pool and closed (best-effort) instead of aborting the whole
+        call, and the scan moves on to the next candidate. The winning tab
+        is committed back into the in-use set under the lock, re-checking
+        that it is still idle (classic check/commit) to guard against a
+        race with another acquire()/release().
+
         Returns an ``_AcquiredTab`` context-manager wrapper that releases the
         tab when used as a ``with`` statement.
         """
-        with self._available:
-            while True:
-                # --- Step 1: URL-aware reuse ---
-                if url is not None:
-                    for tab in self._all:
-                        if tab not in self._in_use and tab.is_at(url):
+        while True:
+            # --- Snapshot idle candidates under the lock, then release it. ---
+            with self._available:
+                idle = [t for t in self._all if t not in self._in_use]
+                room = len(self._all) < self._size
+
+                if not idle and not room:
+                    # --- Step 4: pool full, block ---
+                    # wait() releases _lock, sleeps, then reacquires it.
+                    got = self._available.wait(timeout=self._acquire_timeout_s)
+                    if not got:
+                        # No notification arrived within the timeout.
+                        # Do one last scan before giving up (a release might have
+                        # arrived between the wait() expiry and the lock re-acquire).
+                        idle = [t for t in self._all if t not in self._in_use]
+                        if idle:
+                            tab = idle[0]
                             self._in_use.add(tab)
                             return _AcquiredTab(self, tab)
+                        raise TimeoutError(
+                            f"TabPool: no tab available after {self._acquire_timeout_s}s "
+                            f"(size={self._size}, in_use={len(self._in_use)})"
+                        )
+                    # A notification was received — loop and re-snapshot.
+                    continue
 
-                # --- Step 2: any idle tab ---
-                idle = [t for t in self._all if t not in self._in_use]
-                if idle:
-                    tab = idle[0]
-                    self._in_use.add(tab)
-                    return _AcquiredTab(self, tab)
+            # --- Probe idle candidates OUTSIDE the lock (no I/O while held). ---
+            chosen = None
+            fallback = None  # first idle tab confirmed alive but not url-matched
+            dead: list["ChromeTab"] = []
+            for tab in idle:
+                try:
+                    if url is not None:
+                        # --- Step 1: URL-aware reuse ---
+                        if tab.is_at(url):
+                            chosen = tab
+                            break
+                        if fallback is None:
+                            fallback = tab  # responded, just not at this URL
+                    else:
+                        # --- Step 2: any idle tab (health-checked) ---
+                        if tab.ping():
+                            chosen = tab
+                            break
+                        dead.append(tab)
+                except Exception:
+                    # Tab is unresponsive — evict it instead of aborting acquire().
+                    dead.append(tab)
+            if chosen is None:
+                chosen = fallback
 
-                # --- Step 3: pool has room — open a new tab ---
+            # --- Evict + close (best-effort) any tabs that failed health check. ---
+            if dead:
+                with self._available:
+                    for t in dead:
+                        if t in self._all and t not in self._in_use:
+                            self._all.remove(t)
+                for t in dead:
+                    try:
+                        t.close()
+                    except Exception:
+                        pass
+
+            if chosen is not None:
+                # --- Re-acquire the lock to commit (classic check/commit). ---
+                with self._available:
+                    if chosen in self._all and chosen not in self._in_use:
+                        self._in_use.add(chosen)
+                        return _AcquiredTab(self, chosen)
+                # Lost the race — another thread claimed or evicted this tab
+                # between our health probe and the lock re-acquire. Retry.
+                continue
+
+            # --- Step 3: pool has room — open a new tab ---
+            with self._available:
                 if len(self._all) < self._size:
-                    # Release the lock while doing I/O so other threads can
-                    # call release() while we're waiting for Chrome.
-                    # We use wait(0) to release, then re-check the condition.
-                    # Simpler: just open the tab under the lock — open_tab()
-                    # is fast (one HTTP PUT to localhost).
+                    # open_tab() is fast (one HTTP PUT to localhost) and is
+                    # kept under the lock, same as before this fix.
                     tab = self._session.open_tab()
                     self._all.append(tab)
                     self._in_use.add(tab)
                     return _AcquiredTab(self, tab)
-
-                # --- Step 4: pool full, block ---
-                # wait() releases _lock, sleeps, then reacquires it.
-                got = self._available.wait(timeout=self._acquire_timeout_s)
-                if not got:
-                    # No notification arrived within the timeout.
-                    # Do one last scan before giving up (a release might have
-                    # arrived between the wait() expiry and the lock re-acquire).
-                    idle = [t for t in self._all if t not in self._in_use]
-                    if idle:
-                        tab = idle[0]
-                        self._in_use.add(tab)
-                        return _AcquiredTab(self, tab)
-                    raise TimeoutError(
-                        f"TabPool: no tab available after {self._acquire_timeout_s}s "
-                        f"(size={self._size}, in_use={len(self._in_use)})"
-                    )
-                # A notification was received — loop and re-evaluate.
+            # Evictions above consumed the room we thought we had (raced with
+            # another acquire()) — loop back to re-snapshot/block.
 
     def release(self, tab: "ChromeTab") -> None:
         """

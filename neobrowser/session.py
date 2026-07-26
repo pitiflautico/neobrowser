@@ -22,8 +22,11 @@ from pathlib import Path
 from neobrowser.chrome_process import PROFILES_BASE, ChromeProcess, wait_for_chrome
 from neobrowser.chrome_tab import ChromeTab
 
-# Allow alphanumeric, hyphens, underscores, and spaces (Chrome profile names use spaces).
-_SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_\- ]{0,63}$')
+# Allow alphanumeric, hyphens, and underscores only. This profile_name is the
+# ghost profile dir under ~/.neorender/profiles/, never the real Chrome
+# profile name, so spaces are not needed and are an unnecessary filesystem/
+# shell footgun.
+_SAFE_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,63}$')
 
 CHROME_READY_TIMEOUT = 10.0  # seconds to wait for Chrome to start
 COOKIES_BASE = Path.home() / ".neorender" / "cookies"
@@ -150,13 +153,22 @@ class Session:
         Terminate the Chrome process for this session.
 
         Safe to call multiple times. Does nothing if Chrome is not running.
+        Uses the same lock as ensure() so the two never race on self._chrome.
         """
-        if self._chrome is not None:
-            self._chrome.kill(force=True)
-            self._chrome = None
+        with self._lock:
+            if self._chrome is not None:
+                self._chrome.kill(force=True)
+                self._chrome = None
 
     # ------------------------------------------------------------------
     # Cookie persistence (F06)
+    #
+    # NOTE: This is a separate, low-level on-disk store from the
+    # cookie_sync module's session flow (~/.neorender/sessions/{profile}/,
+    # save_session()/restore()). ensure()/open_tab() only auto-sync via
+    # cookie_sync (pre_launch_sync/post_launch_restore) — the methods below
+    # are never called automatically and must be invoked explicitly by
+    # callers who want a manual JSON cookie snapshot for this profile.
     # ------------------------------------------------------------------
 
     def save_cookies(self, tab: ChromeTab, path: Path | None = None) -> None:
@@ -165,6 +177,10 @@ class Session:
         Default path: ~/.neorender/cookies/{profile_name}.json
         File permissions: 0600 (owner read/write only).
         Does NOT log cookie values — only counts.
+
+        Manual/explicit only: unlike cookie_sync's save_session(), nothing
+        in Session calls this automatically. Callers must invoke it (and
+        restore_cookies()) themselves if they want this JSON snapshot.
         """
         if path is None:
             path = COOKIES_BASE / f"{self.profile_name}.json"
@@ -181,6 +197,11 @@ class Session:
         Returns number of cookies restored.
         Returns 0 if file does not exist (no error).
         Returns 0 if file is corrupt JSON (logs warning, no error).
+
+        Manual/explicit only: this is NOT the auto-restore path. open_tab()
+        already auto-restores cookies for every new tab via cookie_sync's
+        post_launch_restore(). Call this method only if you separately
+        maintain a save_cookies() JSON snapshot for this profile.
         """
         if path is None:
             path = COOKIES_BASE / f"{self.profile_name}.json"
