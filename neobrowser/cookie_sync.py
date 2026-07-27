@@ -34,7 +34,7 @@ Excluded session-identity cookies (Google, LinkedIn, Microsoft):
     from the tab's own session.
 
 Environment:
-    NEOBROWSER_REAL_PROFILE  — Chrome profile subfolder name (default: "Profile 24")
+    NEOBROWSER_REAL_PROFILE  — Chrome profile subfolder name (default: "Default")
     NEOBROWSER_SYNC_TTL      — seconds between file syncs (default: 300)
 """
 from __future__ import annotations
@@ -229,7 +229,7 @@ def _validate_real_profile(name: str) -> str:
     return name
 
 
-REAL_PROFILE = _validate_real_profile(os.environ.get("NEOBROWSER_REAL_PROFILE", "Profile 24"))
+REAL_PROFILE = _validate_real_profile(os.environ.get("NEOBROWSER_REAL_PROFILE", "Default"))
 SYNC_TTL_S = float(os.environ.get("NEOBROWSER_SYNC_TTL", "300"))  # 5 min default
 
 # Centralized map of (domain suffixes) -> session-identity cookie names to

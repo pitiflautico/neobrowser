@@ -38,7 +38,7 @@ The result: an agent that opens `linkedin.com/messaging`, `x.com`, or your dashb
 ```bash
 pip install neobrowser        # from PyPI
 # or from source:
-git clone https://github.com/danielperezpinazo/neobrowser && cd neobrowser
+git clone https://github.com/pitiflautico/neobrowser && cd neobrowser
 pip install -e .
 
 neobrowser doctor             # check Python, websockets, and Chrome

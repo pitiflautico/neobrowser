@@ -32,9 +32,9 @@ llm = ["anthropic>=0.40"]
 dev = ["pytest>=7.0", "pytest-timeout>=2.0"]
 
 [project.urls]
-Homepage = "https://github.com/danielperezpinazo/neobrowser"
-Repository = "https://github.com/danielperezpinazo/neobrowser"
-Issues = "https://github.com/danielperezpinazo/neobrowser/issues"
+Homepage = "https://github.com/pitiflautico/neobrowser"
+Repository = "https://github.com/pitiflautico/neobrowser"
+Issues = "https://github.com/pitiflautico/neobrowser/issues"
 
 [project.scripts]
 neobrowser = "neobrowser.server:main"
