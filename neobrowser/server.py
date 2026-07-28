@@ -886,11 +886,19 @@ def dispatch_tool(name: str, args: dict) -> Any:
                     var check = ''' + json.dumps(value) + ''' === 'true' || ''' + json.dumps(value) + ''' === true;
                     el.checked = check;
                     el.dispatchEvent(new Event('change', {bubbles: true}));
+                } else if (el.isContentEditable) {
+                    el.focus();
+                    el.textContent = ''' + json.dumps(value) + ''';
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    return JSON.stringify({ok: true, tag: tag, type: 'contenteditable', value: el.textContent});
                 } else {
-                    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') ||
-                                                 Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-                    if (nativeInputValueSetter && nativeInputValueSetter.set) {
-                        nativeInputValueSetter.set.call(el, ''' + json.dumps(value) + ''');
+                    // Use the value setter of the element's OWN prototype — a
+                    // textarea needs HTMLTextAreaElement's setter, not the input one.
+                    var proto = tag === 'textarea' ? window.HTMLTextAreaElement.prototype
+                                                    : window.HTMLInputElement.prototype;
+                    var setter = Object.getOwnPropertyDescriptor(proto, 'value');
+                    if (setter && setter.set) {
+                        setter.set.call(el, ''' + json.dumps(value) + ''');
                     } else {
                         el.value = ''' + json.dumps(value) + ''';
                     }
