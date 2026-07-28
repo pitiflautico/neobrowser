@@ -398,8 +398,10 @@ TOOLS = {
         },
     },
     "dismiss_overlay": {
-        "description": "Detect and dismiss cookie banners, GDPR modals, popups. Clicks Accept/Close/Reject.",
-        "schema": {},
+        "description": "Detect and dismiss cookie banners, GDPR modals, newsletter popups and other overlays that block interaction. Targets real overlays (fixed/sticky, high z-index) and clicks Accept/Close inside them. Try this if clicks aren't working.",
+        "schema": {
+            "force": {"type": "boolean", "description": "Try harder: also send Escape and click the backdrop (default false)"},
+        },
     },
     "browse": {
         "description": "Fast HTTP fetch without Chrome (no JS). Use for static pages, APIs, sitemaps. Falls back to Chrome for JS-heavy pages.",
@@ -588,6 +590,14 @@ def dispatch_tool(name: str, args: dict) -> Any:
         wall = _detect_auth_wall(tab)
         if wall:
             msg += f"\n⚠️ {wall['kind']}: {wall['hint']}"
+        else:
+            # Auth-wall covers login/captcha; classify_page_state adds the other
+            # states (rate-limited, server error) so the model isn't misled.
+            from neobrowser.perception import classify_page_state
+            snippet = tab.js("return (document.body ? document.body.innerText.slice(0,3000) : '')") or ""
+            state = classify_page_state(snippet)
+            if state in ("rate_limited", "error"):
+                msg += f"\n⚠️ page looks {state.replace('_', '-')}"
         return msg
 
     elif name == "screenshot":
@@ -614,9 +624,13 @@ def dispatch_tool(name: str, args: dict) -> Any:
         return json.dumps({"found": True, **result.to_dict()})
 
     elif name == "click":
+        import time as _t
+        from neobrowser.perception import CLICK_SNAPSHOT_JS, click_outcome
         tab = _get_tab()
         node_id = args.get("backend_node_id")
         selector = args.get("selector")
+        before = json.loads(tab.js(CLICK_SNAPSHOT_JS) or "{}")
+        clicked = None
         if node_id is not None:
             result = tab.send("DOM.resolveNode", {"backendNodeId": int(node_id)})
             obj_id = result.get("object", {}).get("objectId")
@@ -627,12 +641,21 @@ def dispatch_tool(name: str, args: dict) -> Any:
                     "returnByValue": True,
                 })
                 _record_if_recording("click_node", {"backend_node_id": int(node_id)})
-                return f"Clicked node {node_id}"
-            return f"Node {node_id} not found in DOM"
+                clicked = f"node {node_id}"
+            else:
+                return json.dumps({"clicked": False, "error": f"node {node_id} not found in DOM"})
         elif selector:
-            ok = tab.click(selector)
-            return f"Clicked {selector}" if ok else f"Selector not found: {selector}"
-        return "Error: provide backend_node_id or selector"
+            if tab.click(selector):
+                clicked = selector
+            else:
+                return json.dumps({"clicked": False, "error": f"selector not found: {selector}"})
+        else:
+            return json.dumps({"clicked": False, "error": "provide backend_node_id or selector"})
+        # Report what the click actually did so the model isn't blind post-action.
+        _t.sleep(0.4)
+        after = json.loads(tab.js(CLICK_SNAPSHOT_JS) or "{}")
+        outcome, extra = click_outcome(before, after)
+        return json.dumps({"clicked": clicked, "outcome": outcome, **extra})
 
     elif name == "type":
         tab = _get_tab()
@@ -1107,28 +1130,13 @@ def dispatch_tool(name: str, args: dict) -> Any:
         return result
 
     elif name == "dismiss_overlay":
+        from neobrowser.perception import DISMISS_OVERLAY_JS
         tab = _get_tab()
-        result = tab.js('''
-            return (function() {
-                var patterns = ['accept','acepto','aceptar','agree','i agree','ok','got it','close','cerrar','dismiss','reject','decline','deny','no thanks','continue'];
-                var els = Array.from(document.querySelectorAll('button,a,[role=button]'));
-                for (var i=0; i<els.length; i++) {
-                    var txt = els[i].textContent.toLowerCase().trim();
-                    var aria = (els[i].getAttribute('aria-label')||'').toLowerCase();
-                    for (var j=0; j<patterns.length; j++) {
-                        if (txt === patterns[j] || aria === patterns[j] || txt.indexOf(patterns[j]) !== -1) {
-                            var s = window.getComputedStyle(els[i]);
-                            if (s.display !== 'none' && s.visibility !== 'hidden') {
-                                els[i].click();
-                                return JSON.stringify({ok: true, clicked: els[i].textContent.trim().slice(0,40)});
-                            }
-                        }
-                    }
-                }
-                return JSON.stringify({ok: false, error: "no overlay dismiss button found"});
-            })()
-        ''') or '{"ok": false}'
-        return result
+        force = "true" if args.get("force") else "false"
+        # Target only real overlays (fixed/sticky, high z-index, visible) and
+        # click accept/close INSIDE them — safer than clicking any matching
+        # button anywhere on the page. force=true also tries Escape + backdrop.
+        return tab.js(DISMISS_OVERLAY_JS.replace("FORCE", force)) or '{"dismissed": false}'
 
     elif name == "browse":
         import urllib.request as _req
