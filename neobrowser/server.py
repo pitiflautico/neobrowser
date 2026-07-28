@@ -609,10 +609,12 @@ def dispatch_tool(name: str, args: dict) -> Any:
         return json.dumps({"format": fmt, "data": b64})
 
     elif name == "read":
+        from neobrowser.security import clean_scraped
         tab = _get_tab()
         selector = args.get("selector", "body")
         text = tab.js(f"return document.querySelector({json.dumps(selector)})?.innerText?.trim() || ''")
-        return text or "(empty)"
+        # Web content is untrusted: strip hidden Unicode + flag injection attempts.
+        return clean_scraped(text, tab.current_url()) or "(empty)"
 
     elif name == "find":
         tab = _get_tab()
@@ -1153,13 +1155,13 @@ def dispatch_tool(name: str, args: dict) -> Any:
 
     elif name == "browse":
         import urllib.request as _req
-        from urllib.parse import urlparse as _urlparse
+        from neobrowser.security import validate_url, clean_scraped, scan_secrets
         url_arg = args["url"]
         headers = args.get("headers", {})
-        # Only fetch over http(s) — block file://, ftp://, data:, etc.
-        # (arbitrary local-file read / SSRF via a caller- or page-supplied URL).
-        if _urlparse(url_arg).scheme.lower() not in ("http", "https"):
-            return json.dumps({"ok": False, "error": "browse only supports http(s) URLs", "url": url_arg})
+        # SSRF guard: only public http(s) — blocks file://, private/loopback/
+        # link-local IPs, cloud-metadata hosts, and credentials-in-URL.
+        if not validate_url(url_arg):
+            return json.dumps({"ok": False, "error": "blocked: only public http(s) URLs allowed (SSRF guard)", "url": url_arg})
         try:
             request = _req.Request(url_arg, headers={"User-Agent": "Mozilla/5.0 (compatible; neo-browser/4)", **headers})
             with _req.urlopen(request, timeout=15) as resp:
@@ -1174,7 +1176,12 @@ def dispatch_tool(name: str, args: dict) -> Any:
                 text = _re.sub(r'<style[^>]*>.*?</style>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
                 text = _re.sub(r'<[^>]+>', ' ', text)
                 text = _re.sub(r'\s+', ' ', text).strip()
-                return json.dumps({"url": url_arg, "text": text[:8000], "content_type": content_type})
+                text = clean_scraped(text, url_arg)  # strip hidden Unicode, flag injection
+                out = {"url": url_arg, "text": text[:8000], "content_type": content_type}
+                leaked = scan_secrets(text)
+                if leaked:
+                    out["warning"] = f"page appears to contain secrets: {', '.join(leaked)}"
+                return json.dumps(out)
         except (OSError, UnicodeDecodeError) as e:
             # OSError covers URLError, socket.timeout, and TimeoutError.
             return json.dumps({"ok": False, "error": str(e), "url": url_arg})
