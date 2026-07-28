@@ -239,6 +239,12 @@ class ChromeProcess:
         if ua:
             flags.append(f'--user-agent={ua}')
 
+        # Optional upstream proxy (e.g. NEOBROWSER_PROXY=http://user:pass@host:port
+        # or socks5://host:port) for geo/rotation/scraping.
+        proxy = os.environ.get('NEOBROWSER_PROXY')
+        if proxy:
+            flags.append(f'--proxy-server={proxy}')
+
         # GPU-less hosts (headless Linux CI, some containers) need software
         # rendering. Opt in rather than default it on — software WebGL is a
         # headless fingerprint we don't want on real machines.

@@ -411,6 +411,20 @@ TOOLS = {
             "headers": {"type": "object", "description": "Optional request headers"},
         },
     },
+    "upload": {
+        "description": "Set files on a file <input> element (for upload forms). Files must be absolute paths on this machine.",
+        "schema": {
+            "selector": {"type": "string", "description": "CSS selector of the file input", "required": True},
+            "files":    {"type": "array", "description": "Absolute file path(s) to attach", "required": True},
+        },
+    },
+    "download": {
+        "description": "Download a file URL to disk, reusing the current tab's cookies (works for auth-gated files). Saves under ~/.neobrowser/downloads.",
+        "schema": {
+            "url":      {"type": "string", "description": "Direct file URL to download", "required": True},
+            "filename": {"type": "string", "description": "Optional output filename"},
+        },
+    },
     "search": {
         "description": "Web search via DuckDuckGo. Returns top results with title, URL, snippet.",
         "schema": {
@@ -1185,6 +1199,61 @@ def dispatch_tool(name: str, args: dict) -> Any:
         except (OSError, UnicodeDecodeError) as e:
             # OSError covers URLError, socket.timeout, and TimeoutError.
             return json.dumps({"ok": False, "error": str(e), "url": url_arg})
+
+    elif name == "upload":
+        tab = _get_tab()
+        selector = args["selector"]
+        files = args["files"]
+        if isinstance(files, str):
+            files = [files]
+        files = [os.path.abspath(os.path.expanduser(f)) for f in files]
+        missing = [f for f in files if not os.path.exists(f)]
+        if missing:
+            return json.dumps({"ok": False, "error": f"file(s) not found: {missing}"})
+        doc = tab.send("DOM.getDocument", {"depth": 0})
+        q = tab.send("DOM.querySelector", {"nodeId": doc["root"]["nodeId"], "selector": selector})
+        if not q.get("nodeId"):
+            return json.dumps({"ok": False, "error": f"file input not found: {selector}"})
+        tab.send("DOM.setFileInputFiles", {"files": files, "nodeId": q["nodeId"]})
+        return json.dumps({"ok": True, "uploaded": files, "selector": selector})
+
+    elif name == "download":
+        import re as _re
+        import urllib.request as _req
+        from neobrowser.security import validate_url
+        from neobrowser.paths import NEOBROWSER_HOME
+        url_arg = args["url"]
+        if not validate_url(url_arg):
+            return json.dumps({"ok": False, "error": "blocked: only public http(s) URLs allowed (SSRF guard)"})
+        ddir = NEOBROWSER_HOME / "downloads"
+        ddir.mkdir(parents=True, exist_ok=True)
+        fname = args.get("filename") or url_arg.rstrip("/").split("/")[-1].split("?")[0] or "download"
+        fname = _re.sub(r"[^A-Za-z0-9._-]", "_", fname)[:120] or "download"
+        dest = ddir / fname
+        # Reuse the current tab's cookies so auth-gated files download too.
+        hdrs = {"User-Agent": "Mozilla/5.0"}
+        try:
+            cookies = _get_tab().get_cookies(url_arg)
+            ch = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+            if ch:
+                hdrs["Cookie"] = ch
+        except Exception:
+            pass
+        try:
+            req = _req.Request(url_arg, headers=hdrs)
+            size = 0
+            with _req.urlopen(req, timeout=30) as resp, open(dest, "wb") as fh:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    size += len(chunk)
+                    if size > 200 * 1024 * 1024:  # 200 MB cap
+                        break
+            return json.dumps({"ok": True, "path": str(dest), "bytes": size})
+        except OSError as e:
+            return json.dumps({"ok": False, "error": str(e)})
 
     elif name == "search":
         query = args["query"]
