@@ -524,6 +524,47 @@ class ChromeTab:
         return result.get("result", {}).get("value")
 
     # ------------------------------------------------------------------
+    # Human-like input (anti-detection: real key/mouse events, not instant paste)
+    # ------------------------------------------------------------------
+
+    def type_humanlike(self, text: str, min_delay: float = 0.03, max_delay: float = 0.12) -> None:
+        """
+        Type text one key at a time via CDP Input.dispatchKeyEvent with small
+        randomized inter-key delays — producing genuine keydown/keypress/input
+        events (isTrusted) with human-like cadence, unlike the instant
+        Input.insertText paste that behavioral anti-bot layers flag.
+        """
+        import random
+        import time as _t
+        for ch in text:
+            self.send("Input.dispatchKeyEvent", {"type": "keyDown", "text": ch})
+            self.send("Input.dispatchKeyEvent", {"type": "keyUp", "text": ch})
+            _t.sleep(random.uniform(min_delay, max_delay))
+
+    def click_node_real(self, backend_node_id: int) -> bool:
+        """
+        Click an element by dispatching real mouse events (move → press → release)
+        at its centre, producing isTrusted:true clicks — unlike element.click(),
+        which fires isTrusted:false events that anti-bot systems detect.
+
+        Returns True on success, False if the element has no layout box (e.g. it
+        is off-screen or display:none), so the caller can fall back to JS click.
+        """
+        try:
+            box = self.send("DOM.getBoxModel", {"backendNodeId": int(backend_node_id)})
+            quad = box.get("model", {}).get("content")
+            if not quad or len(quad) < 8:
+                return False
+            cx = (quad[0] + quad[2] + quad[4] + quad[6]) / 4.0
+            cy = (quad[1] + quad[3] + quad[5] + quad[7]) / 4.0
+        except Exception:
+            return False
+        self.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": cx, "y": cy})
+        self.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1})
+        self.send("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1})
+        return True
+
+    # ------------------------------------------------------------------
     # Navigation
     # ------------------------------------------------------------------
 

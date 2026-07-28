@@ -251,9 +251,10 @@ TOOLS = {
         },
     },
     "type": {
-        "description": "Type text into currently focused element. Uses CDP Input.insertText — works with React/Vue SPAs.",
+        "description": "Type text into the currently focused element. Default: instant insert (React/Vue-safe). Set human=true for per-key events with human cadence (slower; for sites with keystroke-timing analysis).",
         "schema": {
             "text": {"type": "string", "description": "Text to type", "required": True},
+            "human": {"type": "boolean", "description": "Type key-by-key with human-like timing (default false)"},
         },
     },
     "console_logs": {
@@ -632,18 +633,24 @@ def dispatch_tool(name: str, args: dict) -> Any:
         before = json.loads(tab.js(CLICK_SNAPSHOT_JS) or "{}")
         clicked = None
         if node_id is not None:
-            result = tab.send("DOM.resolveNode", {"backendNodeId": int(node_id)})
-            obj_id = result.get("object", {}).get("objectId")
-            if obj_id:
-                tab.send("Runtime.callFunctionOn", {
-                    "objectId": obj_id,
-                    "functionDeclaration": "function(){this.click()}",
-                    "returnByValue": True,
-                })
+            # Prefer real mouse events (isTrusted) for stealth; fall back to JS
+            # click if the element has no layout box (off-screen / display:none).
+            if tab.click_node_real(int(node_id)):
                 _record_if_recording("click_node", {"backend_node_id": int(node_id)})
                 clicked = f"node {node_id}"
             else:
-                return json.dumps({"clicked": False, "error": f"node {node_id} not found in DOM"})
+                result = tab.send("DOM.resolveNode", {"backendNodeId": int(node_id)})
+                obj_id = result.get("object", {}).get("objectId")
+                if obj_id:
+                    tab.send("Runtime.callFunctionOn", {
+                        "objectId": obj_id,
+                        "functionDeclaration": "function(){this.click()}",
+                        "returnByValue": True,
+                    })
+                    _record_if_recording("click_node", {"backend_node_id": int(node_id)})
+                    clicked = f"node {node_id}"
+                else:
+                    return json.dumps({"clicked": False, "error": f"node {node_id} not found in DOM"})
         elif selector:
             if tab.click(selector):
                 clicked = selector
@@ -660,7 +667,13 @@ def dispatch_tool(name: str, args: dict) -> Any:
     elif name == "type":
         tab = _get_tab()
         text = args["text"]
-        tab.send("Input.insertText", {"text": text})
+        if args.get("human"):
+            # Per-key events with human cadence (isTrusted) — for sites with
+            # keystroke-timing analysis. Slower; opt-in.
+            tab.type_humanlike(text)
+        else:
+            # Instant insert — fast and React/Vue-safe (default).
+            tab.send("Input.insertText", {"text": text})
         _record_if_recording("type", {"text": text})
         return f"Typed {len(text)} chars"
 
