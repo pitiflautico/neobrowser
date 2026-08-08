@@ -11,6 +11,8 @@ import re
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
+import pytest
+
 from neobrowser import server
 
 
@@ -83,3 +85,76 @@ def test_tools_call_dispatches_to_handler():
         md.assert_called_once_with("read", {})
     resp = json.loads(buf.getvalue().strip().splitlines()[-1])
     assert resp["result"]["content"][0]["text"] == "ok-result"
+
+
+# ---------------------------------------------------------------------------
+# Argument validation — a guessed parameter name must fail loudly, not be
+# silently dropped in favour of the default.
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_argument_is_rejected():
+    with pytest.raises(ValueError) as exc:
+        server.dispatch_tool("wait", {"seconds": 8})
+    assert "seconds" in str(exc.value)
+    assert "ms" in str(exc.value)  # the error names the parameter that does exist
+
+
+def test_unknown_argument_rejected_before_plugin_handler_runs():
+    server._PLUGIN_HANDLERS["fake_plugin"] = lambda args: "should not run"
+    server.TOOLS["fake_plugin"] = {"description": "x", "schema": {"message": {"description": "m"}}}
+    try:
+        with pytest.raises(ValueError):
+            server.dispatch_tool("fake_plugin", {"mesage": "typo"})
+    finally:
+        del server._PLUGIN_HANDLERS["fake_plugin"]
+        del server.TOOLS["fake_plugin"]
+
+
+def test_argument_error_is_reported_without_a_traceback():
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        server._handle({
+            "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+            "params": {"name": "wait", "arguments": {"seconds": 8}},
+        })
+    resp = json.loads(buf.getvalue().strip().splitlines()[-1])
+    text = resp["result"]["content"][0]["text"]
+    assert resp["result"]["isError"] is True
+    assert "unknown argument(s): seconds" in text
+    assert "Traceback" not in text
+
+
+def test_missing_required_argument_is_rejected():
+    with pytest.raises(ValueError) as exc:
+        server.dispatch_tool("navigate", {})
+    assert "url" in str(exc.value)
+
+
+def test_valid_arguments_pass_validation():
+    # Reaches the real handler (which then fails on no Chrome) — the point is
+    # that validation itself did not raise.
+    try:
+        server._validate_args("wait", {"ms": 50, "selector": "body"})
+        server._validate_args("navigate", {"url": "https://example.com", "wait_s": 1})
+        server._validate_args("status", {})
+    except ValueError as exc:
+        raise AssertionError(f"valid arguments were rejected: {exc}")
+
+
+def test_every_handler_only_reads_declared_parameters():
+    """A parameter a handler honours but the schema omits is now unreachable.
+
+    Validation rejects anything undeclared, so an undocumented-but-supported
+    argument would break at the door. This keeps schema and handler in sync.
+    """
+    src = inspect.getsource(server.dispatch_tool)
+    parts = re.split(r'\n    (?:el)?if name == "([a-z_]+)":', src)
+    offenders = {}
+    for i in range(1, len(parts), 2):
+        tool, block = parts[i], parts[i + 1]
+        used = set(re.findall(r'args(?:\.get\(|\[)["\']([a-zA-Z_]+)["\']', block))
+        extra = used - set(server.TOOLS.get(tool, {}).get("schema", {}))
+        if extra:
+            offenders[tool] = sorted(extra)
+    assert not offenders, f"handlers read undeclared parameters: {offenders}"

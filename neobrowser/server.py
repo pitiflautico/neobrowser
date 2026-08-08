@@ -361,6 +361,7 @@ TOOLS = {
         "description": "Submit the current form. Clicks submit button or calls form.submit().",
         "schema": {
             "selector": {"type": "string", "description": "CSS selector for submit button (auto-detected if omitted)"},
+            "wait_s":   {"type": "number", "description": "Seconds to wait for navigation/response after submitting (default 5)"},
         },
     },
     "find_and_click": {
@@ -590,7 +591,42 @@ def _search_duckduckgo(tab, query: str, limit: int) -> list:
         return []
 
 
+class ToolArgumentError(ValueError):
+    """A tool was called with unknown or missing arguments.
+
+    Reported to the caller without a traceback — the message alone says what to
+    fix, and the stack is noise the model has to pay for.
+    """
+
+
+def _validate_args(name: str, args: dict) -> None:
+    """Reject unknown and missing-required arguments against the tool's schema.
+
+    Without this, a caller that invents a parameter name (wait's `seconds`
+    instead of `ms`) silently gets the default instead of an error — the tool
+    reports success while doing something else. Models guess parameter names;
+    a loud failure is the only way they learn the real one.
+    """
+    spec = TOOLS.get(name)
+    if spec is None:
+        return  # unknown tool — dispatch_tool's own fallthrough reports it
+    schema = spec.get("schema", {})
+    unknown = sorted(k for k in args if k not in schema)
+    if unknown:
+        valid = ", ".join(schema) or "(this tool takes no arguments)"
+        raise ToolArgumentError(
+            f"{name}: unknown argument(s): {', '.join(unknown)}. Valid: {valid}"
+        )
+    missing = [p for p, s in schema.items() if s.get("required") and p not in args]
+    if missing:
+        raise ToolArgumentError(
+            f"{name}: missing required argument(s): {', '.join(missing)}"
+        )
+
+
 def dispatch_tool(name: str, args: dict) -> Any:
+    _validate_args(name, args)
+
     if name in _PLUGIN_HANDLERS:
         return _PLUGIN_HANDLERS[name](args)
 
@@ -1448,6 +1484,12 @@ def _handle(req: dict) -> None:
             if len(text) > 500_000:
                 text = text[:500_000] + f"\n... (truncated from {len(text)} chars)"
             _respond(req_id, {"content": [{"type": "text", "text": text}]})
+        except ToolArgumentError as exc:
+            # Caller error, not a server fault — the message is the whole fix.
+            _respond(req_id, {
+                "content": [{"type": "text", "text": f"Error: {exc}"}],
+                "isError": True,
+            })
         except Exception as exc:
             _respond(req_id, {
                 "content": [{"type": "text", "text": f"Error: {exc}\n{traceback.format_exc()}"}],
