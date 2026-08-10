@@ -19,6 +19,37 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_TEXT: usize = 500_000;
 
+/// Guidance injected into the model's context at `initialize` (MCP `instructions`),
+/// so an AI understands how to drive these tools well without trial and error.
+const INSTRUCTIONS: &str = "\
+NeoBrowser drives a real Chrome via CDP for autonomous web use. It is stealthy \
+(passes bot detectors with a genuine fingerprint) and can reuse your real logged-in \
+sessions.
+
+Core loop:
+- `navigate {url}` first. Its result flags any bot wall / captcha / consent / login \
+gate — react to that hint (dismiss_overlay, login, or a real profile) instead of \
+retrying blindly.
+- `read` returns visible text; `page_info`/`analyze` describe structure (forms, \
+buttons, overlays).
+- To act on an element: `find {intent}` (natural language, e.g. \"send button\") \
+returns a backendNodeId, then `click {backend_node_id}`. Or `find_and_click {text}`. \
+Clicks are real (isTrusted) mouse events.
+- Forms: `fill {selector,value}` or `form_fill {fields}` (by label), then `submit`.
+- Files: `upload {selector,files}`; `download {url}` (reuses session cookies).
+
+Rendering note: content is force-rendered on read/find/scroll (headless compositor \
+is otherwise idle), so prefer those over blind waits.
+
+Search is multi-source and routes around walls: `search` (web), `search_images`, \
+`search_videos`.
+
+Tabs: `new_tab`/`list_tabs`/`switch_tab`/`close_tab` — tools act on the active tab.
+
+Real sessions: set NEOBROWSER_REAL_PROFILE to start authenticated; or \
+NEOBROWSER_ATTACH_PORT to drive a Chrome you already have open. Act only as the user \
+would themselves.";
+
 /// Run the MCP server over stdin/stdout until EOF.
 pub async fn serve() {
     let browser = Arc::new(Browser::new());
@@ -72,6 +103,7 @@ pub async fn handle_request(registry: &Registry, ctx: &ToolCtx, req: &Value) -> 
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "version": VERSION },
+                "instructions": INSTRUCTIONS,
             }),
         )),
         "tools/list" => Some(result_response(

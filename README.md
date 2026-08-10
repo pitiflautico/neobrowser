@@ -69,6 +69,12 @@ Real output against live sites:
 - **43 tools** — navigate, click, type, fill/submit forms, upload/download, read, extract tables, screenshot, scroll, console/network logs, performance metrics, record/replay playbooks, web/image/video search, login, and more.
 - **Robust core** — one isolated CDP connection per tab (tokio), typed timeouts, self-healing recovery from dead tabs / restarted Chrome, and no orphaned Chrome processes.
 
+## Documentation
+
+- **[docs/TOOLS.md](docs/TOOLS.md)** — full reference for all 43 tools (params + descriptions). Regenerate with `neobrowser tools --markdown`; introspect live with `neobrowser tools`.
+- **[AGENTS.md](AGENTS.md)** — architecture, build/test, and conventions for contributors and AI agents.
+- The MCP `initialize` response ships an `instructions` field so the model gets a usage primer automatically.
+
 ## Usage
 
 Register it with any MCP client, then ask your model to browse. Example tool calls:
