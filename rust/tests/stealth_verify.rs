@@ -122,7 +122,7 @@ async fn passes_bot_sannysoft_webdriver_check() {
     assert!(
         text.contains("missing (passed)") || text.contains("passed"),
         "bot.sannysoft did not report a passing webdriver result; body head: {}",
-        &text.chars().take(400).collect::<String>()
+        text.chars().take(400).collect::<String>()
     );
     browser.shutdown().await;
 }
