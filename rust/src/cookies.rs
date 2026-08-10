@@ -427,6 +427,7 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, CookieError> {
         cb_data: u32,
         pb_data: *mut u8,
     }
+    #[link(name = "crypt32")]
     extern "system" {
         fn CryptUnprotectData(
             p_data_in: *const DataBlob,
@@ -438,6 +439,7 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, CookieError> {
             p_data_out: *mut DataBlob,
         ) -> i32;
     }
+    #[link(name = "kernel32")]
     extern "system" {
         fn LocalFree(h_mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
     }
