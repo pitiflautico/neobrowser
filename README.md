@@ -1,15 +1,51 @@
 # NeoBrowser
 
-**A fast, stealthy MCP browser-automation server that drives real Chrome with your real logged-in sessions — built for AI models to navigate the web autonomously.**
+**Your AI drives a real Chrome with your real logged-in sessions — no login walls, no CAPTCHAs, and it doesn't get flagged as a bot.** An MCP server for AI models to use the web the way you do.
 
-Most browser tools for LLMs launch a fresh, fingerprintable headless browser with no cookies, so the model hits login walls and bot checks constantly. NeoBrowser takes the opposite approach: it drives the **real Google Chrome binary** and can reuse **your actual logged-in profile**, so the model lands already authenticated and looks like a genuine user — because it *is* one.
+Most browser tools for LLMs launch a fresh, fingerprintable headless browser with no cookies, so the model hits login walls and bot checks constantly. NeoBrowser drives the **real Google Chrome binary** and can reuse **your actual logged-in profile**, so the model lands already authenticated and looks like a genuine user — because it *is* one.
 
 ```jsonc
-// Add to your MCP client (Claude Code, Claude Desktop, etc.)
+// Add to your MCP client (Claude Code, Claude Desktop, Cursor, …)
 { "mcpServers": { "neobrowser": { "command": "neobrowser" } } }
 ```
 
+> Rust rewrite: a single ~4 MB static binary, no runtime to install. (The original Python implementation lives on in this repo as a test oracle — see [Development](#development).)
+
 ---
+
+## Install
+
+```bash
+# One line (macOS / Linux):
+curl -fsSL https://raw.githubusercontent.com/pitiflautico/neobrowser/main/install.sh | sh
+
+# Or from source (needs the Rust toolchain):
+git clone https://github.com/pitiflautico/neobrowser && cd neobrowser/rust
+cargo build --release        # -> target/release/neobrowser
+
+neobrowser doctor            # verify Chrome is found + a live CDP smoke test
+```
+
+Windows binaries are on the [Releases](https://github.com/pitiflautico/neobrowser/releases) page. Requires Google Chrome (or Chromium); auto-discovered on macOS/Linux/Windows, override with `NEOBROWSER_CHROME_BIN`.
+
+## See it work
+
+```bash
+python3 rust/scripts/demo.py     # drives a real login, file upload, and a bot-detector check
+```
+
+Real output against live sites:
+
+```
+✓ Open a real login page             Navigated to .../login
+✓ Fill the username / password       ok
+✓ Click Login (real isTrusted click) ok
+✓ Read the result → logged in        You logged into a secure area!
+✓ Attach a real image file           ok
+✓ Submit the upload                  ok
+✓ Server confirms the file           neobrowser_demo.png
+✓ Check the stealth tells            {"webdriver":"hidden (passed)","chrome_runtime":true,"headless_ua":false}
+```
 
 ## Why NeoBrowser
 
@@ -17,44 +53,31 @@ Most browser tools for LLMs launch a fresh, fingerprintable headless browser wit
 |---|:---:|:---:|:---:|
 | Drives the **real Chrome binary** | ✅ | ⚠️ bundled Chromium | ⚠️ |
 | Reuses your **real logged-in sessions** (no API keys, no re-login) | ✅ | ❌ | ❌ |
-| Stealth by default (no `navigator.webdriver`, genuine UA + Client Hints, real WebGL) | ✅ | ❌ | partial |
+| Stealth by default — passes bot.sannysoft with a **genuine** fingerprint | ✅ | ❌ | partial |
 | **Semantic** element finding (accessibility tree + heuristics + optional LLM) | ✅ | ❌ selectors | ✅ |
-| Runtime dependencies | `websockets` (+ optional `anthropic`) | Node + browsers | many |
+| **Multi-source** search that routes around bot walls | ✅ | ❌ | ❌ |
+| Single static binary, zero runtime deps | ✅ | ❌ Node + browsers | ❌ |
 | Talks CDP directly (no Selenium/WebDriver) | ✅ | — | — |
-
-The result: an agent that opens `linkedin.com/messaging`, `x.com`, or your dashboard and is **already logged in**, moving at the speed of the network instead of getting stuck on auth walls and CAPTCHAs.
 
 ## Features
 
-- **Real-session browsing** — optionally sync cookies + storage from your real Chrome profile (opt-in; see [Security](#security--privacy)).
-- **Stealth-hardened** — genuine Chrome, `navigator.webdriver` suppressed, real-version User-Agent that matches its Client Hints, real GPU WebGL, JS-level fingerprint patches. See [Stealth](#stealth).
-- **Semantic navigation** — `find("send button")` resolves via the CDP accessibility tree + heuristics, with an optional Claude Haiku fallback, instead of brittle CSS selectors.
-- **~35 tools** — navigate, click, type, fill/submit forms, read, extract tables, screenshot, scroll, console/network logs, performance metrics, record/replay playbooks, web search, and more.
-- **Robust core** — one isolated CDP WebSocket per tab, a thread-safe tab pool with health-checking, and self-healing recovery from dead tabs / restarted Chrome.
-- **Zero heavy deps** — pure Python standard library plus `websockets`; `anthropic` only if you want the LLM find fallback.
+- **Real-session browsing** — optionally decrypt + inject cookies from your real Chrome profile (opt-in; macOS Keychain / Linux secret-service / Windows DPAPI). Session-identity cookies for Google/LinkedIn/Microsoft are excluded so your real browser isn't logged out.
+- **Stealth-hardened, genuinely** — real Chrome, `navigator.webdriver` suppressed, real-version User-Agent matching its Client Hints, **real GPU WebGL** (not spoofed). The philosophy is consistency, not piling on fakes. Verified live against bot.sannysoft.
+- **Bot-wall aware** — `navigate` detects bot walls, CAPTCHAs, consent gates, rate-limits and login gates on any site and tells the model how to react.
+- **Multi-source search** — text (DuckDuckGo + Google), images (Bing + Google), videos (YouTube + Google): walled sources are skipped, results merged. No single site is a hard dependency.
+- **Real multi-tab** — `new_tab` / `list_tabs` / `switch_tab` / `close_tab`, all sharing one Chrome.
+- **43 tools** — navigate, click, type, fill/submit forms, upload/download, read, extract tables, screenshot, scroll, console/network logs, performance metrics, record/replay playbooks, web/image/video search, login, and more.
+- **Robust core** — one isolated CDP connection per tab (tokio), typed timeouts, self-healing recovery from dead tabs / restarted Chrome, and no orphaned Chrome processes.
 
-## Install
+## Documentation
 
-```bash
-pip install neobrowser        # from PyPI
-# or from source:
-git clone https://github.com/pitiflautico/neobrowser && cd neobrowser
-pip install -e .
-
-neobrowser doctor             # check Python, websockets, and Chrome
-```
-
-Requires Python 3.10+ and Google Chrome (or Chromium) installed. Chrome is auto-discovered on macOS/Linux/Windows; override with `NEOBROWSER_CHROME_BIN`.
+- **[docs/TOOLS.md](docs/TOOLS.md)** — full reference for all 43 tools (params + descriptions). Regenerate with `neobrowser tools --markdown`; introspect live with `neobrowser tools`.
+- **[AGENTS.md](AGENTS.md)** — architecture, build/test, and conventions for contributors and AI agents.
+- The MCP `initialize` response ships an `instructions` field so the model gets a usage primer automatically.
 
 ## Usage
 
-Register it with any MCP client:
-
-```jsonc
-{ "mcpServers": { "neobrowser": { "command": "neobrowser" } } }
-```
-
-Then ask your model to browse. Example tool calls the model can make:
+Register it with any MCP client, then ask your model to browse. Example tool calls:
 
 ```
 navigate   { "url": "https://example.com" }
@@ -64,82 +87,64 @@ screenshot { "format": "png" }                → returned as an image
 read       {}                                 → visible page text
 ```
 
-By default NeoBrowser runs its own headless Chrome under a dedicated profile. To reuse your real logged-in sessions, see below.
+By default NeoBrowser runs its own headless Chrome under a dedicated profile. To reuse your real logged-in sessions, set `NEOBROWSER_REAL_PROFILE` (see below).
 
 ## Real-session mode
 
-Set `NEOBROWSER_REAL_PROFILE` to the name of the Chrome profile folder whose sessions you want (e.g. `"Default"`, `"Profile 1"`). NeoBrowser decrypts that profile's cookies via the OS keychain and injects them, so the agent starts authenticated:
+Set `NEOBROWSER_REAL_PROFILE` to the Chrome profile folder whose sessions you want (e.g. `"Default"`, `"Profile 1"`). NeoBrowser decrypts that profile's cookies via the OS keychain and injects them, so the agent starts authenticated:
 
 ```jsonc
-{
-  "mcpServers": {
-    "neobrowser": {
-      "command": "neobrowser",
-      "env": { "NEOBROWSER_REAL_PROFILE": "Default" }
-    }
-  }
-}
+{ "mcpServers": { "neobrowser": {
+  "command": "neobrowser",
+  "env": { "NEOBROWSER_REAL_PROFILE": "Default" }
+} } }
 ```
 
-Session-identity cookies for Google, LinkedIn, and Microsoft are deliberately **not** file-synced, because those services log your real browser out when they detect a duplicate session. Everything else (preferences, and post-launch cookie injection) is fair game.
+Or attach to a Chrome you already have open (started with `--remote-debugging-port=9222`): set `NEOBROWSER_ATTACH_PORT=9222`. In attach mode NeoBrowser never patches or kills your real browser.
 
 ## Stealth
 
-Modern bot detection (Cloudflare, DataDome, …) mostly looks for **inconsistencies** — a spoofed User-Agent that doesn't match the browser's Client Hints, a `HeadlessChrome` token, software WebGL, `navigator.webdriver === true`. NeoBrowser's philosophy is to be **genuinely consistent** rather than to pile on spoofs:
+Modern bot detection (Cloudflare, DataDome, …) mostly looks for **inconsistencies** — a spoofed UA that doesn't match Client Hints, a `HeadlessChrome` token, software WebGL, `navigator.webdriver === true`. NeoBrowser is **genuinely consistent** rather than piling on spoofs:
 
 - Runs the **real Chrome binary** (real TLS, real fonts, real everything).
-- `--disable-blink-features=AutomationControlled` + a JS patch so `navigator.webdriver` is `undefined`, in headless too.
-- The User-Agent is rewritten to the **real installed Chrome version** (no `HeadlessChrome`), and because it's applied via the launch flag rather than a CDP override, the browser's genuine Client Hints stay perfectly consistent with it.
-- No `--disable-gpu`, so WebGL reports the **real GPU** (ANGLE/Metal) instead of SwiftShader.
-- JS-level patches for `plugins`, `languages`, and the permissions/`Notification` mismatch, injected only into tabs NeoBrowser owns — never into your real attached Chrome.
+- `navigator.webdriver` forced `undefined`; anti-throttle + focus emulation keep the headless compositor live so content actually renders.
+- UA rewritten to the **real installed Chrome version** via the launch flag, so genuine Client Hints stay consistent.
+- No `--disable-gpu`, so WebGL reports the **real GPU**.
+- JS patches for `plugins`, `languages`, and the permissions/`Notification` mismatch — only on tabs NeoBrowser owns, never on an attached real Chrome.
 
-Verified live: `navigator.webdriver` hidden, UA reports the true Chrome version with matching `Sec-CH-UA`, and WebGL shows the real renderer.
+Verified live: passes bot.sannysoft's WebDriver, Chrome, plugins and WebGL checks with the host's genuine fingerprint.
 
 ## Configuration
 
 | Env var | Default | Purpose |
 |---|---|---|
 | `NEOBROWSER_REAL_PROFILE` | *(unset)* | Real Chrome profile folder to pull sessions from |
-| `NEOBROWSER_PROFILE` | `default` | Name of the dedicated ghost profile |
-| `NEOBROWSER_HOME` | `~/.neobrowser` | Where profiles, cookies, sessions, playbooks live |
-| `NEOBROWSER_CHROME_BIN` | *(auto)* | Path to the Chrome/Chromium binary |
-| `NEOBROWSER_POOL_SIZE` | `3` | Tab pool size |
 | `NEOBROWSER_ATTACH_PORT` | *(unset)* | Attach to an already-running Chrome on this debug port |
+| `NEOBROWSER_CHROME_BIN` | *(auto)* | Path to the Chrome/Chromium binary |
+| `NEOBROWSER_HOME` | `~/.neobrowser` | Where profiles, cookies, sessions, playbooks, downloads live |
+| `NEOBROWSER_PROXY` | *(unset)* | Upstream proxy (`http://…` or `socks5://…`) |
 | `NEOBROWSER_DISABLE_GPU` | *(unset)* | Force software rendering (GPU-less CI hosts only) |
-| `NEOBROWSER_LOG_LEVEL` | `INFO` | Log verbosity |
+| `ANTHROPIC_API_KEY` | *(unset)* | Enables the optional LLM fallback in `find` (your key, your cost; off by default) |
 
-## Architecture
+## Security & responsible use
 
-```
-chrome_process   launch/health-check Chrome (stealth flags, cross-platform discovery)
-      ↓
-session          one Chrome per named profile, anti-zombie health checks
-      ↓
-tab_pool         thread-safe pool of reusable tabs, health-checked before reuse
-      ↓
-chrome_tab       one isolated CDP WebSocket per tab, background reader thread
-      ↓
-page_analyzer    semantic find: accessibility tree + heuristics + optional Haiku
-      ↓
-browser          one high-level facade over all of the above
-```
-
-`cookie_sync` handles session persistence; `playbook` records and replays action sequences; `server` exposes everything as MCP tools over JSON-RPC on stdin/stdout.
-
-## Security & privacy
-
-Real-session mode reads cookies from your Chrome profile and injects them into an automated browser. Treat that with the same care as any credential:
+Real-session mode reads cookies from your Chrome profile and injects them into an automated browser. Treat it like any credential:
 
 - It is **opt-in** — nothing touches your real profile unless you set `NEOBROWSER_REAL_PROFILE`.
-- Cookie and session files are written under `~/.neobrowser` with `0600` permissions.
-- The `login` tool refuses non-`https` URLs and never logs credentials, but driving logins from an LLM is inherently sensitive — point it only at destinations you trust.
-- Anything an AI model browses with your session acts **as you**. Run it against sites and tasks you'd be comfortable performing yourself.
+- Cookie/session files are written under `~/.neobrowser` with `0600` permissions.
+- Server-side fetches (`browse`, `download`) are **SSRF-guarded** to public http(s) only.
+- The `login` tool refuses non-`https` URLs and never logs credentials.
+- Anything an AI browses with your session acts **as you**. Point it only at sites and tasks you'd be comfortable doing yourself. This is a tool for automating *your own* accounts and workflows — not for evading access controls on services you don't own.
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-python3 -m pytest tests/ -q
+# Rust (primary):
+cd rust && cargo test          # unit + one live-Chrome integration test (self-skips without Chrome)
+cargo test --test stealth_verify -- --ignored   # real bot.sannysoft detector
+
+# Python (legacy implementation, kept as a differential-testing oracle):
+pip install -e ".[dev]" && python -m pytest -q
 ```
 
 ## License

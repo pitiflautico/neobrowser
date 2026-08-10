@@ -636,6 +636,9 @@ def dispatch_tool(name: str, args: dict) -> Any:
         url = args["url"]
         wait_s = float(args.get("wait_s", 3.0))
         tab = _get_tab(url, wait_s=wait_s)
+        # Headless compositor is idle until a frame is forced; without this,
+        # deferred/virtualized content never paints and reads come back empty.
+        tab.nudge_frame()
         _record_if_recording("navigate", {"url": url})
         msg = f"Navigated to {tab.current_url()}"
         wall = _detect_auth_wall(tab)
@@ -661,6 +664,7 @@ def dispatch_tool(name: str, args: dict) -> Any:
     elif name == "read":
         from neobrowser.security import clean_scraped
         tab = _get_tab()
+        tab.nudge_frame()  # materialize deferred/virtualized content before reading
         selector = args.get("selector", "body")
         text = tab.js(f"return document.querySelector({json.dumps(selector)})?.innerText?.trim() || ''")
         # Web content is untrusted: strip hidden Unicode + flag injection attempts.
@@ -668,6 +672,7 @@ def dispatch_tool(name: str, args: dict) -> Any:
 
     elif name == "find":
         tab = _get_tab()
+        tab.nudge_frame()  # AX tree only holds rendered nodes; force a frame first
         intent = args["intent"]
         from neobrowser.page_analyzer import FormFinder
         finder = FormFinder(tab)
@@ -820,6 +825,10 @@ def dispatch_tool(name: str, args: dict) -> Any:
         else:
             tab.js(f"window.scrollBy(0, {amount})")
         _time.sleep(0.3)
+        # Virtualized lists load-on-scroll via IntersectionObserver, which only
+        # fires on a produced frame. Force frames so the new rows actually load
+        # and paint — otherwise scrolling a headless list yields nothing new.
+        tab.nudge_frame()
         pos = tab.js("return window.scrollY") or 0
         return json.dumps({"scrolled": direction, "amount": amount, "scrollY": pos})
 
@@ -1200,6 +1209,8 @@ def dispatch_tool(name: str, args: dict) -> Any:
                     return JSON.stringify({ok: false, error: "no next button found"});
                 })()
             ''') or '{"ok": false}'
+        # New page/content loads after the click but only paints on a frame.
+        tab.nudge_frame()
         return result
 
     elif name == "dismiss_overlay":

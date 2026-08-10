@@ -1,0 +1,56 @@
+name: Release
+
+# Publish cross-platform binaries when a version tag is pushed (e.g. v0.1.0).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Package (unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          BIN=target/${{ matrix.target }}/release/neobrowser
+          tar -C "$(dirname "$BIN")" -czf "neobrowser-${{ matrix.target }}.tar.gz" neobrowser
+      - name: Package (windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          BIN=target/${{ matrix.target }}/release/neobrowser.exe
+          7z a "neobrowser-${{ matrix.target }}.zip" "$BIN"
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            rust/neobrowser-${{ matrix.target }}.tar.gz
+            rust/neobrowser-${{ matrix.target }}.zip
