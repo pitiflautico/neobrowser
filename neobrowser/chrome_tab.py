@@ -286,6 +286,13 @@ class ChromeTab:
         # real values with fakes and create the very mismatch anti-bot looks for.
         if not self._is_attached:
             self._apply_stealth()
+            # Make the page believe it is focused and active, so the headless
+            # compositor keeps ticking (rAF / IntersectionObserver / virtualized
+            # lists render). Best-effort; nudge_frame() is the fallback.
+            try:
+                self._send_sync("Emulation.setFocusEmulationEnabled", {"enabled": True})
+            except Exception:
+                pass
 
         self._reader_running = True
         self._listener_running = True  # alias
@@ -967,6 +974,33 @@ class ChromeTab:
     # ------------------------------------------------------------------
 
     _VALID_SCREENSHOT_FORMATS = frozenset({"png", "jpeg"})
+
+    def nudge_frame(self, count: int = 3) -> None:
+        """
+        Force the compositor to produce frames so deferred content materializes.
+
+        Under --headless=new the compositor is idle until a frame is requested, so
+        requestAnimationFrame, IntersectionObserver, and virtualized lists never run
+        their "update the rendering" step — content stays unrendered no matter how
+        long you wait. A screenshot is the one thing that reliably forces that step.
+        We capture a tiny 1x1 JPEG (cheap to encode, bytes discarded) a few times
+        with short gaps: the first frame fires the observers that start loading, the
+        later frames paint what they produced. Best-effort; never raises.
+        """
+        import time as _t
+        for i in range(count):
+            try:
+                self.send("Page.captureScreenshot", {
+                    "format": "jpeg",
+                    "quality": 1,
+                    "clip": {"x": 0, "y": 0, "width": 1, "height": 1, "scale": 1},
+                    "captureBeyondViewport": False,
+                    "optimizeForSpeed": True,
+                })
+            except Exception:
+                break
+            if i < count - 1:
+                _t.sleep(0.15)
 
     def screenshot(self, format: str = "png", quality: int = 80) -> bytes:
         """

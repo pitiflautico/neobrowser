@@ -131,6 +131,13 @@ DEFAULT_CHROME_FLAGS = [
     '--mute-audio',
     '--window-size=1920,1080',
     '--disable-blink-features=AutomationControlled',
+    # Keep the renderer live. Under --headless=new an occluded/backgrounded tab is
+    # throttled, so requestAnimationFrame / IntersectionObserver stall and
+    # virtualized lists and deferred dialogs never render until a frame is forced
+    # (see ChromeTab.nudge_frame + Emulation.setFocusEmulationEnabled).
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-background-timer-throttling',
 ]
 
 # Visible mode: real Chrome window, no headless, no fake UA.

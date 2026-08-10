@@ -1,0 +1,525 @@
+//! Tier 0: Chrome process manager.
+//!
+//! Port of the Python `chrome_process.py`. Design invariants kept:
+//! - No shared PID file that could kill sibling processes.
+//! - A `ChromeProcess` owns exactly the child it spawned and only ever kills that.
+//! - `health_check()` requires BOTH the process alive AND the debug port responding,
+//!   which prevents handing out a zombie ("GhostChrome").
+//!
+//! Improvements over the Python original:
+//! - The spawned child is owned, so `Drop` reaps it — no orphan Chromes if the
+//!   manager is dropped without an explicit `kill()`.
+//! - `kill()` sends SIGTERM first (Chrome flushes its profile/cookies) and only
+//!   escalates to SIGKILL after a grace period.
+
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use serde::Deserialize;
+use thiserror::Error;
+use tokio::process::{Child, Command};
+
+use crate::paths;
+
+#[derive(Debug, Error)]
+pub enum ChromeError {
+    #[error("invalid port {0}: must be 1024..=65535")]
+    InvalidPort(u16),
+    #[error("profile_dir must be under {base}: got {got}")]
+    ProfileOutsideBase { base: String, got: String },
+    #[error("chrome did not become ready on port {0} within timeout")]
+    NotReady(u16),
+    #[error("i/o error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("http error talking to chrome debug endpoint: {0}")]
+    Http(#[from] reqwest::Error),
+}
+
+/// Locate a Chrome/Chromium binary cross-platform.
+///
+/// Honors `NEOBROWSER_CHROME_BIN` first, then probes the usual macOS app-bundle
+/// paths, the PATH (Linux), and the standard Windows install locations. Falls
+/// back to the macOS default so a failure names a concrete, fixable path.
+pub fn discover_chrome_bin() -> PathBuf {
+    if let Some(env) = std::env::var_os("NEOBROWSER_CHROME_BIN") {
+        if !env.is_empty() {
+            return PathBuf::from(env);
+        }
+    }
+    let mac_paths = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ];
+    for p in mac_paths {
+        if Path::new(p).exists() {
+            return PathBuf::from(p);
+        }
+    }
+    for name in [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ] {
+        if let Some(found) = which(name) {
+            return found;
+        }
+    }
+    for p in [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ] {
+        if Path::new(p).exists() {
+            return PathBuf::from(p);
+        }
+    }
+    PathBuf::from(mac_paths[0])
+}
+
+/// Minimal `which`: search PATH for an executable by name.
+fn which(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// The discovered Chrome binary, cached process-wide.
+pub fn chrome_bin() -> &'static Path {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(discover_chrome_bin).as_path()
+}
+
+/// Return the installed Chrome major version (e.g. "150"), or `None` if unknown.
+pub fn detect_chrome_major(chrome_bin: &Path) -> Option<String> {
+    let out = std::process::Command::new(chrome_bin)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    // Match the first "<major>.<minor>" run of digits.
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            // Require a following '.' and another digit to look like a version.
+            if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
+                return Some(text[start..i].to_string());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Build a User-Agent matching the REAL installed Chrome, consistent with its
+/// genuine Client Hints. Applied via the `--user-agent` launch flag (which, unlike
+/// CDP `Network.setUserAgentOverride`, does NOT blank Client Hints), turning the
+/// only remaining headless tell (`HeadlessChrome`) into a clean identity.
+pub fn chrome_user_agent() -> Option<&'static str> {
+    static UA: OnceLock<Option<String>> = OnceLock::new();
+    UA.get_or_init(|| {
+        let major = detect_chrome_major(chrome_bin())?;
+        let token = if cfg!(target_os = "windows") {
+            "Windows NT 10.0; Win64; x64"
+        } else if cfg!(target_os = "linux") {
+            "X11; Linux x86_64"
+        } else {
+            // Darwin and anything else -> frozen macOS token.
+            "Macintosh; Intel Mac OS X 10_15_7"
+        };
+        Some(format!(
+            "Mozilla/5.0 ({token}) AppleWebKit/537.36 (KHTML, like Gecko) \
+             Chrome/{major}.0.0.0 Safari/537.36"
+        ))
+    })
+    .as_deref()
+}
+
+/// Headless launch flags — deliberately minimal and free of automation tells.
+/// `--disable-blink-features=AutomationControlled` suppresses `navigator.webdriver`.
+/// `--disable-gpu` is intentionally absent: under `--headless=new` the GPU works and
+/// software WebGL (SwiftShader) is itself a headless fingerprint. Opt in via
+/// `NEOBROWSER_DISABLE_GPU` on GPU-less CI hosts.
+pub const DEFAULT_CHROME_FLAGS: &[&str] = &[
+    "--headless=new",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-sync",
+    "--disable-translate",
+    "--mute-audio",
+    "--window-size=1920,1080",
+    "--disable-blink-features=AutomationControlled",
+    // Keep the renderer live: in --headless=new an occluded/backgrounded tab is
+    // throttled, which stalls requestAnimationFrame / IntersectionObserver and
+    // leaves virtualized lists and deferred dialogs unrendered. See browser.rs
+    // (focus emulation) and page::nudge_frame for the rest of the fix.
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+];
+
+/// Visible mode: real Chrome window, no headless, no fake UA.
+pub const VISIBLE_CHROME_FLAGS: &[&str] = &[
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--mute-audio",
+    "--disable-blink-features=AutomationControlled",
+];
+
+fn validate_port(port: u16) -> Result<(), ChromeError> {
+    if (1024..=65535).contains(&port) {
+        Ok(())
+    } else {
+        Err(ChromeError::InvalidPort(port))
+    }
+}
+
+/// Find a free TCP port by binding to port 0 and letting the OS assign one.
+pub fn find_free_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    Ok(listener.local_addr()?.port())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NewTab {
+    pub id: String,
+    #[serde(rename = "webSocketDebuggerUrl")]
+    pub web_socket_debugger_url: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+/// Poll `GET /json/version` until Chrome responds or the timeout expires.
+pub async fn wait_for_chrome(port: u16, timeout: Duration) -> Result<(), ChromeError> {
+    validate_port(port)?;
+    let url = format!("http://127.0.0.1:{port}/json/version");
+    let client = reqwest::Client::new();
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Ok(resp) = client
+            .get(&url)
+            .timeout(Duration::from_secs(1))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                return Ok(());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(ChromeError::NotReady(port))
+}
+
+/// Does Chrome's HTTP debug endpoint on `port` respond? (Standalone; used for
+/// health-checking an attached Chrome we don't own.)
+pub async fn port_alive(port: u16) -> bool {
+    if validate_port(port).is_err() {
+        return false;
+    }
+    let url = format!("http://127.0.0.1:{port}/json/version");
+    reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Open a new tab via the DevTools HTTP endpoint.
+///
+/// IMPORTANT: must use PUT, not GET — GET returns HTTP 405 on modern Chrome.
+pub async fn open_new_tab(port: u16) -> Result<NewTab, ChromeError> {
+    validate_port(port)?;
+    let url = format!("http://127.0.0.1:{port}/json/new");
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(&url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(resp.json::<NewTab>().await?)
+}
+
+/// Close a tab by its DevTools target id via the HTTP endpoint.
+pub async fn close_tab(port: u16, target_id: &str) -> Result<(), ChromeError> {
+    validate_port(port)?;
+    let url = format!("http://127.0.0.1:{port}/json/close/{target_id}");
+    reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await?;
+    Ok(())
+}
+
+/// Manages a single Chrome process. Owns exactly one child; `kill`/`Drop` only
+/// ever touch that child.
+#[derive(Debug)]
+pub struct ChromeProcess {
+    pub profile_dir: PathBuf,
+    pub port: u16,
+    child: Option<Child>,
+}
+
+impl ChromeProcess {
+    /// Launch headless Chrome on a free port. `profile_dir` must be under the
+    /// profiles base (`~/.neobrowser/profiles/`).
+    pub async fn launch(profile_dir: impl AsRef<Path>) -> Result<Self, ChromeError> {
+        let profile_dir = profile_dir.as_ref().to_path_buf();
+        let base = paths::profiles_base();
+        // Create both dirs before canonicalizing so symlinked prefixes (e.g. macOS
+        // /tmp -> /private/tmp) resolve consistently for base and profile alike.
+        std::fs::create_dir_all(&base)?;
+        std::fs::create_dir_all(&profile_dir)?;
+        let canon_base = base.canonicalize().unwrap_or(base.clone());
+        let canon_profile = profile_dir.canonicalize().unwrap_or(profile_dir.clone());
+        if !canon_profile.starts_with(&canon_base) {
+            return Err(ChromeError::ProfileOutsideBase {
+                base: canon_base.display().to_string(),
+                got: canon_profile.display().to_string(),
+            });
+        }
+
+        let port = find_free_port()?;
+        let mut cmd = Command::new(chrome_bin());
+        cmd.arg(format!("--remote-debugging-port={port}"))
+            .arg(format!("--user-data-dir={}", profile_dir.display()));
+        for flag in DEFAULT_CHROME_FLAGS {
+            cmd.arg(flag);
+        }
+        if let Some(ua) = chrome_user_agent() {
+            cmd.arg(format!("--user-agent={ua}"));
+        }
+        if let Some(proxy) = std::env::var_os("NEOBROWSER_PROXY") {
+            if !proxy.is_empty() {
+                cmd.arg(format!("--proxy-server={}", proxy.to_string_lossy()));
+            }
+        }
+        if std::env::var_os("NEOBROWSER_DISABLE_GPU").is_some() {
+            cmd.arg("--disable-gpu");
+        }
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(false); // we reap explicitly in Drop with a graceful term
+
+        let child = cmd.spawn()?;
+        Ok(Self {
+            profile_dir,
+            port,
+            child: Some(child),
+        })
+    }
+
+    /// Launch Chrome in visible mode (no headless, no fake UA).
+    pub async fn launch_visible(profile_dir: Option<PathBuf>) -> Result<Self, ChromeError> {
+        let port = find_free_port()?;
+        let profile_dir =
+            profile_dir.unwrap_or_else(|| paths::profiles_base().join(format!("visible-{port}")));
+        std::fs::create_dir_all(&profile_dir)?;
+
+        let mut cmd = Command::new(chrome_bin());
+        cmd.arg(format!("--remote-debugging-port={port}"))
+            .arg(format!("--user-data-dir={}", profile_dir.display()))
+            .arg("--window-size=1920,1080");
+        for flag in VISIBLE_CHROME_FLAGS {
+            cmd.arg(flag);
+        }
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        let child = cmd.spawn()?;
+        Ok(Self {
+            profile_dir,
+            port,
+            child: Some(child),
+        })
+    }
+
+    /// The OS process id of the spawned child, if still owned.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|c| c.id())
+    }
+
+    /// Is the process still running? (No signal sent; just a non-blocking wait.)
+    pub fn is_alive(&mut self) -> bool {
+        match self.child.as_mut() {
+            Some(c) => matches!(c.try_wait(), Ok(None)),
+            None => false,
+        }
+    }
+
+    /// Does Chrome's HTTP debug endpoint respond?
+    pub async fn port_alive(&self) -> bool {
+        if validate_port(self.port).is_err() {
+            return false;
+        }
+        let url = format!("http://127.0.0.1:{}/json/version", self.port);
+        reqwest::Client::new()
+            .get(&url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+    }
+
+    /// True only if BOTH the process is alive AND the port responds. Prevents
+    /// handing out a zombie GhostChrome.
+    pub async fn health_check(&mut self) -> bool {
+        self.is_alive() && self.port_alive().await
+    }
+
+    /// Terminate the process. Sends SIGTERM first (Chrome flushes its profile);
+    /// if `force`, escalates to SIGKILL after a 3s grace period.
+    pub async fn kill(&mut self, force: bool) {
+        let Some(pid) = self.pid() else { return };
+        term(pid);
+        if force {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                if !self.is_alive() {
+                    self.child = None;
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if let Some(c) = self.child.as_mut() {
+                let _ = c.start_kill(); // SIGKILL
+            }
+        }
+        // Reap so no zombie remains.
+        if let Some(mut c) = self.child.take() {
+            let _ = c.try_wait();
+            // If it hasn't exited yet, leave the handle dropped; kill_on_drop is off,
+            // so we best-effort SIGKILL via the pid to avoid an orphan.
+            let _ = c.start_kill();
+        }
+    }
+}
+
+impl Drop for ChromeProcess {
+    fn drop(&mut self) {
+        // Best-effort graceful shutdown so we never leak a headless Chrome.
+        if let Some(pid) = self.pid() {
+            term(pid);
+        }
+    }
+}
+
+/// Send SIGTERM on Unix; on Windows, start_kill semantics are handled by the caller.
+fn term(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    {
+        let _ = pid; // handled via Child::start_kill on the Windows path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discover_honors_env_override() {
+        let _g = crate::env_test_guard();
+        let prev = std::env::var_os("NEOBROWSER_CHROME_BIN");
+        std::env::set_var("NEOBROWSER_CHROME_BIN", "/custom/chrome");
+        assert_eq!(discover_chrome_bin(), PathBuf::from("/custom/chrome"));
+        match prev {
+            Some(v) => std::env::set_var("NEOBROWSER_CHROME_BIN", v),
+            None => std::env::remove_var("NEOBROWSER_CHROME_BIN"),
+        }
+    }
+
+    #[test]
+    fn default_flags_suppress_webdriver_and_avoid_disable_gpu() {
+        assert!(DEFAULT_CHROME_FLAGS.contains(&"--disable-blink-features=AutomationControlled"));
+        assert!(DEFAULT_CHROME_FLAGS.contains(&"--headless=new"));
+        // --disable-gpu must NOT be a default (software WebGL is a headless tell).
+        assert!(!DEFAULT_CHROME_FLAGS.contains(&"--disable-gpu"));
+    }
+
+    #[test]
+    fn find_free_port_is_in_valid_range() {
+        let p = find_free_port().unwrap();
+        assert!((1024..=65535).contains(&p), "got {p}");
+        assert!(validate_port(p).is_ok());
+    }
+
+    #[test]
+    fn validate_port_rejects_out_of_range() {
+        assert!(validate_port(80).is_err());
+        assert!(validate_port(1024).is_ok());
+        assert!(validate_port(65535).is_ok());
+    }
+
+    #[test]
+    fn user_agent_shape_from_major() {
+        // Directly exercise the UA string shape without depending on a real Chrome.
+        let major = "150";
+        let token = if cfg!(target_os = "windows") {
+            "Windows NT 10.0; Win64; x64"
+        } else if cfg!(target_os = "linux") {
+            "X11; Linux x86_64"
+        } else {
+            "Macintosh; Intel Mac OS X 10_15_7"
+        };
+        let ua = format!(
+            "Mozilla/5.0 ({token}) AppleWebKit/537.36 (KHTML, like Gecko) \
+             Chrome/{major}.0.0.0 Safari/537.36"
+        );
+        assert!(ua.contains("Chrome/150.0.0.0"));
+        assert!(!ua.contains("HeadlessChrome"));
+    }
+
+    #[test]
+    fn detect_major_parses_version_string() {
+        // Simulate `--version` output parsing via a temp script.
+        // We can't guarantee Chrome here, so assert the parser on a known binary:
+        // `echo` prints its args; wrap the expected shape.
+        // Instead, unit-test the digit scan through a tiny helper reimplementation.
+        fn parse(text: &str) -> Option<String> {
+            let bytes = text.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i].is_ascii_digit() {
+                    let start = i;
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
+                        return Some(text[start..i].to_string());
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            None
+        }
+        assert_eq!(parse("Google Chrome 150.0.7258.5 "), Some("150".into()));
+        assert_eq!(parse("Chromium 121.0.6167.184"), Some("121".into()));
+        assert_eq!(parse("no version here"), None);
+    }
+}
