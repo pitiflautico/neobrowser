@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeoBrowser — your AI drives real Chrome, undetected</title>
+<meta name="description" content="An MCP server that drives real Chrome with your real logged-in sessions. Genuine fingerprint, human-like input, bot-wall aware. 43 tools, single binary.">
+<meta property="og:title" content="NeoBrowser">
+<meta property="og:description" content="Your AI drives a real Chrome with your real logged-in sessions — genuine fingerprint, human-like input, not flagged like a headless bot.">
+<style>
+  :root{
+    --bg:#0b0e14; --bg2:#111624; --card:#141a2a; --line:#232c40;
+    --fg:#e6ecff; --muted:#93a0bd; --accent:#5eead4; --accent2:#7c9cff; --warn:#f5b971;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:960px;margin:0 auto;padding:0 20px}
+  header{display:flex;align-items:center;justify-content:space-between;padding:20px 0;border-bottom:1px solid var(--line)}
+  .brand{font-weight:800;letter-spacing:-.02em;font-size:18px}
+  .brand span{color:var(--accent)}
+  nav a{color:var(--muted);margin-left:18px;font-size:14px}
+  .hero{padding:64px 0 40px;text-align:center}
+  .hero h1{font-size:clamp(30px,5vw,52px);line-height:1.1;letter-spacing:-.03em;margin:0 0 18px;font-weight:800}
+  .hero h1 .g{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.sub{font-size:clamp(16px,2.4vw,20px);color:var(--muted);max-width:720px;margin:0 auto 12px}
+  .note{font-size:14px;color:var(--muted);max-width:680px;margin:14px auto 0;border-left:2px solid var(--warn);padding-left:12px;text-align:left}
+  .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:28px 0 8px}
+  .btn{display:inline-block;padding:11px 18px;border-radius:10px;font-weight:600;font-size:15px}
+  .btn.primary{background:var(--accent);color:#06231e}
+  .btn.ghost{border:1px solid var(--line);color:var(--fg)}
+  .install{font-family:var(--mono);font-size:14px;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:14px 16px;max-width:640px;margin:22px auto 0;overflow-x:auto;text-align:left;color:#cfe}
+  .install .p{color:var(--muted)}
+  section{padding:44px 0;border-top:1px solid var(--line)}
+  h2{font-size:24px;letter-spacing:-.02em;margin:0 0 20px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .card h3{margin:0 0 6px;font-size:16px}
+  .card p{margin:0;color:var(--muted);font-size:14px}
+  .term{background:#05070c;border:1px solid var(--line);border-radius:12px;padding:16px;font-family:var(--mono);font-size:13px;color:#bfe;overflow-x:auto;line-height:1.7}
+  .term .ok{color:var(--accent)}
+  .term .dim{color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:14px;overflow:hidden;border-radius:12px}
+  th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--muted);font-weight:600}
+  td.y{color:var(--accent)}
+  td.n{color:#e88}
+  footer{padding:30px 0 60px;color:var(--muted);font-size:14px;text-align:center;border-top:1px solid var(--line)}
+  @media(prefers-color-scheme:light){
+    :root{--bg:#f7f9fc;--bg2:#eef2f8;--card:#fff;--line:#dbe2ee;--fg:#0d1524;--muted:#5a6883;--accent:#0d9488;--accent2:#3b5bdb}
+    .btn.primary{color:#fff}
+    .term{background:#0b0e14;color:#bfe}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">Neo<span>Browser</span></div>
+    <nav>
+      <a href="https://github.com/pitiflautico/neobrowser">GitHub</a>
+      <a href="https://github.com/pitiflautico/neobrowser/releases">Releases</a>
+      <a href="https://github.com/pitiflautico/neobrowser/blob/main/docs/TOOLS.md">Tools</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>Your AI drives <span class="g">real Chrome</span>,<br>with your real sessions — undetected</h1>
+    <p class="sub">An MCP server that drives the real Google&nbsp;Chrome binary with your logged-in profile. It wins the fingerprint game, moves the mouse like a human, and lands already authenticated — so it isn't flagged like a stock headless bot.</p>
+    <div class="cta">
+      <a class="btn primary" href="#install">Install</a>
+      <a class="btn ghost" href="https://github.com/pitiflautico/neobrowser">Star on GitHub</a>
+    </div>
+    <div class="install" id="install">
+      <span class="p"># macOS / Linux — verifies a SHA-256 checksum</span><br>
+      curl -fsSL https://raw.githubusercontent.com/pitiflautico/neobrowser/main/install.sh | sh
+    </div>
+    <p class="note"><strong>Honest scope:</strong> NeoBrowser defeats <em>fingerprint</em> detection, not <em>challenges</em>. reCAPTCHA, Turnstile and behavioral systems can still put up a wall — so it <em>detects</em> the wall and hands control back with a real-session or human path, instead of pretending to be invisible.</p>
+  </div>
+
+  <section>
+    <h2>See it work</h2>
+    <div class="term">
+<span class="dim">$ python3 rust/scripts/demo.py</span><br>
+<span class="ok">✓</span> Open a real login page<br>
+<span class="ok">✓</span> Fill username / password &nbsp;<span class="dim">→ real isTrusted input</span><br>
+<span class="ok">✓</span> Click Login &nbsp;<span class="dim">→ You logged into a secure area!</span><br>
+<span class="ok">✓</span> Upload an image &nbsp;<span class="dim">→ server confirms: neobrowser_demo.png</span><br>
+<span class="ok">✓</span> Bot detector &nbsp;<span class="dim">→ {"webdriver":"hidden (passed)","chrome_runtime":true,"headless_ua":false}</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>Real-session browsing</h3><p>Decrypt + inject cookies from your real Chrome profile (macOS Keychain / Linux secret-service / Windows DPAPI). Opt-in; identity cookies excluded so your browser isn't logged out.</p></div>
+      <div class="card"><h3>Genuine stealth</h3><p>Passes bot.sannysoft with the host's real fingerprint — no spoofed WebGL or UA mismatch. CI runs the checks against a real Chrome on every push.</p></div>
+      <div class="card"><h3>Human-like input</h3><p>Clicks travel to the target along an eased, jittered path with human-cadence pauses; typing can be per-key with realistic timing.</p></div>
+      <div class="card"><h3>Bot-wall aware</h3><p>Detects CAPTCHAs, consent gates, rate-limits and login walls on any site and tells the model how to react.</p></div>
+      <div class="card"><h3>Multi-source search</h3><p>Text, images and video across several engines — walled sources are detected and skipped, results merged.</p></div>
+      <div class="card"><h3>43 tools · one binary</h3><p>Navigate, forms, upload/download, extract, multi-tab, playbooks, search — a single ~5&nbsp;MB static binary, no runtime.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why NeoBrowser</h2>
+    <table>
+      <tr><th></th><th>NeoBrowser</th><th>Playwright MCP</th><th>browser-use</th></tr>
+      <tr><td>Real Chrome binary</td><td class="y">✓</td><td>bundled Chromium</td><td>⚠️</td></tr>
+      <tr><td>Real logged-in sessions</td><td class="y">✓</td><td class="n">✗</td><td class="n">✗</td></tr>
+      <tr><td>Genuine fingerprint (bot.sannysoft)</td><td class="y">✓</td><td class="n">✗</td><td>partial</td></tr>
+      <tr><td>Human-like mouse / typing</td><td class="y">✓</td><td class="n">✗</td><td class="n">✗</td></tr>
+      <tr><td>Bot-wall detection</td><td class="y">✓</td><td class="n">✗</td><td class="n">✗</td></tr>
+      <tr><td>Single static binary</td><td class="y">✓</td><td>Node + browsers</td><td class="n">✗</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>Get started</h2>
+    <div class="grid">
+      <div class="card"><h3>1 · Install</h3><p>Run the one-liner above, or grab a binary from <a href="https://github.com/pitiflautico/neobrowser/releases">Releases</a> (checksummed &amp; signed with build provenance).</p></div>
+      <div class="card"><h3>2 · Register</h3><p style="font-family:var(--mono);font-size:12.5px;color:#bfe">{ "mcpServers": { "neobrowser":<br>&nbsp;&nbsp;{ "command": "neobrowser" } } }</p></div>
+      <div class="card"><h3>3 · Browse</h3><p>Ask your model to navigate, fill forms, upload, search — see the <a href="https://github.com/pitiflautico/neobrowser/blob/main/docs/TOOLS.md">tool reference</a>.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    Run it against sites and tasks you'd be comfortable doing yourself — it acts as you.<br>
+    MIT © Daniel Perez Pinazo · <a href="https://github.com/pitiflautico/neobrowser">github.com/pitiflautico/neobrowser</a>
+  </footer>
+</div>
+</body>
+</html>
