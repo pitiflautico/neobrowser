@@ -83,13 +83,16 @@ Real output against live sites:
 
 ## Benchmark
 
-A reproducible harness ([`bench/`](bench/)) drives the tool through a task matrix
-and reports success rate, bot-wall detection, latency, crashes, and self-healing
-recovery. First pass (`python3 bench/run.py`): **12/12 tasks, 0 crashes,
-crash-recovery PASS**, with a live Cloudflare page correctly flagged as a wall.
-It is built to plug in other tools (Playwright MCP, browser-use) and, for
-adversarial sites at scale, residential proxies + repeated runs — see
-[bench/README.md](bench/README.md) for the honest limits and how to extend it.
+A reproducible harness ([`bench/`](bench/)) drives browser tools through a shared
+task matrix. It includes a **neutral 2-way comparison vs Playwright MCP**
+(`python3 bench/compare.py`) with a common layer — nothing tuned to make either win.
+Honest first-run findings: both pass the shared functional tasks; **Playwright MCP is
+faster** (NeoBrowser pays for forcing frames so deferred content renders), while
+**NeoBrowser adds session persistence and first-class bot-wall detection** Playwright
+MCP lacks. On adversarial pages **both were walled equally** (single IP) — no "evades
+better" claim; that needs residential proxies + repeated runs. Metrics separate
+`task_execution_success` from `destination_access_success` so a detected wall never
+inflates the score. See [bench/README.md](bench/README.md) and `bench/compare.md`.
 
 ## Usage
 

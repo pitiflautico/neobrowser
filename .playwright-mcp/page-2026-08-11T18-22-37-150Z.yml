@@ -1,0 +1,17 @@
+- generic [active] [ref=f7e1]:
+  - generic [ref=f7e4]:
+    - link "Fork me on GitHub":
+      - /url: https://github.com/tourdedave/the-internet
+      - img "Fork me on GitHub" [ref=f7e5] [cursor=pointer]
+    - generic [ref=f7e7]:
+      - heading "File Uploader" [level=3] [ref=f7e8]
+      - paragraph [ref=f7e9]: Choose a file on your system and then click upload. Or, drag and drop a file into the area below.
+      - generic [ref=f7e10]:
+        - button "Choose File" [ref=f7e11]
+        - button "Upload" [ref=f7e12] [cursor=pointer]
+  - generic [ref=f7e15]:
+    - separator [ref=f7e16]
+    - generic [ref=f7e17]:
+      - text: Powered by
+      - link "Elemental Selenium" [ref=f7e18] [cursor=pointer]:
+        - /url: http://elementalselenium.com/

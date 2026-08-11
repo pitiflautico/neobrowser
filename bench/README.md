@@ -27,6 +27,27 @@ Coverage: navigation, login, file upload, table extraction, SPA/deferred loading
 long navigation, JSON APIs, **bot-wall detection** (incl. a live Cloudflare
 challenge page correctly flagged), multi-tab, crash recovery, persistent sessions.
 
+## Neutral 2-way: NeoBrowser vs Playwright MCP
+
+```bash
+npx playwright install chromium      # one-time (Playwright's browser)
+python3 bench/compare.py             # -> bench/compare.md + compare.json
+```
+
+A **common layer** drives both tools with the *identical* abstract steps and JS —
+nothing is tuned to make either win. It reports, per task: `task_execution_success`,
+`destination_access_success` (kept separate), `step_success`, `wall_detected`,
+`wall_type`, `total_latency`, `latency_per_step`, `tool_calls`, `browser_crash`,
+`recovery_success`, `tabs_created`, `final_state_valid` — split into a **Functional**
+block and an **Adversarial (observational)** block.
+
+First run (single machine, single IP): both tools pass the shared functional tasks;
+**Playwright MCP is faster** (NeoBrowser pays for forcing frames so deferred content
+renders), **NeoBrowser adds session persistence** Playwright MCP lacks, and on the
+adversarial pages **both were walled equally** — no "evades better" claim. See
+`bench/compare.md` for the numbers and the honest per-metric caveats (incl. why the
+upload row isn't a clean Playwright loss).
+
 ## What this does and does NOT prove (honest)
 
 - **Does** show NeoBrowser completes real functional tasks reliably, detects walls

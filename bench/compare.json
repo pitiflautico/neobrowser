@@ -1,0 +1,430 @@
+{
+  "functional": {
+    "NeoBrowser": [
+      {
+        "task": "nav_read",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "read"
+        ],
+        "total_latency_ms": 3156,
+        "latency_per_step_ms": 1578,
+        "tool_calls": 3,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "login",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "fill_user",
+          "fill_pass",
+          "submit",
+          "verify"
+        ],
+        "total_latency_ms": 5694,
+        "latency_per_step_ms": 1139,
+        "tool_calls": 6,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "dom_extract",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "extract"
+        ],
+        "total_latency_ms": 2972,
+        "latency_per_step_ms": 1486,
+        "tool_calls": 3,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "spa_dynamic",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "start",
+          "await_render"
+        ],
+        "total_latency_ms": 8210,
+        "latency_per_step_ms": 2737,
+        "tool_calls": 12,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "screenshot",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "screenshot"
+        ],
+        "total_latency_ms": 2640,
+        "latency_per_step_ms": 1320,
+        "tool_calls": 3,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "multitab",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "count=2"
+        ],
+        "total_latency_ms": 5670,
+        "latency_per_step_ms": 2835,
+        "tool_calls": 6,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": 2
+      },
+      {
+        "task": "upload",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "upload",
+          "verify"
+        ],
+        "total_latency_ms": 5417,
+        "latency_per_step_ms": 1806,
+        "tool_calls": 5,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "persistence",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "persist"
+        ],
+        "total_latency_ms": 2578,
+        "latency_per_step_ms": 1289,
+        "tool_calls": 5,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "recovery",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "kill",
+          "recover"
+        ],
+        "total_latency_ms": 6499,
+        "latency_per_step_ms": 2166,
+        "tool_calls": 4,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": true,
+        "tabs_created": null
+      }
+    ],
+    "Playwright MCP": [
+      {
+        "task": "nav_read",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "read"
+        ],
+        "total_latency_ms": 2154,
+        "latency_per_step_ms": 1077,
+        "tool_calls": 3,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "login",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "fill_user",
+          "fill_pass",
+          "submit",
+          "verify"
+        ],
+        "total_latency_ms": 5503,
+        "latency_per_step_ms": 1101,
+        "tool_calls": 6,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "dom_extract",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "extract"
+        ],
+        "total_latency_ms": 1398,
+        "latency_per_step_ms": 699,
+        "tool_calls": 3,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "spa_dynamic",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "start",
+          "await_render"
+        ],
+        "total_latency_ms": 7210,
+        "latency_per_step_ms": 2403,
+        "tool_calls": 8,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "screenshot",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "screenshot"
+        ],
+        "total_latency_ms": 571,
+        "latency_per_step_ms": 286,
+        "tool_calls": 3,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "multitab",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "count=2"
+        ],
+        "total_latency_ms": 1048,
+        "latency_per_step_ms": 524,
+        "tool_calls": 6,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": null,
+        "tabs_created": 2
+      },
+      {
+        "task": "upload",
+        "task_execution_success": false,
+        "destination_access_success": false,
+        "step_success": [
+          true,
+          false,
+          false
+        ],
+        "steps": [
+          "navigate",
+          "upload",
+          "verify"
+        ],
+        "total_latency_ms": 3074,
+        "latency_per_step_ms": 1025,
+        "tool_calls": 6,
+        "browser_crash": false,
+        "final_state_valid": false,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "persistence",
+        "task_execution_success": false,
+        "destination_access_success": false,
+        "step_success": [
+          true,
+          false
+        ],
+        "steps": [
+          "navigate",
+          "unsupported"
+        ],
+        "total_latency_ms": 23,
+        "latency_per_step_ms": 12,
+        "tool_calls": 3,
+        "browser_crash": false,
+        "final_state_valid": false,
+        "recovery_success": null,
+        "tabs_created": null
+      },
+      {
+        "task": "recovery",
+        "task_execution_success": true,
+        "destination_access_success": true,
+        "step_success": [
+          true,
+          true,
+          true
+        ],
+        "steps": [
+          "navigate",
+          "kill",
+          "recover"
+        ],
+        "total_latency_ms": 2389,
+        "latency_per_step_ms": 796,
+        "tool_calls": 4,
+        "browser_crash": false,
+        "final_state_valid": true,
+        "recovery_success": true,
+        "tabs_created": null
+      }
+    ]
+  },
+  "adversarial": {
+    "NeoBrowser": [
+      {
+        "task": "google_images",
+        "wall_detected": true,
+        "wall_type": "bot_wall",
+        "destination_access_success": false,
+        "total_latency_ms": 3953,
+        "tool_calls": 2
+      },
+      {
+        "task": "cloudflare_nowsecure",
+        "wall_detected": true,
+        "wall_type": "captcha",
+        "destination_access_success": false,
+        "total_latency_ms": 3077,
+        "tool_calls": 2
+      }
+    ],
+    "Playwright MCP": [
+      {
+        "task": "google_images",
+        "wall_detected": true,
+        "wall_type": "bot_wall",
+        "destination_access_success": false,
+        "total_latency_ms": 3476,
+        "tool_calls": 2
+      },
+      {
+        "task": "cloudflare_nowsecure",
+        "wall_detected": true,
+        "wall_type": "captcha",
+        "destination_access_success": false,
+        "total_latency_ms": 6545,
+        "tool_calls": 2
+      }
+    ]
+  }
+}

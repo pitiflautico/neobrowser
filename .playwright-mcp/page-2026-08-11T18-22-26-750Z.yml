@@ -1,0 +1,126 @@
+- generic [active] [ref=f3e1]:
+  - generic [ref=f3e4]:
+    - link "Fork me on GitHub":
+      - /url: https://github.com/tourdedave/the-internet
+      - img "Fork me on GitHub" [ref=f3e5] [cursor=pointer]
+    - generic [ref=f3e7]:
+      - heading "Data Tables" [level=3] [ref=f3e8]
+      - paragraph [ref=f3e9]: Often times when you see a table it contains data which is sortable -- sometimes with actions that can be taken within each row (e.g. edit, delete). And it can be challenging to automate interaction with sets of data in a table depending on how it is constructed.
+      - heading "Example 1" [level=4] [ref=f3e10]
+      - paragraph [ref=f3e11]: No Class or ID attributes to signify groupings of rows and columns
+      - table [ref=f3e12]:
+        - rowgroup [ref=f3e13]:
+          - row [ref=f3e14]:
+            - columnheader "Last Name" [ref=f3e15]
+            - columnheader "First Name" [ref=f3e16]
+            - columnheader "Email" [ref=f3e17]
+            - columnheader "Due" [ref=f3e18]
+            - columnheader "Web Site" [ref=f3e19]
+            - columnheader "Action" [ref=f3e20]
+        - rowgroup [ref=f3e21]:
+          - row [ref=f3e22]:
+            - cell "Smith" [ref=f3e23]
+            - cell "John" [ref=f3e24]
+            - cell "jsmith@gmail.com" [ref=f3e25]
+            - cell "$50.00" [ref=f3e26]
+            - cell "http://www.jsmith.com" [ref=f3e27]
+            - cell [ref=f3e28]:
+              - link "edit" [ref=f3e29] [cursor=pointer]:
+                - /url: "#edit"
+              - link "delete" [ref=f3e30] [cursor=pointer]:
+                - /url: "#delete"
+          - row [ref=f3e31]:
+            - cell "Bach" [ref=f3e32]
+            - cell "Frank" [ref=f3e33]
+            - cell "fbach@yahoo.com" [ref=f3e34]
+            - cell "$51.00" [ref=f3e35]
+            - cell "http://www.frank.com" [ref=f3e36]
+            - cell [ref=f3e37]:
+              - link "edit" [ref=f3e38] [cursor=pointer]:
+                - /url: "#edit"
+              - link "delete" [ref=f3e39] [cursor=pointer]:
+                - /url: "#delete"
+          - row [ref=f3e40]:
+            - cell "Doe" [ref=f3e41]
+            - cell "Jason" [ref=f3e42]
+            - cell "jdoe@hotmail.com" [ref=f3e43]
+            - cell "$100.00" [ref=f3e44]
+            - cell "http://www.jdoe.com" [ref=f3e45]
+            - cell [ref=f3e46]:
+              - link "edit" [ref=f3e47] [cursor=pointer]:
+                - /url: "#edit"
+              - link "delete" [ref=f3e48] [cursor=pointer]:
+                - /url: "#delete"
+          - row [ref=f3e49]:
+            - cell "Conway" [ref=f3e50]
+            - cell "Tim" [ref=f3e51]
+            - cell "tconway@earthlink.net" [ref=f3e52]
+            - cell "$50.00" [ref=f3e53]
+            - cell "http://www.timconway.com" [ref=f3e54]
+            - cell [ref=f3e55]:
+              - link "edit" [ref=f3e56] [cursor=pointer]:
+                - /url: "#edit"
+              - link "delete" [ref=f3e57] [cursor=pointer]:
+                - /url: "#delete"
+      - heading "Example 2" [level=4] [ref=f3e58]
+      - paragraph [ref=f3e59]: Class and ID attributes to signify groupings of rows and columns
+      - table [ref=f3e60]:
+        - rowgroup [ref=f3e61]:
+          - row [ref=f3e62]:
+            - columnheader "Last Name" [ref=f3e63]
+            - columnheader "First Name" [ref=f3e64]
+            - columnheader "Email" [ref=f3e65]
+            - columnheader "Due" [ref=f3e66]
+            - columnheader "Web Site" [ref=f3e67]
+            - columnheader "Action" [ref=f3e68]
+        - rowgroup [ref=f3e69]:
+          - row [ref=f3e70]:
+            - cell "Smith" [ref=f3e71]
+            - cell "John" [ref=f3e72]
+            - cell "jsmith@gmail.com" [ref=f3e73]
+            - cell "$50.00" [ref=f3e74]
+            - cell "http://www.jsmith.com" [ref=f3e75]
+            - cell [ref=f3e76]:
+              - link "edit" [ref=f3e77] [cursor=pointer]:
+                - /url: "#edit"
+              - link "delete" [ref=f3e78] [cursor=pointer]:
+                - /url: "#delete"
+          - row [ref=f3e79]:
+            - cell "Bach" [ref=f3e80]
+            - cell "Frank" [ref=f3e81]
+            - cell "fbach@yahoo.com" [ref=f3e82]
+            - cell "$51.00" [ref=f3e83]
+            - cell "http://www.frank.com" [ref=f3e84]
+            - cell [ref=f3e85]:
+              - link "edit" [ref=f3e86] [cursor=pointer]:
+                - /url: "#edit"
+              - link "delete" [ref=f3e87] [cursor=pointer]:
+                - /url: "#delete"
+          - row [ref=f3e88]:
+            - cell "Doe" [ref=f3e89]
+            - cell "Jason" [ref=f3e90]
+            - cell "jdoe@hotmail.com" [ref=f3e91]
+            - cell "$100.00" [ref=f3e92]
+            - cell "http://www.jdoe.com" [ref=f3e93]
+            - cell [ref=f3e94]:
+              - link "edit" [ref=f3e95] [cursor=pointer]:
+                - /url: "#edit"
+              - link "delete" [ref=f3e96] [cursor=pointer]:
+                - /url: "#delete"
+          - row [ref=f3e97]:
+            - cell "Conway" [ref=f3e98]
+            - cell "Tim" [ref=f3e99]
+            - cell "tconway@earthlink.net" [ref=f3e100]
+            - cell "$50.00" [ref=f3e101]
+            - cell "http://www.timconway.com" [ref=f3e102]
+            - cell [ref=f3e103]:
+              - link "edit" [ref=f3e104] [cursor=pointer]:
+                - /url: "#edit"
+              - link "delete" [ref=f3e105] [cursor=pointer]:
+                - /url: "#delete"
+  - generic [ref=f3e107]:
+    - separator [ref=f3e108]
+    - generic [ref=f3e109]:
+      - text: Powered by
+      - link "Elemental Selenium" [ref=f3e110] [cursor=pointer]:
+        - /url: http://elementalselenium.com/

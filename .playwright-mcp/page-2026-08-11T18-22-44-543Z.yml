@@ -1,0 +1,14 @@
+- generic [ref=f3e2]:
+  - separator [ref=f3e3]
+  - iframe [ref=f3e8]:
+    - generic [ref=f4e2]:
+      - generic [ref=f4e3]:
+        - checkbox "No soy un robot" [ref=f4e7]
+        - generic [ref=f4e9]: No soy un robot
+      - generic [ref=f4e12]: reCAPTCHA
+  - separator [ref=f3e9]
+  - generic [ref=f3e10]:
+    - text: Acerca de esta página Nuestros sistemas han detectado tráfico inusual procedente de tu red de ordenadores. En esta página se comprueba si eres tú quien envía las solicitudes en lugar de un robot.
+    - link "¿A qué se debe esto?" [ref=f3e11] [cursor=pointer]:
+      - /url: "#"
+    - generic [ref=f3e12]: "Dirección IP: 88.17.119.169Hora: 2026-08-11T18:22:43ZURL: https://www.google.com/search?q=cat&udm=2&num=30&sei=cmh7apXGFMeW4-EProaqgAw"
