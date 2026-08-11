@@ -177,18 +177,20 @@ pub async fn click_backend_node(
     backend_node_id: i64,
 ) -> Result<bool, CdpError> {
     if let Some((cx, cy)) = box_center(client, backend_node_id).await? {
-        client
-            .send(
-                "Input.dispatchMouseEvent",
-                json!({ "type": "mouseMoved", "x": cx, "y": cy }),
-            )
-            .await?;
+        // Behavioral realism: move the cursor to the target along a human-like path
+        // (curved, eased, jittered, with per-step pauses) instead of teleporting —
+        // the trajectory/timing signals behavioral anti-bot systems inspect.
+        human_mouse_move(client, cx, cy).await?;
+        // A short dwell before the press, as a human would.
+        let mut j = Jitter::new(((cx as i64) ^ (cy as i64) ^ backend_node_id) as u64);
+        tokio::time::sleep(Duration::from_millis(40 + j.next() % 80)).await;
         client
             .send(
                 "Input.dispatchMouseEvent",
                 json!({ "type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
             )
             .await?;
+        tokio::time::sleep(Duration::from_millis(20 + j.next() % 60)).await;
         client
             .send(
                 "Input.dispatchMouseEvent",
@@ -199,6 +201,32 @@ pub async fn click_backend_node(
     }
     // No box model — fall back to a JS click via the resolved node.
     js_click_backend_node(client, backend_node_id).await
+}
+
+/// Move the cursor to (tx, ty) over several eased, jittered steps with human-cadence
+/// pauses — approximating a real hand rather than an instantaneous jump.
+async fn human_mouse_move(client: &CdpClient, tx: f64, ty: f64) -> Result<(), CdpError> {
+    let mut j = Jitter::new(((tx as i64).wrapping_mul(31) ^ (ty as i64)) as u64);
+    // Start from a plausible off-target origin (as if arriving from up-and-left).
+    let sx = (tx - 90.0 - (j.next() % 120) as f64).max(0.0);
+    let sy = (ty - 70.0 - (j.next() % 90) as f64).max(0.0);
+    let steps = 12 + (j.next() % 10) as usize; // 12–21 steps
+    for i in 1..=steps {
+        let t = i as f64 / steps as f64;
+        let ease = t * t * (3.0 - 2.0 * t); // smoothstep
+        let jitter_x = ((j.next() % 5) as f64) - 2.0;
+        let jitter_y = ((j.next() % 5) as f64) - 2.0;
+        let x = sx + (tx - sx) * ease + if i == steps { 0.0 } else { jitter_x };
+        let y = sy + (ty - sy) * ease + if i == steps { 0.0 } else { jitter_y };
+        client
+            .send(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": x.max(0.0), "y": y.max(0.0) }),
+            )
+            .await?;
+        tokio::time::sleep(Duration::from_millis(6 + j.next() % 12)).await;
+    }
+    Ok(())
 }
 
 /// Center of an element's content box, or None if it has no layout.

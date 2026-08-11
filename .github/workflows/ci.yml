@@ -20,13 +20,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: stable
       - name: Format check
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
-      - name: Test
-        # The one live-Chrome integration test self-skips when no Chrome is present,
-        # so unit + integration suites run cleanly on a headless CI runner.
+      - name: Test (incl. live-Chrome stealth verification)
+        # Chrome is installed above, so the stealth integration test actually runs
+        # (it self-skips only when no Chrome is present). NEOBROWSER_DISABLE_GPU
+        # forces software rendering on the GPU-less runner.
+        env:
+          NEOBROWSER_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+          NEOBROWSER_DISABLE_GPU: "1"
         run: cargo test
 
   python:

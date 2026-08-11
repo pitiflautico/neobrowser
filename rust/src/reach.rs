@@ -171,35 +171,121 @@ pub async fn browse(url: &str, headers: &Map<String, Value>) -> String {
     json!({ "url": url, "text": text, "content_type": content_type }).to_string()
 }
 
+/// Directories `upload` may read from. If `NEOBROWSER_UPLOAD_DIR` is set, ONLY that
+/// directory is allowed (tightest, recommended for autonomous agents). Otherwise a
+/// safe default set of user content folders.
+fn upload_allowed_roots() -> Vec<PathBuf> {
+    if let Some(dir) = std::env::var_os("NEOBROWSER_UPLOAD_DIR") {
+        if !dir.is_empty() {
+            let p = PathBuf::from(dir);
+            return vec![std::fs::canonicalize(&p).unwrap_or(p)];
+        }
+    }
+    let home = paths_home();
+    ["Downloads", "Desktop", "Documents"]
+        .iter()
+        .map(|d| home.join(d))
+        .chain(std::iter::once(crate::paths::home().join("downloads")))
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .collect()
+}
+
+/// True for paths that must never be uploaded even from an allowed root — secrets,
+/// keys, keychains, credential files, and NeoBrowser's own cookie/session store.
+/// This is the defense against a prompt-injected agent exfiltrating local secrets.
+fn is_sensitive_upload(canonical: &std::path::Path) -> bool {
+    let s = canonical.to_string_lossy().to_lowercase();
+    const DENY_SEGMENTS: &[&str] = &[
+        "/.ssh/",
+        "/.aws/",
+        "/.gnupg/",
+        "/.gpg/",
+        "/.kube/",
+        "/.docker/",
+        "/.config/gcloud/",
+        "/library/keychains/",
+        "/.mozilla/",
+        "/.password-store/",
+    ];
+    if DENY_SEGMENTS.iter().any(|seg| s.contains(seg)) {
+        return true;
+    }
+    // NeoBrowser's own secret store (cookies / sessions / profiles).
+    let nb = crate::paths::home().to_string_lossy().to_lowercase();
+    for sub in ["/cookies", "/sessions", "/profiles"] {
+        if s.starts_with(&format!("{nb}{sub}")) {
+            return true;
+        }
+    }
+    let name = canonical
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    const DENY_NAMES: &[&str] = &[
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "credentials",
+        ".env",
+        ".netrc",
+        ".pgpass",
+        ".git-credentials",
+        ".npmrc",
+        ".pypirc",
+    ];
+    if DENY_NAMES.contains(&name.as_str()) {
+        return true;
+    }
+    let ext = canonical
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "pem" | "key" | "p12" | "pfx" | "keychain" | "kdbx"
+    )
+}
+
+/// Resolve a requested upload path, or return a reason it is rejected.
+fn resolve_upload_path(f: &str) -> Result<PathBuf, String> {
+    let expanded = if let Some(rest) = f.strip_prefix("~/") {
+        paths_home().join(rest)
+    } else {
+        PathBuf::from(f)
+    };
+    let canonical = std::fs::canonicalize(&expanded).map_err(|_| format!("file not found: {f}"))?;
+    if is_sensitive_upload(&canonical) {
+        return Err(format!("refused (sensitive path): {f}"));
+    }
+    let roots = upload_allowed_roots();
+    if !roots.iter().any(|r| canonical.starts_with(r)) {
+        return Err(format!(
+            "refused (outside allowed upload dirs): {f}. Allowed: {}. Set NEOBROWSER_UPLOAD_DIR to widen.",
+            roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Ok(canonical)
+}
+
 /// `upload` — attach local files to a file input via `DOM.setFileInputFiles`.
+///
+/// Security: files must live under an allowed root (see `upload_allowed_roots`) and
+/// must not be sensitive (see `is_sensitive_upload`), so a prompt-injected agent
+/// cannot exfiltrate arbitrary local files (ssh keys, credentials, cookie stores…).
 pub async fn upload(
     client: &CdpClient,
     selector: &str,
     files: Vec<String>,
 ) -> Result<String, CdpError> {
-    // Expand ~ and make absolute; verify existence.
-    let abs: Vec<String> = files
-        .iter()
-        .map(|f| {
-            let expanded = if let Some(rest) = f.strip_prefix("~/") {
-                paths_home().join(rest)
-            } else {
-                PathBuf::from(f)
-            };
-            std::fs::canonicalize(&expanded)
-                .unwrap_or(expanded)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    let missing: Vec<&String> = abs
-        .iter()
-        .filter(|f| !std::path::Path::new(f).exists())
-        .collect();
-    if !missing.is_empty() {
-        return Ok(
-            json!({ "ok": false, "error": format!("file(s) not found: {missing:?}") }).to_string(),
-        );
+    let mut abs: Vec<String> = Vec::with_capacity(files.len());
+    for f in &files {
+        match resolve_upload_path(f) {
+            Ok(p) => abs.push(p.to_string_lossy().into_owned()),
+            Err(reason) => {
+                return Ok(json!({ "ok": false, "error": reason }).to_string());
+            }
+        }
     }
     let doc = client
         .send("DOM.getDocument", json!({ "depth": 0 }))
@@ -386,5 +472,48 @@ mod tests {
             })
             .collect();
         assert_eq!(safe, "pa__wd");
+    }
+
+    #[test]
+    fn sensitive_upload_paths_blocked() {
+        use std::path::Path;
+        assert!(is_sensitive_upload(Path::new("/Users/x/.ssh/id_rsa")));
+        assert!(is_sensitive_upload(Path::new("/Users/x/.aws/credentials")));
+        assert!(is_sensitive_upload(Path::new(
+            "/Users/x/Documents/server.pem"
+        )));
+        assert!(is_sensitive_upload(Path::new("/Users/x/project/.env")));
+        assert!(is_sensitive_upload(Path::new(
+            "/Users/x/Library/Keychains/login.keychain-db"
+        )));
+        // Ordinary user content is fine.
+        assert!(!is_sensitive_upload(Path::new(
+            "/Users/x/Downloads/photo.png"
+        )));
+        assert!(!is_sensitive_upload(Path::new("/Users/x/Documents/cv.pdf")));
+    }
+
+    #[test]
+    fn upload_restricted_to_allowed_root() {
+        let _g = crate::env_test_guard();
+        let dir = std::env::temp_dir().join(format!("nb-upload-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let inside = dir.join("ok.txt");
+        std::fs::write(&inside, b"hi").unwrap();
+        let outside = std::env::temp_dir().join(format!("nb-upl-out-{}.txt", std::process::id()));
+        std::fs::write(&outside, b"hi").unwrap();
+
+        std::env::set_var("NEOBROWSER_UPLOAD_DIR", &dir);
+        // A file inside the allowed dir resolves.
+        assert!(resolve_upload_path(inside.to_str().unwrap()).is_ok());
+        // A file outside is refused.
+        let err = resolve_upload_path(outside.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("outside allowed upload dirs"), "got: {err}");
+        // A missing file is refused.
+        assert!(resolve_upload_path("/no/such/file-xyz").is_err());
+
+        std::env::remove_var("NEOBROWSER_UPLOAD_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
     }
 }

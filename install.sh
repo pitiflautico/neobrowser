@@ -24,13 +24,29 @@ case "$os" in
   *) echo "unsupported OS: $os (on Windows, download the .zip from the Releases page)" >&2; exit 1 ;;
 esac
 
-url="https://github.com/${REPO}/releases/latest/download/neobrowser-${target}.tar.gz"
+art="neobrowser-${target}.tar.gz"
+base="https://github.com/${REPO}/releases/latest/download"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 echo "Downloading neobrowser (${target})..."
-curl -fsSL "$url" -o "$tmp/neobrowser.tar.gz"
-tar -C "$tmp" -xzf "$tmp/neobrowser.tar.gz"
+curl -fsSL "$base/$art" -o "$tmp/$art"
+curl -fsSL "$base/$art.sha256" -o "$tmp/$art.sha256" || echo "warning: checksum file unavailable"
+
+if [ -s "$tmp/$art.sha256" ]; then
+  echo "Verifying checksum..."
+  if command -v sha256sum >/dev/null 2>&1; then
+    ( cd "$tmp" && sha256sum -c "$art.sha256" ) || { echo "checksum FAILED — aborting" >&2; exit 1; }
+  elif command -v shasum >/dev/null 2>&1; then
+    ( cd "$tmp" && shasum -a 256 -c "$art.sha256" ) || { echo "checksum FAILED — aborting" >&2; exit 1; }
+  else
+    echo "warning: no sha256 tool found; skipping verification"
+  fi
+fi
+# Stronger (optional): verify signed build provenance with the GitHub CLI:
+#   gh attestation verify "$tmp/$art" --repo ${REPO}
+
+tar -C "$tmp" -xzf "$tmp/$art"
 chmod +x "$tmp/neobrowser"
 
 if [ -w "$INSTALL_DIR" ]; then

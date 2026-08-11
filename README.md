@@ -4,7 +4,9 @@
 [![Release](https://img.shields.io/github/v/release/pitiflautico/neobrowser?sort=semver)](https://github.com/pitiflautico/neobrowser/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Your AI drives a real Chrome with your real logged-in sessions — no login walls, no CAPTCHAs, and it doesn't get flagged as a bot.** An MCP server for AI models to use the web the way you do.
+**Your AI drives a real Chrome with your real logged-in sessions — it wins the fingerprint game (passes bot.sannysoft with a genuine fingerprint), moves the mouse like a human, and lands already authenticated, so it isn't flagged like a stock headless bot.** An MCP server for AI models to use the web the way you do.
+
+It doesn't pretend to be invisible: when a site throws an interactive challenge (reCAPTCHA, Turnstile) NeoBrowser **detects** it and hands control back with a real-session or human path — that honesty is what makes it dependable.
 
 Most browser tools for LLMs launch a fresh, fingerprintable headless browser with no cookies, so the model hits login walls and bot checks constantly. NeoBrowser drives the **real Google Chrome binary** and can reuse **your actual logged-in profile**, so the model lands already authenticated and looks like a genuine user — because it *is* one.
 
@@ -116,7 +118,11 @@ Modern bot detection (Cloudflare, DataDome, …) mostly looks for **inconsistenc
 - No `--disable-gpu`, so WebGL reports the **real GPU**.
 - JS patches for `plugins`, `languages`, and the permissions/`Notification` mismatch — only on tabs NeoBrowser owns, never on an attached real Chrome.
 
-Verified live: passes bot.sannysoft's WebDriver, Chrome, plugins and WebGL checks with the host's genuine fingerprint.
+Beyond the fingerprint, input is **behaviorally human**: clicks move the cursor to the target along a multi-step path with human-cadence pauses (not a teleport-then-click), and typing can be per-key with realistic timing — the signals behavioral systems watch for.
+
+Verified live: passes bot.sannysoft's WebDriver, Chrome, plugins and WebGL checks with the host's genuine fingerprint. **CI installs Chrome and runs these checks against a real browser on every push**; the full bot.sannysoft run is an on-demand test (`cargo test --test stealth_verify -- --ignored`).
+
+What no tool can promise is defeating *interactive challenges* — reCAPTCHA, Turnstile, or behavioral/reputation systems (DataDome) can still put up a wall, and a fresh cookie-less profile is itself a signal. NeoBrowser's edge there is a warm real profile plus **detecting** the wall (`navigate` flags it) so the model reacts instead of hammering it.
 
 ## Configuration
 

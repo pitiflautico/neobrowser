@@ -247,7 +247,7 @@ Server-side fetch of a public URL (SSRF-guarded). JSON passes through; HTML is r
 
 ## `upload`
 
-Attach local file(s) to a file input by CSS selector via DOM.setFileInputFiles.
+Attach local file(s) to a file input by CSS selector. Files must live under an allowed directory (~/Downloads, ~/Desktop, ~/Documents, ~/.neobrowser/downloads, or NEOBROWSER_UPLOAD_DIR) and never a sensitive path (ssh/aws keys, .env, keychains, credentials).
 
 | param | type | required | description |
 |---|---|---|---|

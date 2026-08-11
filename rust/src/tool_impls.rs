@@ -944,7 +944,7 @@ impl Tool for UploadTool {
         ToolSpec {
             name: "upload",
             description:
-                "Attach local file(s) to a file input by CSS selector via DOM.setFileInputFiles.",
+                "Attach local file(s) to a file input by CSS selector. Files must live under an allowed directory (~/Downloads, ~/Desktop, ~/Documents, ~/.neobrowser/downloads, or NEOBROWSER_UPLOAD_DIR) and never a sensitive path (ssh/aws keys, .env, keychains, credentials).",
             params: vec![
                 ParamSpec::new(
                     "selector",

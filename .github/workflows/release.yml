@@ -1,12 +1,14 @@
 name: Release
 
-# Publish cross-platform binaries when a version tag is pushed (e.g. v0.1.0).
+# Publish cross-platform binaries when a version tag is pushed (e.g. v0.1.2).
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: write        # create the release + upload assets
+  id-token: write        # sign build provenance attestations
+  attestations: write    # store the attestations
 
 jobs:
   build:
@@ -29,28 +31,50 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify tag matches Cargo version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          echo "tag=$TAG cargo=$VER"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::git tag v$TAG does not match Cargo.toml version $VER"
+            exit 1
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Package (unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          BIN=target/${{ matrix.target }}/release/neobrowser
-          tar -C "$(dirname "$BIN")" -czf "neobrowser-${{ matrix.target }}.tar.gz" neobrowser
-      - name: Package (windows)
-        if: matrix.os == 'windows-latest'
+
+      - name: Package + checksum
         shell: bash
         run: |
-          BIN=target/${{ matrix.target }}/release/neobrowser.exe
-          7z a "neobrowser-${{ matrix.target }}.zip" "$BIN"
+          cd target/${{ matrix.target }}/release
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            ART="neobrowser-${{ matrix.target }}.zip"
+            7z a "$ART" neobrowser.exe
+          else
+            ART="neobrowser-${{ matrix.target }}.tar.gz"
+            tar -czf "$ART" neobrowser
+          fi
+          sha256sum "$ART" > "$ART.sha256"
+          echo "ART=rust/target/${{ matrix.target }}/release/$ART" >> "$GITHUB_ENV"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ env.ART }}
+
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            rust/neobrowser-${{ matrix.target }}.tar.gz
-            rust/neobrowser-${{ matrix.target }}.zip
+            ${{ env.ART }}
+            ${{ env.ART }}.sha256

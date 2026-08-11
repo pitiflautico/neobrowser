@@ -118,11 +118,24 @@ async fn passes_bot_sannysoft_webdriver_check() {
         .await
         .unwrap_or_default()
         .to_lowercase();
-    // The WebDriver row reads "missing (passed)" when navigator.webdriver is undefined.
+    let head: String = text.chars().take(500).collect();
+
+    // Strict: the WebDriver row must read the definitive "missing (passed)" (i.e.
+    // navigator.webdriver is undefined) — not just any "passed" anywhere on the page.
     assert!(
-        text.contains("missing (passed)") || text.contains("passed"),
-        "bot.sannysoft did not report a passing webdriver result; body head: {}",
-        text.chars().take(400).collect::<String>()
+        text.contains("missing (passed)"),
+        "WebDriver check is not 'missing (passed)'; head: {head}"
     );
+    // And no core fingerprint check may be reported as failed.
+    for bad in [
+        "present (failed)",
+        "webdriver (new) failed",
+        "headlesschrome",
+    ] {
+        assert!(
+            !text.contains(bad),
+            "stealth regression — page contains '{bad}'; head: {head}"
+        );
+    }
     browser.shutdown().await;
 }

@@ -50,7 +50,12 @@ STEPS = [
 reqs = "".join(json.dumps({"jsonrpc": "2.0", "id": i, "method": m, "params": p}) + "\n" for i, m, p, _ in STEPS)
 labels = {i: lbl for i, _, _, lbl in STEPS}
 
-env = dict(os.environ, NEOBROWSER_HOME=os.path.join(tempfile.gettempdir(), "neobrowser-demo"), NEOBROWSER_LOG_LEVEL="warn")
+# Restrict uploads to the temp dir where the demo image lives (the recommended
+# pattern for agents: scope NEOBROWSER_UPLOAD_DIR instead of allowing any path).
+env = dict(os.environ,
+           NEOBROWSER_HOME=os.path.join(tempfile.gettempdir(), "neobrowser-demo"),
+           NEOBROWSER_UPLOAD_DIR=tempfile.gettempdir(),
+           NEOBROWSER_LOG_LEVEL="warn")
 proc = subprocess.run([BIN, "serve"], input=reqs, capture_output=True, text=True, timeout=180, env=env)
 
 print("\n=== NeoBrowser demo ===\n")
