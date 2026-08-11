@@ -1,0 +1,108 @@
+{
+  "tool": "neobrowser",
+  "binary": "/Volumes/DiscoExterno2/mac_offload/Projects/neobrowser/rust/target/release/neobrowser",
+  "tasks": 12,
+  "task_success_rate": 1.0,
+  "bot_wall_rate": 0.25,
+  "avg_latency_ms": 3965,
+  "crashes": 0,
+  "recovery_ok": true,
+  "results": [
+    {
+      "id": "nav-basic",
+      "category": "navigation",
+      "success": true,
+      "wall": null,
+      "latency_ms": 3593,
+      "error": null
+    },
+    {
+      "id": "login",
+      "category": "login",
+      "success": true,
+      "wall": "login_required",
+      "latency_ms": 4765,
+      "error": null
+    },
+    {
+      "id": "upload",
+      "category": "upload",
+      "success": true,
+      "wall": null,
+      "latency_ms": 3635,
+      "error": null
+    },
+    {
+      "id": "extract-table",
+      "category": "extract",
+      "success": true,
+      "wall": null,
+      "latency_ms": 2969,
+      "error": null
+    },
+    {
+      "id": "spa-dynamic-load",
+      "category": "spa",
+      "success": true,
+      "wall": null,
+      "latency_ms": 8267,
+      "error": null
+    },
+    {
+      "id": "long-nav-read",
+      "category": "long-navigation",
+      "success": true,
+      "wall": null,
+      "latency_ms": 3301,
+      "error": null
+    },
+    {
+      "id": "json-api",
+      "category": "navigation",
+      "success": true,
+      "wall": null,
+      "latency_ms": 3431,
+      "error": null
+    },
+    {
+      "id": "botwall-detection",
+      "category": "bot-wall",
+      "success": true,
+      "wall": "bot_wall",
+      "latency_ms": 3917,
+      "error": null
+    },
+    {
+      "id": "cloudflare-detection",
+      "category": "cloudflare",
+      "success": true,
+      "wall": "captcha",
+      "latency_ms": 3199,
+      "error": null
+    },
+    {
+      "id": "multitab",
+      "category": "multi-tab",
+      "success": true,
+      "wall": null,
+      "latency_ms": 3340,
+      "error": null
+    },
+    {
+      "id": "recovery",
+      "category": "crash-recovery",
+      "success": true,
+      "wall": null,
+      "latency_ms": 5578,
+      "error": null
+    },
+    {
+      "id": "persistence",
+      "category": "persistent-session",
+      "success": true,
+      "wall": null,
+      "latency_ms": 1589,
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+[
+  {
+    "id": "nav-basic", "category": "navigation", "url": "https://example.com",
+    "steps": [{"tool": "expect", "args": {"selector": "body", "contains": "example domain"}}]
+  },
+  {
+    "id": "login", "category": "login", "url": "https://the-internet.herokuapp.com/login",
+    "steps": [
+      {"tool": "fill", "args": {"selector": "#username", "value": "tomsmith"}},
+      {"tool": "fill", "args": {"selector": "#password", "value": "SuperSecretPassword!"}},
+      {"tool": "find_and_click", "args": {"text": "Login"}},
+      {"tool": "expect", "args": {"selector": ".flash", "contains": "secure area"}}
+    ]
+  },
+  {
+    "id": "upload", "category": "upload", "url": "https://the-internet.herokuapp.com/upload",
+    "steps": [
+      {"tool": "upload", "args": {"selector": "#file-upload", "files": ["__BENCH_IMG__"]}},
+      {"tool": "submit", "args": {"selector": "#file-submit", "wait_s": 8}},
+      {"tool": "expect", "args": {"selector": "#uploaded-files", "contains": "bench"}}
+    ]
+  },
+  {
+    "id": "extract-table", "category": "extract", "url": "https://the-internet.herokuapp.com/tables",
+    "steps": [
+      {"tool": "extract_table", "args": {"selector": "#table1", "index": 0}, "expect_contains": "smith"}
+    ]
+  },
+  {
+    "id": "spa-dynamic-load", "category": "spa", "url": "https://the-internet.herokuapp.com/dynamic_loading/2",
+    "steps": [
+      {"tool": "find_and_click", "args": {"text": "Start"}},
+      {"tool": "wait", "args": {"ms": 8000, "selector": "#finish"}},
+      {"tool": "expect", "args": {"selector": "#finish", "contains": "hello world"}}
+    ]
+  },
+  {
+    "id": "long-nav-read", "category": "long-navigation", "url": "https://en.wikipedia.org/wiki/Web_scraping",
+    "steps": [{"tool": "expect", "args": {"selector": "body", "contains": "scraping"}}]
+  },
+  {
+    "id": "json-api", "category": "navigation", "url": "https://httpbin.org/json",
+    "steps": [{"tool": "expect", "args": {"selector": "body", "contains": "slideshow"}}]
+  },
+  {
+    "id": "botwall-detection", "category": "bot-wall",
+    "url": "https://www.google.com/search?q=cat&udm=2&num=30",
+    "expect_wall": true,
+    "steps": []
+  },
+  {
+    "id": "cloudflare-detection", "category": "cloudflare", "url": "https://nowsecure.nl/",
+    "note": "measures wall DETECTION, not bypass",
+    "steps": []
+  },
+  {"id": "multitab", "category": "multi-tab", "special": "multitab"},
+  {"id": "recovery", "category": "crash-recovery", "special": "recovery"},
+  {"id": "persistence", "category": "persistent-session", "special": "persistence"}
+]

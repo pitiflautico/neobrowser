@@ -81,6 +81,16 @@ Real output against live sites:
 - **[AGENTS.md](AGENTS.md)** — architecture, build/test, and conventions for contributors and AI agents.
 - The MCP `initialize` response ships an `instructions` field so the model gets a usage primer automatically.
 
+## Benchmark
+
+A reproducible harness ([`bench/`](bench/)) drives the tool through a task matrix
+and reports success rate, bot-wall detection, latency, crashes, and self-healing
+recovery. First pass (`python3 bench/run.py`): **12/12 tasks, 0 crashes,
+crash-recovery PASS**, with a live Cloudflare page correctly flagged as a wall.
+It is built to plug in other tools (Playwright MCP, browser-use) and, for
+adversarial sites at scale, residential proxies + repeated runs — see
+[bench/README.md](bench/README.md) for the honest limits and how to extend it.
+
 ## Usage
 
 Register it with any MCP client, then ask your model to browse. Example tool calls:
