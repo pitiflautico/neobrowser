@@ -103,7 +103,19 @@
       <div class="card"><h3>Bot-wall aware</h3><p>Detects CAPTCHAs, consent gates, rate-limits and login walls on any site and tells the model how to react.</p></div>
       <div class="card"><h3>Multi-source search</h3><p>Text, images and video across several engines — walled sources are detected and skipped, results merged.</p></div>
       <div class="card"><h3>43 tools · one binary</h3><p>Navigate, forms, upload/download, extract, multi-tab, playbooks, search — a single ~5&nbsp;MB static binary, no runtime.</p></div>
+      <div class="card"><h3>Robust core</h3><p>One isolated CDP connection per tab, typed timeouts, self-healing recovery — and a graceful shutdown that never leaves an orphaned Chrome behind.</p></div>
     </div>
+  </section>
+
+  <section>
+    <h2>Benchmarked, honestly</h2>
+    <p style="color:var(--muted);max-width:720px;margin:0 0 18px">A neutral harness drives NeoBrowser and Playwright MCP through the same task matrix — nothing tuned to make either win:</p>
+    <table>
+      <tr><th></th><th>Functional tasks</th><th>Avg latency</th><th>Crashes</th></tr>
+      <tr><td>NeoBrowser</td><td class="y">9/9</td><td>4760 ms</td><td class="y">0</td></tr>
+      <tr><td>Playwright MCP</td><td class="n">7/9</td><td>2597 ms</td><td class="y">0</td></tr>
+    </table>
+    <p style="color:var(--muted);font-size:14px;max-width:720px;margin:14px 0 0">Playwright MCP is faster; NeoBrowser passes <em>upload</em> and <em>session persistence</em>, which Playwright MCP can't do — and on adversarial pages both were walled equally (no "evades better" claim). Full methodology: <a href="https://github.com/pitiflautico/neobrowser/blob/main/bench/compare.md">bench/compare.md</a>.</p>
   </section>
 
   <section>
