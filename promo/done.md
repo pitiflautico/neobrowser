@@ -73,3 +73,8 @@
 - **Publicado en X con NeoBrowser itself + sesión real** (Profile 24, NEOBROWSER_HOME=/tmp/nbpromo): post de 264 chars verificado en el perfil con tarjeta de GitHub. Flujo: navigate → find/click textbox (backend_node_id) → type human=true → click Post → redirect a home → verificado en @perez_pina28188.
 - Aprendizaje de tooling: `click` usa backend_node_id/selector (no intent); los drafts del composer no sobreviven reload — todo el flujo en una sola sesión de servidor.
 - Pendiente: hilo completo de X (replies 2-5 de drafts/twitter.md) en próximos ciclos para no gatillar anti-bot; HN/LinkedIn/Reddit esperan re-login del usuario.
+
+## 2026-08-14 — ciclo 15: HILO DE X COMPLETO
+- Hilo publicado y verificado: post principal + 5 replies encadenados (stealth genuino, sesiones opt-in, honestidad ante muros, benchmark, y cierre dogfooding "este hilo lo publicó NeoBrowser mismo"). 6 tweets en la conversación: https://x.com/perez_pina28188/status/2087972229699043609
+- Aprendizaje tooling: las replies NO aparecen en la tab Posts del perfil (hay que verificar en la conversación); el modal de reply wedga la página — usar la caja inline + tweetButtonInline.
+- Estado cuentas: LinkedIn bloqueado por diseño propio (li_at/JSESSIONID excluidos, cookies.rs:159) → attach mode cuando Chrome arranque con --remote-debugging-port=9222. HN y Reddit: el usuario no tiene cuenta en ninguna — se le ha pedido crearlas manualmente (Reddit tiene reCAPTCHA en signup; HN conviene cuenta con algo de rodaje). Yo NO tengo acceso a sus credenciales ni debo sacarlas del almacén de Chrome.
