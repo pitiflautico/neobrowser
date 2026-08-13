@@ -45,3 +45,8 @@
 - Monitor de menciones: 0 reales (la única en HN es un artículo de 2022 sobre "neobrowsers" como categoría, sin relación). Estrellas: 0; PR #12089 OPEN.
 - Newsletters: research hecho — no hay forms públicos de submission relevantes que no requieran cuenta/email del usuario; canal aplazado a cuando haya tracción que enseñar.
 - Asset nuevo: `docs/assets/og.png` (1200×630, captura real de la landing hecha con el propio NeoBrowser) + meta tags og:image/twitter:card en la landing — los links compartidos en X/LinkedIn/PH ahora salen con imagen.
+
+## 2026-08-14 — ciclo 9
+- PulseMCP re-check (con NeoBrowser): submissions SIGUEN pausadas. Reintentar próximos ciclos.
+- Nuevo contenido: `promo/drafts/tech-cookies.md` — deep-dive "How to decrypt Chrome cookies on macOS/Linux/Windows without being evil", verificado contra cookies.rs real. Para publicar 1-2 semanas después del primer artículo.
+- Estrellas: 0. PR #12089 y mcp.so #3546 OPEN.
