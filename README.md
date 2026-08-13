@@ -38,6 +38,10 @@ Windows binaries are on the [Releases](https://github.com/pitiflautico/neobrowse
 
 ## See it work
 
+![NeoBrowser demo](docs/assets/demo.gif)
+
+*Real run: login, file upload and a bot-detector check against live sites (~14 s).*
+
 ```bash
 python3 rust/scripts/demo.py     # drives a real login, file upload, and a bot-detector check
 ```
