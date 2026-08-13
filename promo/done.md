@@ -40,3 +40,8 @@
 - Borrador artículo dev.to (`promo/drafts/devto.md`): ángulo "benchmark honesto vs Playwright MCP", con front matter listo y nota sobre la API de dev.to (si el usuario pasa DEV API key, el agente puede publicar drafts).
 - Prep completa de Product Hunt (`promo/drafts/producthunt.md`): tagline, descripción, galería, maker comment y checklist del día de launch.
 - Estrellas: 0. PR #12089 y mcp.so #3546 siguen OPEN.
+
+## 2026-08-14 — ciclo 8
+- Monitor de menciones: 0 reales (la única en HN es un artículo de 2022 sobre "neobrowsers" como categoría, sin relación). Estrellas: 0; PR #12089 OPEN.
+- Newsletters: research hecho — no hay forms públicos de submission relevantes que no requieran cuenta/email del usuario; canal aplazado a cuando haya tracción que enseñar.
+- Asset nuevo: `docs/assets/og.png` (1200×630, captura real de la landing hecha con el propio NeoBrowser) + meta tags og:image/twitter:card en la landing — los links compartidos en X/LinkedIn/PH ahora salen con imagen.
