@@ -16,10 +16,10 @@
 - [x] Borrador post r/mcp → `promo/drafts/reddit.md`
 - [x] Borrador hilo Twitter/X con demo → `promo/drafts/twitter.md`
 - [x] Borrador LinkedIn → `promo/drafts/linkedin.md`
-- [ ] Borrador artículo dev.to (benchmark honesto como gancho)
+- [x] Borrador artículo dev.to (benchmark honesto como gancho) → `promo/drafts/devto.md`
 
 ## Después
-- [ ] Preparar launch de Product Hunt (tagline, descripción, primeras 5 imágenes)
+- [x] Preparar launch de Product Hunt → `promo/drafts/producthunt.md` (tagline, descripción, galería, maker comment, checklist)
 - [ ] Buscar newsletters MCP/AI-agent con form de submission y enviar
 - [ ] Monitor semanal de menciones ("neobrowser") en HN/Reddit/GitHub y responder donde aporte
 - [ ] Ideas de contenido técnico: post sobre cookie decryption cross-platform, post sobre el CDP multiplexer en Rust
