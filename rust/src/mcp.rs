@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 
 use crate::browser::Browser;
 use crate::tool_impls;
@@ -50,7 +50,7 @@ Real sessions: set NEOBROWSER_REAL_PROFILE to start authenticated; or \
 NEOBROWSER_ATTACH_PORT to drive a Chrome you already have open. Act only as the user \
 would themselves.";
 
-/// Run the MCP server over stdin/stdout until EOF.
+/// Run the MCP server over stdin/stdout until EOF or a termination signal.
 pub async fn serve() {
     let browser = Arc::new(Browser::new());
     let registry = Arc::new(tool_impls::build_registry());
@@ -59,11 +59,42 @@ pub async fn serve() {
         registry: registry.clone(),
     };
 
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin).lines();
+    // Read stdin on a plain std thread instead of `tokio::io::stdin()`: tokio's
+    // stdin leaves a permanently-blocked blocking task that prevents the runtime
+    // (and thus the whole process) from exiting after a signal-triggered
+    // shutdown — the server would hang until stdin EOF. A detached std thread
+    // does not block process exit.
+    let (lines_tx, mut lines_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(l) => {
+                    if lines_tx.send(l).is_err() {
+                        return; // server shutting down
+                    }
+                }
+                Err(_) => return, // stdin error: close the channel (EOF path)
+            }
+        }
+    });
     let mut stdout = tokio::io::stdout();
 
-    while let Ok(Some(line)) = reader.next_line().await {
+    loop {
+        // Race the next request line against SIGTERM/SIGINT: MCP clients kill
+        // their servers with SIGTERM on exit, and without handling it the
+        // headless Chrome outlived the server (orphaned processes).
+        let line = tokio::select! {
+            line = lines_rx.recv() => match line {
+                Some(l) => l,
+                None => break, // stdin EOF
+            },
+            _ = shutdown_signal() => {
+                tracing::info!("termination signal received; shutting down");
+                break;
+            }
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -88,6 +119,31 @@ pub async fn serve() {
 
     // Clean shutdown: never leak a headless Chrome.
     ctx.browser.shutdown().await;
+}
+
+/// Resolve on SIGINT (all platforms) or SIGTERM (unix) — the normal ways an MCP
+/// client (Claude Desktop, Cursor) terminates its server.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            // No SIGTERM handler: fall back to ctrl_c only.
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Handle one JSON-RPC request. Returns `Some(response)` or `None` for notifications.
@@ -265,6 +321,26 @@ mod tests {
         let reg = tool_impls::build_registry();
         let req = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         assert!(handle_request(&reg, &ctx(), &req).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_numeric_args_are_iserror_not_panic() {
+        // Regression: negative/NaN waits used to reach Duration::from_secs* and
+        // panic the whole server. Validation runs before any Chrome launch.
+        let reg = tool_impls::build_registry();
+        for (tool, args) in [
+            ("submit", json!({ "wait_s": -1.0 })),
+            ("wait", json!({ "ms": -5 })),
+        ] {
+            let req = json!({
+                "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+                "params": { "name": tool, "arguments": args }
+            });
+            let resp = handle_request(&reg, &ctx(), &req).await.unwrap();
+            assert_eq!(resp["result"]["isError"], true, "{tool} should be isError");
+            let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("must be"), "{tool} got: {text}");
+        }
     }
 
     #[tokio::test]

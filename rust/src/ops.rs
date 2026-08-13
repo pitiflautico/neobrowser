@@ -11,6 +11,26 @@ use serde_json::{json, Map, Value};
 use crate::cdp::{CdpClient, CdpError};
 use crate::page;
 
+/// Cap on client-controlled waits: the server is sequential, so an unbounded
+/// `wait`/`submit` would wedge every other tool call.
+pub const MAX_WAIT: Duration = Duration::from_secs(60);
+
+/// Clamp a client-supplied seconds value into `[0, MAX_WAIT]`. Non-finite
+/// (NaN/inf) becomes 0 — `Duration::from_secs_f64` panics on those, so nothing
+/// unvalidated may ever reach it.
+fn bounded_secs_f64(v: f64) -> f64 {
+    if v.is_finite() {
+        v.clamp(0.0, MAX_WAIT.as_secs_f64())
+    } else {
+        0.0
+    }
+}
+
+/// Clamp a client-supplied milliseconds value into `[0, MAX_WAIT]`.
+fn bounded_ms_i64(v: i64) -> u64 {
+    v.clamp(0, MAX_WAIT.as_millis() as i64) as u64
+}
+
 /// Safely encode a Rust string as a JS literal (quotes + escaping).
 fn js_lit(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
@@ -201,7 +221,7 @@ pub async fn submit(
     }
 
     let t0 = Instant::now();
-    let deadline = t0 + Duration::from_secs_f64(wait_s);
+    let deadline = t0 + Duration::from_secs_f64(bounded_secs_f64(wait_s));
     let mut url_after = url_before.clone();
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -370,8 +390,9 @@ pub async fn scroll(client: &CdpClient, direction: &str, amount: i64) -> Result<
 
 /// `wait` — sleep `ms`, or poll until `selector` appears (whichever `selector` implies).
 pub async fn wait(client: &CdpClient, ms: i64, selector: Option<&str>) -> Result<String, CdpError> {
+    let ms = bounded_ms_i64(ms);
     if let Some(sel) = selector {
-        let deadline = Instant::now() + Duration::from_millis(ms.max(0) as u64);
+        let deadline = Instant::now() + Duration::from_millis(ms);
         let mut found = false;
         while Instant::now() < deadline {
             let expr = format!("return document.querySelectorAll({}).length", js_lit(sel));
@@ -384,7 +405,7 @@ pub async fn wait(client: &CdpClient, ms: i64, selector: Option<&str>) -> Result
         }
         Ok(json!({ "found": found, "selector": sel, "waited_ms": ms }).to_string())
     } else {
-        tokio::time::sleep(Duration::from_millis(ms.max(0) as u64)).await;
+        tokio::time::sleep(Duration::from_millis(ms)).await;
         Ok(format!("Waited {ms}ms"))
     }
 }
@@ -513,5 +534,27 @@ mod tests {
         let t = DISMISS_OVERLAY_JS.replace("FORCE", "true");
         assert!(t.contains("(true)"));
         assert!(!t.contains("FORCE"));
+    }
+
+    #[test]
+    fn bounded_secs_f64_never_panics_input() {
+        // NaN/inf/negative would panic Duration::from_secs_f64 if passed raw.
+        assert_eq!(bounded_secs_f64(f64::NAN), 0.0);
+        assert_eq!(bounded_secs_f64(f64::INFINITY), 0.0);
+        assert_eq!(bounded_secs_f64(f64::NEG_INFINITY), 0.0);
+        assert_eq!(bounded_secs_f64(-1.0), 0.0);
+        assert_eq!(bounded_secs_f64(5.0), 5.0);
+        assert_eq!(bounded_secs_f64(86_400.0), MAX_WAIT.as_secs_f64());
+        // Every result is a legal from_secs_f64 argument.
+        for v in [-1.0, f64::NAN, f64::INFINITY, 1e300, 0.5] {
+            let _ = Duration::from_secs_f64(bounded_secs_f64(v));
+        }
+    }
+
+    #[test]
+    fn bounded_ms_i64_clamps_to_range() {
+        assert_eq!(bounded_ms_i64(-5), 0);
+        assert_eq!(bounded_ms_i64(250), 250);
+        assert_eq!(bounded_ms_i64(i64::MAX), MAX_WAIT.as_millis() as u64);
     }
 }

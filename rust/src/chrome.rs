@@ -173,15 +173,6 @@ pub const DEFAULT_CHROME_FLAGS: &[&str] = &[
     "--disable-background-timer-throttling",
 ];
 
-/// Visible mode: real Chrome window, no headless, no fake UA.
-pub const VISIBLE_CHROME_FLAGS: &[&str] = &[
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-background-networking",
-    "--mute-audio",
-    "--disable-blink-features=AutomationControlled",
-];
-
 fn validate_port(port: u16) -> Result<(), ChromeError> {
     if (1024..=65535).contains(&port) {
         Ok(())
@@ -329,31 +320,6 @@ impl ChromeProcess {
         })
     }
 
-    /// Launch Chrome in visible mode (no headless, no fake UA).
-    pub async fn launch_visible(profile_dir: Option<PathBuf>) -> Result<Self, ChromeError> {
-        let port = find_free_port()?;
-        let profile_dir =
-            profile_dir.unwrap_or_else(|| paths::profiles_base().join(format!("visible-{port}")));
-        std::fs::create_dir_all(&profile_dir)?;
-
-        let mut cmd = Command::new(chrome_bin());
-        cmd.arg(format!("--remote-debugging-port={port}"))
-            .arg(format!("--user-data-dir={}", profile_dir.display()))
-            .arg("--window-size=1920,1080");
-        for flag in VISIBLE_CHROME_FLAGS {
-            cmd.arg(flag);
-        }
-        cmd.stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        let child = cmd.spawn()?;
-        Ok(Self {
-            profile_dir,
-            port,
-            child: Some(child),
-        })
-    }
-
     /// The OS process id of the spawned child, if still owned.
     pub fn pid(&self) -> Option<u32> {
         self.child.as_ref().and_then(|c| c.id())
@@ -388,39 +354,67 @@ impl ChromeProcess {
         self.is_alive() && self.port_alive().await
     }
 
-    /// Terminate the process. Sends SIGTERM first (Chrome flushes its profile);
-    /// if `force`, escalates to SIGKILL after a 3s grace period.
+    /// Terminate the process. Always sends SIGTERM first (Chrome flushes its
+    /// profile) and waits up to 3s for a graceful exit; only if `force` and it
+    /// is still alive after the grace period does it escalate to SIGKILL.
+    /// An exited child is always reaped (no zombies).
     pub async fn kill(&mut self, force: bool) {
         let Some(pid) = self.pid() else { return };
         term(pid);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if !self.is_alive() {
+                // try_wait already reaped it.
+                self.child = None;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         if force {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while Instant::now() < deadline {
-                if !self.is_alive() {
-                    self.child = None;
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if let Some(c) = self.child.as_mut() {
+            if let Some(mut c) = self.child.take() {
                 let _ = c.start_kill(); // SIGKILL
+                let _ = c.wait().await; // reap: no zombie
             }
         }
-        // Reap so no zombie remains.
-        if let Some(mut c) = self.child.take() {
-            let _ = c.try_wait();
-            // If it hasn't exited yet, leave the handle dropped; kill_on_drop is off,
-            // so we best-effort SIGKILL via the pid to avoid an orphan.
-            let _ = c.start_kill();
-        }
+        // !force: graceful mode — Chrome got SIGTERM and exits on its own
+        // schedule; we deliberately do not SIGKILL it.
     }
 }
 
 impl Drop for ChromeProcess {
     fn drop(&mut self) {
-        // Best-effort graceful shutdown so we never leak a headless Chrome.
-        if let Some(pid) = self.pid() {
+        // Terminate AND reap so we never leak or zombie a headless Chrome, even
+        // when the manager is dropped without an explicit kill().
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        // Graceful first: SIGTERM, then a bounded poll (~1s) for exit.
+        if let Some(pid) = child.id() {
             term(pid);
+        }
+        if reap_with_timeout(&mut child, Duration::from_secs(1)) {
+            return;
+        }
+        // Still alive: SIGKILL and reap again (bounded).
+        let _ = child.start_kill();
+        let _ = reap_with_timeout(&mut child, Duration::from_secs(1));
+    }
+}
+
+/// Poll `try_wait` (which reaps on exit) until the child exits or `timeout`
+/// elapses. Returns true if the child was confirmed exited and reaped.
+/// Blocking and sync — only used from `Drop`, where await is impossible.
+fn reap_with_timeout(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return true,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
     }
 }
@@ -473,6 +467,41 @@ mod tests {
         assert!(validate_port(80).is_err());
         assert!(validate_port(1024).is_ok());
         assert!(validate_port(65535).is_ok());
+    }
+
+    /// Build a manager around an arbitrary child process for kill/Drop tests.
+    fn proc_of(child: Child) -> ChromeProcess {
+        ChromeProcess {
+            profile_dir: PathBuf::from("/tmp"),
+            port: 0,
+            child: Some(child),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_force_terminates_and_reaps() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let mut proc = proc_of(child);
+        let pid = proc.pid().unwrap();
+        proc.kill(true).await;
+        assert!(proc.child.is_none());
+        // Reaped and gone: signalling the pid must fail with ESRCH.
+        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        assert!(rc != 0, "process {pid} still exists after kill(true)");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drop_terminates_child_without_explicit_kill() {
+        let pid;
+        {
+            let child = Command::new("sleep").arg("30").spawn().unwrap();
+            let proc = proc_of(child);
+            pid = proc.pid().unwrap();
+        } // Drop runs here: SIGTERM + bounded reap.
+        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        assert!(rc != 0, "process {pid} survived ChromeProcess drop");
     }
 
     #[test]

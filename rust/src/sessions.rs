@@ -15,12 +15,12 @@ use crate::cdp::{CdpClient, CdpError};
 use crate::page;
 use crate::paths;
 
-/// Profile name for on-disk snapshots. `NEOBROWSER_REAL_PROFILE` overrides "default".
+/// Profile name for on-disk snapshots. `NEOBROWSER_REAL_PROFILE` overrides "default",
+/// but only after the same whitelist validation the cookie-decryption path applies
+/// (`cookies::real_profile_folder`) — an unvalidated value like `../../x` would
+/// otherwise let snapshots escape `~/.neobrowser`.
 pub fn profile_name() -> String {
-    std::env::var("NEOBROWSER_REAL_PROFILE")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "default".to_string())
+    crate::cookies::real_profile_folder().unwrap_or_else(|| "default".to_string())
 }
 
 fn cookies_path() -> PathBuf {
@@ -38,8 +38,9 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// Write a file readable/writable only by the owner (0600 on Unix).
-fn write_private(path: &std::path::Path, data: &str) -> std::io::Result<()> {
+/// Write a file readable/writable only by the owner (0600 on Unix). Shared with
+/// the playbook store, whose files can contain credentials from recorded fills.
+pub(crate) fn write_private(path: &std::path::Path, data: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -247,6 +248,23 @@ mod tests {
             Some(v) => std::env::set_var("NEOBROWSER_REAL_PROFILE", v),
             None => std::env::remove_var("NEOBROWSER_REAL_PROFILE"),
         }
+    }
+
+    #[test]
+    fn profile_name_rejects_traversal() {
+        let _g = crate::env_test_guard();
+        std::env::set_var("NEOBROWSER_HOME", "/tmp/nb-sessions-test-traversal");
+        for bad in ["../../x", "../foo", "a/b", ".hidden", ""] {
+            std::env::set_var("NEOBROWSER_REAL_PROFILE", bad);
+            assert_eq!(
+                profile_name(),
+                "default",
+                "{bad:?} must fall back to the default profile"
+            );
+            assert!(cookies_path().starts_with(paths::cookies_base()));
+            assert!(session_dir().starts_with(paths::sessions_base()));
+        }
+        std::env::remove_var("NEOBROWSER_REAL_PROFILE");
     }
 
     #[test]

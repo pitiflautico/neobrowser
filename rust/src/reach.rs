@@ -5,7 +5,7 @@
 //! hosts resolving to loopback/private/link-local ranges (incl. cloud metadata) are
 //! blocked before any request goes out.
 
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -17,73 +17,188 @@ use crate::paths;
 /// SSRF guard: true only for a public http(s) URL with no userinfo whose host
 /// resolves entirely to public addresses.
 pub fn validate_url(raw: &str) -> bool {
-    let url = match reqwest::Url::parse(raw) {
-        Ok(u) => u,
-        Err(_) => return false,
-    };
+    resolve_public_url(raw).is_some()
+}
+
+/// Full SSRF validation of `raw`. On success returns the parsed URL plus, for
+/// domain hosts, the exact socket addresses validation checked — callers pin
+/// them on the request (`ClientBuilder::resolve_to_addrs`) so an attacker
+/// can't re-resolve to a private IP between validation and connect
+/// (DNS-rebinding TOCTOU).
+fn resolve_public_url(raw: &str) -> Option<(reqwest::Url, Vec<SocketAddr>)> {
+    let url = reqwest::Url::parse(raw).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
-        return false;
+        return None;
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return false; // credentials-in-URL
+        return None; // credentials-in-URL
     }
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    // A literal IP: check it directly.
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return is_public(ip);
+    let host = url.host_str()?;
+    // A literal IP: check it directly (no DNS, nothing to pin). host_str keeps
+    // the brackets on IPv6 literals ("[::1]") — strip them before parsing.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return is_public(ip).then_some((url, Vec::new()));
     }
     // Block obvious internal names outright.
     let h = host.to_ascii_lowercase();
     if h == "localhost" || h.ends_with(".localhost") || h == "metadata.google.internal" {
-        return false;
+        return None;
     }
     // Resolve and require every address to be public.
     let port = url.port_or_known_default().unwrap_or(80);
-    match (host, port).to_socket_addrs() {
-        Ok(addrs) => {
-            let mut any = false;
-            for a in addrs {
-                any = true;
-                if !is_public(a.ip()) {
-                    return false;
-                }
-            }
-            any
-        }
-        Err(_) => false,
+    let addrs: Vec<SocketAddr> = (host, port).to_socket_addrs().ok()?.collect();
+    if addrs.is_empty() || !addrs.iter().all(|a| is_public(a.ip())) {
+        return None;
     }
+    Some((url, addrs))
 }
 
 /// Reject loopback / private / link-local / unspecified / cloud-metadata IPs.
 fn is_public(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => {
-            if v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-            {
-                return false;
-            }
-            // Carrier-grade NAT 100.64.0.0/10 and metadata 169.254.169.254.
-            let o = v4.octets();
-            if o[0] == 100 && (64..=127).contains(&o[1]) {
-                return false;
-            }
-            true
-        }
+        IpAddr::V4(v4) => is_public_v4(v4),
         IpAddr::V6(v6) => {
-            !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()
+            // Loopback/unspecified/multicast first: to_ipv4() would otherwise
+            // map ::1 to 0.0.0.1 and skip the loopback check.
+            if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                return false;
+            }
+            // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d)
+            // forms embed an IPv4 that must pass the same checks — otherwise
+            // ::ffff:127.0.0.1 or ::ffff:a9fe:a9fe would sail through.
+            if let Some(v4) = v6.to_ipv4() {
+                return is_public_v4(v4);
+            }
+            let segs = v6.segments();
+            // 6to4 (2002::/16): the next 32 bits are an IPv4 address.
+            if segs[0] == 0x2002 {
+                let v4 = Ipv4Addr::new(
+                    (segs[1] >> 8) as u8,
+                    segs[1] as u8,
+                    (segs[2] >> 8) as u8,
+                    segs[2] as u8,
+                );
+                return is_public_v4(v4);
+            }
+            // Teredo (2001:0000::/32): the last 32 bits are the IPv4 XOR all-ones.
+            if segs[0] == 0x2001 && segs[1] == 0x0000 {
+                let v4 = Ipv4Addr::new(
+                    !(segs[6] >> 8) as u8,
+                    !segs[6] as u8,
+                    !(segs[7] >> 8) as u8,
+                    !segs[7] as u8,
+                );
+                return is_public_v4(v4);
+            }
+            !(
                 // unique-local fc00::/7
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                (segs[0] & 0xfe00) == 0xfc00
                 // link-local fe80::/10
-                || (v6.segments()[0] & 0xffc0) == 0xfe80)
+                || (segs[0] & 0xffc0) == 0xfe80
+            )
         }
     }
+}
+
+fn is_public_v4(v4: Ipv4Addr) -> bool {
+    if v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.is_broadcast()
+        || v4.is_documentation()
+    {
+        return false;
+    }
+    // Carrier-grade NAT 100.64.0.0/10 and metadata 169.254.169.254.
+    let o = v4.octets();
+    if o[0] == 100 && (64..=127).contains(&o[1]) {
+        return false;
+    }
+    true
+}
+
+/// Max redirects followed manually (each hop re-runs the full SSRF guard).
+const MAX_REDIRECTS: u32 = 5;
+
+/// GET `raw_url` with redirect::Policy::none, following redirects manually and
+/// re-validating every hop (scheme + host + DNS + is_public) so a public URL
+/// can't bounce us into `169.254.169.254` or a private range. `cookie` is only
+/// sent on hops sharing the original host.
+async fn guarded_get(
+    raw_url: &str,
+    ua: &str,
+    timeout: Duration,
+    headers: &Map<String, Value>,
+    cookie: Option<&str>,
+) -> Result<reqwest::Response, String> {
+    const BLOCKED: &str = "blocked: only public http(s) URLs allowed (SSRF guard)";
+    let first_host = reqwest::Url::parse(raw_url)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from));
+    let mut current = raw_url.to_string();
+    for _ in 0..=MAX_REDIRECTS {
+        let (url, addrs) = resolve_public_url(&current).ok_or_else(|| BLOCKED.to_string())?;
+        // Pin the validated IPs for this hop's DNS (see resolve_public_url).
+        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        if !addrs.is_empty() {
+            if let Some(host) = url.host_str() {
+                builder = builder.resolve_to_addrs(host, &addrs);
+            }
+        }
+        let client = builder.build().map_err(|e| e.to_string())?;
+        let mut req = client
+            .get(url.as_str())
+            .header("User-Agent", ua)
+            .timeout(timeout);
+        for (k, v) in headers {
+            if let Some(s) = v.as_str() {
+                req = req.header(k.as_str(), s);
+            }
+        }
+        if let Some(c) = cookie {
+            if url.host_str().map(String::from) == first_host {
+                req = req.header("Cookie", c);
+            }
+        }
+        let resp = req.send().await.map_err(|e| e.to_string())?;
+        if resp.status().is_redirection() {
+            let location = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| "redirect without Location header".to_string())?;
+            // Relative redirects resolve against the current URL.
+            current = url
+                .join(location)
+                .map_err(|e| format!("bad redirect target: {e}"))?
+                .to_string();
+            continue;
+        }
+        return Ok(resp);
+    }
+    Err(format!("too many redirects (max {MAX_REDIRECTS})"))
+}
+
+/// Read a response body incrementally, stopping as soon as `cap` bytes are
+/// accumulated — the old `resp.bytes().await` buffered the WHOLE body in
+/// memory before truncating, so a multi-GB body could OOM the server.
+async fn read_capped(resp: reqwest::Response, cap: usize) -> Result<Vec<u8>, reqwest::Error> {
+    let mut resp = resp;
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        let remaining = cap.saturating_sub(buf.len());
+        if chunk.len() >= remaining {
+            buf.extend_from_slice(&chunk[..remaining]);
+            break; // drop the response; the rest never leaves the socket buffer
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// Strip zero-width and most control characters that hide in scraped text.
@@ -135,22 +250,17 @@ fn strip_html(input: &str) -> String {
 /// `browse` — server-side fetch of a public URL. JSON passes through; HTML is
 /// reduced to text (8000-char cap). Never uses the browser (raw HTTP).
 pub async fn browse(url: &str, headers: &Map<String, Value>) -> String {
-    if !validate_url(url) {
-        return json!({ "ok": false, "error": "blocked: only public http(s) URLs allowed (SSRF guard)", "url": url }).to_string();
-    }
-    let client = reqwest::Client::new();
-    let mut req = client
-        .get(url)
-        .header("User-Agent", "Mozilla/5.0 (compatible; neo-browser/rust)")
-        .timeout(Duration::from_secs(15));
-    for (k, v) in headers {
-        if let Some(s) = v.as_str() {
-            req = req.header(k.as_str(), s);
-        }
-    }
-    let resp = match req.send().await {
+    let resp = match guarded_get(
+        url,
+        "Mozilla/5.0 (compatible; neo-browser/rust)",
+        Duration::from_secs(15),
+        headers,
+        None,
+    )
+    .await
+    {
         Ok(r) => r,
-        Err(e) => return json!({ "ok": false, "error": e.to_string(), "url": url }).to_string(),
+        Err(e) => return json!({ "ok": false, "error": e, "url": url }).to_string(),
     };
     let content_type = resp
         .headers()
@@ -158,15 +268,14 @@ pub async fn browse(url: &str, headers: &Map<String, Value>) -> String {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let body = match resp.text().await {
-        Ok(t) => t,
+    let body = match read_capped(resp, 512 * 1024).await {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
         Err(e) => return json!({ "ok": false, "error": e.to_string(), "url": url }).to_string(),
     };
-    let capped: String = body.chars().take(512 * 1024).collect();
     if content_type.contains("json") {
-        return capped;
+        return body;
     }
-    let text = clean_scraped(&strip_html(&capped));
+    let text = clean_scraped(&strip_html(&body));
     let text: String = text.chars().take(8000).collect();
     json!({ "url": url, "text": text, "content_type": content_type }).to_string()
 }
@@ -387,29 +496,32 @@ pub async fn download(
         }
     }
 
-    let mut req = reqwest::Client::new()
-        .get(url)
-        .header("User-Agent", "Mozilla/5.0")
-        .timeout(Duration::from_secs(30));
-    if !cookie_header.is_empty() {
-        req = req.header("Cookie", cookie_header);
-    }
-    let resp = match req.send().await {
-        Ok(r) => r,
-        Err(e) => return Ok(json!({ "ok": false, "error": e.to_string() }).to_string()),
+    let cookie_opt = if cookie_header.is_empty() {
+        None
+    } else {
+        Some(cookie_header.as_str())
     };
-    let bytes = match resp.bytes().await {
+    let empty_headers = Map::new();
+    let resp = match guarded_get(
+        url,
+        "Mozilla/5.0",
+        Duration::from_secs(30),
+        &empty_headers,
+        cookie_opt,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return Ok(json!({ "ok": false, "error": e }).to_string()),
+    };
+    let bytes = match read_capped(resp, 200 * 1024 * 1024).await {
         Ok(b) => b,
         Err(e) => return Ok(json!({ "ok": false, "error": e.to_string() }).to_string()),
     };
-    let capped = &bytes[..bytes.len().min(200 * 1024 * 1024)];
-    if std::fs::write(&dest, capped).is_err() {
+    if std::fs::write(&dest, &bytes).is_err() {
         return Ok(json!({ "ok": false, "error": "write failed" }).to_string());
     }
-    Ok(
-        json!({ "ok": true, "path": dest.display().to_string(), "bytes": capped.len() })
-            .to_string(),
-    )
+    Ok(json!({ "ok": true, "path": dest.display().to_string(), "bytes": bytes.len() }).to_string())
 }
 
 #[cfg(test)]
@@ -433,6 +545,64 @@ mod tests {
     fn ssrf_allows_public_literals() {
         assert!(validate_url("http://8.8.8.8/"));
         assert!(validate_url("https://1.1.1.1/"));
+    }
+
+    #[test]
+    fn ssrf_blocks_ipv4_in_v6_disguises() {
+        // IPv4-mapped: ::ffff:a.b.c.d
+        assert!(!validate_url("http://[::ffff:127.0.0.1]/"));
+        assert!(!validate_url("http://[::ffff:a9fe:a9fe]/")); // 169.254.169.254
+        assert!(!validate_url("http://[::ffff:10.0.0.5]/"));
+        // IPv4-compatible: ::a.b.c.d
+        assert!(!validate_url("http://[::127.0.0.1]/"));
+        // 6to4 (2002::/16) embedding 127.0.0.1.
+        assert!(!validate_url("http://[2002:7f00:1::]/"));
+        // Teredo (2001:0000::/32) embedding 127.0.0.1 (XORed).
+        assert!(!validate_url("http://[2001:0::80ff:fffe]/"));
+        // Plain v6 loopback/link-local/unique-local still blocked.
+        assert!(!validate_url("http://[::1]/"));
+        assert!(!validate_url("http://[fe80::1]/"));
+        assert!(!validate_url("http://[fd00::1]/"));
+        // A mapped PUBLIC address still passes.
+        assert!(validate_url("http://[::ffff:8.8.8.8]/"));
+    }
+
+    #[tokio::test]
+    async fn guarded_get_blocks_private_url() {
+        let err = guarded_get(
+            "http://127.0.0.1:1/",
+            "ua",
+            Duration::from_secs(1),
+            &Map::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("blocked"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn read_capped_stops_at_cap() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = listener.accept().await {
+                let mut req = [0u8; 1024];
+                let _ = s.read(&mut req).await;
+                let body = vec![b'x'; 1024 * 1024];
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(head.as_bytes()).await;
+                let _ = s.write_all(&body).await;
+            }
+        });
+        let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let buf = read_capped(resp, 4096).await.unwrap();
+        assert_eq!(buf.len(), 4096);
     }
 
     #[test]

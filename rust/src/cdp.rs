@@ -56,8 +56,15 @@ pub struct CdpEvent {
     pub params: Value,
 }
 
+/// A request awaiting its response, with the method name kept so protocol
+/// errors can say WHICH command failed instead of reporting method ''.
+struct PendingRequest {
+    method: String,
+    tx: oneshot::Sender<Result<Value, CdpError>>,
+}
+
 /// A response frame we route back to the caller.
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>>>;
+type Pending = Arc<Mutex<HashMap<u64, PendingRequest>>>;
 
 /// An outbound command queued to the connection task.
 struct Outbound {
@@ -127,7 +134,13 @@ impl CdpClient {
         let text = serde_json::to_string(&payload).map_err(|e| CdpError::Serde(e.to_string()))?;
 
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        self.pending.lock().await.insert(
+            id,
+            PendingRequest {
+                method: method.to_string(),
+                tx,
+            },
+        );
 
         if self.cmd_tx.send(Outbound { id, text }).is_err() {
             self.pending.lock().await.remove(&id);
@@ -281,21 +294,21 @@ async fn route_message(txt: &str, pending: &Pending, events_tx: &broadcast::Send
 
     if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
         let sender = pending.lock().await.remove(&id);
-        if let Some(tx) = sender {
+        if let Some(pr) = sender {
             if let Some(err) = msg.get("error") {
                 let pe: ProtocolError =
                     serde_json::from_value(err.clone()).unwrap_or(ProtocolError {
                         code: -1,
                         message: err.to_string(),
                     });
-                let _ = tx.send(Err(CdpError::Protocol {
-                    method: String::new(),
+                let _ = pr.tx.send(Err(CdpError::Protocol {
+                    method: pr.method,
                     code: pe.code,
                     message: pe.message,
                 }));
             } else {
                 let result = msg.get("result").cloned().unwrap_or(Value::Null);
-                let _ = tx.send(Ok(result));
+                let _ = pr.tx.send(Ok(result));
             }
         }
         return;
@@ -312,8 +325,8 @@ async fn route_message(txt: &str, pending: &Pending, events_tx: &broadcast::Send
 }
 
 async fn fail_pending(pending: &Pending, id: u64, err: CdpError) {
-    if let Some(tx) = pending.lock().await.remove(&id) {
-        let _ = tx.send(Err(err));
+    if let Some(pr) = pending.lock().await.remove(&id) {
+        let _ = pr.tx.send(Err(err));
     }
 }
 
@@ -321,8 +334,8 @@ async fn fail_pending(pending: &Pending, id: u64, err: CdpError) {
 /// `Closed` error immediately instead of waiting out their timeouts.
 async fn drain_all(pending: &Pending, reason: &str) {
     let mut map = pending.lock().await;
-    for (_, tx) in map.drain() {
-        let _ = tx.send(Err(CdpError::Closed(reason.to_string())));
+    for (_, pr) in map.drain() {
+        let _ = pr.tx.send(Err(CdpError::Closed(reason.to_string())));
     }
 }
 
@@ -405,7 +418,12 @@ mod tests {
         let client = CdpClient::connect(&url).await.unwrap();
         let err = client.send("DOM.getDocument", json!({})).await.unwrap_err();
         match err {
-            CdpError::Protocol { code, message, .. } => {
+            CdpError::Protocol {
+                method,
+                code,
+                message,
+            } => {
+                assert_eq!(method, "DOM.getDocument");
                 assert_eq!(code, -32000);
                 assert_eq!(message, "boom");
             }

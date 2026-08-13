@@ -448,6 +448,12 @@ impl Tool for SubmitTool {
     ) -> Result<ToolOutput, ToolError> {
         let selector = arg_str(args, "selector");
         let wait_s = arg_f64(args, "wait_s", 5.0);
+        if !wait_s.is_finite() || wait_s < 0.0 {
+            return Err(ToolError::Argument(
+                "submit: wait_s must be a finite number >= 0".into(),
+            ));
+        }
+        let wait_s = wait_s.min(ops::MAX_WAIT.as_secs_f64());
         let tab = ctx.browser.tab().await?;
         Ok(ToolOutput::text(ops::submit(&tab, selector, wait_s).await?))
     }
@@ -633,6 +639,10 @@ impl Tool for WaitTool {
         args: &Map<String, Value>,
     ) -> Result<ToolOutput, ToolError> {
         let ms = arg_i64(args, "ms", 1000);
+        if ms < 0 {
+            return Err(ToolError::Argument("wait: ms must be >= 0".into()));
+        }
+        let ms = ms.min(ops::MAX_WAIT.as_millis() as i64);
         let selector = arg_str(args, "selector");
         let tab = ctx.browser.tab().await?;
         Ok(ToolOutput::text(ops::wait(&tab, ms, selector).await?))

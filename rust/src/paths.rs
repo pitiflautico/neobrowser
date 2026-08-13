@@ -2,7 +2,7 @@
 //!
 //! Everything lives under `NEOBROWSER_HOME` (default `~/.neobrowser`), overridable
 //! via the `NEOBROWSER_HOME` environment variable. Keeping every path in one place
-//! means the on-disk layout — profiles, cookies, sessions, playbooks, logs — is
+//! means the on-disk layout — profiles, cookies, sessions, playbooks — is
 //! defined exactly once. Mirrors the Python `neobrowser/paths.py`.
 
 use std::path::PathBuf;
@@ -33,16 +33,6 @@ pub fn sessions_base() -> PathBuf {
 /// Recorded action playbooks.
 pub fn playbooks_base() -> PathBuf {
     home().join("playbooks")
-}
-
-/// Log directory.
-pub fn logs_base() -> PathBuf {
-    home().join("logs")
-}
-
-/// Attach-mode port handoff file.
-pub fn port_file() -> PathBuf {
-    home().join("neo-browser-port.txt")
 }
 
 /// The user's real Chrome profile root (macOS layout).

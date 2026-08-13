@@ -31,15 +31,13 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// Persist a recorded step list.
+/// Persist a recorded step list. Written 0600: recorded `fill`/`form_fill`/`type`
+/// steps can contain credentials, same as the cookie/session snapshots.
 pub fn save(domain: &str, task: &str, steps: &[Value]) -> std::io::Result<()> {
     let path = playbook_path(domain, task);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(
+    crate::sessions::write_private(
         &path,
-        serde_json::to_string_pretty(steps).unwrap_or_else(|_| "[]".into()),
+        &serde_json::to_string_pretty(steps).unwrap_or_else(|_| "[]".into()),
     )
 }
 
@@ -105,5 +103,20 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0]["tool"], "navigate");
         assert_eq!(load("x.com", "missing").len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_owner_only_perms() {
+        // Playbooks can capture credentials via fill/form_fill/type steps.
+        let _g = crate::env_test_guard();
+        std::env::set_var("NEOBROWSER_HOME", "/tmp/nb-playbook-perms-test");
+        save("x.com", "creds", &[json!({ "tool": "fill", "args": {} })]).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(playbook_path("x.com", "creds"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }
