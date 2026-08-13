@@ -7,11 +7,12 @@
 - [x] demo.gif generado → docs/assets/demo.gif, embebido en README y landing
 - [ ] Publicar en el **MCP Registry oficial** (modelcontextprotocol/registry) vía `mcp-publisher` — canal de mayor leverage, alimenta agregadores downstream. Requiere login GitHub OAuth interactivo → necesita al usuario 1 minuto
 - [ ] Verificar/submit en glama.ai (hoy NO está indexado — solo aparece "NexBrowser", que no somos nosotros); los nuevos topics pueden disparar la auto-indexación, re-chequear en próximos ciclos
-- [ ] Verificar indexación en mcp.so / PulseMCP; submit si no está
+- [x] Submit a mcp.so → issue creado: https://github.com/chatmcp/mcpso/issues/3546 (pendiente de revisión)
+- [ ] Verificar indexación en PulseMCP; submit si no está
 - [ ] Submit a Smithery (smithery.ai)
 
 ## Contenido (borradores para el usuario)
-- [ ] Borrador Show HN (ángulo: "drives YOUR Chrome with YOUR sessions; honest benchmark vs Playwright MCP")
+- [x] Borrador Show HN → `promo/drafts/show-hn.md` (título + texto + respuestas preparadas)
 - [ ] Borrador post r/mcp
 - [ ] Borrador hilo Twitter/X con demo
 - [ ] Borrador LinkedIn

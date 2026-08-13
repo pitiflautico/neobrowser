@@ -13,7 +13,11 @@
 - wong2/awesome-mcp-servers: **PRs desactivados** (404 en /pulls). Descartado. El ecosistema awesome-list se ha consolidado en punkpeye — buena noticia: un solo merge cubre el canal.
 - glama.ai: NeoBrowser NO indexado (solo hay "NexBrowser", homónimo ajeno). Pendiente; los topics nuevos pueden disparar auto-indexación.
 - README: badges de instalación 1-click para VS Code y Cursor (commit cbaf80b, pusheado).
-- Descubierto canal prioritario nuevo: **MCP Registry oficial** (mcp-publisher CLI) — alimenta agregadores downstream. Bloqueado por OAuth interactivo (necesita 1 min del usuario).
+## 2026-08-13 — ciclo 3
+- PR #12089 (punkpeye): sigue OPEN sin merge. Estrellas: 0.
+- mcp.so: submission creada como issue en chatmcp/mcpso (#3546), formato estándar del directorio.
+- Borrador Show HN completo en promo/drafts/show-hn.md (2 títulos, texto, respuestas preparadas a objeciones típicas).
+- Investigación de directorios: el MCP Registry oficial es el canal canónico 2026 (alimenta downstream); sigue bloqueado por OAuth interactivo del usuario.
 
 ## 2026-08-13 — ciclo 2
 - demo.gif generado: grabación asciinema (venv /tmp/promo-tools) del demo con wrapper streaming (/tmp/demo_live.py, mismos pasos MCP que rust/scripts/demo.py), convertido a GIF con pyte+Pillow (/tmp/cast2gif.py). 14 frames, 931x448, 89 KB. Embebido en README.md y docs/index.html.
