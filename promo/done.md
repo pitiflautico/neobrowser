@@ -55,3 +55,7 @@
 - Nuevo contenido: `promo/drafts/tech-cdp.md` — deep-dive "Multiplexing CDP in Rust: one reader, zero races", verificado contra cdp.rs real. Cierra la serie técnica (benchmark → cookies → CDP).
 - Estrellas: 0. PR #12089 y mcp.so #3546 OPEN.
 - El backlog autónomo de contenido queda agotado; próximos ciclos = mantenimiento (re-checks directorios, monitor, mejoras de assets si hacen falta).
+
+## 2026-08-14 — ciclo 11
+- Nuevo asset: `docs/assets/architecture.png` (diagrama AI client → NeoBrowser → real Chrome → web, dark theme acorde a la landing), embebido en la landing y referenciado como imagen 5 de la galería de Product Hunt. Todos los assets de PH quedan completos.
+- Estrellas: 0. PR #12089 y mcp.so #3546 OPEN.

@@ -35,7 +35,7 @@ MIT licensed. Feedback welcome — especially from folks who've fought bot detec
 2. Screenshot de la landing hero (pitiflautico.github.io/neobrowser)
 3. Screenshot de la tabla del benchmark (`bench/compare.md` renderizado)
 4. Screenshot de la tabla "Why NeoBrowser" del README
-5. Diagrama simple: "AI client → NeoBrowser → real Chrome → web (authenticated)" (pendiente de generar si se quiere)
+5. Diagrama de arquitectura: "AI client → NeoBrowser → real Chrome → web (authenticated)" → **ya generado: `docs/assets/architecture.png`** (también embebido en la landing)
 
 ## First comment (el maker comment, publicarlo nada más lanzar)
 
