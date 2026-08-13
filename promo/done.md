@@ -30,3 +30,8 @@
 - PulseMCP: no estamos listados; **submissions pausadas hasta mediados de agosto** (rework de su ingestion). Reintentar en próximos ciclos. Bonus: la comprobación se hizo con el propio NeoBrowser — curl recibía 403 de Cloudflare, NeoBrowser pasó, detectó el captcha y leyó la página. Dogfooding + anécdota de marketing.
 - Smithery: no estamos listados; el submit requiere cuenta/CLI auth → pendiente credenciales del usuario.
 - Mantenimiento: actualizado el binario instalado ~/.local/bin/neobrowser a v0.1.3 (había un server viejo vivo de otra sesión con un Chrome fugado; limpiado). Ojo macOS: al copiar el binario a mano, quitar el xattr com.apple.provenance o Gatekeeper lo mata (SIGKILL) en el primer exec.
+
+## 2026-08-14 — ciclo 6
+- MCP Registry oficial: `server.json` creado en la raíz y **validado contra el schema oficial 2025-12-11** (variante websiteUrl, descripción 89 chars). Instrucciones exactas para el usuario en `promo/drafts/registry-publish.md` — solo falta `mcp-publisher login github` (OAuth interactivo).
+- glama.ai: sigue sin indexar (solo el homónimo NexBrowser). Tener server.json en la raíz puede ayudar a su crawler; re-check en próximos ciclos.
+- Estrellas: 0. PR #12089 y issue mcp.so #3546 siguen OPEN.

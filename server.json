@@ -1,0 +1,12 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.pitiflautico/neobrowser",
+  "title": "NeoBrowser",
+  "description": "Drive real Chrome via CDP with your logged-in sessions — genuine stealth, bot-wall aware.",
+  "websiteUrl": "https://pitiflautico.github.io/neobrowser/",
+  "repository": {
+    "url": "https://github.com/pitiflautico/neobrowser",
+    "source": "github"
+  },
+  "version": "0.1.3"
+}
