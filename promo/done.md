@@ -84,3 +84,9 @@
 - PLAYBOOK.md creado: 5 estrategias (stunts de dogfooding recurrentes, outreach a figuras con replies de valor, cadencia de contenido, engagement comunitario, launches secuenciados) con reglas anti-spam intactas.
 - targets.md: tier 1 (simonw, swyx, t3dotgg, mitsuhiko, Anthropic, levelsio) + tier 2, con ángulos por cuenta.
 - Cron actualizado: d77462a9 eliminado → 7c2c75a4 (3×/día: 9:23, 14:23, 20:23) con prompt de hype que incluye el playbook, targets y el flujo X probado.
+
+## 2026-08-14 — ciclo 18: VÍDEO COMPARATIVO PUBLICADO
+- Asset nuevo: `docs/assets/demo-split.mp4` (15s, 172KB, 1080p) — pantalla dividida: navegador headless de fábrica (GitHub logged-out) vs NeoBrowser con sesión real (GitHub dashboard autenticado). Capturas reales hechas con el propio NeoBrowser, montaje Pillow+ffmpeg.
+- **Publicado en X**: https://x.com/perez_pina28188/status/2087982402572263603 — vídeo adjunto renderizando (verificado con captura). La primera versión salió sin el vídeo → borrada y republicada correctamente.
+- Aprendizajes tooling X: los vídeos necesitan ~60s de procesamiento antes de Post; tras ~50s en páginas de X el Runtime.evaluate se wedgea (js devuelve null) — usar click por selector CSS (dominio DOM, no Runtime) para el botón Post; los drafts conservan el vídeo pero no el texto; los saltos de línea del texto se colapsan en el composer (ojo para futuros posts: texto sin \n o con puntos).
+
