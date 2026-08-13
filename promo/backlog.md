@@ -8,8 +8,8 @@
 - [ ] Publicar en el **MCP Registry oficial** (modelcontextprotocol/registry) vía `mcp-publisher` — canal de mayor leverage, alimenta agregadores downstream. Requiere login GitHub OAuth interactivo → necesita al usuario 1 minuto
 - [ ] Verificar/submit en glama.ai (hoy NO está indexado — solo aparece "NexBrowser", que no somos nosotros); los nuevos topics pueden disparar la auto-indexación, re-chequear en próximos ciclos
 - [x] Submit a mcp.so → issue creado: https://github.com/chatmcp/mcpso/issues/3546 (pendiente de revisión)
-- [ ] Verificar indexación en PulseMCP; submit si no está
-- [ ] Submit a Smithery (smithery.ai)
+- [~] PulseMCP: no listados y **submissions pausadas hasta mediados de agosto** (rework de ingestion). Reintentar submit en ciclos a partir del ~18 ago. La comprobación se hizo con NeoBrowser itself (curl recibía 403; NeoBrowser pasó) — anécdota usable en contenido.
+- [ ] Submit a Smithery (smithery.ai) — requiere cuenta/auth del usuario
 
 ## Contenido (borradores para el usuario)
 - [x] Borrador Show HN → `promo/drafts/show-hn.md` (título + texto + respuestas preparadas)
