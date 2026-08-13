@@ -64,3 +64,6 @@
 - PR #12089: el bot glama-check pidió requisito nuevo — listing en glama.ai + badge de score en la entrada. Hecho: `glama.json` añadido a la raíz del repo (mecanismo de auto-descubrimiento de glama, ~24h de crawl) y badge añadido a la entrada del PR (commit 514a4e8 en el fork, PR actualizado automáticamente). El badge dará 404 hasta que glama nos indexe.
 - Pendiente en glama: para que sus checks pasen piden añadir un Dockerfile "directly to Glama" — evaluar cuando aparezca el listing.
 - glama: sigue sin indexar (esperado, crawl ~24h). Estrellas: 0. mcp.so #3546 OPEN.
+
+## 2026-08-14 — ciclo 13 (mantenimiento)
+- Sin movimiento: 0★, PR #12089 OPEN, mcp.so #3546 OPEN, glama aún sin indexar (crawl ~24h desde el glama.json; re-check en próximos ciclos).
