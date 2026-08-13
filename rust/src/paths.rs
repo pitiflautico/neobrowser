@@ -35,6 +35,18 @@ pub fn playbooks_base() -> PathBuf {
     home().join("playbooks")
 }
 
+/// Chrome stderr logs, one per debug port. Chrome explains startup failures
+/// (profile lock held, port in use, missing sandbox) on stderr; keeping it lets
+/// the "did not become ready" error carry the real reason instead of guessing.
+pub fn logs_base() -> PathBuf {
+    home().join("logs")
+}
+
+/// Path of the stderr log for the Chrome instance on `port`.
+pub fn chrome_log(port: u16) -> PathBuf {
+    logs_base().join(format!("chrome-{port}.log"))
+}
+
 /// The user's real Chrome profile root (macOS layout).
 #[cfg(target_os = "macos")]
 pub fn real_chrome_profile() -> PathBuf {

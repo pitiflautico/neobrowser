@@ -227,7 +227,7 @@ impl Tool for ClickTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "click",
-            description: "Click an element by backendNodeId (from find) or CSS selector. Uses real (isTrusted) mouse events.",
+            description: "Click an element by backendNodeId (from find) or CSS selector. Uses real (isTrusted) mouse events. Scrolls the target into view first, and refuses to click when another element (modal, cookie banner, sticky header) covers it — reporting which one, so you can dismiss it and retry rather than assuming the click landed.",
             params: vec![
                 ParamSpec::new("backend_node_id", ParamType::Integer, "backendNodeId from a find result"),
                 ParamSpec::new("selector", ParamType::String, "CSS selector fallback"),
@@ -240,7 +240,7 @@ impl Tool for ClickTool {
         args: &Map<String, Value>,
     ) -> Result<ToolOutput, ToolError> {
         let tab = ctx.browser.tab().await?;
-        let ok = if let Some(id) = args.get("backend_node_id").and_then(|v| v.as_i64()) {
+        let outcome = if let Some(id) = args.get("backend_node_id").and_then(|v| v.as_i64()) {
             page::click_backend_node(&tab, id).await?
         } else if let Some(sel) = arg_str(args, "selector") {
             page::click_selector(&tab, sel).await?
@@ -249,10 +249,19 @@ impl Tool for ClickTool {
                 "click: provide either backend_node_id or selector".into(),
             ));
         };
-        Ok(ToolOutput::text(if ok {
-            "Clicked"
-        } else {
-            "Click target not found or had no layout"
+        // Say what actually happened. "Clicked" for a click that never landed
+        // is worse than an error: the agent builds on it and fails much later,
+        // far from the cause.
+        Ok(ToolOutput::text(match outcome {
+            page::ClickOutcome::Clicked => "Clicked".to_string(),
+            page::ClickOutcome::NoLayoutUsedJs => {
+                "Clicked via JS fallback (element had no box model)".to_string()
+            }
+            page::ClickOutcome::NotFound => "Click target not found".to_string(),
+            page::ClickOutcome::Obscured { by } => format!(
+                "Not clicked: target is covered by {by}. \
+                 Dismiss the overlay (dismiss_overlay) or scroll it out of the way, then retry."
+            ),
         }))
     }
 }
@@ -468,7 +477,7 @@ impl Tool for FindAndClickTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "find_and_click",
-            description: "Click the nth clickable element whose visible text or aria-label contains the given text.",
+            description: "Click the nth VISIBLE clickable element whose text or aria-label contains the given text. Hidden and collapsed matches (closed accordion steps, header panels duplicating a body form) are skipped and counted in matched_total vs matched_visible, so a multi-step form can't silently submit the wrong step.",
             params: vec![
                 ParamSpec::new("text", ParamType::String, "Visible text or label to search for").required(),
                 ParamSpec::new("role", ParamType::String, "Optional ARIA role to narrow the search"),

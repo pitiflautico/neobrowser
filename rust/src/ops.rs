@@ -239,7 +239,19 @@ pub async fn submit(
     )
 }
 
-/// `find_and_click` — click the nth clickable whose text/aria-label contains `text`.
+/// `find_and_click` — click the nth **visible** clickable whose text/aria-label
+/// contains `text`.
+///
+/// Visibility is not cosmetic here. Multi-step forms (accordions, wizards,
+/// header panels duplicating a body form) keep collapsed steps in the DOM at
+/// `height: 0`, so a plain text match happily returns a button nobody can see
+/// and the click goes to the wrong step — silently, with `ok: true`. Hidden
+/// candidates are filtered out and still counted, so the caller can tell
+/// "nothing matched" from "everything that matched was hidden".
+///
+/// The click itself is delegated to `page::click_backend_node` rather than a JS
+/// `.click()`, so it is a real isTrusted mouse event and inherits the
+/// scroll-into-view and overlay hit-test from there.
 pub async fn find_and_click(
     client: &CdpClient,
     text: &str,
@@ -255,17 +267,72 @@ pub async fn find_and_click(
                 return e.textContent.toLowerCase().indexOf(textQ) !== -1 ||
                        (e.getAttribute('aria-label')||'').toLowerCase().indexOf(textQ) !== -1;
             }});
-            if (matches.length === 0) return JSON.stringify({{ok: false, error: "no match for: " + {textraw}}});
-            var target = matches[Math.min(nth, matches.length-1)];
-            target.click();
-            return JSON.stringify({{ok: true, text: target.textContent.trim().slice(0,60), nth: nth}});
+            var total = matches.length;
+            var visible = matches.filter(function(e) {{
+                var r = e.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) return false;
+                var s = getComputedStyle(e);
+                if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') return false;
+                // Reject anything inside a collapsed ancestor — the accordion case.
+                for (var p = e.parentElement; p; p = p.parentElement) {{
+                    var pr = p.getBoundingClientRect();
+                    if (pr.height === 0 || pr.width === 0) {{
+                        if (getComputedStyle(p).overflow !== 'visible') return false;
+                    }}
+                }}
+                return true;
+            }});
+            if (total === 0)
+                return JSON.stringify({{ok: false, error: "no match for: " + {textraw}}});
+            if (visible.length === 0)
+                return JSON.stringify({{ok: false, matched_total: total, matched_visible: 0,
+                    error: "matched " + total + " node(s) for " + {textraw} +
+                           ", all hidden or inside a collapsed container"}});
+            var target = visible[Math.min(nth, visible.length-1)];
+            window.__nbClickTarget = target;
+            return JSON.stringify({{ok: true, matched_total: total,
+                matched_visible: visible.length,
+                text: target.textContent.trim().slice(0,60), nth: nth}});
         }})()"#,
         role = js_lit(role),
         textq = js_lit(&text.to_lowercase()),
         textraw = js_lit(text),
         nth = nth,
     );
-    Ok(str_or(page::js(client, &code).await?, r#"{"ok": false}"#))
+    let picked = str_or(page::js(client, &code).await?, r#"{"ok": false}"#);
+    let mut report: Value = serde_json::from_str(&picked)
+        .unwrap_or_else(|_| json!({ "ok": false, "error": "find_and_click: bad selection" }));
+    if report.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Ok(report.to_string());
+    }
+
+    // Hand the chosen node to the real mouse-click path.
+    let outcome = match page::click_stashed_node(client, "__nbClickTarget").await? {
+        Some(o) => o,
+        None => {
+            report["ok"] = json!(false);
+            report["error"] = json!("find_and_click: element vanished before the click");
+            return Ok(report.to_string());
+        }
+    };
+    match outcome {
+        page::ClickOutcome::Clicked => {}
+        page::ClickOutcome::NoLayoutUsedJs => {
+            report["note"] = json!("clicked via JS fallback (no box model)");
+        }
+        page::ClickOutcome::NotFound => {
+            report["ok"] = json!(false);
+            report["error"] = json!("find_and_click: element vanished before the click");
+        }
+        page::ClickOutcome::Obscured { by } => {
+            report["ok"] = json!(false);
+            report["error"] = json!(format!(
+                "matched a visible element but it is covered by {by}. \
+                 Dismiss the overlay (dismiss_overlay), then retry."
+            ));
+        }
+    }
+    Ok(report.to_string())
 }
 
 const DISMISS_OVERLAY_JS: &str = r#"return (function(force){
