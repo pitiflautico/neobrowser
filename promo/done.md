@@ -25,3 +25,8 @@
 ## 2026-08-13 — ciclo 4
 - PR #12089 y issue mcp.so #3546: ambos siguen OPEN. Estrellas: 0.
 - Borradores listos para el usuario: r/mcp, hilo Twitter/X (con demo.gif adjunto), LinkedIn (ES, tono first-person).
+
+## 2026-08-13 — ciclo 5
+- PulseMCP: no estamos listados; **submissions pausadas hasta mediados de agosto** (rework de su ingestion). Reintentar en próximos ciclos. Bonus: la comprobación se hizo con el propio NeoBrowser — curl recibía 403 de Cloudflare, NeoBrowser pasó, detectó el captcha y leyó la página. Dogfooding + anécdota de marketing.
+- Smithery: no estamos listados; el submit requiere cuenta/CLI auth → pendiente credenciales del usuario.
+- Mantenimiento: actualizado el binario instalado ~/.local/bin/neobrowser a v0.1.3 (había un server viejo vivo de otra sesión con un Chrome fugado; limpiado). Ojo macOS: al copiar el binario a mano, quitar el xattr com.apple.provenance o Gatekeeper lo mata (SIGKILL) en el primer exec.
