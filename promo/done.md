@@ -78,3 +78,9 @@
 - Hilo publicado y verificado: post principal + 5 replies encadenados (stealth genuino, sesiones opt-in, honestidad ante muros, benchmark, y cierre dogfooding "este hilo lo publicó NeoBrowser mismo"). 6 tweets en la conversación: https://x.com/perez_pina28188/status/2087972229699043609
 - Aprendizaje tooling: las replies NO aparecen en la tab Posts del perfil (hay que verificar en la conversación); el modal de reply wedga la página — usar la caja inline + tweetButtonInline.
 - Estado cuentas: LinkedIn bloqueado por diseño propio (li_at/JSESSIONID excluidos, cookies.rs:159) → attach mode cuando Chrome arranque con --remote-debugging-port=9222. HN y Reddit: el usuario no tiene cuenta en ninguna — se le ha pedido crearlas manualmente (Reddit tiene reCAPTCHA en signup; HN conviene cuenta con algo de rodaje). Yo NO tengo acceso a sus credenciales ni debo sacarlas del almacén de Chrome.
+
+## 2026-08-14 — ciclo 16/17: la máquina de hype
+- Engagement del hilo X: 18 views, 2 replies en el principal (primeras horas, cuenta pequeña — normal).
+- PLAYBOOK.md creado: 5 estrategias (stunts de dogfooding recurrentes, outreach a figuras con replies de valor, cadencia de contenido, engagement comunitario, launches secuenciados) con reglas anti-spam intactas.
+- targets.md: tier 1 (simonw, swyx, t3dotgg, mitsuhiko, Anthropic, levelsio) + tier 2, con ángulos por cuenta.
+- Cron actualizado: d77462a9 eliminado → 7c2c75a4 (3×/día: 9:23, 14:23, 20:23) con prompt de hype que incluye el playbook, targets y el flujo X probado.
