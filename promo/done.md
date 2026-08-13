@@ -50,3 +50,8 @@
 - PulseMCP re-check (con NeoBrowser): submissions SIGUEN pausadas. Reintentar próximos ciclos.
 - Nuevo contenido: `promo/drafts/tech-cookies.md` — deep-dive "How to decrypt Chrome cookies on macOS/Linux/Windows without being evil", verificado contra cookies.rs real. Para publicar 1-2 semanas después del primer artículo.
 - Estrellas: 0. PR #12089 y mcp.so #3546 OPEN.
+
+## 2026-08-14 — ciclo 10
+- Nuevo contenido: `promo/drafts/tech-cdp.md` — deep-dive "Multiplexing CDP in Rust: one reader, zero races", verificado contra cdp.rs real. Cierra la serie técnica (benchmark → cookies → CDP).
+- Estrellas: 0. PR #12089 y mcp.so #3546 OPEN.
+- El backlog autónomo de contenido queda agotado; próximos ciclos = mantenimiento (re-checks directorios, monitor, mejoras de assets si hacen falta).
