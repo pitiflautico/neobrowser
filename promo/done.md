@@ -35,3 +35,8 @@
 - MCP Registry oficial: `server.json` creado en la raíz y **validado contra el schema oficial 2025-12-11** (variante websiteUrl, descripción 89 chars). Instrucciones exactas para el usuario en `promo/drafts/registry-publish.md` — solo falta `mcp-publisher login github` (OAuth interactivo).
 - glama.ai: sigue sin indexar (solo el homónimo NexBrowser). Tener server.json en la raíz puede ayudar a su crawler; re-check en próximos ciclos.
 - Estrellas: 0. PR #12089 y issue mcp.so #3546 siguen OPEN.
+
+## 2026-08-14 — ciclo 7
+- Borrador artículo dev.to (`promo/drafts/devto.md`): ángulo "benchmark honesto vs Playwright MCP", con front matter listo y nota sobre la API de dev.to (si el usuario pasa DEV API key, el agente puede publicar drafts).
+- Prep completa de Product Hunt (`promo/drafts/producthunt.md`): tagline, descripción, galería, maker comment y checklist del día de launch.
+- Estrellas: 0. PR #12089 y mcp.so #3546 siguen OPEN.
