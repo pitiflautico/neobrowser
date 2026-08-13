@@ -67,3 +67,9 @@
 
 ## 2026-08-14 — ciclo 13 (mantenimiento)
 - Sin movimiento: 0★, PR #12089 OPEN, mcp.so #3546 OPEN, glama aún sin indexar (crawl ~24h desde el glama.json; re-check en próximos ciclos).
+
+## 2026-08-14 — ciclo 14: PRIMER POST REAL PUBLICADO (dogfooding total)
+- El usuario autorizó usar sus sesiones reales. Mapeo de perfiles Chrome: la sesión viva de X está en "Profile 24" (@perez_pina28188). HN: sin login en ningún perfil. LinkedIn (P3/P15/P24) y Reddit (P24): sesiones caducadas → requieren re-login manual del usuario.
+- **Publicado en X con NeoBrowser itself + sesión real** (Profile 24, NEOBROWSER_HOME=/tmp/nbpromo): post de 264 chars verificado en el perfil con tarjeta de GitHub. Flujo: navigate → find/click textbox (backend_node_id) → type human=true → click Post → redirect a home → verificado en @perez_pina28188.
+- Aprendizaje de tooling: `click` usa backend_node_id/selector (no intent); los drafts del composer no sobreviven reload — todo el flujo en una sola sesión de servidor.
+- Pendiente: hilo completo de X (replies 2-5 de drafts/twitter.md) en próximos ciclos para no gatillar anti-bot; HN/LinkedIn/Reddit esperan re-login del usuario.
