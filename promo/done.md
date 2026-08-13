@@ -21,3 +21,7 @@
 
 ## 2026-08-13 — ciclo 2
 - demo.gif generado: grabación asciinema (venv /tmp/promo-tools) del demo con wrapper streaming (/tmp/demo_live.py, mismos pasos MCP que rust/scripts/demo.py), convertido a GIF con pyte+Pillow (/tmp/cast2gif.py). 14 frames, 931x448, 89 KB. Embebido en README.md y docs/index.html.
+
+## 2026-08-13 — ciclo 4
+- PR #12089 y issue mcp.so #3546: ambos siguen OPEN. Estrellas: 0.
+- Borradores listos para el usuario: r/mcp, hilo Twitter/X (con demo.gif adjunto), LinkedIn (ES, tono first-person).

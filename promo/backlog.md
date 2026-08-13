@@ -13,9 +13,9 @@
 
 ## Contenido (borradores para el usuario)
 - [x] Borrador Show HN → `promo/drafts/show-hn.md` (título + texto + respuestas preparadas)
-- [ ] Borrador post r/mcp
-- [ ] Borrador hilo Twitter/X con demo
-- [ ] Borrador LinkedIn
+- [x] Borrador post r/mcp → `promo/drafts/reddit.md`
+- [x] Borrador hilo Twitter/X con demo → `promo/drafts/twitter.md`
+- [x] Borrador LinkedIn → `promo/drafts/linkedin.md`
 - [ ] Borrador artículo dev.to (benchmark honesto como gancho)
 
 ## Después
