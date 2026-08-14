@@ -475,7 +475,11 @@ fn clear_stale_lock(profile_dir: &Path) {
         return; // no lock, or not a symlink: nothing to clean
     };
     let target = target.to_string_lossy().to_string();
-    let Some(pid) = target.rsplit('-').next().and_then(|p| p.parse::<i32>().ok()) else {
+    let Some(pid) = target
+        .rsplit('-')
+        .next()
+        .and_then(|p| p.parse::<i32>().ok())
+    else {
         return; // unrecognized format — leave it alone rather than guess
     };
     if pid_alive(pid) {

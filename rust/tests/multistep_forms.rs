@@ -55,9 +55,7 @@ style='position:fixed;top:0;left:0;right:0;height:60px;background:rgb(51,51,51);
 
 /// Launch an isolated browser on the fixture. The returned `Browser` must be
 /// kept alive for the duration of the test (dropping it reaps Chrome).
-async fn fixture_tab(
-    name: &str,
-) -> Option<(Browser, std::sync::Arc<neobrowser::cdp::CdpClient>)> {
+async fn fixture_tab(name: &str) -> Option<(Browser, std::sync::Arc<neobrowser::cdp::CdpClient>)> {
     if !chrome_available() {
         eprintln!("SKIP: no Chrome binary found; these tests need a real browser");
         return None;
@@ -77,7 +75,9 @@ async fn fixture_tab(
 #[tokio::test]
 async fn find_and_click_skips_collapsed_matches() {
     let _guard = ENV_LOCK.lock().await;
-    let Some((_browser, tab)) = fixture_tab("collapsed").await else { return };
+    let Some((_browser, tab)) = fixture_tab("collapsed").await else {
+        return;
+    };
 
     let raw = ops::find_and_click(&tab, "Continue", "", 0)
         .await
@@ -105,7 +105,9 @@ async fn find_and_click_skips_collapsed_matches() {
 #[tokio::test]
 async fn find_and_click_reports_when_all_matches_are_hidden() {
     let _guard = ENV_LOCK.lock().await;
-    let Some((_browser, tab)) = fixture_tab("hidden").await else { return };
+    let Some((_browser, tab)) = fixture_tab("hidden").await else {
+        return;
+    };
 
     // Collapse step 2 as well: now both "Continue" buttons are invisible.
     page::js(
@@ -134,7 +136,9 @@ async fn find_and_click_reports_when_all_matches_are_hidden() {
 #[tokio::test]
 async fn click_scrolls_target_into_view() {
     let _guard = ENV_LOCK.lock().await;
-    let Some((_browser, tab)) = fixture_tab("scroll").await else { return };
+    let Some((_browser, tab)) = fixture_tab("scroll").await else {
+        return;
+    };
 
     let outcome = page::click_selector(&tab, "#below")
         .await
@@ -156,7 +160,9 @@ async fn click_scrolls_target_into_view() {
 #[tokio::test]
 async fn click_detects_an_overlay_instead_of_claiming_success() {
     let _guard = ENV_LOCK.lock().await;
-    let Some((_browser, tab)) = fixture_tab("overlay").await else { return };
+    let Some((_browser, tab)) = fixture_tab("overlay").await else {
+        return;
+    };
 
     let outcome = page::click_selector(&tab, "#covered")
         .await
@@ -201,7 +207,9 @@ async fn click_detects_an_overlay_instead_of_claiming_success() {
 #[tokio::test]
 async fn click_distinguishes_a_missing_target() {
     let _guard = ENV_LOCK.lock().await;
-    let Some((_browser, tab)) = fixture_tab("missing").await else { return };
+    let Some((_browser, tab)) = fixture_tab("missing").await else {
+        return;
+    };
     let outcome = page::click_selector(&tab, "#does-not-exist")
         .await
         .expect("click runs");

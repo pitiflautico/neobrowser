@@ -489,10 +489,7 @@ pub async fn click_stashed_node(
 }
 
 /// Click the first element matching a CSS `selector` with a real mouse click.
-pub async fn click_selector(
-    client: &CdpClient,
-    selector: &str,
-) -> Result<ClickOutcome, CdpError> {
+pub async fn click_selector(client: &CdpClient, selector: &str) -> Result<ClickOutcome, CdpError> {
     match backend_node_for_selector(client, selector).await? {
         Some(id) => click_backend_node(client, id).await,
         None => Ok(ClickOutcome::NotFound),
