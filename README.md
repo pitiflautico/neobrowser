@@ -148,6 +148,7 @@ What no tool can promise is defeating *interactive challenges* — reCAPTCHA, Tu
 | Env var | Default | Purpose |
 |---|---|---|
 | `NEOBROWSER_REAL_PROFILE` | *(unset)* | Real Chrome profile folder to pull sessions from |
+| `NEOBROWSER_PROFILE` | `default` | Which Ghost profile this session uses. Chrome locks a profile exclusively, so give concurrent sessions different names to keep them from colliding |
 | `NEOBROWSER_ATTACH_PORT` | *(unset)* | Attach to an already-running Chrome on this debug port |
 | `NEOBROWSER_CHROME_BIN` | *(auto)* | Path to the Chrome/Chromium binary |
 | `NEOBROWSER_HOME` | `~/.neobrowser` | Where profiles, cookies, sessions, playbooks, downloads live |

@@ -30,6 +30,17 @@ pub enum ChromeError {
     ProfileOutsideBase { base: String, got: String },
     #[error("chrome did not become ready on port {port} within timeout{stderr}")]
     NotReady { port: u16, stderr: String },
+    #[error(
+        "profile {profile:?} is already in use by a running Chrome (pid {pid}). \
+         Chrome locks a user-data dir exclusively, so this session cannot launch \
+         its own. Either drive that browser with NEOBROWSER_ATTACH_PORT={port_hint}, \
+         or give this session its own profile with NEOBROWSER_PROFILE=<name>."
+    )]
+    ProfileInUse {
+        profile: String,
+        pid: i32,
+        port_hint: String,
+    },
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
     #[error("http error talking to chrome debug endpoint: {0}")]
@@ -317,6 +328,22 @@ impl ChromeProcess {
         // debug port never opens and every launch fails with an opaque timeout.
         clear_stale_lock(&profile_dir);
 
+        // If the lock survived, a live Chrome owns this profile. Launching anyway
+        // would just fail on Chrome's ProcessSingleton with a timeout that says
+        // nothing about the cause — so fail here with the two ways out instead.
+        if let Some(pid) = lock_holder_pid(&profile_dir) {
+            return Err(ChromeError::ProfileInUse {
+                profile: profile_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| profile_dir.display().to_string()),
+                pid,
+                port_hint: devtools_active_port(&profile_dir)
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "<its debug port>".into()),
+            });
+        }
+
         let port = find_free_port()?;
         let mut cmd = Command::new(chrome_bin());
         cmd.arg(format!("--remote-debugging-port={port}"))
@@ -449,7 +476,6 @@ fn reap_with_timeout(child: &mut Child, timeout: Duration) -> bool {
     }
 }
 
-/// Send SIGTERM on Unix; on Windows, start_kill semantics are handled by the caller.
 /// Open (truncating) the stderr log for `port`, falling back to /dev/null if the
 /// log directory is unusable — logging must never block a launch.
 fn chrome_stderr_sink(port: u16) -> std::process::Stdio {
@@ -470,17 +496,8 @@ fn chrome_stderr_sink(port: u16) -> std::process::Stdio {
 /// nothing is removed, so we never yank the profile out from under a running
 /// sibling. Only a genuinely orphaned lock is cleared.
 fn clear_stale_lock(profile_dir: &Path) {
-    let lock = profile_dir.join("SingletonLock");
-    let Ok(target) = std::fs::read_link(&lock) else {
-        return; // no lock, or not a symlink: nothing to clean
-    };
-    let target = target.to_string_lossy().to_string();
-    let Some(pid) = target
-        .rsplit('-')
-        .next()
-        .and_then(|p| p.parse::<i32>().ok())
-    else {
-        return; // unrecognized format — leave it alone rather than guess
+    let Some(pid) = lock_pid(profile_dir) else {
+        return; // no lock, or a format we don't recognize — leave it alone
     };
     if pid_alive(pid) {
         return; // a live Chrome owns this profile
@@ -488,6 +505,33 @@ fn clear_stale_lock(profile_dir: &Path) {
     for f in ["SingletonLock", "SingletonCookie", "SingletonSocket"] {
         let _ = std::fs::remove_file(profile_dir.join(f));
     }
+}
+
+/// The pid recorded in `SingletonLock`, whether or not it is still running.
+/// The lock is a symlink whose target is `hostname-pid`.
+fn lock_pid(profile_dir: &Path) -> Option<i32> {
+    let target = std::fs::read_link(profile_dir.join("SingletonLock")).ok()?;
+    target
+        .to_string_lossy()
+        .rsplit('-')
+        .next()
+        .and_then(|p| p.parse::<i32>().ok())
+}
+
+/// The pid of a **live** Chrome holding this profile, if any.
+fn lock_holder_pid(profile_dir: &Path) -> Option<i32> {
+    lock_pid(profile_dir).filter(|pid| pid_alive(*pid))
+}
+
+/// The debug port a running Chrome published for this profile.
+///
+/// Chrome writes `DevToolsActivePort` into the user-data dir at startup: the
+/// port on the first line, the browser's WS path on the second. Reading it lets
+/// the "profile in use" error name the exact port to attach to instead of
+/// telling the caller to go hunting for it.
+fn devtools_active_port(profile_dir: &Path) -> Option<u16> {
+    let s = std::fs::read_to_string(profile_dir.join("DevToolsActivePort")).ok()?;
+    s.lines().next()?.trim().parse::<u16>().ok()
 }
 
 /// Test hook: exercise the stale-lock rule without spawning Chrome.
