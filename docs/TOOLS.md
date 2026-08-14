@@ -44,7 +44,7 @@ Find a UI element by natural-language intent (accessibility tree + heuristics). 
 
 ## `click`
 
-Click an element by backendNodeId (from find) or CSS selector. Uses real (isTrusted) mouse events.
+Click an element by backendNodeId (from find) or CSS selector. Uses real (isTrusted) mouse events. Scrolls the target into view first, and refuses to click when another element (modal, cookie banner, sticky header) covers it — reporting which one, so you can dismiss it and retry rather than assuming the click landed.
 
 | param | type | required | description |
 |---|---|---|---|
@@ -109,7 +109,7 @@ Submit a form: click the given selector or auto-detect a submit control, then wa
 
 ## `find_and_click`
 
-Click the nth clickable element whose visible text or aria-label contains the given text.
+Click the nth VISIBLE clickable element whose text or aria-label contains the given text. Hidden and collapsed matches (closed accordion steps, header panels duplicating a body form) are skipped and counted in matched_total vs matched_visible, so a multi-step form can't silently submit the wrong step.
 
 | param | type | required | description |
 |---|---|---|---|
