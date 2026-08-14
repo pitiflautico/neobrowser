@@ -23,4 +23,4 @@ Los handles marcados se verifican con la sesión de X antes de interactuar (busc
 ## Log de interacciones
 | fecha | cuenta | tipo | tema | resultado |
 |---|---|---|---|---|
-| (vacío) | | | | |
+| 2026-08-14 | @mitsuhiko | reply | extensiones Chrome vs CDP para agentes | publicado, visible |
