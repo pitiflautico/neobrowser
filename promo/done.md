@@ -122,3 +122,7 @@
 - Métricas: 0★, PR #12089 OPEN, mcp.so #3546 OPEN, glama 404.
 - **HN warm-up #1**: comentario genuino en "Why does Opus 5 feel worse to work with?" (item 49296740) — aporta nuestra experiencia real con harnesses de agentes (efectos vs despachos, validación de args, el pánico por wait_s=-1). Sin mencionar NeoBrowser ni links. Verificado visible.
 - Plan: 1 comentario/día de este nivel durante 2-3 días → Show HN la semana que viene (mar/jue 9-11am ET).
+
+## 2026-08-14 — ciclo 23 (cron 20:23): vigilancia, sin acción forzada
+- Métricas: 0★, PR #12089 OPEN, glama 404. Post del vídeo: 6 views. Reply a mitsuhiko: sin respuesta aún (1Password respondió por debajo — buena compañía en esa conversación).
+- Escaneo de targets (t3dotgg, levelsio) y búsqueda comunitaria "mcp server browser": nada fresco donde un reply aporte de verdad → no se fuerza. Segunda acción de X del día no utilizada.
