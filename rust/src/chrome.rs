@@ -28,8 +28,8 @@ pub enum ChromeError {
     InvalidPort(u16),
     #[error("profile_dir must be under {base}: got {got}")]
     ProfileOutsideBase { base: String, got: String },
-    #[error("chrome did not become ready on port {0} within timeout")]
-    NotReady(u16),
+    #[error("chrome did not become ready on port {port} within timeout{stderr}")]
+    NotReady { port: u16, stderr: String },
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
     #[error("http error talking to chrome debug endpoint: {0}")]
@@ -215,7 +215,29 @@ pub async fn wait_for_chrome(port: u16, timeout: Duration) -> Result<(), ChromeE
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Err(ChromeError::NotReady(port))
+    Err(ChromeError::NotReady {
+        port,
+        stderr: chrome_stderr_tail(port),
+    })
+}
+
+/// Last few lines of Chrome's stderr for `port`, formatted for an error message.
+/// Empty when there is nothing useful to show, so the message stays clean.
+fn chrome_stderr_tail(port: u16) -> String {
+    let Ok(log) = std::fs::read_to_string(paths::chrome_log(port)) else {
+        return String::new();
+    };
+    let tail: Vec<&str> = log
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(8)
+        .collect();
+    if tail.is_empty() {
+        return String::new();
+    }
+    let body: Vec<&str> = tail.into_iter().rev().collect();
+    format!(".\nchrome stderr:\n  {}", body.join("\n  "))
 }
 
 /// Does Chrome's HTTP debug endpoint on `port` respond? (Standalone; used for
@@ -290,6 +312,11 @@ impl ChromeProcess {
             });
         }
 
+        // A Chrome that died without cleaning up leaves SingletonLock behind.
+        // Chrome then refuses to use the profile and exits immediately, so the
+        // debug port never opens and every launch fails with an opaque timeout.
+        clear_stale_lock(&profile_dir);
+
         let port = find_free_port()?;
         let mut cmd = Command::new(chrome_bin());
         cmd.arg(format!("--remote-debugging-port={port}"))
@@ -308,8 +335,11 @@ impl ChromeProcess {
         if std::env::var_os("NEOBROWSER_DISABLE_GPU").is_some() {
             cmd.arg("--disable-gpu");
         }
+        // Keep stderr: Chrome writes the reason for a failed start there, and
+        // discarding it is what turns a lock/port/sandbox problem into a bare
+        // "did not become ready" with nothing to go on.
         cmd.stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(chrome_stderr_sink(port))
             .kill_on_drop(false); // we reap explicitly in Drop with a graceful term
 
         let child = cmd.spawn()?;
@@ -420,6 +450,69 @@ fn reap_with_timeout(child: &mut Child, timeout: Duration) -> bool {
 }
 
 /// Send SIGTERM on Unix; on Windows, start_kill semantics are handled by the caller.
+/// Open (truncating) the stderr log for `port`, falling back to /dev/null if the
+/// log directory is unusable — logging must never block a launch.
+fn chrome_stderr_sink(port: u16) -> std::process::Stdio {
+    if std::fs::create_dir_all(paths::logs_base()).is_err() {
+        return std::process::Stdio::null();
+    }
+    match std::fs::File::create(paths::chrome_log(port)) {
+        Ok(f) => std::process::Stdio::from(f),
+        Err(_) => std::process::Stdio::null(),
+    }
+}
+
+/// Remove `Singleton*` from a profile when the process that created them is
+/// gone.
+///
+/// `SingletonLock` is a symlink whose target is `hostname-pid`. If that pid is
+/// still alive the lock is legitimate — a real Chrome owns this profile — and
+/// nothing is removed, so we never yank the profile out from under a running
+/// sibling. Only a genuinely orphaned lock is cleared.
+fn clear_stale_lock(profile_dir: &Path) {
+    let lock = profile_dir.join("SingletonLock");
+    let Ok(target) = std::fs::read_link(&lock) else {
+        return; // no lock, or not a symlink: nothing to clean
+    };
+    let target = target.to_string_lossy().to_string();
+    let Some(pid) = target
+        .rsplit('-')
+        .next()
+        .and_then(|p| p.parse::<i32>().ok())
+    else {
+        return; // unrecognized format — leave it alone rather than guess
+    };
+    if pid_alive(pid) {
+        return; // a live Chrome owns this profile
+    }
+    for f in ["SingletonLock", "SingletonCookie", "SingletonSocket"] {
+        let _ = std::fs::remove_file(profile_dir.join(f));
+    }
+}
+
+/// Test hook: exercise the stale-lock rule without spawning Chrome.
+#[doc(hidden)]
+pub fn clear_stale_lock_for_test(profile_dir: &Path) {
+    clear_stale_lock(profile_dir);
+}
+
+/// Does a process with this pid exist? Signal 0 checks for existence without
+/// delivering anything.
+fn pid_alive(pid: i32) -> bool {
+    #[cfg(unix)]
+    {
+        if pid <= 0 {
+            return false;
+        }
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true // can't tell: assume alive and leave the lock in place
+    }
+}
+
 fn term(pid: u32) {
     #[cfg(unix)]
     unsafe {

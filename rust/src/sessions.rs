@@ -199,12 +199,21 @@ pub async fn login(
     page::js(client, &pw_js).await?;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
+    // Submit the form that owns the password field we just filled — NOT the
+    // first submit button in the document. Sites commonly ship a sign-in panel
+    // in the header alongside the real form in the body, and a document-wide
+    // querySelector picks the header one, submitting an empty form.
     page::js(
         client,
         r#"(function() {
-            var btn = document.querySelector('button[type=submit],input[type=submit]');
+            var pw = document.querySelector('input[type=password]');
+            var form = pw && pw.form;
+            var btn = form
+                ? form.querySelector('button[type=submit],input[type=submit]')
+                : document.querySelector('button[type=submit],input[type=submit]');
             if (btn) btn.click();
-            else { var f = document.querySelector('form'); if(f) f.submit(); }
+            else if (form) form.submit();
+            else { var f = document.querySelector('form'); if (f) f.submit(); }
         })()"#,
     )
     .await?;
@@ -216,25 +225,88 @@ pub async fn login(
         .as_str()
         .unwrap_or("")
         .to_string();
-    let still_login = page::js(
+
+    // A leftover password field is a weak signal on its own: an account or
+    // settings page legitimately has "old password" / "new password" inputs,
+    // and a hidden sign-in panel keeps one in the DOM forever. Only count a
+    // field that is actually VISIBLE.
+    let visible_pw = page::js(
         client,
-        "return !!document.querySelector('input[type=password]')",
+        r#"return (function() {
+            return Array.from(document.querySelectorAll('input[type=password]'))
+                .some(function(el) {
+                    var r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    var s = getComputedStyle(el);
+                    return s.visibility !== 'hidden' && s.display !== 'none';
+                });
+        })()"#,
     )
     .await?
     .as_bool()
     .unwrap_or(false);
-    Ok(json!({
-        "ok": !still_login,
+
+    // Cross-check with navigation: landing somewhere other than the login URL
+    // is strong evidence the credentials were accepted.
+    let url_unchanged = same_page(url, &final_url);
+    let failed = visible_pw && url_unchanged;
+
+    let mut out = json!({
+        "ok": !failed,
         "url": final_url,
         "title": title,
-        "still_has_password_field": still_login,
-    })
-    .to_string())
+        "still_has_password_field": visible_pw,
+    });
+    // When the signals disagree, say so instead of silently picking one.
+    if !failed && visible_pw {
+        out["confidence"] = json!("medium");
+        out["note"] = json!(
+            "navigated away from the login URL, but a visible password field is still \
+             present (an account/settings page can legitimately have one) — verify if it matters"
+        );
+    }
+    Ok(out.to_string())
+}
+
+/// Same page ignoring query string and fragment, so a `?returnTo=…` or `#` on
+/// the post-submit URL doesn't read as a successful navigation.
+fn same_page(a: &str, b: &str) -> bool {
+    fn base(u: &str) -> &str {
+        let u = u.split('#').next().unwrap_or(u);
+        let u = u.split('?').next().unwrap_or(u);
+        u.trim_end_matches('/')
+    }
+    base(a) == base(b)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The login success check compares where we landed against where we
+    /// started. A redirect back to the login page carrying `?returnTo=…` is
+    /// still the login page — treating it as "navigated away" would report a
+    /// failed login as a success.
+    #[test]
+    fn same_page_ignores_query_and_fragment() {
+        assert!(same_page(
+            "https://x.com/account/login/",
+            "https://x.com/account/login"
+        ));
+        assert!(same_page(
+            "https://x.com/account/login/",
+            "https://x.com/account/login/?returnTo=%2Faccount%2Fsettings"
+        ));
+        assert!(same_page(
+            "https://x.com/login",
+            "https://x.com/login#error"
+        ));
+        // A real navigation must NOT look like the same page.
+        assert!(!same_page(
+            "https://x.com/account/login/",
+            "https://x.com/account/settings"
+        ));
+    }
 
     #[test]
     fn profile_name_defaults() {

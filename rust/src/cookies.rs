@@ -169,10 +169,34 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
 ];
 
 /// True if this cookie is a session-identity cookie we must not inject.
+///
+/// Escape hatch: `NEOBROWSER_INCLUDE_IDENTITY_COOKIES=1` disables the exclusion,
+/// injecting Google/LinkedIn/Microsoft session-identity cookies too. Risk: the
+/// provider may flag the duplicate session and log the real browser out. Opt-in,
+/// use sparingly (e.g. one automated action per day), never the default.
 pub fn is_session_auth_excluded(host_key: &str, name: &str) -> bool {
+    if identity_cookies_opt_in() {
+        return false;
+    }
     SESSION_AUTH_EXCLUSIONS.iter().any(|(domains, names)| {
         names.contains(&name) && domains.iter().any(|d| host_key.ends_with(d))
     })
+}
+
+/// True only for an explicit affirmative value.
+///
+/// Presence alone must NOT be enough: with a bare `is_some()`, spelling out
+/// `NEOBROWSER_INCLUDE_IDENTITY_COOKIES=0` to disable the escape hatch would
+/// switch it ON — silently injecting the identity cookies the exclusion list
+/// exists to hold back, and risking a logout of the user's real browser.
+fn identity_cookies_opt_in() -> bool {
+    match std::env::var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES") {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
 }
 
 /// The real Chrome profile subfolder to pull sessions from (default "Default").
@@ -575,6 +599,37 @@ mod tests {
         assert!(!is_session_auth_excluded(".linkedin.com", "lang"));
         // Same cookie name on an unrelated domain is not excluded.
         assert!(!is_session_auth_excluded(".example.com", "SID"));
+    }
+
+    /// The escape hatch must need an explicit yes. Anything else — absent, empty,
+    /// or a spelled-out "0"/"false" — keeps the identity cookies held back.
+    #[test]
+    fn identity_cookie_escape_hatch_requires_an_affirmative_value() {
+        let _g = crate::env_test_guard();
+        let prev = std::env::var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES").ok();
+
+        std::env::remove_var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES");
+        assert!(is_session_auth_excluded(".google.com", "SID"), "unset");
+
+        for off in ["0", "false", "no", "", "  "] {
+            std::env::set_var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES", off);
+            assert!(
+                is_session_auth_excluded(".google.com", "SID"),
+                "{off:?} must NOT enable the hatch"
+            );
+        }
+        for on in ["1", "true", "YES", " on "] {
+            std::env::set_var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES", on);
+            assert!(
+                !is_session_auth_excluded(".google.com", "SID"),
+                "{on:?} must enable the hatch"
+            );
+        }
+
+        match prev {
+            Some(v) => std::env::set_var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES", v),
+            None => std::env::remove_var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES"),
+        }
     }
 
     #[test]

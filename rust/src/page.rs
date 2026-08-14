@@ -172,35 +172,198 @@ pub async fn type_text(client: &CdpClient, text: &str, human: bool) -> Result<()
 /// Click an element by `backendNodeId` using real mouse events at its centre
 /// (isTrusted:true). Falls back to a JS `.click()` when the element has no layout
 /// box. Returns true on success.
+/// What actually happened when we tried to click — never just "we dispatched
+/// two mouse events". A caller (and an agent reading the tool result) has to be
+/// able to tell a landed click from one that fell off-screen or hit an overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClickOutcome {
+    /// A real press/release landed on the target (or one of its descendants).
+    Clicked,
+    /// The selector matched nothing.
+    NotFound,
+    /// The node exists but has no box model (display:none, detached, zero-size).
+    /// A JS `.click()` fallback was attempted instead.
+    NoLayoutUsedJs,
+    /// Another element occupies the click point — typically a modal, a cookie
+    /// banner or a sticky header. The click was NOT dispatched.
+    Obscured { by: String },
+}
+
+impl ClickOutcome {
+    /// Did the intended element actually receive a click?
+    pub fn landed(&self) -> bool {
+        matches!(self, ClickOutcome::Clicked | ClickOutcome::NoLayoutUsedJs)
+    }
+}
+
 pub async fn click_backend_node(
     client: &CdpClient,
     backend_node_id: i64,
-) -> Result<bool, CdpError> {
-    if let Some((cx, cy)) = box_center(client, backend_node_id).await? {
-        // Behavioral realism: move the cursor to the target along a human-like path
-        // (curved, eased, jittered, with per-step pauses) instead of teleporting —
-        // the trajectory/timing signals behavioral anti-bot systems inspect.
-        human_mouse_move(client, cx, cy).await?;
-        // A short dwell before the press, as a human would.
-        let mut j = Jitter::new(((cx as i64) ^ (cy as i64) ^ backend_node_id) as u64);
-        tokio::time::sleep(Duration::from_millis(40 + j.next() % 80)).await;
-        client
-            .send(
-                "Input.dispatchMouseEvent",
-                json!({ "type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
-            )
-            .await?;
-        tokio::time::sleep(Duration::from_millis(20 + j.next() % 60)).await;
-        client
-            .send(
-                "Input.dispatchMouseEvent",
-                json!({ "type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
-            )
-            .await?;
-        return Ok(true);
+) -> Result<ClickOutcome, CdpError> {
+    // Bring the node into the viewport FIRST. `DOM.getBoxModel` returns
+    // viewport-relative coordinates, so a node below the fold yields a `y` that
+    // is off-screen and the dispatched event lands nowhere. Ignore failures:
+    // the node may be unscrollable but still clickable where it sits.
+    let _ = client
+        .send(
+            "DOM.scrollIntoViewIfNeeded",
+            json!({ "backendNodeId": backend_node_id }),
+        )
+        .await;
+
+    // Re-read the box AFTER scrolling — any coordinates from before are stale.
+    let Some((cx, cy)) = box_center(client, backend_node_id).await? else {
+        // No box model — fall back to a JS click via the resolved node.
+        return if js_click_backend_node(client, backend_node_id).await? {
+            Ok(ClickOutcome::NoLayoutUsedJs)
+        } else {
+            Ok(ClickOutcome::NotFound)
+        };
+    };
+
+    // Verify the point actually belongs to the target before pressing, so an
+    // overlay can be reported instead of silently swallowing the click.
+    if let Some(by) = obscured_by(client, backend_node_id, cx, cy).await? {
+        return Ok(ClickOutcome::Obscured { by });
     }
-    // No box model — fall back to a JS click via the resolved node.
-    js_click_backend_node(client, backend_node_id).await
+
+    // Behavioral realism: move the cursor to the target along a human-like path
+    // (curved, eased, jittered, with per-step pauses) instead of teleporting —
+    // the trajectory/timing signals behavioral anti-bot systems inspect.
+    human_mouse_move(client, cx, cy).await?;
+    // A short dwell before the press, as a human would.
+    let mut j = Jitter::new(((cx as i64) ^ (cy as i64) ^ backend_node_id) as u64);
+    tokio::time::sleep(Duration::from_millis(40 + j.next() % 80)).await;
+    client
+        .send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
+        )
+        .await?;
+    tokio::time::sleep(Duration::from_millis(20 + j.next() % 60)).await;
+    client
+        .send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
+        )
+        .await?;
+    Ok(ClickOutcome::Clicked)
+}
+
+/// Hit-test (cx, cy): return a description of the element on top when it is
+/// NOT the target nor one of its descendants, else None.
+///
+/// Descendants must pass: the centre of a `<button>` usually lands on an inner
+/// `<span>`, which is a perfectly good click. What has to be rejected is a node
+/// from a different branch — that is the overlay case.
+async fn obscured_by(
+    client: &CdpClient,
+    backend_node_id: i64,
+    cx: f64,
+    cy: f64,
+) -> Result<Option<String>, CdpError> {
+    let hit = client
+        .send(
+            "DOM.getNodeForLocation",
+            json!({ "x": cx as i64, "y": cy as i64, "includeUserAgentShadowDOM": false }),
+        )
+        .await;
+    // Hit-testing is best-effort: if the command is unavailable or errors, do
+    // not block a click that would otherwise have worked.
+    let Ok(hit) = hit else { return Ok(None) };
+    let Some(hit_id) = hit.get("backendNodeId").and_then(|v| v.as_i64()) else {
+        return Ok(None);
+    };
+    if hit_id == backend_node_id {
+        return Ok(None);
+    }
+    let related = js_nodes_related(client, backend_node_id, hit_id).await?;
+    if related {
+        return Ok(None);
+    }
+    Ok(Some(describe_node(client, hit_id).await))
+}
+
+/// True when either node contains the other (so the hit is inside the target,
+/// or the target is inside the hit — a label wrapping its own control).
+async fn js_nodes_related(
+    client: &CdpClient,
+    a_backend: i64,
+    b_backend: i64,
+) -> Result<bool, CdpError> {
+    let Some(a_obj) = resolve_object_id(client, a_backend).await? else {
+        return Ok(false);
+    };
+    let Some(b_obj) = resolve_object_id(client, b_backend).await? else {
+        return Ok(false);
+    };
+    let res = client
+        .send(
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": a_obj,
+                "functionDeclaration":
+                    "function(other){ return this.contains(other) || other.contains(this); }",
+                "arguments": [{ "objectId": b_obj }],
+                "returnByValue": true,
+            }),
+        )
+        .await?;
+    Ok(res
+        .get("result")
+        .and_then(|r| r.get("value"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+/// A short `tag.class` label for a node, for the obscured-by message.
+async fn describe_node(client: &CdpClient, backend_node_id: i64) -> String {
+    let Ok(Some(obj)) = resolve_object_id(client, backend_node_id).await else {
+        return "unknown element".into();
+    };
+    let res = client
+        .send(
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": obj,
+                "functionDeclaration": "function(){ \
+                    var c = (this.className && this.className.baseVal !== undefined) \
+                        ? this.className.baseVal : (this.className || ''); \
+                    return (this.tagName || '?').toLowerCase() \
+                        + (c ? '.' + String(c).trim().split(/\\s+/).slice(0,2).join('.') : ''); }",
+                "returnByValue": true,
+            }),
+        )
+        .await;
+    res.ok()
+        .and_then(|r| {
+            r.get("result")
+                .and_then(|x| x.get("value"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown element".into())
+}
+
+/// Resolve a backendNodeId to a Runtime objectId.
+async fn resolve_object_id(
+    client: &CdpClient,
+    backend_node_id: i64,
+) -> Result<Option<String>, CdpError> {
+    let Ok(node) = client
+        .send(
+            "DOM.resolveNode",
+            json!({ "backendNodeId": backend_node_id }),
+        )
+        .await
+    else {
+        return Ok(None);
+    };
+    Ok(node
+        .get("object")
+        .and_then(|o| o.get("objectId"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string))
 }
 
 /// Move the cursor to (tx, ty) over several eased, jittered steps with human-cadence
@@ -283,11 +446,53 @@ async fn js_click_backend_node(client: &CdpClient, backend_node_id: i64) -> Resu
     Ok(true)
 }
 
+/// Click an element previously stashed on `window.<global>` by page JS, with a
+/// real mouse click. Lets a JS selection step (which can evaluate layout and
+/// computed styles) hand its pick to the isTrusted click path. The global is
+/// cleared afterwards. Returns None if the global holds no element.
+pub async fn click_stashed_node(
+    client: &CdpClient,
+    global: &str,
+) -> Result<Option<ClickOutcome>, CdpError> {
+    let res = client
+        .send(
+            "Runtime.evaluate",
+            json!({ "expression": format!("window.{global}") }),
+        )
+        .await?;
+    let object_id = res
+        .get("result")
+        .and_then(|r| r.get("objectId"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let Some(object_id) = object_id else {
+        return Ok(None);
+    };
+    let described = client
+        .send("DOM.describeNode", json!({ "objectId": object_id }))
+        .await?;
+    let backend_id = described
+        .get("node")
+        .and_then(|n| n.get("backendNodeId"))
+        .and_then(|v| v.as_i64());
+    // Don't leave our scratch global on the page.
+    let _ = client
+        .send(
+            "Runtime.evaluate",
+            json!({ "expression": format!("delete window.{global}") }),
+        )
+        .await;
+    let Some(backend_id) = backend_id else {
+        return Ok(None);
+    };
+    Ok(Some(click_backend_node(client, backend_id).await?))
+}
+
 /// Click the first element matching a CSS `selector` with a real mouse click.
-pub async fn click_selector(client: &CdpClient, selector: &str) -> Result<bool, CdpError> {
+pub async fn click_selector(client: &CdpClient, selector: &str) -> Result<ClickOutcome, CdpError> {
     match backend_node_for_selector(client, selector).await? {
         Some(id) => click_backend_node(client, id).await,
-        None => Ok(false),
+        None => Ok(ClickOutcome::NotFound),
     }
 }
 

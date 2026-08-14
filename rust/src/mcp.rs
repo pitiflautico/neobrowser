@@ -34,7 +34,15 @@ retrying blindly.
 buttons, overlays).
 - To act on an element: `find {intent}` (natural language, e.g. \"send button\") \
 returns a backendNodeId, then `click {backend_node_id}`. Or `find_and_click {text}`. \
-Clicks are real (isTrusted) mouse events.
+Clicks are real (isTrusted) mouse events, scroll the target into view, and only \
+target VISIBLE elements — a match inside a collapsed accordion step or a hidden \
+header panel is skipped, not clicked.
+- Clicks report what happened. \"Not clicked: target is covered by X\" means an \
+overlay is in the way: `dismiss_overlay`, then retry. Never read a click result as \
+success without reading it.
+- Multi-step forms: each step keeps its own buttons in the DOM, so target the step \
+you mean (a CSS selector scoped to its form) rather than the first button with the \
+right label, and check the page changed before moving on.
 - Forms: `fill {selector,value}` or `form_fill {fields}` (by label), then `submit`.
 - Files: `upload {selector,files}`; `download {url}` (reuses session cookies).
 

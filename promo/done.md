@@ -85,6 +85,15 @@
 - targets.md: tier 1 (simonw, swyx, t3dotgg, mitsuhiko, Anthropic, levelsio) + tier 2, con ángulos por cuenta.
 - Cron actualizado: d77462a9 eliminado → 7c2c75a4 (3×/día: 9:23, 14:23, 20:23) con prompt de hype que incluye el playbook, targets y el flujo X probado.
 
+## 2026-08-13 — dogfooding: alta real en FWA → 4 bugs encontrados y arreglados
+- Stunt de dogfooding: dar de alta moneyincheck.org en thefwa.com de punta a punta con NeoBrowser. Enviado (case 19085, £0 con voucher del 100%). El formulario React de 4 pasos destapó 4 bugs, los 4 con la misma raíz: **la tool reportaba éxito por despachar la acción, sin comprobar el efecto**.
+- `find_and_click` clicaba nodos invisibles: cogía el primer match textual aunque estuviera en un acordeón colapsado, así que todos los "Continue" iban al paso cerrado y el paso abierto no se enviaba nunca. Provocó un diagnóstico entero en falso (culpé al voucher del usuario). Ahora filtra por visibilidad, devuelve `matched_total`/`matched_visible` y usa el click de ratón real (antes era `.click()` de JS, contradiciendo la promesa de isTrusted del propio MCP).
+- `click` no hacía scroll ni verificaba impacto: `"Clicked"` con el target fuera del viewport o bajo un banner de cookies. Ahora `scrollIntoViewIfNeeded` → relee la caja → hit-test con `DOM.getNodeForLocation` → enum `ClickOutcome` con `Obscured{by}` que nombra al elemento que tapa.
+- `SingletonLock` huérfano mataba el arranque con error mudo (stderr iba a /dev/null). Ahora se limpia solo si el PID está muerto, y el stderr de Chrome (`~/.neobrowser/logs/chrome-{port}.log`) viaja dentro del error.
+- `login` daba falso negativo en páginas con campos de cambio de contraseña, y submitía el primer form del documento (el panel del header) en vez del que contiene el password.
+- Cobertura nueva: `rust/tests/multistep_forms.rs`, 7 tests herméticos (fixture `data:` URL) que comprueban **efectos**, no valores de retorno. Total 94 en verde, clippy limpio. Doc: `docs/BUGS-formularios-multipaso.md`.
+- v0.1.4. Descripciones de `click`/`find_and_click` y la guía del server actualizadas: el contrato nuevo hay que contarlo al agente, no solo implementarlo.
+
 ## 2026-08-14 — ciclo 18: VÍDEO COMPARATIVO PUBLICADO
 - Asset nuevo: `docs/assets/demo-split.mp4` (15s, 172KB, 1080p) — pantalla dividida: navegador headless de fábrica (GitHub logged-out) vs NeoBrowser con sesión real (GitHub dashboard autenticado). Capturas reales hechas con el propio NeoBrowser, montaje Pillow+ffmpeg.
 - **Publicado en X**: https://x.com/perez_pina28188/status/2087982402572263603 — vídeo adjunto renderizando (verificado con captura). La primera versión salió sin el vídeo → borrada y republicada correctamente.
