@@ -111,3 +111,9 @@
 - **Cuenta HN creada**: usuario `pitiflautico`, logueada en el perfil de promo. Credenciales en ~/.neobrowser/hn_credentials.txt (0600). Home de promo movido a ~/.neobrowser/promo-home (persistente; /tmp se limpia en reboot). Cron actualizado → id 38546e47.
 - **Reddit**: signup con js_challenge + captcha iframe desde la primera pantalla — detectado honestamente por walls. No se fuerza: el usuario la crea manual en su Chrome (2 min) y reddit_session SÍ es inyectable (no está en exclusiones).
 - Nota tooling: el editor de LinkedIn es contenteditable="plaintext-only" (no lo caza `[contenteditable=true]`); la tool find por AX tree sí lo encuentra. Los selectores ARIA en español varían entre cargas — find es más robusto que querySelector con regex.
+
+## 2026-08-14 — ciclo 21: Gmail y Google probados a fondo
+- Gmail MCP: NO configurado en esta sesión de kimi (~/.kimi-code/config.toml no tiene MCP servers). El usuario lo tiene en otro cliente; para usarlo aquí hay que añadirlo a la config y reiniciar (además ese server requiere su propio OAuth de Google Cloud).
+- Gmail vía NeoBrowser + excepción identity cookies: PROBADO Y NO FUNCIONA — las cookies Google SID están frescas (rotadas hoy, expiran 2027) y se inyectan (9 pares visibles), pero Google redirige a login: las sesiones Google van ligadas al dispositivo/navegador (LS/IDB + tokens rotatorios), no bastan las cookies. Es exactamente por esto que la exclusión existe por defecto.
+- Reddit signup reintentado con sesión Google caliente: sigue walled (js_challenge + captcha iframe inmediato). Sin vía automatizada legítima.
+- Conclusión: Reddit requiere signup manual del usuario (2 min en su Chrome); la verificación por email la puede hacer el usuario o configurar el Gmail MCP en kimi.
