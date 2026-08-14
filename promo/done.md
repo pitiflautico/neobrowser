@@ -104,3 +104,10 @@
 - Métricas: 0★, PR #12089 OPEN, mcp.so #3546 OPEN, glama 404, Chrome sin :9222.
 - **Reply publicado a @mitsuhiko** (Armin Ronacher, 13K views en su tweet "1password's chrome extension is also shit for agents"): respuesta técnica genuina sobre por qué CDP > extensiones para agentes. Sin link, sin pitch — valor puro. https://x.com/mitsuhiko/status/2086528346075156565
 - Escaneo de targets: simonw (nada fresco relevante), swyx (nada). Acción X del día: 1 de 2.
+
+## 2026-08-14 — ciclo 20: LinkedIn publicado + cuenta HN creada + Reddit walled
+- **Excepción LinkedIn**: el usuario aprobó incluir identity cookies. La otra sesión de kimi implementó `NEOBROWSER_INCLUDE_IDENTITY_COOKIES` (con semántica afirmativa estricta 1/true/yes/on y tests) y la mergeó a main vía PR #2. Binario release reconstruido desde main (95 tests verdes).
+- **LinkedIn PUBLICADO**: post en español del draft, verificado en /in/me/recent-activity/all/ ("Tú · 1 minuto"). Flujo: find "Crear publicación" → editor AX ("Editor de texto para crear contenido") → type → find "Publicar" → click. Regla fijada: máx 1 acción LinkedIn/día (petición del usuario).
+- **Cuenta HN creada**: usuario `pitiflautico`, logueada en el perfil de promo. Credenciales en ~/.neobrowser/hn_credentials.txt (0600). Home de promo movido a ~/.neobrowser/promo-home (persistente; /tmp se limpia en reboot). Cron actualizado → id 38546e47.
+- **Reddit**: signup con js_challenge + captcha iframe desde la primera pantalla — detectado honestamente por walls. No se fuerza: el usuario la crea manual en su Chrome (2 min) y reddit_session SÍ es inyectable (no está en exclusiones).
+- Nota tooling: el editor de LinkedIn es contenteditable="plaintext-only" (no lo caza `[contenteditable=true]`); la tool find por AX tree sí lo encuentra. Los selectores ARIA en español varían entre cargas — find es más robusto que querySelector con regex.
