@@ -131,7 +131,7 @@ impl Browser {
                 (None, port, true)
             }
             None => {
-                let proc = ChromeProcess::launch(paths::profiles_base().join("default")).await?;
+                let proc = ChromeProcess::launch(paths::profile_dir()).await?;
                 let port = proc.port;
                 chrome::wait_for_chrome(port, Duration::from_secs(15)).await?;
                 (Some(proc), port, false)

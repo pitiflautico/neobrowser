@@ -274,3 +274,96 @@ fn live_singleton_lock_is_left_alone() {
     );
     let _ = std::fs::remove_file(&lock);
 }
+
+// ---------------------------------------------------------------------------
+// Concurrent-profile isolation (NEOBROWSER_PROFILE)
+//
+// Chrome takes an exclusive lock on a user-data dir, so two NeoBrowser sessions
+// sharing one profile cannot both run — the second dies with an opaque timeout.
+// These assert the real behaviour with real Chrome processes, not mocks.
+// ---------------------------------------------------------------------------
+
+/// A named profile must get its OWN user-data dir, so two sessions can run at
+/// the same time instead of fighting over `profiles/default`.
+#[tokio::test]
+async fn named_profiles_get_separate_user_data_dirs() {
+    if !chrome_available() {
+        eprintln!("SKIP: no Chrome binary found");
+        return;
+    }
+    let _guard = ENV_LOCK.lock().await;
+    let home = "/tmp/nb-rust-it-profiles";
+    std::env::set_var("NEOBROWSER_HOME", home);
+
+    std::env::set_var("NEOBROWSER_PROFILE", "alpha");
+    let alpha = neobrowser::paths::profile_dir();
+    std::env::set_var("NEOBROWSER_PROFILE", "beta");
+    let beta = neobrowser::paths::profile_dir();
+    std::env::remove_var("NEOBROWSER_PROFILE");
+    let fallback = neobrowser::paths::profile_dir();
+
+    assert_ne!(alpha, beta, "distinct profiles must not share a directory");
+    assert!(alpha.ends_with("alpha"), "got {alpha:?}");
+    assert!(beta.ends_with("beta"), "got {beta:?}");
+    assert!(fallback.ends_with("default"), "unset must fall back");
+
+    // The real point: two Chromes, both alive, at the same time.
+    let mut a = chrome::ChromeProcess::launch(&alpha)
+        .await
+        .expect("launch alpha");
+    let mut b = chrome::ChromeProcess::launch(&beta)
+        .await
+        .expect("launch beta");
+    let ra = chrome::wait_for_chrome(a.port, std::time::Duration::from_secs(20)).await;
+    let rb = chrome::wait_for_chrome(b.port, std::time::Duration::from_secs(20)).await;
+    a.kill(true).await;
+    b.kill(true).await;
+
+    assert!(ra.is_ok(), "alpha never came up: {:?}", ra.err());
+    assert!(rb.is_ok(), "beta never came up: {:?}", rb.err());
+}
+
+/// A profile already held by a LIVE Chrome must fail with an actionable error
+/// naming the profile, the pid and the port to attach to — not the opaque
+/// "did not become ready" timeout that sent us debugging by hand.
+#[tokio::test]
+async fn profile_held_by_a_live_chrome_fails_with_a_way_out() {
+    if !chrome_available() {
+        eprintln!("SKIP: no Chrome binary found");
+        return;
+    }
+    let _guard = ENV_LOCK.lock().await;
+    std::env::set_var("NEOBROWSER_HOME", "/tmp/nb-rust-it-inuse");
+    std::env::set_var("NEOBROWSER_PROFILE", "busy");
+    let dir = neobrowser::paths::profile_dir();
+
+    let mut holder = chrome::ChromeProcess::launch(&dir)
+        .await
+        .expect("first launch");
+    chrome::wait_for_chrome(holder.port, std::time::Duration::from_secs(20))
+        .await
+        .expect("holder ready");
+
+    // Second launch on the same profile, while the first is alive.
+    let second = chrome::ChromeProcess::launch(&dir).await;
+    let err = match second {
+        Err(e) => e.to_string(),
+        Ok(mut p) => {
+            p.kill(true).await;
+            holder.kill(true).await;
+            panic!("second launch should have been refused while the profile is in use");
+        }
+    };
+    holder.kill(true).await;
+    std::env::remove_var("NEOBROWSER_PROFILE");
+
+    assert!(err.contains("busy"), "error must name the profile: {err}");
+    assert!(
+        err.contains("NEOBROWSER_PROFILE"),
+        "error must offer a way out: {err}"
+    );
+    assert!(
+        err.contains("NEOBROWSER_ATTACH_PORT"),
+        "error must offer attaching: {err}"
+    );
+}

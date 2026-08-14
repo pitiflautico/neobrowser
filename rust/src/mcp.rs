@@ -56,7 +56,11 @@ Tabs: `new_tab`/`list_tabs`/`switch_tab`/`close_tab` — tools act on the active
 
 Real sessions: set NEOBROWSER_REAL_PROFILE to start authenticated; or \
 NEOBROWSER_ATTACH_PORT to drive a Chrome you already have open. Act only as the user \
-would themselves.";
+would themselves.
+
+Chrome locks a profile exclusively, so two sessions sharing one cannot both run. \
+If a launch reports the profile is in use, either attach to that browser on the port \
+it names, or set NEOBROWSER_PROFILE=<name> to get an isolated one.";
 
 /// Run the MCP server over stdin/stdout until EOF or a termination signal.
 pub async fn serve() {

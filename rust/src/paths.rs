@@ -20,6 +20,51 @@ pub fn profiles_base() -> PathBuf {
     home().join("profiles")
 }
 
+/// Which **Ghost** profile this process uses, from `NEOBROWSER_PROFILE`
+/// (default `"default"`).
+///
+/// Chrome takes an exclusive lock on a user-data dir, so two NeoBrowser
+/// processes sharing one profile cannot both run: the second dies on startup
+/// with an opaque timeout. Naming the profile per session (or per agent) keeps
+/// concurrent sessions from colliding, and keeps their browsing isolated.
+///
+/// Not to be confused with two neighbours:
+/// - `NEOBROWSER_REAL_PROFILE` names the *user's own* Chrome profile, the
+///   source real cookies are imported FROM.
+/// - `sessions::profile_name()` names on-disk cookie/session snapshots, and is
+///   still keyed on `NEOBROWSER_REAL_PROFILE` — so two Ghost profiles sharing
+///   one real profile share their snapshot files.
+///
+/// The name is validated so it can never escape `profiles_base()`: an
+/// unvalidated `NEOBROWSER_PROFILE=../../.ssh` would point Chrome's user-data
+/// dir at an arbitrary directory. Anything invalid falls back to `"default"`
+/// rather than erroring, so a typo degrades instead of breaking the session.
+pub fn ghost_profile_name() -> String {
+    std::env::var("NEOBROWSER_PROFILE")
+        .ok()
+        .filter(|n| is_safe_profile_name(n))
+        .unwrap_or_else(|| "default".to_string())
+}
+
+/// Alphanumeric start, then alphanumerics/space/underscore/hyphen, max 64.
+/// Rejects anything with a path separator, `..`, or a leading dot.
+fn is_safe_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '-'))
+}
+
+/// The Ghost Chrome user-data dir for this process's profile.
+pub fn profile_dir() -> PathBuf {
+    profiles_base().join(ghost_profile_name())
+}
+
 /// Per-profile JSON cookie snapshots.
 pub fn cookies_base() -> PathBuf {
     home().join("cookies")
@@ -96,6 +141,46 @@ fn expand_tilde(p: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The profile name lands in a filesystem path, so a traversal attempt must
+    /// never reach it — an unvalidated `../../.ssh` would point Chrome's
+    /// user-data dir at an arbitrary directory. Invalid names degrade to
+    /// "default" rather than erroring, so a typo doesn't break the session.
+    #[test]
+    fn ghost_profile_name_rejects_traversal_and_falls_back() {
+        let _g = crate::env_test_guard();
+        let prev = std::env::var_os("NEOBROWSER_PROFILE");
+
+        std::env::remove_var("NEOBROWSER_PROFILE");
+        assert_eq!(ghost_profile_name(), "default", "unset");
+
+        for good in ["alpha", "Session 2", "agent-7", "a_b-c 9"] {
+            std::env::set_var("NEOBROWSER_PROFILE", good);
+            assert_eq!(ghost_profile_name(), good, "{good:?} should be accepted");
+        }
+        for bad in [
+            "../evil",
+            "..",
+            "/etc/passwd",
+            ".ssh",
+            "a/b",
+            "",
+            "-leading-dash",
+            "x..y/../z",
+        ] {
+            std::env::set_var("NEOBROWSER_PROFILE", bad);
+            assert_eq!(ghost_profile_name(), "default", "{bad:?} must be rejected");
+        }
+
+        // And the resulting dir always stays under profiles_base().
+        std::env::set_var("NEOBROWSER_PROFILE", "../evil");
+        assert!(profile_dir().starts_with(profiles_base()));
+
+        match prev {
+            Some(v) => std::env::set_var("NEOBROWSER_PROFILE", v),
+            None => std::env::remove_var("NEOBROWSER_PROFILE"),
+        }
+    }
 
     #[test]
     fn home_honors_env() {
