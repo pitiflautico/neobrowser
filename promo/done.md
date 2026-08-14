@@ -90,3 +90,8 @@
 - **Publicado en X**: https://x.com/perez_pina28188/status/2087982402572263603 — vídeo adjunto renderizando (verificado con captura). La primera versión salió sin el vídeo → borrada y republicada correctamente.
 - Aprendizajes tooling X: los vídeos necesitan ~60s de procesamiento antes de Post; tras ~50s en páginas de X el Runtime.evaluate se wedgea (js devuelve null) — usar click por selector CSS (dominio DOM, no Runtime) para el botón Post; los drafts conservan el vídeo pero no el texto; los saltos de línea del texto se colapsan en el composer (ojo para futuros posts: texto sin \n o con puntos).
 
+
+## 2026-08-14 — ciclo 19 (cron 9:23): primer outreach a figura del sector
+- Métricas: 0★, PR #12089 OPEN, mcp.so #3546 OPEN, glama 404, Chrome sin :9222.
+- **Reply publicado a @mitsuhiko** (Armin Ronacher, 13K views en su tweet "1password's chrome extension is also shit for agents"): respuesta técnica genuina sobre por qué CDP > extensiones para agentes. Sin link, sin pitch — valor puro. https://x.com/mitsuhiko/status/2086528346075156565
+- Escaneo de targets: simonw (nada fresco relevante), swyx (nada). Acción X del día: 1 de 2.
