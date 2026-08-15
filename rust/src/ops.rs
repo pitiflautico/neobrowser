@@ -274,7 +274,12 @@ pub async fn find_and_click(
                 var s = getComputedStyle(e);
                 if (s.visibility === 'hidden' || s.display === 'none' || s.opacity === '0') return false;
                 // Reject anything inside a collapsed ancestor — the accordion case.
-                for (var p = e.parentElement; p; p = p.parentElement) {{
+                // Stop before <body>/<html>: those routinely measure zero height with
+                // overflow:hidden on sites using fixed or virtualised scrolling, and
+                // treating that as "collapsed" would hide every element on the page.
+                for (var p = e.parentElement;
+                     p && p !== document.body && p !== document.documentElement;
+                     p = p.parentElement) {{
                     var pr = p.getBoundingClientRect();
                     if (pr.height === 0 || pr.width === 0) {{
                         if (getComputedStyle(p).overflow !== 'visible') return false;
