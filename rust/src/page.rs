@@ -149,19 +149,40 @@ pub async fn type_text(client: &CdpClient, text: &str, human: bool) -> Result<()
     }
     let mut rng = Jitter::new(text.len() as u64 ^ 0x9E37_79B9);
     for ch in text.chars() {
-        let s = ch.to_string();
-        client
-            .send(
-                "Input.dispatchKeyEvent",
-                json!({ "type": "keyDown", "text": s }),
-            )
-            .await?;
-        client
-            .send(
-                "Input.dispatchKeyEvent",
-                json!({ "type": "keyUp", "text": s }),
-            )
-            .await?;
+        // Control chars need real key metadata — `text: "\n"` alone is a key
+        // event for *no key*, and editors (Draft.js, Quill, plain textareas)
+        // silently drop it, collapsing the user's line breaks.
+        if ch == '\n' {
+            for ev in ["keyDown", "keyUp"] {
+                client
+                    .send(
+                        "Input.dispatchKeyEvent",
+                        json!({
+                            "type": ev,
+                            "key": "Enter",
+                            "code": "Enter",
+                            "windowsVirtualKeyCode": 13,
+                            "nativeVirtualKeyCode": 13,
+                            "text": "\r"
+                        }),
+                    )
+                    .await?;
+            }
+        } else {
+            let s = ch.to_string();
+            client
+                .send(
+                    "Input.dispatchKeyEvent",
+                    json!({ "type": "keyDown", "text": s, "key": s }),
+                )
+                .await?;
+            client
+                .send(
+                    "Input.dispatchKeyEvent",
+                    json!({ "type": "keyUp", "text": s, "key": s }),
+                )
+                .await?;
+        }
         // 30–120ms inter-key delay, dependency-free pseudo-random.
         let ms = 30 + (rng.next() % 90);
         tokio::time::sleep(Duration::from_millis(ms)).await;
