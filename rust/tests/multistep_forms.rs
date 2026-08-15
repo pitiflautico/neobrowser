@@ -367,3 +367,55 @@ async fn profile_held_by_a_live_chrome_fails_with_a_way_out() {
         "error must offer attaching: {err}"
     );
 }
+
+/// Regression: the collapsed-ancestor filter used to walk all the way up to
+/// <html>. Sites with fixed or virtualised scrolling (Lenis, body{position:fixed})
+/// give <html> a zero height with overflow:hidden, so every clickable on the page
+/// was reported as "hidden or inside a collapsed container" and nothing could be
+/// clicked. Found dogfooding on a real site (cloudstudio.es), not in a fixture.
+#[tokio::test]
+async fn zero_height_html_does_not_hide_the_whole_page() {
+    if !chrome_available() {
+        eprintln!("SKIP: no Chrome binary found");
+        return;
+    }
+    let _guard = ENV_LOCK.lock().await;
+    isolate_home("zeroheight");
+    let browser = Browser::new();
+    let tab = browser.tab().await.expect("launch + attach a CDP tab");
+
+    // html{height:0;overflow:hidden} with a fixed body — the real-world shape.
+    let fixture = "data:text/html,\
+<html style='height:0;overflow:hidden'>\
+<body style='position:fixed;inset:0;margin:0;overflow:hidden'>\
+<button type='button' id='go' onclick='window.hit=1'>Explore</button>\
+</body></html>";
+    page::navigate(&tab, fixture, 1.0).await.expect("navigate");
+
+    let html_h = page::js(
+        &tab,
+        "return document.documentElement.getBoundingClientRect().height",
+    )
+    .await
+    .expect("read html height");
+    assert_eq!(
+        html_h.as_f64(),
+        Some(0.0),
+        "fixture must actually reproduce the zero-height html"
+    );
+
+    let raw = ops::find_and_click(&tab, "Explore", "", 0)
+        .await
+        .expect("find_and_click runs");
+    let report: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+    assert_eq!(
+        report["ok"], true,
+        "visible button must be clickable: {raw}"
+    );
+    assert_eq!(report["matched_visible"], 1, "{raw}");
+
+    let hit = page::js(&tab, "return window.hit || 0")
+        .await
+        .expect("read hit");
+    assert_eq!(hit.as_i64(), Some(1), "the click never reached the button");
+}
