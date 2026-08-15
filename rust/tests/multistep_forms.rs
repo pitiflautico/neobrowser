@@ -419,3 +419,53 @@ async fn zero_height_html_does_not_hide_the_whole_page() {
         .expect("read hit");
     assert_eq!(hit.as_i64(), Some(1), "the click never reached the button");
 }
+
+// ---------------------------------------------------------------------------
+// Wall detection: only a VISIBLE challenge counts
+// ---------------------------------------------------------------------------
+
+/// Regression: any page loading Stripe.js was flagged as having a captcha,
+/// because Stripe embeds an *invisible* anti-fraud hCaptcha iframe
+/// (js.stripe.com/v3/hcaptcha-invisible-…, visibility:hidden, 1px tall).
+/// navigate then told the agent "a real profile or human handoff may be needed"
+/// on an ordinary checkout page with nothing in its way — advice that makes an
+/// obedient agent abandon a flow it could complete. Found on thefwa.com.
+#[tokio::test]
+async fn invisible_captcha_is_not_reported_as_a_wall() {
+    if !chrome_available() {
+        eprintln!("SKIP: no Chrome binary found");
+        return;
+    }
+    let _guard = ENV_LOCK.lock().await;
+    isolate_home("wallcaptcha");
+    let browser = Browser::new();
+    let tab = browser.tab().await.expect("launch + attach a CDP tab");
+
+    // Shaped exactly like Stripe's: matches the hcaptcha selector, invisible.
+    let invisible = "data:text/html,\
+<html><body><h1>Checkout</h1>\
+<iframe src='https://example.com/v3/hcaptcha-invisible-abc' \
+style='visibility:hidden;width:1905px;height:1px;border:0'></iframe>\
+</body></html>";
+    page::navigate(&tab, invisible, 1.0)
+        .await
+        .expect("navigate");
+    let hint = neobrowser::walls::detect(&tab).await;
+    assert!(
+        hint.is_none(),
+        "an invisible captcha must not be reported as a wall, got {hint:?}"
+    );
+
+    // A real, visible widget still must be reported.
+    let visible = "data:text/html,\
+<html><body><h1>Verify</h1>\
+<iframe src='https://example.com/recaptcha/api2/anchor' \
+style='width:304px;height:78px;border:0'></iframe>\
+</body></html>";
+    page::navigate(&tab, visible, 1.0).await.expect("navigate");
+    let hint = neobrowser::walls::detect(&tab).await;
+    assert!(
+        hint.is_some(),
+        "a visible captcha widget must still be reported"
+    );
+}
