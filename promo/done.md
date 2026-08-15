@@ -141,3 +141,8 @@
 - Métricas: 0★, PR OPEN, glama 404.
 - Escaneo targets (simonw, swyx, mitsuhiko): nada donde un reply aporte → no se fuerza outreach.
 - **Post stunt publicado**: "Day 2 of NeoBrowser promoting itself: today it published its own LinkedIn post and left two genuinely technical comments on Hacker News…" — https://x.com/perez_pina28188/status/2088694363446562852 (verificado en perfil). La serie diaria de dogfooding queda instaurada.
+
+## 2026-08-15 — ciclo 27: FIX REAL DE PRODUCTO + repost con formato
+- El usuario reportó que los posts salían sin saltos de línea. Causa raíz en `page.rs::type_text`: human=true enviaba keyDown/keyUp con `text:"\n"` pero sin metadatos de tecla → los editores (Draft.js de X, Quill de LinkedIn) descartaban el carácter. Fix: `\n` ahora despacha un Enter completo (key/code/keyCode 13). Verificado hermético (textarea conserva `\n\n`) y en producción. 99 tests verdes, clippy limpio. Commit bf9f30c en main.
+- **Post del vídeo republicado CON formato** (párrafos + vídeo adjunto): https://x.com/perez_pina28188/status/2088701432539041845 — verificado con captura. Costó 2 borrados intermedios (aprendizaje: nunca clicar Post si el upload devolvió error; la guardia de upload exige archivos bajo NEOBROWSER_HOME/downloads).
+- Cron actualizado → ae57b551 (nota de \n corregida + regla de no-publicar-si-upload-falla + ruta de uploads).
