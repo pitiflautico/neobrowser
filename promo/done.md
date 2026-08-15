@@ -131,3 +131,8 @@
 - Métricas: 0★, PR #12089 OPEN, mcp.so OPEN, glama 404 (>40h tras glama.json — crawler lento; si mañana sigue, evaluar submit manual con login del usuario).
 - **HN warm-up #2**: comentario en "Maximizing the value of your Claude Code sessions" (item 49300800, 116c) — ángulo propio: el coste en tokens lo decide el diseño de las tools (efectos vs despachos, read de texto visible vs DOM, instructions field). Sin mencionar el producto. Verificado visible.
 - Nota tooling: la API de Algolia de HN (hn.algolia.com) es más fiable que scrapear la portada para encontrar hilos relevantes.
+
+## 2026-08-15 — ciclo 25 (cron 14:23): segundo post en LinkedIn
+- Métricas: 0★, PR OPEN, glama 404.
+- **LinkedIn post #2 publicado** (texto del vídeo comparativo, verificado "ahora" en recent-activity). El vídeo nativo NO se pudo adjuntar: LinkedIn no crea un input[type=file] persistente (su flujo de vídeo abre diálogo nativo sin nodo DOM) — la tool upload necesita selector. Limitación registrada; alternativa futura: Page.setInterceptFileChooserDialog (feature candidata para NeoBrowser).
+- Flujo LinkedIn con AX names fiables: "Crear publicación" → "Editor de texto para crear contenido" → "Publicar". Los textboxes tardan ~4s tras abrir el modal (waits generosos).
