@@ -136,3 +136,8 @@
 - Métricas: 0★, PR OPEN, glama 404.
 - **LinkedIn post #2 publicado** (texto del vídeo comparativo, verificado "ahora" en recent-activity). El vídeo nativo NO se pudo adjuntar: LinkedIn no crea un input[type=file] persistente (su flujo de vídeo abre diálogo nativo sin nodo DOM) — la tool upload necesita selector. Limitación registrada; alternativa futura: Page.setInterceptFileChooserDialog (feature candidata para NeoBrowser).
 - Flujo LinkedIn con AX names fiables: "Crear publicación" → "Editor de texto para crear contenido" → "Publicar". Los textboxes tardan ~4s tras abrir el modal (waits generosos).
+
+## 2026-08-15 — ciclo 26 (cron 20:23): stunt "Day 2" en X
+- Métricas: 0★, PR OPEN, glama 404.
+- Escaneo targets (simonw, swyx, mitsuhiko): nada donde un reply aporte → no se fuerza outreach.
+- **Post stunt publicado**: "Day 2 of NeoBrowser promoting itself: today it published its own LinkedIn post and left two genuinely technical comments on Hacker News…" — https://x.com/perez_pina28188/status/2088694363446562852 (verificado en perfil). La serie diaria de dogfooding queda instaurada.
