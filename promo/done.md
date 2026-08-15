@@ -126,3 +126,8 @@
 ## 2026-08-14 — ciclo 23 (cron 20:23): vigilancia, sin acción forzada
 - Métricas: 0★, PR #12089 OPEN, glama 404. Post del vídeo: 6 views. Reply a mitsuhiko: sin respuesta aún (1Password respondió por debajo — buena compañía en esa conversación).
 - Escaneo de targets (t3dotgg, levelsio) y búsqueda comunitaria "mcp server browser": nada fresco donde un reply aporte de verdad → no se fuerza. Segunda acción de X del día no utilizada.
+
+## 2026-08-15 — ciclo 24 (cron 9:23): HN warm-up #2
+- Métricas: 0★, PR #12089 OPEN, mcp.so OPEN, glama 404 (>40h tras glama.json — crawler lento; si mañana sigue, evaluar submit manual con login del usuario).
+- **HN warm-up #2**: comentario en "Maximizing the value of your Claude Code sessions" (item 49300800, 116c) — ángulo propio: el coste en tokens lo decide el diseño de las tools (efectos vs despachos, read de texto visible vs DOM, instructions field). Sin mencionar el producto. Verificado visible.
+- Nota tooling: la API de Algolia de HN (hn.algolia.com) es más fiable que scrapear la portada para encontrar hilos relevantes.
