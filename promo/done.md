@@ -155,3 +155,8 @@
 ## 2026-08-16 — ciclo 29 (cron 14:23): LinkedIn post #3 (historia del bug)
 - Métricas: 0★, PR OPEN, mcp.so OPEN, glama 404.
 - **LinkedIn #3 publicado y verificado**: la historia real de ayer — el agente de promo encontró el bug de saltos de línea al publicar, fix mergeado el mismo día, "el dogfooding es el mejor QA". Con el fix de \n, sale con párrafos correctos. Es el primer post que enlaza el stunt con una lección de ingeniería — el formato que mejor funciona en LinkedIn.
+
+## 2026-08-16 — ciclo 30 (cron 20:23): X "Day 3" con formato perfecto
+- Métricas: 0★, PR OPEN, glama 404.
+- Outreach: simonw (AI Overviews de Google — off-topic para nosotros) y mitsuhiko (nada claro) → no se fuerza.
+- **Post "Day 3" publicado**: https://x.com/perez_pina28188/status/2089058591642730862 — con párrafos correctos tras el fix de \n y la tarjeta de GitHub renderizada (se ve profesional). "My marketing agent files better bug reports than most humans."
