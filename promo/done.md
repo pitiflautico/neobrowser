@@ -146,3 +146,8 @@
 - El usuario reportó que los posts salían sin saltos de línea. Causa raíz en `page.rs::type_text`: human=true enviaba keyDown/keyUp con `text:"\n"` pero sin metadatos de tecla → los editores (Draft.js de X, Quill de LinkedIn) descartaban el carácter. Fix: `\n` ahora despacha un Enter completo (key/code/keyCode 13). Verificado hermético (textarea conserva `\n\n`) y en producción. 99 tests verdes, clippy limpio. Commit bf9f30c en main.
 - **Post del vídeo republicado CON formato** (párrafos + vídeo adjunto): https://x.com/perez_pina28188/status/2088701432539041845 — verificado con captura. Costó 2 borrados intermedios (aprendizaje: nunca clicar Post si el upload devolvió error; la guardia de upload exige archivos bajo NEOBROWSER_HOME/downloads).
 - Cron actualizado → ae57b551 (nota de \n corregida + regla de no-publicar-si-upload-falla + ruta de uploads).
+
+## 2026-08-16 — ciclo 28 (cron 9:23): HN warm-up #3 — rodaje completo
+- Métricas: 0★, PR OPEN, mcp.so OPEN, glama 404 (>2,5 días tras glama.json; su crawler no nos coge — la vía restante es "Add Server" con login del usuario).
+- **HN warm-up #3**: comentario en "AI has access to a vastly larger working memory than the human brain" (item 49312845, 407c) — data point real de NeoBrowser (100K tokens de DOM vs 2K de texto visible: la restricción es señal/ruido, no capacidad). Sin mencionar el producto. Verificado visible.
+- Rodaje completado: 3 comentarios técnicos en 3 días. La cuenta pitiflautico ya puede lanzar el Show HN la próxima semana (mar 18 o mié 19, 9-11am ET).
