@@ -151,3 +151,7 @@
 - Métricas: 0★, PR OPEN, mcp.so OPEN, glama 404 (>2,5 días tras glama.json; su crawler no nos coge — la vía restante es "Add Server" con login del usuario).
 - **HN warm-up #3**: comentario en "AI has access to a vastly larger working memory than the human brain" (item 49312845, 407c) — data point real de NeoBrowser (100K tokens de DOM vs 2K de texto visible: la restricción es señal/ruido, no capacidad). Sin mencionar el producto. Verificado visible.
 - Rodaje completado: 3 comentarios técnicos en 3 días. La cuenta pitiflautico ya puede lanzar el Show HN la próxima semana (mar 18 o mié 19, 9-11am ET).
+
+## 2026-08-16 — ciclo 29 (cron 14:23): LinkedIn post #3 (historia del bug)
+- Métricas: 0★, PR OPEN, mcp.so OPEN, glama 404.
+- **LinkedIn #3 publicado y verificado**: la historia real de ayer — el agente de promo encontró el bug de saltos de línea al publicar, fix mergeado el mismo día, "el dogfooding es el mejor QA". Con el fix de \n, sale con párrafos correctos. Es el primer post que enlaza el stunt con una lección de ingeniería — el formato que mejor funciona en LinkedIn.
