@@ -44,7 +44,8 @@
 
 use std::sync::Arc;
 
-use super::{Bridge, MAX_BODY, TOKEN_HEADER};
+use super::queue::Bridge;
+use super::{MAX_BODY, TOKEN_HEADER};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

@@ -23,9 +23,9 @@ mod tests {
     // The tests deliberately stay together rather than moving into each submodule: they
     // assert the behaviour of the guard as a whole — a URL is validated, followed,
     // scoped and written — which is a property of the composition, not of one file.
-    use fetch::{
-        clean_scraped, guarded_get, read_capped, safe_cross_origin, strip_html, CredentialScope,
-    };
+    use fetch::credentials::{safe_cross_origin, CredentialScope};
+    use fetch::text::{clean_scraped, strip_html};
+    use fetch::{guarded_get, read_capped};
     use files::{download_size_cap, write_download_atomically};
     use serde_json::Map;
     use std::time::Duration;
@@ -244,7 +244,7 @@ mod tests {
 
         let validated = transfer::resolve_upload_path(target.to_str().unwrap())
             .expect("an innocent file under the allowed root validates");
-        let staged = transfer::upload::stage_for_upload(&validated).expect("staging succeeds");
+        let staged = transfer::stage::stage_for_upload(&validated).expect("staging succeeds");
 
         // The attacker's move: swap the validated path for a symlink to the secret.
         std::fs::remove_file(&target).unwrap();
@@ -285,7 +285,7 @@ mod tests {
         let big = dir.join("big.bin");
         std::fs::write(&big, vec![0u8; 2 * 1024 * 1024]).unwrap();
         let validated = transfer::resolve_upload_path(big.to_str().unwrap()).unwrap();
-        let err = transfer::upload::stage_for_upload(&validated).unwrap_err();
+        let err = transfer::stage::stage_for_upload(&validated).unwrap_err();
         assert!(err.contains("over the 1 MiB upload cap"), "{err}");
 
         std::env::remove_var("NEOBROWSER_MAX_UPLOAD_MB");

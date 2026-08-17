@@ -37,16 +37,15 @@
 //! Split so the listener sits apart from the queue it serves: [`server`] accepts
 //! connections and authenticates them, while the queue, its pending map and the token file
 //! stay here.
+//!
+//! Split so the queue sits apart from the listener that serves it: [`queue`] holds the
+//! pending commands and their random ids, [`server`] accepts and authenticates connections,
+//! and the token file stays here.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-
-use serde_json::{json, Value};
-use tokio::sync::{oneshot, Mutex};
-
+pub mod queue;
 pub mod server;
 
+pub use queue::Bridge;
 pub use server::serve;
 
 /// How long a queued command waits for the extension before it is abandoned.
@@ -66,185 +65,6 @@ const TOKEN_HEADER: &str = "x-neobrowser-token";
 /// A CDP result can be large (a DOM snapshot), but unbounded reads from a socket are
 /// how a local process makes a server allocate until it dies.
 const MAX_BODY: usize = 32 * 1024 * 1024;
-
-/// One queued CDP command.
-#[derive(Debug, Clone)]
-struct Pending {
-    id: u64,
-    tab_id: i64,
-    method: String,
-    params: Value,
-}
-
-/// Shared bridge state.
-pub struct Bridge {
-    port: u16,
-    inner: Mutex<Inner>,
-    /// Retained only so a stale sequential-id assumption cannot creep back in; ids
-    /// themselves are random. Kept as a monotonic counter mixed into the id so two
-    /// commands minted in the same instant cannot collide.
-    next_id: AtomicU64,
-    token: String,
-}
-
-#[derive(Default)]
-struct Inner {
-    /// Commands waiting to be handed to the extension.
-    queue: Vec<Pending>,
-    /// Where to deliver each result once it arrives.
-    waiting: HashMap<u64, oneshot::Sender<Result<Value, String>>>,
-    /// Tab ids the user has shared, as last reported by the extension. Advisory on
-    /// this side — the extension enforces it — but needed so the agent can list what
-    /// it is actually allowed to drive.
-    shared_tabs: Vec<i64>,
-    /// Whether the extension has polled at least once.
-    connected: bool,
-}
-
-impl Bridge {
-    pub fn new(port: u16) -> Arc<Self> {
-        Arc::new(Self {
-            port,
-            inner: Mutex::new(Inner::default()),
-            next_id: AtomicU64::new(1),
-            token: crate::vault::random_token_hex(),
-        })
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
-    pub fn token(&self) -> &str {
-        &self.token
-    }
-
-    /// Persist the token where the user (and only the user) can read it, so
-    /// `neobrowser bridge token` can print it for pasting into the extension popup.
-    pub fn write_token_file(&self) -> std::io::Result<std::path::PathBuf> {
-        let path = token_path();
-        crate::sessions::write_private(&path, &self.token)?;
-        Ok(path)
-    }
-
-    /// Constant-time token comparison.
-    ///
-    /// Over loopback with a 256-bit token a timing oracle is not a realistic attack,
-    /// but a variable-time compare on a secret is the kind of thing that becomes one
-    /// after a refactor, and the constant-time version costs nothing.
-    fn token_matches(&self, presented: Option<&str>) -> bool {
-        let Some(presented) = presented else {
-            return false;
-        };
-        let expected = self.token.as_bytes();
-        let got = presented.trim().as_bytes();
-        if expected.len() != got.len() {
-            return false;
-        }
-        let mut diff = 0u8;
-        for (a, b) in expected.iter().zip(got.iter()) {
-            diff |= a ^ b;
-        }
-        diff == 0
-    }
-
-    /// Has the extension ever polled? Reported by `doctor` and `bridge_status`, so
-    /// "nothing happens" is distinguishable from "the extension is not installed".
-    pub async fn is_connected(&self) -> bool {
-        self.inner.lock().await.connected
-    }
-
-    pub async fn shared_tabs(&self) -> Vec<i64> {
-        self.inner.lock().await.shared_tabs.clone()
-    }
-
-    /// Send a CDP command to a shared tab and await its result.
-    pub async fn send(&self, tab_id: i64, method: &str, params: Value) -> Result<Value, String> {
-        // Random, not sequential: a guessable id lets a forged result be addressed to
-        // an outstanding command. The counter is mixed in so two ids minted in the same
-        // instant cannot collide.
-        let id = {
-            let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let rand =
-                u64::from_str_radix(&crate::vault::random_token_hex()[..15], 16).unwrap_or(seq);
-            rand.wrapping_mul(1 << 8).wrapping_add(seq & 0xFF)
-        };
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut inner = self.inner.lock().await;
-            if !inner.connected {
-                return Err(
-                    "the NeoBrowser Bridge extension has not connected. Load it from \
-                     extension/ in chrome://extensions, then share a tab from its popup"
-                        .into(),
-                );
-            }
-            inner.queue.push(Pending {
-                id,
-                tab_id,
-                method: method.to_string(),
-                params,
-            });
-            inner.waiting.insert(id, tx);
-        }
-
-        match tokio::time::timeout(std::time::Duration::from_secs(COMMAND_TIMEOUT_SECS), rx).await {
-            Ok(Ok(result)) => result,
-            // The sender was dropped: the bridge was torn down mid-flight.
-            Ok(Err(_)) => Err("bridge closed while the command was in flight".into()),
-            Err(_) => {
-                // Timed out. Remove the waiter so a late result cannot be delivered to
-                // a caller that has already given up.
-                let mut inner = self.inner.lock().await;
-                inner.waiting.remove(&id);
-                inner.queue.retain(|c| c.id != id);
-                Err(format!(
-                    "the extension did not answer within {COMMAND_TIMEOUT_SECS}s. Is the \
-                     tab still shared? Chrome drops the attachment when a tab closes"
-                ))
-            }
-        }
-    }
-
-    /// Handle the extension's poll: record what it shares, hand back queued work.
-    async fn take_work(&self, shared: Vec<i64>) -> Value {
-        let mut inner = self.inner.lock().await;
-        inner.connected = true;
-        inner.shared_tabs = shared;
-        let commands: Vec<Value> = inner
-            .queue
-            .drain(..)
-            .map(|c| {
-                json!({ "id": c.id, "tabId": c.tab_id, "method": c.method, "params": c.params })
-            })
-            .collect();
-        json!({ "commands": commands })
-    }
-
-    /// Deliver results back to whoever is waiting for them.
-    async fn deliver(&self, results: &[Value]) -> usize {
-        let mut inner = self.inner.lock().await;
-        let mut delivered = 0;
-        for r in results {
-            let Some(id) = r.get("id").and_then(Value::as_u64) else {
-                continue;
-            };
-            let Some(tx) = inner.waiting.remove(&id) else {
-                // Nobody is waiting: the caller already timed out. Dropping it is
-                // correct, and counting it would overstate what got through.
-                continue;
-            };
-            let payload = match r.get("error").and_then(Value::as_str) {
-                Some(e) => Err(e.to_string()),
-                None => Ok(r.get("result").cloned().unwrap_or(Value::Null)),
-            };
-            if tx.send(payload).is_ok() {
-                delivered += 1;
-            }
-        }
-        delivered
-    }
-}
 
 /// Where the bridge token is written for the user to read.
 pub fn token_path() -> std::path::PathBuf {
@@ -266,7 +86,10 @@ pub fn configured_port() -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{json, Value};
     use tokio::net::TcpListener;
+
+    use super::queue::Bridge;
 
     use super::server::{find_header_end, handle_connection};
     use super::*;

@@ -60,7 +60,7 @@ def main():
         "tool count", stated, len(tools),
         "regenerate docs too: neobrowser tools --markdown > docs/TOOLS.md")
 
-    core_src = open(os.path.join(ROOT, "rust/src/tools.rs")).read()
+    core_src = open(os.path.join(ROOT, "rust/src/tools/catalogue.rs")).read()
     core = core_src.split("pub const CORE_TOOLS")[1].split("];")[0]
     core_n = len(re.findall(r'^\s+"', core, re.M))
     m = re.search(r"\((\d+) advertised by default\)", readme)

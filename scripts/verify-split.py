@@ -12,6 +12,7 @@ the hand-written `keep` ranges for mod.rs are exactly where lines went missing t
 running. So this compares multisets of non-trivial lines and reports what was lost or
 duplicated, regardless of how the split was expressed.
 """
+import re
 import sys
 from collections import Counter
 
@@ -25,10 +26,10 @@ def norm(lines):
     out = Counter()
     for l in lines:
         t = l.strip()
-        for vis in ('pub(super) ', 'pub(crate) ', 'pub '):
-            if t.startswith(vis):
-                t = t[len(vis):]
-                break
+        # Any visibility form, including `pub(in crate::reach)`.
+        m = re.match(r'pub(\([^)]*\))? ', t)
+        if m:
+            t = t[m.end():]
         if t and t not in ('{', '}', '};', ')', '],', '})', '});', '//!'):
             out[t] += 1
     return out
@@ -48,8 +49,13 @@ def check(original, outputs, allow_added_prefixes=ADDED_OK):
     moved = [(l, c - n[l]) for l, c in o.items() if n[l] < c and l.startswith('use ')]
     for l, c in sorted(moved):
         print(f"  moved  x{c}: {l[:100]}")
+    # A `pub use a::{...}` that rustfmt wrapped continues on lines that are bare identifier
+    # lists, so they cannot be matched by prefix.
+    def is_use_continuation(line):
+        return bool(re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*(, [A-Za-z_][A-Za-z_0-9]*)*,?', line))
+
     added = [(l, n[l] - o[l]) for l in n if n[l] > o.get(l, 0)
-             and not l.startswith(allow_added_prefixes)]
+             and not l.startswith(allow_added_prefixes) and not is_use_continuation(l)]
     for l, c in sorted(lost):
         print(f"  PERDIDA x{c}: {l[:100]}")
     for l, c in sorted(added):

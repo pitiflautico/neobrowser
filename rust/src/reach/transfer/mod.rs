@@ -8,7 +8,9 @@
 //! should not leave the machine, [`download`] receives one.
 
 pub mod download;
+pub mod stage;
 pub mod upload;
 
 pub use download::download;
-pub use upload::{resolve_upload_path, upload, upload_roots_for_report};
+pub use stage::upload;
+pub use upload::{resolve_upload_path, upload_roots_for_report};
