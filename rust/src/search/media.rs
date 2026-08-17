@@ -1,3 +1,10 @@
+//! Image and video search, and the commands to fetch what was found.
+//!
+//! The download commands are *returned as text*, never executed. Running a shell command
+//! built from strings a web page supplied would be a command-injection hole with extra steps,
+//! so the caller decides — and the values are sanitised anyway, because they end up on
+//! someone's terminal.
+
 //! Browser-driven search: text (Google → DuckDuckGo fallback), images, videos.
 //!
 //! Ported from the Python `_search_google`/`_search_duckduckgo` and
@@ -8,159 +15,19 @@
 
 use serde_json::{json, Value};
 
+use super::web::{by_field, google_url, merge_providers, quote_plus, Provider};
 use crate::cdp::CdpClient;
-use crate::page;
-
-/// Percent-encode a query the `quote_plus` way (space → '+').
-fn quote_plus(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            b' ' => out.push('+'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-fn google_url(query: &str, udm: u8) -> String {
-    format!(
-        "https://www.google.com/search?q={}&udm={}&num=30",
-        quote_plus(query),
-        udm
-    )
-}
-
-/// Loaded from `js/dismiss_consent.js`. See [`crate::js`] for why the snippets live
-/// in real JavaScript files rather than Rust string literals.
-fn dismiss_consent_js() -> &'static str {
-    include_str!("../js/dismiss_consent.js")
-}
-
-async fn dismiss_consent(client: &CdpClient) {
-    let _ = page::js(client, dismiss_consent_js()).await;
-}
-
-/// Loaded from `js/search_google_text.js`. See [`crate::js`] for why the snippets live
-/// in real JavaScript files rather than Rust string literals.
-fn google_text_js() -> &'static str {
-    include_str!("../js/search_google_text.js")
-}
-
-/// Loaded from `js/search_ddg_text.js`. See [`crate::js`] for why the snippets live
-/// in real JavaScript files rather than Rust string literals.
-fn ddg_text_js() -> &'static str {
-    include_str!("../js/search_ddg_text.js")
-}
-
-async fn js_array(client: &CdpClient, code: &str) -> Vec<Value> {
-    match page::js(client, code).await {
-        Ok(Value::String(s)) => serde_json::from_str(&s).unwrap_or_default(),
-        Ok(Value::Array(a)) => a,
-        _ => Vec::new(),
-    }
-}
-
-/// One search source: a URL to open plus JS that returns an array of results.
-struct Provider {
-    name: &'static str,
-    url: String,
-    extract_js: String,
-    consent: bool,
-}
-
-/// Run providers in order: navigate, dismiss consent, skip if the page is walled
-/// (bot wall / captcha / etc.), extract, and merge deduped results until `count`.
-///
-/// This is the general answer to "we'll hit this on many more sites": no single
-/// source is a hard dependency — a walled or empty provider is transparently
-/// skipped and the next one fills in. Returns (results, per-engine trace).
-async fn merge_providers(
-    client: &CdpClient,
-    providers: Vec<Provider>,
-    key: impl Fn(&Value) -> Option<String>,
-    count: usize,
-) -> (Vec<Value>, Vec<Value>) {
-    let mut out: Vec<Value> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut trace: Vec<Value> = Vec::new();
-    for p in providers {
-        if out.len() >= count {
-            break;
-        }
-        if page::navigate(client, &p.url, 3.0).await.is_err() {
-            trace.push(json!({ "engine": p.name, "error": "navigate failed" }));
-            continue;
-        }
-        if p.consent {
-            dismiss_consent(client).await;
-        }
-        if let Some(w) = crate::walls::detect(client).await {
-            trace.push(json!({ "engine": p.name, "walled": w.as_str() }));
-            continue;
-        }
-        let before = out.len();
-        for item in js_array(client, &p.extract_js).await {
-            if let Some(k) = key(&item) {
-                if seen.insert(k) {
-                    out.push(item);
-                    if out.len() >= count {
-                        break;
-                    }
-                }
-            }
-        }
-        trace.push(json!({ "engine": p.name, "got": out.len() - before }));
-    }
-    (out, trace)
-}
-
-fn by_field(field: &'static str) -> impl Fn(&Value) -> Option<String> {
-    move |v: &Value| {
-        v.get(field)
-            .and_then(|x| x.as_str())
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-    }
-}
-
-/// `search` — merges DuckDuckGo + Google (skips whichever is walled).
-pub async fn search(client: &CdpClient, query: &str, limit: usize) -> String {
-    let providers = vec![
-        Provider {
-            name: "duckduckgo",
-            url: format!("https://html.duckduckgo.com/html/?q={}", quote_plus(query)),
-            extract_js: ddg_text_js().replace("LIMIT", &limit.to_string()),
-            consent: false,
-        },
-        Provider {
-            name: "google",
-            url: format!(
-                "https://www.google.com/search?q={}&hl=en&num=20",
-                quote_plus(query)
-            ),
-            extract_js: google_text_js().replace("LIMIT", &limit.to_string()),
-            consent: true,
-        },
-    ];
-    let (mut results, engines) = merge_providers(client, providers, by_field("url"), limit).await;
-    results.truncate(limit);
-    json!({ "query": query, "results": results, "engines": engines }).to_string()
-}
 
 /// Loaded from `js/search_images_extract.js`. See [`crate::js`] for why the snippets live
 /// in real JavaScript files rather than Rust string literals.
 fn image_extract_js() -> &'static str {
-    include_str!("../js/search_images_extract.js")
+    include_str!("../../js/search_images_extract.js")
 }
 
 /// Loaded from `js/search_videos_extract.js`. See [`crate::js`] for why the snippets live
 /// in real JavaScript files rather than Rust string literals.
 fn video_extract_js() -> &'static str {
-    include_str!("../js/search_videos_extract.js")
+    include_str!("../../js/search_videos_extract.js")
 }
 
 // --- Google-free fallbacks (no /sorry/ wall on a clean profile) ---------------
@@ -169,17 +36,17 @@ fn video_extract_js() -> &'static str {
 /// Loaded from `js/search_bing_images.js`. See [`crate::js`] for why the snippets live
 /// in real JavaScript files rather than Rust string literals.
 fn bing_images_js() -> &'static str {
-    include_str!("../js/search_bing_images.js")
+    include_str!("../../js/search_bing_images.js")
 }
 
 /// YouTube results — genuine browser is not walled; gives real watch URLs + titles.
 /// Loaded from `js/search_youtube_videos.js`. See [`crate::js`] for why the snippets live
 /// in real JavaScript files rather than Rust string literals.
 fn youtube_videos_js() -> &'static str {
-    include_str!("../js/search_youtube_videos.js")
+    include_str!("../../js/search_youtube_videos.js")
 }
 
-fn platform(url: &str) -> &'static str {
+pub(super) fn platform(url: &str) -> &'static str {
     for (host, name) in [
         ("youtube.com", "youtube"),
         ("youtu.be", "youtube"),
@@ -199,7 +66,7 @@ fn platform(url: &str) -> &'static str {
 }
 
 /// Keep filename-safe characters, replace everything else (incl. spaces) with '_'.
-fn sanitize(s: &str, max: usize) -> String {
+pub(super) fn sanitize(s: &str, max: usize) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
@@ -212,7 +79,7 @@ fn sanitize(s: &str, max: usize) -> String {
         .collect()
 }
 
-fn download_cmd_for_image(url: &str) -> String {
+pub(super) fn download_cmd_for_image(url: &str) -> String {
     if !url.starts_with("http") {
         return String::new();
     }
@@ -228,7 +95,7 @@ fn download_cmd_for_image(url: &str) -> String {
     format!("curl -L -o \"{safe}\" \"{url}\"")
 }
 
-fn download_cmd_for_video(url: &str, title: &str) -> String {
+pub(super) fn download_cmd_for_video(url: &str, title: &str) -> String {
     const SUPPORTED: &[&str] = &[
         "youtube.com",
         "youtu.be",
@@ -372,39 +239,4 @@ pub async fn search_twitter_videos(client: &CdpClient, query: &str, count: usize
         .collect();
     json!({ "query": query, "count": results.len(), "results": results, "engines": engines })
         .to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn quote_plus_encodes() {
-        assert_eq!(quote_plus("hello world"), "hello+world");
-        assert_eq!(quote_plus("a&b=c"), "a%26b%3Dc");
-        assert_eq!(quote_plus("café"), "caf%C3%A9");
-    }
-
-    #[test]
-    fn google_url_has_udm_and_num() {
-        let u = google_url("cats", 2);
-        assert!(u.contains("q=cats"));
-        assert!(u.contains("udm=2"));
-        assert!(u.contains("num=30"));
-    }
-
-    #[test]
-    fn platform_detection() {
-        assert_eq!(platform("https://youtu.be/abc"), "youtube");
-        assert_eq!(platform("https://x.com/user/status/1"), "twitter");
-        assert_eq!(platform("https://example.com/v"), "other");
-    }
-
-    #[test]
-    fn download_cmds() {
-        assert!(download_cmd_for_image("https://a.com/pic.jpg").starts_with("curl -L -o"));
-        assert_eq!(download_cmd_for_image("data:x"), "");
-        assert!(download_cmd_for_video("https://youtu.be/x", "My Video!").contains("yt-dlp"));
-        assert_eq!(download_cmd_for_video("https://example.com/v", "t"), "");
-    }
 }

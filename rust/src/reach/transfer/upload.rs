@@ -1,3 +1,12 @@
+//! Sending a local file into a page, and refusing the ones that should never leave.
+//!
+//! Two defences that are easy to get wrong. The allow-list is checked against the
+//! *canonicalised* path, so `~/project/../.ssh/id_rsa` does not slip through as
+//! "under the project root". And the validated file is copied into a private staging
+//! directory before Chrome is told about it, because validating a path and then handing that
+//! same path to another process is a time-of-check/time-of-use race: a symlink swapped in
+//! between the two makes the check meaningless.
+
 //! Upload and download: the tools that move files between the machine and a page.
 //!
 //! Both are gated on the same allowlist (`resolve_upload_path`) so a second file-reading
@@ -5,16 +14,14 @@
 //! nearly happened when `har_import` was added.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
-use serde_json::{json, Map};
+use serde_json::json;
 
 use crate::cdp::{CdpClient, CdpError};
 use crate::paths;
 
-use super::fetch::{guarded_get, read_capped};
-use super::files::{download_size_cap, mcp_roots, write_download_atomically};
-use super::ssrf::validate_url;
+use super::super::files::mcp_roots;
+use super::download::paths_home;
 
 /// Directories `upload` may read from. If `NEOBROWSER_UPLOAD_DIR` is set, ONLY that
 /// directory is allowed (tightest, recommended for autonomous agents). Otherwise a
@@ -57,7 +64,7 @@ fn upload_allowed_roots() -> Vec<PathBuf> {
 /// True for paths that must never be uploaded even from an allowed root — secrets,
 /// keys, keychains, credential files, and NeoBrowser's own cookie/session store.
 /// This is the defense against a prompt-injected agent exfiltrating local secrets.
-pub(super) fn is_sensitive_upload(canonical: &std::path::Path) -> bool {
+pub(crate) fn is_sensitive_upload(canonical: &std::path::Path) -> bool {
     let s = canonical.to_string_lossy().to_lowercase();
     const DENY_SEGMENTS: &[&str] = &[
         "/.ssh/",
@@ -137,7 +144,7 @@ pub fn resolve_upload_path(f: &str) -> Result<PathBuf, String> {
 }
 
 /// Maximum size of a file `upload` will stage. Bounded because staging copies it.
-pub(super) fn upload_size_cap() -> u64 {
+pub(crate) fn upload_size_cap() -> u64 {
     std::env::var("NEOBROWSER_MAX_UPLOAD_MB")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -162,7 +169,7 @@ pub(super) fn upload_size_cap() -> u64 {
 ///
 /// The copy is the cost. Bounded by `NEOBROWSER_MAX_UPLOAD_MB`, and the staging directory
 /// is cleared per upload so it does not accumulate copies of the user's files.
-pub(super) fn stage_for_upload(validated: &std::path::Path) -> Result<PathBuf, String> {
+pub(crate) fn stage_for_upload(validated: &std::path::Path) -> Result<PathBuf, String> {
     let staging = paths::home().join("upload-staging");
     // Recreated each time: a stale copy of a previous upload sitting in NEOBROWSER_HOME is
     // a small data-retention problem with no upside.
@@ -256,137 +263,4 @@ pub async fn upload(
         )
         .await?;
     Ok(json!({ "ok": true, "uploaded": abs, "selector": selector }).to_string())
-}
-
-fn paths_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-/// `download` — fetch a public URL to `~/.neobrowser/downloads/`, reusing the tab's
-/// cookies so auth-gated files work. 200 MB cap.
-pub async fn download(
-    client: &CdpClient,
-    url: &str,
-    filename: Option<&str>,
-) -> Result<String, CdpError> {
-    if !validate_url(url) {
-        return Ok(json!({ "ok": false, "error": "blocked: only public http(s) URLs allowed (SSRF guard)" }).to_string());
-    }
-    let ddir = paths::home().join("downloads");
-    if std::fs::create_dir_all(&ddir).is_err() {
-        return Ok(json!({ "ok": false, "error": "could not create downloads dir" }).to_string());
-    }
-    let raw_name = filename
-        .map(String::from)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            url.trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or("download")
-                .split('?')
-                .next()
-                .unwrap_or("download")
-                .to_string()
-        });
-    let safe: String = raw_name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(120)
-        .collect();
-    let safe = if safe.is_empty() {
-        "download".to_string()
-    } else {
-        safe
-    };
-    let dest = ddir.join(&safe);
-
-    // Reuse the tab's cookies for this URL.
-    let mut cookie_header = String::new();
-    if let Ok(res) = client
-        .send("Network.getCookies", json!({ "urls": [url] }))
-        .await
-    {
-        if let Some(cookies) = res.get("cookies").and_then(|c| c.as_array()) {
-            let parts: Vec<String> = cookies
-                .iter()
-                .filter_map(|c| {
-                    let n = c.get("name").and_then(|v| v.as_str())?;
-                    let v = c.get("value").and_then(|v| v.as_str())?;
-                    Some(format!("{n}={v}"))
-                })
-                .collect();
-            cookie_header = parts.join("; ");
-        }
-    }
-
-    let cookie_opt = if cookie_header.is_empty() {
-        None
-    } else {
-        Some(cookie_header.as_str())
-    };
-    let empty_headers = Map::new();
-    let (resp, withheld) = match guarded_get(
-        url,
-        "Mozilla/5.0",
-        Duration::from_secs(30),
-        &empty_headers,
-        cookie_opt,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return Ok(json!({ "ok": false, "error": e }).to_string()),
-    };
-    // A download that redirected off-origin loses the tab's cookies, so it may
-    // land on a login page instead of the file. Say so rather than saving that
-    // HTML under the requested filename.
-    if !withheld.is_empty() {
-        tracing::warn!(
-            url = %url,
-            "download redirected off the requested origin; session cookies were not forwarded"
-        );
-    }
-    let bytes = match read_capped(resp, download_size_cap()).await {
-        Ok(b) => b,
-        Err(e) => return Ok(json!({ "ok": false, "error": e.to_string() }).to_string()),
-    };
-    if bytes.len() >= download_size_cap() {
-        // Reported, not silently truncated: a half file saved under the requested
-        // name is worse than a refusal, because it looks like a complete download.
-        return Ok(json!({
-            "ok": false,
-            "error": format!(
-                "response exceeded the {} MiB download cap; nothing was written. Raise NEOBROWSER_MAX_DOWNLOAD_MB if this is expected",
-                download_size_cap() / (1024 * 1024)
-            ),
-        })
-        .to_string());
-    }
-    let (final_path, renamed) = match write_download_atomically(&dest, &bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            return Ok(json!({ "ok": false, "error": format!("write failed: {e}") }).to_string())
-        }
-    };
-    let mut out = json!({
-        "ok": true,
-        "path": final_path.display().to_string(),
-        "bytes": bytes.len(),
-    });
-    if renamed {
-        out["warnings"] = json!([format!(
-            "a file already existed at {}; saved under a new name rather than overwriting it",
-            dest.display()
-        )]);
-    }
-    Ok(out.to_string())
 }

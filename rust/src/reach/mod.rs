@@ -29,7 +29,8 @@ mod tests {
     use files::{download_size_cap, write_download_atomically};
     use serde_json::Map;
     use std::time::Duration;
-    use transfer::{is_sensitive_upload, resolve_upload_path};
+    use transfer::resolve_upload_path;
+    use transfer::upload::is_sensitive_upload;
 
     #[test]
     fn ssrf_blocks_non_public() {
@@ -243,7 +244,7 @@ mod tests {
 
         let validated = transfer::resolve_upload_path(target.to_str().unwrap())
             .expect("an innocent file under the allowed root validates");
-        let staged = transfer::stage_for_upload(&validated).expect("staging succeeds");
+        let staged = transfer::upload::stage_for_upload(&validated).expect("staging succeeds");
 
         // The attacker's move: swap the validated path for a symlink to the secret.
         std::fs::remove_file(&target).unwrap();
@@ -284,7 +285,7 @@ mod tests {
         let big = dir.join("big.bin");
         std::fs::write(&big, vec![0u8; 2 * 1024 * 1024]).unwrap();
         let validated = transfer::resolve_upload_path(big.to_str().unwrap()).unwrap();
-        let err = transfer::stage_for_upload(&validated).unwrap_err();
+        let err = transfer::upload::stage_for_upload(&validated).unwrap_err();
         assert!(err.contains("over the 1 MiB upload cap"), "{err}");
 
         std::env::remove_var("NEOBROWSER_MAX_UPLOAD_MB");
