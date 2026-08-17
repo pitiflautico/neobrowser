@@ -1,16 +1,17 @@
-//! The two tools that change the page: click and type.
+//! The click tool: dispatch a real click, then decide honestly whether it did anything.
 //!
-//! Both report what actually happened rather than that a message was dispatched. A click
-//! that cannot be verified comes back as unverified, never as success — this is the whole
-//! point of the verified-action contract, and these are the tools where it is visible.
+//! This is where the verified-action contract is most visible and hardest to get right. A
+//! click either changed the page or it did not, and the only way to know is to compare — but
+//! a comparison of the whole page credits the click with anything that happened to move
+//! while it ran. That is not a hypothetical failure: on a real shop, an `add to cart` that
+//! never landed reported `succeeded` because the page was still settling from the previous
+//! navigation.
 
-use async_trait::async_trait;
-use serde_json::{Map, Value};
-
+use super::super::{arg_f64, arg_str};
 use crate::page;
 use crate::tools::{ParamSpec, ParamType, Tool, ToolCtx, ToolError, ToolOutput, ToolSpec};
-
-use super::super::{arg_bool, arg_f64, arg_str, verified};
+use async_trait::async_trait;
+use serde_json::{Map, Value};
 
 pub struct ClickTool;
 
@@ -95,50 +96,31 @@ impl Tool for ClickTool {
         } else {
             crate::action::ambient_noise(&tab, std::time::Duration::from_millis(350)).await
         };
-        let outcome = if let Some(id) = resolved_id {
-            page::click_backend_node(&tab, id).await?
-        } else if let Some(id) = args.get("backend_node_id").and_then(|v| v.as_i64()) {
-            page::click_backend_node(&tab, id).await?
-        } else {
-            page::click_selector(&tab, arg_str(args, "selector").unwrap_or_default()).await?
+        // The node actually about to be clicked, whichever way it was addressed. Needed for
+        // the fingerprint below: without an id there is nothing to compare the target against.
+        let target_id = match resolved_id {
+            Some(id) => Some(id),
+            None => match args.get("backend_node_id").and_then(|v| v.as_i64()) {
+                Some(id) => Some(id),
+                None => match arg_str(args, "selector") {
+                    Some(sel) => page::backend_node_for_css(&tab, sel).await?,
+                    None => None,
+                },
+            },
+        };
+        let fingerprint_before = match target_id {
+            Some(id) => page::element_fingerprint(&tab, id).await,
+            None => None,
         };
 
-        // A click that never left the gate is decided by the outcome alone — there is
-        // no point waiting for a page reaction to an event we did not dispatch.
-        let dispatched = match &outcome {
-            page::ClickOutcome::Clicked | page::ClickOutcome::NoLayoutUsedJs => true,
-            page::ClickOutcome::NotFound
-            | page::ClickOutcome::Obscured { .. }
-            | page::ClickOutcome::Disabled { .. } => false,
-        };
-        let detail = match &outcome {
-            page::ClickOutcome::Clicked => "click dispatched as real mouse events".to_string(),
-            page::ClickOutcome::NoLayoutUsedJs => {
-                "click dispatched via JS fallback (element had no box model)".to_string()
+        let outcome = match target_id {
+            Some(id) => page::click_backend_node(&tab, id).await?,
+            None => {
+                page::click_selector(&tab, arg_str(args, "selector").unwrap_or_default()).await?
             }
-            page::ClickOutcome::NotFound => "click target not found".to_string(),
-            page::ClickOutcome::Obscured { by } => format!(
-                "not clicked: target is covered by {by}. Dismiss the overlay \
-                 (dismiss_overlay) or scroll it out of the way, then retry"
-            ),
-            page::ClickOutcome::Disabled { reason } => format!(
-                "not clicked: {reason}. Change what keeps it disabled — a required field, a \
-                 pending validation — rather than retrying the click"
-            ),
         };
-        // An obstruction is not a failure, and the difference is the caller's next move.
-        //
-        // `failed` means "this did not happen and will not on retry"; `blocked` means "clear
-        // the thing in the way and try again". The distinction was already encoded here — in
-        // `retryable`, and in the detail text — but the *status* lumped an overlay in with a
-        // target that does not exist. A caller switching on status therefore read a removable
-        // cookie banner as a dead end. Conformance scenario C2 is what caught it.
-        let status = match &outcome {
-            page::ClickOutcome::Obscured { .. } | page::ClickOutcome::Disabled { .. } => {
-                ActionStatus::Blocked
-            }
-            _ => ActionStatus::Failed,
-        };
+
+        let (dispatched, detail, status) = super::verdict::describe(&outcome);
 
         if !dispatched {
             let after = crate::action::observe(&tab).await;
@@ -158,11 +140,12 @@ impl Tool for ClickTool {
         // Dispatched: now find out whether the page agreed.
         let (after, changed) =
             crate::action::wait_for_change_discounting(&tab, &before, &budget, &noise).await;
-        let status = if changed {
-            ActionStatus::Succeeded
-        } else {
-            ActionStatus::Uncertain
-        };
+        let observed = crate::action::detect_changes_discounting(&before, &after, &noise);
+
+        let attributable =
+            super::verdict::attributable(&tab, target_id, &fingerprint_before, &observed, quiet)
+                .await;
+        let status = super::verdict::dispatched_status(changed, attributable);
         let mut r = crate::action::ActionResult::new("click", status)
             .with_detail(detail)
             .with_target(target_desc);
@@ -183,6 +166,16 @@ impl Tool for ClickTool {
         }
         if let Some(note) = resolve_warning {
             r.warnings.push(note);
+        }
+        if changed && !attributable {
+            r = r.retryable(true).warn(format!(
+                "unattributable_change: this page never stopped changing on its own, and the \
+                 only difference after the click ({}) was one it was already capable of \
+                 producing — the clicked element did not change, and nothing appeared, \
+                 vanished or toggled. On a page that will not hold still that is not evidence, \
+                 so it is reported as uncertain rather than counted as success",
+                observed.join(", ")
+            ));
         }
         if !changed {
             // Before blaming the element, check whether the tab is still receiving input at
@@ -226,50 +219,3 @@ impl Tool for ClickTool {
         Ok(ToolOutput::text(r.to_string_pretty()))
     }
 }
-
-// --- type ----------------------------------------------------------------------
-
-pub struct TypeTool;
-
-#[async_trait]
-impl Tool for TypeTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "type",
-            description: "Type text into the focused element. Default: instant insert (React/Vue-safe). Set human=true for per-key events with human cadence.",
-            params: vec![
-                ParamSpec::new("text", ParamType::String, "Text to type").required(),
-                ParamSpec::new("human", ParamType::Boolean, "Type key-by-key with human-like timing (default false)"),
-                ParamSpec::new("budget_s", ParamType::Number, "Seconds to wait for the field to reflect the change before reporting 'uncertain' (default 3)"),
-            ],
-        }
-    }
-    async fn call(
-        &self,
-        ctx: &ToolCtx,
-        args: &Map<String, Value>,
-    ) -> Result<ToolOutput, ToolError> {
-        let text = arg_str(args, "text")
-            .ok_or_else(|| ToolError::Argument("type: text must be a string".into()))?;
-        let human = arg_bool(args, "human", false);
-        let tab = ctx.browser.tab().await?;
-        let n = text.chars().count();
-        // Typing changes a control's value, which the state digest records as a
-        // length — so "typed 12 chars" is now backed by the field having changed.
-        // Bind a reference so the async block does not move `tab`, which `verified`
-        // still needs for its before/after observations.
-        let tab_ref = &tab;
-        verified(
-            &tab,
-            "type",
-            arg_f64(args, "budget_s", 3.0),
-            || async move {
-                page::type_text(tab_ref, text, human).await?;
-                Ok(format!("typed {n} chars into the focused element"))
-            },
-        )
-        .await
-    }
-}
-
-// --- js ------------------------------------------------------------------------
