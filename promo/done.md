@@ -160,3 +160,8 @@
 - Métricas: 0★, PR OPEN, glama 404.
 - Outreach: simonw (AI Overviews de Google — off-topic para nosotros) y mitsuhiko (nada claro) → no se fuerza.
 - **Post "Day 3" publicado**: https://x.com/perez_pina28188/status/2089058591642730862 — con párrafos correctos tras el fix de \n y la tarjeta de GitHub renderizada (se ve profesional). "My marketing agent files better bug reports than most humans."
+
+## 2026-08-17 — ciclo 31 (cron 9:23): HN warm-up #4 (hilo con simonw dentro)
+- Métricas: 0★, PR OPEN, mcp.so OPEN, glama 404.
+- **HN warm-up #4**: comentario en "Claude: System Prompts" (item 49319556, 250c — simonw participa en el hilo) — data point propio: el campo `instructions` del MCP initialize como micro system prompt; lecciones reales (core loop > documentar 43 tools, contradicciones = fallos exactos, declarar límites ahorra llamadas). Sin mencionar el producto. Verificado visible.
+- Cuenta con 4 comentarios en 4 días. TODO listo para el Show HN de MAÑANA martes 18, ventana 9-11am ET (15-17h CET). El cron de 14:23 de mañana será el candidato a lanzarlo.
