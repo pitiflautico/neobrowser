@@ -33,15 +33,21 @@
 //! read it — the same trust the MCP stdio transport already implies — while nothing
 //! else can. Per-tab consent is still enforced in the extension, where Chrome shows
 //! its own "being debugged" banner.
+//!
+//! Split so the listener sits apart from the queue it serves: [`server`] accepts
+//! connections and authenticates them, while the queue, its pending map and the token file
+//! stay here.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex};
+
+pub mod server;
+
+pub use server::serve;
 
 /// How long a queued command waits for the extension before it is abandoned.
 ///
@@ -240,168 +246,6 @@ impl Bridge {
     }
 }
 
-/// Run the bridge HTTP server until the process ends.
-///
-/// A hand-rolled minimal HTTP/1.1 responder rather than a web framework: the surface is
-/// two POST routes on loopback, and adding an HTTP server dependency for that would be
-/// a large amount of new attack surface and audit burden for no functionality.
-pub async fn serve(bridge: Arc<Bridge>) -> std::io::Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", bridge.port())).await?;
-    tracing::info!(
-        port = bridge.port(),
-        "bridge listening on 127.0.0.1; load extension/ in chrome://extensions to connect"
-    );
-    loop {
-        let (mut socket, _peer) = match listener.accept().await {
-            Ok(pair) => pair,
-            // A failed accept is not fatal: keep serving rather than taking the
-            // bridge down for one bad connection.
-            Err(e) => {
-                tracing::warn!(error = %e, "bridge accept failed");
-                continue;
-            }
-        };
-        let bridge = bridge.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(&bridge, &mut socket).await {
-                tracing::debug!(error = %e, "bridge connection ended");
-            }
-        });
-    }
-}
-
-async fn handle_connection(
-    bridge: &Bridge,
-    socket: &mut tokio::net::TcpStream,
-) -> std::io::Result<()> {
-    let mut buf = Vec::with_capacity(8192);
-    let mut chunk = [0u8; 8192];
-
-    // Read until the headers are complete.
-    let header_end = loop {
-        if let Some(pos) = find_header_end(&buf) {
-            break pos;
-        }
-        let n = socket.read(&mut chunk).await?;
-        if n == 0 {
-            return Ok(()); // client closed before sending a full request
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > MAX_BODY {
-            return respond(socket, 413, &json!({ "error": "request too large" })).await;
-        }
-    };
-
-    let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or_default().to_string();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let path = parts.next().unwrap_or_default().to_string();
-
-    let header = |name: &str| -> Option<String> {
-        head.lines().find_map(|l| {
-            let (k, v) = l.split_once(':')?;
-            k.trim()
-                .eq_ignore_ascii_case(name)
-                .then(|| v.trim().to_string())
-        })
-    };
-
-    // Authenticated BEFORE the body is parsed, so an unauthenticated caller cannot even
-    // make this process allocate for its payload.
-    if !bridge.token_matches(header(TOKEN_HEADER).as_deref()) {
-        return respond(
-            socket,
-            401,
-            &json!({
-                "error": "missing or invalid X-NeoBrowser-Token",
-                "hint": "run `neobrowser bridge token` and paste the value into the \
-                         NeoBrowser Bridge popup",
-            }),
-        )
-        .await;
-    }
-
-    let content_length = header("content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
-    if content_length > MAX_BODY {
-        return respond(socket, 413, &json!({ "error": "body too large" })).await;
-    }
-
-    // Read the declared body length.
-    let body_start = header_end + 4;
-    while buf.len() < body_start + content_length {
-        let n = socket.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    }
-    let body = &buf[body_start.min(buf.len())..];
-    let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-
-    if method != "POST" {
-        return respond(socket, 405, &json!({ "error": "only POST is supported" })).await;
-    }
-
-    match path.as_str() {
-        "/bridge" => {
-            let shared: Vec<i64> = parsed
-                .get("shared_tabs")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_i64).collect())
-                .unwrap_or_default();
-            let work = bridge.take_work(shared).await;
-            respond(socket, 200, &work).await
-        }
-        "/bridge/results" => {
-            let results: Vec<Value> = parsed
-                .get("results")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let delivered = bridge.deliver(&results).await;
-            respond(socket, 200, &json!({ "delivered": delivered })).await
-        }
-        _ => respond(socket, 404, &json!({ "error": "no such route" })).await,
-    }
-}
-
-fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n")
-}
-
-async fn respond(
-    socket: &mut tokio::net::TcpStream,
-    status: u16,
-    body: &Value,
-) -> std::io::Result<()> {
-    let text = body.to_string();
-    let reason = match status {
-        200 => "OK",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        413 => "Payload Too Large",
-        _ => "Error",
-    };
-    // No CORS headers, deliberately: an extension service worker is not subject to
-    // CORS, and adding permissive headers would let any web page in the browser talk
-    // to the bridge.
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\n\
-         content-type: application/json\r\n\
-         content-length: {}\r\n\
-         connection: close\r\n\
-         \r\n{text}",
-        text.len()
-    );
-    socket.write_all(response.as_bytes()).await?;
-    socket.flush().await
-}
-
 /// Where the bridge token is written for the user to read.
 pub fn token_path() -> std::path::PathBuf {
     crate::paths::home().join("bridge.token")
@@ -422,6 +266,9 @@ pub fn configured_port() -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    use tokio::net::TcpListener;
+
+    use super::server::{find_header_end, handle_connection};
     use super::*;
 
     #[test]

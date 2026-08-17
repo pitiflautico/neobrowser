@@ -21,16 +21,24 @@
 //! Binding defaults to loopback. A non-loopback bind is possible but requires an
 //! explicit opt-in, because exposing this on a LAN interface is a materially different
 //! decision from running it locally.
+//!
+//! Split into [`origin`] (the check that keeps a web page from driving the browser),
+//! [`serve`] (the listener and per-session isolation) and [`respond`] (hand-written
+//! responses). The transport state and the token file live here.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 use crate::tools::{Registry, ToolCtx};
+
+pub mod origin;
+pub mod respond;
+pub mod serve;
+
+pub use origin::origin_allowed;
+pub use serve::serve;
 
 /// Maximum request body. A JSON-RPC call is small; unbounded reads are how a client
 /// makes the server allocate until it dies.
@@ -147,281 +155,6 @@ impl HttpTransport {
 
     pub async fn session_count(&self) -> usize {
         self.sessions.lock().await.len()
-    }
-}
-
-/// Is this `Origin` acceptable?
-///
-/// Absent is fine: a native MCP client is not a browser and sends none. A present one
-/// must be loopback — that is what stops a web page (or a DNS-rebound remote page) from
-/// driving the transport, since a page cannot forge its own Origin.
-fn origin_allowed(origin: Option<&str>) -> bool {
-    let Some(origin) = origin else { return true };
-    let o = origin.trim().to_ascii_lowercase();
-    if o == "null" {
-        // A `null` origin comes from a sandboxed iframe or a `file://` page. Not a
-        // legitimate MCP client, and exactly the shape an attacker would arrive with.
-        return false;
-    }
-    // Parsed and compared by exact host, not by prefix. A prefix check accepts
-    // `http://localhost.evil.test`, which is an attacker-controlled domain that merely
-    // begins with the right characters — the same near-miss the policy engine's suffix
-    // matching has to defend against.
-    let Ok(url) = reqwest::Url::parse(&o) else {
-        return false;
-    };
-    if !matches!(url.scheme(), "http" | "https") {
-        return false;
-    }
-    matches!(
-        url.host_str(),
-        Some("127.0.0.1") | Some("localhost") | Some("[::1]") | Some("::1")
-    )
-}
-
-/// Run the HTTP transport until the process ends.
-pub async fn serve(transport: Arc<HttpTransport>) -> std::io::Result<()> {
-    let listener = TcpListener::bind((transport.bind.as_str(), transport.port)).await?;
-    let loopback = transport.bind.starts_with("127.") || transport.bind == "::1";
-    if !loopback {
-        // Stated loudly rather than logged at debug: a non-loopback bind means anything
-        // that can route to this host can attempt to drive a browser here.
-        tracing::warn!(
-            bind = %transport.bind,
-            port = transport.port,
-            "MCP HTTP transport is bound to a NON-LOOPBACK address. Anything that can \
-             reach this host can attempt to authenticate. Put it behind a TLS proxy and \
-             treat the bearer token as a production credential."
-        );
-    }
-    tracing::info!(
-        bind = %transport.bind,
-        port = transport.port,
-        "MCP HTTP transport listening; run `neobrowser http token` for the bearer token"
-    );
-
-    loop {
-        let (mut socket, peer) = match listener.accept().await {
-            Ok(pair) => pair,
-            Err(e) => {
-                tracing::warn!(error = %e, "http accept failed");
-                continue;
-            }
-        };
-        let transport = transport.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle(&transport, &mut socket).await {
-                tracing::debug!(peer = %peer, error = %e, "http connection ended");
-            }
-        });
-    }
-}
-
-async fn handle(
-    transport: &HttpTransport,
-    socket: &mut tokio::net::TcpStream,
-) -> std::io::Result<()> {
-    let mut buf = Vec::with_capacity(4096);
-    let mut chunk = [0u8; 8192];
-
-    let header_end = loop {
-        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break p;
-        }
-        let n = socket.read(&mut chunk).await?;
-        if n == 0 {
-            return Ok(());
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if buf.len() > MAX_BODY {
-            return reply(socket, 413, None, &json!({ "error": "request too large" })).await;
-        }
-    };
-
-    let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or_default();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let path = parts.next().unwrap_or_default().to_string();
-
-    let header = |name: &str| -> Option<String> {
-        head.lines().find_map(|l| {
-            let (k, v) = l.split_once(':')?;
-            k.trim()
-                .eq_ignore_ascii_case(name)
-                .then(|| v.trim().to_string())
-        })
-    };
-
-    // Origin first: a rejected origin must not even reach the auth comparison, so a
-    // hostile page learns nothing from timing.
-    if !origin_allowed(header("origin").as_deref()) {
-        return reply(
-            socket,
-            403,
-            None,
-            &json!({
-                "error": "origin not allowed",
-                "hint": "the MCP HTTP transport only accepts loopback origins, or none at \
-                         all. A browser page cannot be a client here",
-            }),
-        )
-        .await;
-    }
-
-    if !transport.authorized(header("authorization").as_deref()) {
-        return reply(
-            socket,
-            401,
-            None,
-            &json!({
-                "error": "missing or invalid bearer token",
-                "hint": "send `Authorization: Bearer <token>`; get the value from \
-                         `neobrowser http token`",
-            }),
-        )
-        .await;
-    }
-
-    if path != "/mcp" {
-        return reply(
-            socket,
-            404,
-            None,
-            &json!({ "error": "no such route; use /mcp" }),
-        )
-        .await;
-    }
-
-    // A session id is required so isolation is explicit. Generating one silently would
-    // mean a client that forgot the header quietly got a brand-new browser per request.
-    let session_id = match header("mcp-session-id") {
-        Some(id) if !id.trim().is_empty() => id.trim().to_string(),
-        _ => {
-            return reply(
-                socket,
-                400,
-                None,
-                &json!({
-                    "error": "missing Mcp-Session-Id header",
-                    "hint": "choose any stable opaque id per client session; each one gets \
-                             its own isolated browser profile",
-                }),
-            )
-            .await
-        }
-    };
-
-    // DELETE ends a session, per the Streamable HTTP spec.
-    if method == "DELETE" {
-        let existed = transport.end_session(&session_id).await;
-        return reply(socket, 200, Some(&session_id), &json!({ "ended": existed })).await;
-    }
-    if method != "POST" {
-        return reply(
-            socket,
-            405,
-            Some(&session_id),
-            &json!({ "error": "use POST to send JSON-RPC, or DELETE to end the session" }),
-        )
-        .await;
-    }
-
-    let content_length = header("content-length")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(0);
-    if content_length > MAX_BODY {
-        return reply(socket, 413, None, &json!({ "error": "body too large" })).await;
-    }
-    let body_start = header_end + 4;
-    while buf.len() < body_start + content_length {
-        let n = socket.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    }
-    let body = &buf[body_start.min(buf.len())..];
-
-    let request: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(e) => {
-            return reply(
-                socket,
-                200,
-                Some(&session_id),
-                &json!({
-                    "jsonrpc": "2.0",
-                    "id": Value::Null,
-                    "error": { "code": -32700, "message": format!("Parse error: {e}") },
-                }),
-            )
-            .await
-        }
-    };
-
-    let ctx = transport.session_ctx(&session_id).await;
-    // Reuses the exact same dispatch as stdio, so the two transports cannot drift in
-    // behaviour — policy, tracing and validation all apply identically.
-    match crate::mcp::handle_request(&transport.registry, &ctx, &request).await {
-        Some(response) => reply(socket, 200, Some(&session_id), &response).await,
-        // A notification has no response. 202 Accepted is what the spec calls for.
-        None => reply_empty(socket, 202, Some(&session_id)).await,
-    }
-}
-
-async fn reply(
-    socket: &mut tokio::net::TcpStream,
-    status: u16,
-    session: Option<&str>,
-    body: &Value,
-) -> std::io::Result<()> {
-    let text = body.to_string();
-    let session_header = session
-        .map(|s| format!("mcp-session-id: {s}\r\n"))
-        .unwrap_or_default();
-    let response = format!(
-        "HTTP/1.1 {status} {}\r\n\
-         content-type: application/json\r\n\
-         {session_header}\
-         content-length: {}\r\n\
-         connection: close\r\n\
-         \r\n{text}",
-        reason(status),
-        text.len()
-    );
-    socket.write_all(response.as_bytes()).await?;
-    socket.flush().await
-}
-
-async fn reply_empty(
-    socket: &mut tokio::net::TcpStream,
-    status: u16,
-    session: Option<&str>,
-) -> std::io::Result<()> {
-    let session_header = session
-        .map(|s| format!("mcp-session-id: {s}\r\n"))
-        .unwrap_or_default();
-    let response = format!(
-        "HTTP/1.1 {status} {}\r\n{session_header}content-length: 0\r\nconnection: close\r\n\r\n",
-        reason(status)
-    );
-    socket.write_all(response.as_bytes()).await?;
-    socket.flush().await
-}
-
-fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        202 => "Accepted",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        413 => "Payload Too Large",
-        _ => "Error",
     }
 }
 
