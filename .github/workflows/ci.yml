@@ -73,6 +73,13 @@ jobs:
           cargo build --release
           python3 ../scripts/check-claims.py
 
+      # An attribute separated from its item still compiles, and applies to the wrong
+      # thing. Two real defects came from this while splitting modules, and neither broke
+      # a test. See the script's docstring.
+      - name: No orphaned attributes
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 ../scripts/check-orphan-attrs.py
+
       - name: Format check
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check

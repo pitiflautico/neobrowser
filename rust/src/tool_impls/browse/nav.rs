@@ -1,0 +1,231 @@
+//! Tools for getting somewhere and seeing what is there.
+//!
+//! `navigate` is the one that carries the most weight: it spends its budget on making the
+//! page *usable* rather than merely loaded, because a tool that returns at the load event
+//! hands back an empty page as though it were the truth.
+
+//! The core loop: navigate, observe, act, verify, extract.
+//!
+//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
+//! stopped being navigable, and a reviewer could not tell which tools a change
+//! touched.
+
+use async_trait::async_trait;
+use serde_json::{Map, Value};
+
+use crate::page;
+use crate::tools::{ParamSpec, ParamType, Tool, ToolCtx, ToolError, ToolOutput, ToolSpec};
+
+use super::super::{arg_bool, arg_f64, arg_i64, arg_str};
+
+// --- status --------------------------------------------------------------------
+
+pub struct StatusTool;
+
+#[async_trait]
+impl Tool for StatusTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "status",
+            description:
+                "Report browser status: Chrome binary discovery and whether a live session exists.",
+            params: vec![],
+        }
+    }
+    async fn call(
+        &self,
+        ctx: &ToolCtx,
+        _args: &Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        let status = ctx.browser.status().await;
+        Ok(ToolOutput::text(
+            serde_json::to_string(&status).unwrap_or_else(|_| "{}".into()),
+        ))
+    }
+}
+
+// --- navigate ------------------------------------------------------------------
+
+// --- navigate ------------------------------------------------------------------
+
+pub struct NavigateTool;
+
+#[async_trait]
+impl Tool for NavigateTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "navigate",
+            description: "Open URL in Chrome (tab reuse, self-healing). Required for SPAs, JS-heavy sites, and login-required pages.",
+            params: vec![
+                ParamSpec::new("url", ParamType::String, "HTTP/HTTPS URL to open").required(),
+                ParamSpec::new("budget_s", ParamType::Number, "Total seconds allowed for the navigation (default 15). Returns status 'uncertain' if the page is not ready in time rather than waiting longer"),
+                ParamSpec::new("wait_s", ParamType::Number, "Deprecated alias kept for compatibility: raises budget_s if larger"),
+            ],
+        }
+    }
+    async fn call(
+        &self,
+        ctx: &ToolCtx,
+        args: &Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        use crate::action::{ActionStatus, Budget};
+
+        let url = arg_str(args, "url")
+            .ok_or_else(|| ToolError::Argument("navigate: url must be a string".into()))?;
+        // `wait_s` used to mean "render buffer" while a separate hardcoded 15s
+        // governed the load, so a caller had no way to bound the total. Now one
+        // budget covers both; the old name is honoured as a floor so an existing
+        // call asking for a long wait does not suddenly time out sooner.
+        let budget_s = arg_f64(args, "budget_s", 15.0).max(arg_f64(args, "wait_s", 0.0));
+        let budget = Budget::from_secs(budget_s);
+
+        let tab = ctx.browser.tab().await?;
+        let before = crate::action::observe(&tab).await;
+        let complete = page::navigate_budgeted(&tab, url, &budget).await?;
+        let after = crate::action::observe(&tab).await;
+        let landed = if after.url.is_empty() {
+            page::current_url(&tab)
+                .await
+                .unwrap_or_else(|_| url.to_string())
+        } else {
+            after.url.clone()
+        };
+
+        // A wall decides the status: reaching a captcha is not a successful
+        // navigation to the requested page, and reporting it as one is exactly the
+        // false success this contract exists to prevent.
+        let wall = crate::walls::detect(&tab).await;
+        let status = match (&wall, complete) {
+            (Some(w), _) => w.action_status(),
+            (None, true) => ActionStatus::Succeeded,
+            (None, false) => ActionStatus::Uncertain,
+        };
+
+        let mut result = crate::action::ActionResult::new("navigate", status)
+            .with_detail(format!("Navigated to {landed}"));
+        result.before = before;
+        result.after = after;
+        result.changes = crate::action::detect_changes(&result.before, &result.after);
+        if let Some(w) = wall {
+            result = result
+                .warn(format!("{}: {}", w.as_str(), w.hint()))
+                .retryable(matches!(
+                    w,
+                    crate::walls::Wall::RateLimited | crate::walls::Wall::Error
+                ));
+        } else if !complete {
+            result = result
+                .warn(format!(
+                    "budget_exhausted: the page was still loading after {budget_s}s; \
+                     content may be incomplete. Re-read, or retry with a larger budget_s"
+                ))
+                .retryable(true);
+        }
+        Ok(ToolOutput::text(result.to_string_pretty()))
+    }
+}
+
+// --- read ----------------------------------------------------------------------
+
+// --- read ----------------------------------------------------------------------
+
+pub struct ReadTool;
+
+#[async_trait]
+impl Tool for ReadTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "read",
+            description: "Extract visible text from the current page via JavaScript.",
+            params: vec![
+                ParamSpec::new(
+                    "selector",
+                    ParamType::String,
+                    "Optional CSS selector to read a specific element (default: body)",
+                ),
+                ParamSpec::new(
+                    "raw",
+                    ParamType::Boolean,
+                    "Return the bare text without the untrusted-content fence (default false). Only for scripted extraction — a model should read the fenced form",
+                ),
+            ],
+        }
+    }
+    async fn call(
+        &self,
+        ctx: &ToolCtx,
+        args: &Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        let selector = arg_str(args, "selector").unwrap_or("body");
+        let raw = arg_bool(args, "raw", false);
+        let tab = ctx.browser.tab().await?;
+        let text = page::read_text(&tab, selector).await?;
+        if text.is_empty() {
+            return Ok(ToolOutput::text("(empty)"));
+        }
+        if raw {
+            // Escape hatch for scripted extraction, where the caller is code rather
+            // than a model and the fence is just noise to strip.
+            return Ok(ToolOutput::text(text));
+        }
+        // Everything a page says is data written by whoever controls the page. Fence
+        // and label it so it cannot be mistaken for an instruction from the user, and
+        // say so when the page is actively trying.
+        let origin = page::current_url(&tab).await.unwrap_or_default();
+        Ok(ToolOutput::text(
+            crate::untrusted::wrap(&origin, &text).to_string(),
+        ))
+    }
+}
+
+// --- screenshot ----------------------------------------------------------------
+
+// --- screenshot ----------------------------------------------------------------
+
+pub struct ScreenshotTool;
+
+#[async_trait]
+impl Tool for ScreenshotTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "screenshot",
+            description: "Capture current page viewport as a base64 image (PNG default, or JPEG).",
+            params: vec![
+                ParamSpec::new(
+                    "format",
+                    ParamType::String,
+                    "Image format: png (default) or jpeg",
+                )
+                .with_enum(&["png", "jpeg"]),
+                ParamSpec::new(
+                    "quality",
+                    ParamType::Integer,
+                    "JPEG quality 0-100 (default 80, ignored for PNG)",
+                ),
+            ],
+        }
+    }
+    async fn call(
+        &self,
+        ctx: &ToolCtx,
+        args: &Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        let format = arg_str(args, "format").unwrap_or("png").to_string();
+        let quality = arg_i64(args, "quality", 80);
+        let tab = ctx.browser.tab().await?;
+        let data = page::screenshot_base64(&tab, &format, quality).await?;
+        let mime = if format == "jpeg" {
+            "image/jpeg"
+        } else {
+            "image/png"
+        };
+        Ok(ToolOutput::Image {
+            data,
+            mime: mime.into(),
+        })
+    }
+}
+
+// --- find ----------------------------------------------------------------------
+
+// --- find ----------------------------------------------------------------------
