@@ -46,7 +46,7 @@ pub async fn computed_style(
             "PROPS",
             &serde_json::to_string(&want).unwrap_or_else(|_| "[]".into()),
         );
-    let raw = crate::page::js(client, &snippet.returning()).await?;
+    let raw = crate::page::eval_body(client, &snippet.returning()).await?;
     Ok(match raw {
         Value::String(s) => s,
         other => other.to_string(),

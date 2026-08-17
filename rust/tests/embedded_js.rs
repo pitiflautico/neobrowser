@@ -424,7 +424,7 @@ fn every_extracted_js_file_parses() {
 ///
 /// "Wrapped" is not one shape. An expression snippet arrives as `return <expr>` inside an
 /// async IIFE; a statement snippet arrives as written, wrapped only if it happens to
-/// contain a `return `. `js::as_page_js_evaluates` decides, exactly as `page::js` does, so
+/// contain a `return `. `js::as_evaluated` wraps it according to the form the snippet declares, so
 /// each snippet is checked as the code Chrome actually parses rather than as a shape it was
 /// forced into.
 #[test]
@@ -442,7 +442,7 @@ fn every_extracted_snippet_parses_in_the_form_that_reaches_the_browser() {
         // Placeholders filled with `null` so the structure is checked without needing real
         // arguments, then wrapped the way `page::js` will wrap it.
         let filled = substitute_placeholders(&source);
-        let wrapped = neobrowser::js::as_page_js_evaluates(&filled);
+        let wrapped = neobrowser::js::as_evaluated(&filled, form);
 
         // The ASI check first: it is a *semantic* fault that still parses, so a syntax
         // check alone would pass a broken snippet.

@@ -60,7 +60,7 @@ pub async fn pierce(
         "unsubstituted placeholders would reach the browser: {:?}",
         snippet.unresolved()
     );
-    let raw = crate::page::js(client, &snippet.returning()).await?;
+    let raw = crate::page::eval_body(client, &snippet.returning()).await?;
     let mut parsed: Value = match &raw {
         Value::String(s) => serde_json::from_str(s).unwrap_or(json!({ "found": false })),
         other => other.clone(),
@@ -89,7 +89,7 @@ pub async fn list_frames(client: &CdpClient) -> Result<String, CdpError> {
     // Which same-origin frames JS can actually enter, checked from the page rather
     // than inferred from URLs — the origin comparison Chrome applies is the only
     // authority on it.
-    let reachable = crate::page::js(client, &crate::js::frame_access().returning())
+    let reachable = crate::page::eval_body(client, &crate::js::frame_access().returning())
         .await
         .ok()
         .and_then(|v| match v {

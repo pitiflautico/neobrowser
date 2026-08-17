@@ -41,7 +41,7 @@ pub async fn find_and_click(
         .with("TEXTRAW", &js_lit(text))
         .with("NTH", &nth.to_string())
         .returning();
-    let picked = str_or(page::js(client, &code).await?, r#"{"ok": false}"#);
+    let picked = str_or(page::eval_body(client, &code).await?, r#"{"ok": false}"#);
     let mut report: Value = serde_json::from_str(&picked)
         .unwrap_or_else(|_| json!({ "ok": false, "error": "find_and_click: bad selection" }));
     if report.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -95,7 +95,7 @@ pub(super) fn dismiss_overlay_js() -> &'static str {
 pub async fn dismiss_overlay(client: &CdpClient, force: bool) -> Result<String, CdpError> {
     let code = dismiss_overlay_js().replace("FORCE", if force { "true" } else { "false" });
     Ok(str_or(
-        page::js(client, &code).await?,
+        page::eval_body(client, &code).await?,
         r#"{"dismissed": false}"#,
     ))
 }
@@ -104,21 +104,21 @@ pub async fn dismiss_overlay(client: &CdpClient, force: bool) -> Result<String, 
 pub async fn scroll(client: &CdpClient, direction: &str, amount: i64) -> Result<String, CdpError> {
     match direction {
         "top" => {
-            page::js(client, "window.scrollTo(0, 0)").await?;
+            page::eval_expr(client, "window.scrollTo(0, 0)").await?;
         }
         "bottom" => {
-            page::js(client, "window.scrollTo(0, document.body.scrollHeight)").await?;
+            page::eval_expr(client, "window.scrollTo(0, document.body.scrollHeight)").await?;
         }
         "up" => {
-            page::js(client, &format!("window.scrollBy(0, -{amount})")).await?;
+            page::eval_expr(client, &format!("window.scrollBy(0, -{amount})")).await?;
         }
         _ => {
-            page::js(client, &format!("window.scrollBy(0, {amount})")).await?;
+            page::eval_expr(client, &format!("window.scrollBy(0, {amount})")).await?;
         }
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     page::nudge_frame(client).await; // virtualized lists load-on-scroll via a frame
-    let pos = page::js(client, "return window.scrollY").await?;
+    let pos = page::eval_body(client, "return window.scrollY").await?;
     let pos = pos.as_f64().unwrap_or(0.0) as i64;
     Ok(json!({ "scrolled": direction, "amount": amount, "scrollY": pos }).to_string())
 }
@@ -131,7 +131,7 @@ pub async fn wait(client: &CdpClient, ms: i64, selector: Option<&str>) -> Result
         let mut found = false;
         while Instant::now() < deadline {
             let expr = format!("return document.querySelectorAll({}).length", js_lit(sel));
-            let count = page::js(client, &expr).await?.as_i64().unwrap_or(0);
+            let count = page::eval_body(client, &expr).await?.as_i64().unwrap_or(0);
             if count > 0 {
                 found = true;
                 break;

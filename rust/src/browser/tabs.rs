@@ -46,7 +46,7 @@ impl Browser {
         let mut out = Vec::new();
         for (i, t) in st.tabs.iter().enumerate() {
             let url = page::current_url(&t.client).await.unwrap_or_default();
-            let title = page::js(&t.client, "return document.title")
+            let title = page::eval_body(&t.client, "return document.title")
                 .await
                 .ok()
                 .and_then(|v| v.as_str().map(String::from))

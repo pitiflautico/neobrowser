@@ -21,7 +21,7 @@ pub mod nav;
 pub mod node;
 pub mod pointer;
 
-pub use eval::{js, nudge_frame};
+pub use eval::{eval_body, eval_caller_supplied, eval_expr, nudge_frame};
 pub use gesture::{click_selector, click_stashed_node, click_variant, drag_and_drop, hover};
 pub use input::{press_key, set_control, type_text};
 pub use locate::{ax_interactive_nodes, find, AxNode};

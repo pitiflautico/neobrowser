@@ -15,12 +15,12 @@ use super::{js_lit, str_or};
 pub async fn extract(client: &CdpClient, what: &str) -> Result<String, CdpError> {
     if what == "links" {
         Ok(str_or(
-            page::js(client, &crate::js::extract_links().returning()).await?,
+            page::eval_body(client, &crate::js::extract_links().returning()).await?,
             "[]",
         ))
     } else {
         Ok(str_or(
-            page::js(
+            page::eval_body(
                 client,
                 "return Array.from(document.querySelectorAll('table')).map(function(t){ return t.outerHTML; }).join('\\n');",
             )
@@ -40,7 +40,7 @@ pub async fn extract_table(
         .with("SEL", &js_lit(selector))
         .with("IDX", &index.to_string())
         .returning();
-    Ok(str_or(page::js(client, &code).await?, "[]"))
+    Ok(str_or(page::eval_body(client, &code).await?, "[]"))
 }
 
 /// `paginate` — click a "next" control (given selector or auto-detected), then frame.
@@ -49,10 +49,10 @@ pub async fn paginate(client: &CdpClient, selector: Option<&str>) -> Result<Stri
         let code = crate::js::paginate_click()
             .with("SEL", &js_lit(sel))
             .returning();
-        str_or(page::js(client, &code).await?, r#"{"ok": false}"#)
+        str_or(page::eval_body(client, &code).await?, r#"{"ok": false}"#)
     } else {
         str_or(
-            page::js(client, &crate::js::paginate_next().returning()).await?,
+            page::eval_body(client, &crate::js::paginate_next().returning()).await?,
             r#"{"ok": false}"#,
         )
     };

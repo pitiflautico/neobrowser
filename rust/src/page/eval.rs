@@ -10,41 +10,50 @@ use serde_json::{json, Value};
 
 use crate::cdp::{CdpClient, CdpError};
 
-/// Evaluate `expr` in the page and return its value.
+/// Evaluate a **function body** in the page and return its value.
 ///
-/// Two shapes are accepted, distinguished by whether the code contains `return `:
+/// The code is wrapped as `(async function(){ … })()`, so it may declare variables, branch
+/// and `await`. To produce a value it must contain a `return` **at the top level of the
+/// body** — an indented one is fine, a `return` that only appears inside a nested callback
+/// is not, because the outer function would then return nothing and the result would be
+/// `undefined` rather than an error.
 ///
-/// - **A statement body.** Wrapped as `(async function(){ … })()`, so it may declare
-///   variables, branch, and `await`. This is what most snippets are.
-/// - **An expression or a bare script.** Passed to `Runtime.evaluate` unchanged. Chrome
-///   evaluates it as a script, so a sequence of statements works and the value is the
-///   completion value of the last one.
+/// That constraint is asserted for every shipped snippet in [`crate::js`]'s tests, which is
+/// where it belongs: the caller knows which shape its code is, so nothing here has to guess.
+pub async fn eval_body(client: &CdpClient, body: &str) -> Result<Value, CdpError> {
+    evaluate(client, &format!("(async function(){{{body}}})()")).await
+}
+
+/// Evaluate an **expression or a bare script** in the page and return its value.
 ///
-/// # The hazard in that heuristic
+/// Passed to `Runtime.evaluate` unchanged. Chrome evaluates it as a script, so a sequence of
+/// statements is valid and the value is the completion value of the last one — which is why
+/// a fire-and-forget snippet like restoring the page's console belongs here rather than in
+/// [`eval_body`].
+pub async fn eval_expr(client: &CdpClient, expr: &str) -> Result<Value, CdpError> {
+    evaluate(client, expr).await
+}
+
+/// Evaluate code supplied by the caller, guessing which of the two shapes it is.
 ///
-/// The choice is made by `expr.contains("return ")`, which cannot tell a `return` at the
-/// top level from one inside a nested callback. Code whose only `return` sits in, say, an
-/// `Array.map` callback gets wrapped as a function body — and that body never returns, so
-/// the result is `undefined`. Not an error: `undefined`, silently, which a caller reads as
-/// a page that evaluated to nothing.
+/// **The only place the guess is acceptable, and only because it is unavoidable here.** The
+/// `js` tool hands a model's own JavaScript to the page, so this side genuinely cannot know
+/// whether it is an expression or a body — there is nobody to ask.
 ///
-/// That is the same failure mode as the automatic-semicolon-insertion bug documented in
-/// [`crate::js`], and it reached production twice. Every shipped snippet is asserted safe
-/// against it in the `js` module's tests. **A new snippet that needs a value must have a
-/// `return` at the top level of its body** — an indented one is fine, a nested-only one is
-/// not.
-///
-/// The heuristic is kept rather than replaced because a brace-aware scanner would have to
-/// track string and comment context to be correct, and being subtly wrong here is worse
-/// than being crudely right with the constraint written down and tested.
-pub async fn js(client: &CdpClient, expr: &str) -> Result<Value, CdpError> {
-    let wrapped;
-    let expression = if expr.contains("return ") {
-        wrapped = format!("(async function(){{{expr}}})()");
-        wrapped.as_str()
+/// The guess is `code.contains("return ")`, and its failure mode is worth stating because it
+/// bit this project twice in other forms: code whose only `return` sits inside a nested
+/// callback is wrapped as a body, that body returns nothing, and the caller receives
+/// `undefined` instead of an error. Confining the heuristic to this one function is the fix —
+/// every snippet this crate owns now says which shape it is, so none of them is exposed to it.
+pub async fn eval_caller_supplied(client: &CdpClient, code: &str) -> Result<Value, CdpError> {
+    if code.contains("return ") {
+        eval_body(client, code).await
     } else {
-        expr
-    };
+        eval_expr(client, code).await
+    }
+}
+
+async fn evaluate(client: &CdpClient, expression: &str) -> Result<Value, CdpError> {
     let result = client
         .send(
             "Runtime.evaluate",

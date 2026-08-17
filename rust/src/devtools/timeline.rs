@@ -14,7 +14,7 @@ use crate::cdp::{CdpClient, CdpError};
 /// Returns an interpretation alongside the raw numbers: a table of milliseconds is
 /// data, and the point of a debugging tool is to say which number is the problem.
 pub async fn perf_trace(client: &CdpClient) -> Result<String, CdpError> {
-    let raw = crate::page::js(client, &crate::js::vitals().returning()).await?;
+    let raw = crate::page::eval_body(client, &crate::js::vitals().returning()).await?;
     let mut vitals: Value = match raw {
         Value::String(s) => serde_json::from_str(&s).unwrap_or(json!({})),
         other => other,

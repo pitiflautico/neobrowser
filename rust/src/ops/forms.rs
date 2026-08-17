@@ -24,7 +24,7 @@ pub async fn fill(client: &CdpClient, selector: &str, value: &str) -> Result<Str
         .with("VAL", &js_lit(value))
         .returning();
     Ok(str_or(
-        page::js(client, &code).await?,
+        page::eval_body(client, &code).await?,
         r#"{"ok": false, "error": "js returned null"}"#,
     ))
 }
@@ -46,7 +46,7 @@ pub async fn form_fill(
             .with("LABEL", &js_lit(label))
             .with("VAL", &js_lit(&value_str))
             .returning();
-        let res = page::js(client, &code).await?;
+        let res = page::eval_body(client, &code).await?;
         let parsed: Value = match &res {
             Value::String(s) => serde_json::from_str(s).unwrap_or(json!({ "ok": false })),
             _ => json!({ "ok": false }),
@@ -63,17 +63,17 @@ pub async fn submit(
     selector: Option<&str>,
     wait_s: f64,
 ) -> Result<String, CdpError> {
-    let url_before = str_or(page::js(client, "return location.href").await?, "");
+    let url_before = str_or(page::eval_body(client, "return location.href").await?, "");
     let method;
     if let Some(sel) = selector {
         let code = format!(
             "var el = document.querySelector({}); if (el) el.click();",
             js_lit(sel)
         );
-        page::js(client, &code).await?;
+        page::eval_body(client, &code).await?;
         method = sel.to_string();
     } else {
-        let m = page::js(client, &crate::js::submit_form().returning()).await?;
+        let m = page::eval_body(client, &crate::js::submit_form().returning()).await?;
         method = m.as_str().unwrap_or("").to_string();
         if method.is_empty() {
             return Ok(
@@ -87,8 +87,14 @@ pub async fn submit(
     let mut url_after = url_before.clone();
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let ready = str_or(page::js(client, "return document.readyState").await?, "");
-        let url_now = str_or(page::js(client, "return location.href").await?, &url_before);
+        let ready = str_or(
+            page::eval_body(client, "return document.readyState").await?,
+            "",
+        );
+        let url_now = str_or(
+            page::eval_body(client, "return location.href").await?,
+            &url_before,
+        );
         if url_now != url_before || ready == "complete" {
             url_after = url_now;
             break;

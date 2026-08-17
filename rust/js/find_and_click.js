@@ -1,18 +1,39 @@
 // Find the element that best matches an intent, and report why it was chosen.
 //
 // Returns the pick rather than clicking it, so the click itself goes through the trusted
-// pointer path. Scoring considers accessible name, visible text, title and value, and it
-// returns the runner-up too — when the wrong thing gets clicked, the second choice is the
-// most useful piece of debugging information there is.
+// pointer path. It returns the runner-up too — when the wrong thing gets clicked, the second
+// choice is the most useful piece of debugging information there is.
+//
+// Matching considers every place a control's visible label can live, and that list is longer
+// than it looks. `<input type="submit" value="Login">` has no textContent at all: the word the
+// user sees is in `value`. An earlier version matched only textContent and aria-label, so it
+// could not find the submit button on a large fraction of the real web — including the login
+// form of the app this project uses as a real-site test. The accessibility tree gets this
+// right (`observe` reported the control correctly the whole time), which is why the two
+// disagreed, and why the fix is to match what a user reads rather than what the DOM stores.
 
 (function() {
     var role = __ROLE__; var textQ = __TEXTQ__; var nth = __NTH__;
-    var sel = role ? '[role=' + role + '],button,a,[role=button],[role=link]' : 'button,a,[role=button],[role=link],input[type=submit]';
+    // Every control a user would call a button, including the four <input> types that are
+    // one. Listing only input[type=submit] missed `<input type=button value=Cancel>`, which
+    // is as common as the submit variant.
+    var CLICKABLE = 'button,a,[role=button],[role=link],' +
+                    'input[type=submit],input[type=button],input[type=reset],input[type=image],' +
+                    'summary,[onclick]';
+    var sel = role ? '[role=' + role + '],' + CLICKABLE : CLICKABLE;
     var els = Array.from(document.querySelectorAll(sel));
-    var matches = els.filter(function(e) {
-        return e.textContent.toLowerCase().indexOf(textQ) !== -1 ||
-               (e.getAttribute('aria-label')||'').toLowerCase().indexOf(textQ) !== -1;
-    });
+    // Every place a visible label can live, in the order a user would read them.
+    var labelOf = function(e) {
+        return [
+            e.textContent,
+            e.getAttribute('aria-label'),
+            e.value,                        // <input type=submit|button|reset>
+            e.getAttribute('title'),
+            e.getAttribute('alt'),          // <input type=image>
+            e.getAttribute('placeholder')
+        ].filter(Boolean).join(' ').toLowerCase();
+    };
+    var matches = els.filter(function(e) { return labelOf(e).indexOf(textQ) !== -1; });
     var total = matches.length;
     var visible = matches.filter(function(e) {
         var r = e.getBoundingClientRect();
@@ -43,5 +64,5 @@
     window.__nbClickTarget = target;
     return JSON.stringify({ok: true, matched_total: total,
         matched_visible: visible.length,
-        text: target.textContent.trim().slice(0,60), nth: nth});
+        text: (target.textContent.trim() || target.value || target.getAttribute('aria-label') || '').slice(0,60), nth: nth});
 })()

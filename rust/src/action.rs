@@ -183,7 +183,7 @@ pub async fn observe(client: &CdpClient) -> PageState {
     // `Snippet::returning` guarantees the expression follows `return` on the same line —
     // the ASI hazard that once made every action report `uncertain`. See `crate::js`.
     let snippet = crate::js::state_digest().with("SALT", &state_salt().to_string());
-    let raw = match page::js(client, &snippet.returning()).await {
+    let raw = match page::eval_body(client, &snippet.returning()).await {
         Ok(v) => v,
         Err(_) => return PageState::default(),
     };

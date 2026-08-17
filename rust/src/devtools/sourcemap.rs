@@ -42,7 +42,7 @@ pub async fn resolve_source(
             &serde_json::to_string(script_url).unwrap_or_else(|_| "\"\"".into()),
         )
         .returning();
-    let raw = crate::page::js(client, &js).await?;
+    let raw = crate::page::eval_body(client, &js).await?;
     let fetched: Value = match &raw {
         Value::String(t) => serde_json::from_str(t).unwrap_or(Value::Null),
         other => other.clone(),

@@ -174,7 +174,7 @@ async fn the_state_digest_never_leaks_field_contents() {
     // The empty → filled transition MUST be detectable, or every password fill would
     // report `uncertain` and users would learn to ignore the status on the most
     // security-sensitive action there is.
-    page::js(&tab, "document.getElementById('pw').value=''; return 1")
+    page::eval_body(&tab, "document.getElementById('pw').value=''; return 1")
         .await
         .expect("clear password");
     let empty = action::observe(&tab).await;
@@ -339,7 +339,7 @@ customElements.define('my-card',MyCard);</script></body></html>";
     };
 
     // The premise: a top-level query genuinely cannot find it.
-    let visible_from_top = page::js(&tab, "return !!document.querySelector('#si')")
+    let visible_from_top = page::eval_body(&tab, "return !!document.querySelector('#si')")
         .await
         .expect("probe");
     assert_eq!(
@@ -368,7 +368,7 @@ customElements.define('my-card',MyCard);</script></body></html>";
     );
 
     // And the value really is set, not merely reported.
-    let value = page::js(
+    let value = page::eval_body(
         &tab,
         "return document.querySelector('my-card').shadowRoot.querySelector('#si').value",
     )

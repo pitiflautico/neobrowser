@@ -15,7 +15,7 @@ use super::str_or;
 
 /// `js` tool — evaluate arbitrary page JS and return the value (string passthrough).
 pub async fn eval_js(client: &CdpClient, code: &str) -> Result<String, CdpError> {
-    let v = page::js(client, code).await?;
+    let v = page::eval_caller_supplied(client, code).await?;
     Ok(match v {
         Value::String(s) => s,
         other => other.to_string(),
@@ -29,7 +29,7 @@ fn page_info_js() -> &'static str {
 }
 
 pub async fn page_info(client: &CdpClient) -> Result<String, CdpError> {
-    Ok(str_or(page::js(client, page_info_js()).await?, "{}"))
+    Ok(str_or(page::eval_body(client, page_info_js()).await?, "{}"))
 }
 
 /// Loaded from `js/analyze.js`. See [`crate::js`] for why the snippets live
@@ -39,7 +39,7 @@ fn analyze_js() -> &'static str {
 }
 
 pub async fn analyze(client: &CdpClient) -> Result<String, CdpError> {
-    Ok(str_or(page::js(client, analyze_js()).await?, "{}"))
+    Ok(str_or(page::eval_body(client, analyze_js()).await?, "{}"))
 }
 
 /// `debug` — install/flush/remove an in-page console interceptor.
@@ -50,17 +50,17 @@ pub async fn debug(client: &CdpClient, action: &str) -> Result<String, CdpError>
             // on the page. It does contain a `return ` inside the mapping callback, so
             // `page::js` wraps it as a function body and the evaluation yields `undefined` —
             // which is why the value is discarded rather than reported.
-            page::js(client, &crate::js::debug_capture_on().expr()).await?;
+            page::eval_expr(client, &crate::js::debug_capture_on().expr()).await?;
             Ok(json!({ "ok": true, "action": "interceptor_installed" }).to_string())
         }
         "stop" => {
-            page::js(client, &crate::js::debug_capture_off().expr()).await?;
+            page::eval_expr(client, &crate::js::debug_capture_off().expr()).await?;
             Ok(json!({ "ok": true, "action": "interceptor_removed" }).to_string())
         }
         _ => {
             // flush (default)
             Ok(str_or(
-                page::js(
+                page::eval_body(
                     client,
                     "var logs = window.__neo_debug_logs || []; window.__neo_debug_logs = []; return JSON.stringify(logs);",
                 )

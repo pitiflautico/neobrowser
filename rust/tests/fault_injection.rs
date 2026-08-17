@@ -71,7 +71,7 @@ async fn a_dropped_cdp_socket_produces_errors_not_empty_successes() {
     };
 
     // Sanity: the tab works before the fault, or the test proves nothing.
-    assert!(page::js(&tab, "return 1").await.is_ok());
+    assert!(page::eval_body(&tab, "return 1").await.is_ok());
 
     kill_chrome_for("socket");
     // Give the transport a moment to notice the peer is gone.
@@ -80,7 +80,7 @@ async fn a_dropped_cdp_socket_produces_errors_not_empty_successes() {
     // The critical assertion: `js` must FAIL, not return Null. A None-coalescing
     // implementation here would hand a model `null` and look like a page that simply
     // evaluated to nothing.
-    match page::js(&tab, "return document.title").await {
+    match page::eval_body(&tab, "return document.title").await {
         Err(_) => {}
         Ok(v) => panic!("a dead socket returned Ok({v:?}) instead of an error"),
     }

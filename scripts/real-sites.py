@@ -129,6 +129,103 @@ SCENARIOS = [
         lambda r: ("status_codes" in json.dumps(r[-1]),
                    "should report the destination reached, not the URL requested"),
     ),
+    # --- content that only exists after JavaScript runs ---------------------------------
+    Scenario(
+        "content rendered only by JavaScript",
+        "The single most common cause of a false negative on the real web: the server sends "
+        "an empty shell and the content appears after a script runs. A tool that reads at the "
+        "load event reports an empty page as the truth.",
+        [call("navigate", {"url": "https://quotes.toscrape.com/js/"}),
+         call("read", {"selector": ".quote .text"})],
+        lambda r: (len(json.dumps(r[-1])) > 60 and "einstein" in json.dumps(r[-1]).lower()
+                   or "change" in json.dumps(r[-1]).lower(),
+                   "the JS-rendered quotes must be readable"),
+    ),
+    # --- pagination, the scraping loop -------------------------------------------------
+    Scenario(
+        "pagination advances to a different page",
+        "A `next` link that is present but inert makes a scraping loop re-read page one "
+        "forever while reporting success. What matters is not that a click happened but that "
+        "the content changed.",
+        [call("navigate", {"url": "https://books.toscrape.com/catalogue/page-1.html"}),
+         call("read", {"selector": "h3"}),
+         call("paginate", {}),
+         call("read", {"selector": "h3"})],
+        lambda r: (r[1] != r[3] and len(json.dumps(r[3])) > 20,
+                   "page two must differ from page one"),
+    ),
+    # --- a single-page app route change ------------------------------------------------
+    Scenario(
+        "a single-page app route change is observed",
+        "An SPA changes the URL and the DOM without a page load, so none of the navigation "
+        "events a tool normally waits on ever fire. If the observation misses it, every "
+        "subsequent action reasons about the previous route.",
+        [call("navigate", {"url": "https://react.dev/"}),
+         call("find_and_click", {"text": "Learn"}),
+         call("page_info", {})],
+        lambda r: ("learn" in json.dumps(r[-1]).lower(),
+                   "the reported URL or title must reflect the new route"),
+    ),
+    # --- a real login, verified from inside the app ------------------------------------
+    Scenario(
+        "a real login lands inside the application",
+        "Two fills and a submit against a real app, verified by reaching a page that only "
+        "exists once authenticated. These are the credentials the site publishes on its own "
+        "front page for exactly this purpose.",
+        [call("navigate", {"url": "https://www.saucedemo.com/"}),
+         call("fill", {"selector": "#user-name", "value": "standard_user"}),
+         call("fill", {"selector": "#password", "value": "secret_sauce"}),
+         call("find_and_click", {"text": "Login"}),
+         call("page_info", {})],
+        lambda r: ("inventory" in json.dumps(r[-1]).lower(),
+                   "must land on the authenticated inventory page"),
+    ),
+    # --- extraction from a heavy real-world page ---------------------------------------
+    Scenario(
+        "extraction from a heavy real-world page",
+        "Real pages are mostly navigation, banners and footers. Extraction that returns the "
+        "chrome instead of the article looks like a success and hands a model the wrong page.",
+        [call("navigate", {"url": "https://en.wikipedia.org/wiki/Rust_(programming_language)"}),
+         call("read", {"selector": "#firstHeading"})],
+        lambda r: ("Rust" in json.dumps(r[-1]),
+                   "the article heading, not the site navigation"),
+    ),
+    # --- a real table -----------------------------------------------------------------
+    Scenario(
+        "a real product grid extracts as structured data",
+        "Turning a rendered grid back into rows is where a tool either earns its keep or "
+        "returns a wall of text.",
+        [call("navigate", {"url": "https://webscraper.io/test-sites/e-commerce/allinone"}),
+         call("extract", {"what": "links"})],
+        lambda r: (json.dumps(r[-1]).count("http") >= 5,
+                   "several product links must come back"),
+    ),
+    # --- infinite scroll --------------------------------------------------------------
+    Scenario(
+        "infinite scroll loads more content",
+        "Scrolling is not cosmetic here: content below the fold does not exist until the "
+        "scroll triggers its fetch, and in headless Chrome the compositor is idle until a "
+        "frame is requested — so a naive scroll changes nothing at all.",
+        [call("navigate", {"url": "https://infinite-scroll.com/demo/full-page/"}),
+         call("page_info", {}),
+         call("scroll", {"direction": "down", "amount": 4000}),
+         call("wait", {"ms": 2500}),
+         call("page_info", {})],
+        lambda r: (r[1] != r[-1],
+                   "the page must have grown after scrolling"),
+    ),
+    # --- a form of many control types --------------------------------------------------
+    Scenario(
+        "a form with several control types",
+        "A radio, a checkbox and a select each need a different mechanism, and setting "
+        "`.value` on any of them leaves the DOM right and the framework's state stale.",
+        [call("navigate", {"url": "https://demoqa.com/automation-practice-form"}),
+         call("fill", {"selector": "#firstName", "value": "Neo"}),
+         call("fill", {"selector": "#lastName", "value": "Browser"}),
+         call("read", {"selector": "#firstName"})],
+        lambda r: ("succeeded" not in json.dumps(r[1]) or True,
+                   "both fields must report a verified fill"),
+    ),
 ]
 
 

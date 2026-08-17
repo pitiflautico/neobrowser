@@ -79,7 +79,7 @@ struct Signals {
 
 async fn gather(client: &CdpClient) -> Signals {
     // One evaluation collects everything, so detection is a single round-trip.
-    let v = page::js(client, &crate::js::wall_signals().returning())
+    let v = page::eval_body(client, &crate::js::wall_signals().returning())
         .await
         .ok();
     let obj = v.and_then(|v| match v {

@@ -224,7 +224,7 @@ impl Conformance {
 
     /// Evaluate JavaScript in the fixture, for setting up and inspecting page state.
     async fn js(&self, expr: &str) -> Value {
-        page::js(&self.tab, expr)
+        page::eval_caller_supplied(&self.tab, expr)
             .await
             .unwrap_or_else(|e| panic!("page JS failed: {e}\n{expr}"))
     }
@@ -306,7 +306,7 @@ fn kill_chrome_for(home_key: &str) {
 async fn await_dead_session(tab: &neobrowser::cdp::CdpClient) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if page::js(tab, "return 1").await.is_err() {
+        if page::eval_caller_supplied(tab, "return 1").await.is_err() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1003,7 +1003,7 @@ async fn c9_acting_after_the_browser_is_killed_is_reported_as_an_error() {
 
     // Alive before the fault, or the test proves nothing.
     assert!(
-        page::js(&c.tab, "return 1").await.is_ok(),
+        page::eval_body(&c.tab, "return 1").await.is_ok(),
         "C9: the session was already broken before the kill"
     );
 
@@ -1389,7 +1389,7 @@ async fn c13_observing_an_unobservable_page_twice_reports_no_change() {
     await_dead_session(&c.tab).await;
 
     assert!(
-        page::js(&c.tab, "return 1").await.is_err(),
+        page::eval_body(&c.tab, "return 1").await.is_err(),
         "C13: the closed page is still evaluating JavaScript, so it is not unobservable and \
          the scenario is untested"
     );

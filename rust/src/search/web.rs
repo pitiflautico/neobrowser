@@ -48,7 +48,7 @@ fn dismiss_consent_js() -> &'static str {
 }
 
 pub(super) async fn dismiss_consent(client: &CdpClient) {
-    let _ = page::js(client, dismiss_consent_js()).await;
+    let _ = page::eval_body(client, dismiss_consent_js()).await;
 }
 
 /// Loaded from `js/search_google_text.js`. See [`crate::js`] for why the snippets live
@@ -64,7 +64,7 @@ fn ddg_text_js() -> &'static str {
 }
 
 pub(super) async fn js_array(client: &CdpClient, code: &str) -> Vec<Value> {
-    match page::js(client, code).await {
+    match page::eval_body(client, code).await {
         Ok(Value::String(s)) => serde_json::from_str(&s).unwrap_or_default(),
         Ok(Value::Array(a)) => a,
         _ => Vec::new(),

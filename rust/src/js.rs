@@ -136,28 +136,32 @@ pub use page::{frame_access, pierce, set_control, state_digest, wall_signals};
 /// floor and a [`Statements`](Form::Statements) snippet look identical from the Rust side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Form {
-    /// The call site passes [`Snippet::returning`], so `page::js` receives
-    /// `return <expr>` and wraps it in an async IIFE. The expression MUST begin on the
-    /// same line as `return` — that is the ASI hazard this module exists to prevent.
+    /// The call site passes [`Snippet::returning`] to [`crate::page::eval_body`], which
+    /// wraps it in an async IIFE. The expression MUST begin on the same line as `return` —
+    /// that is the ASI hazard this module exists to prevent.
     Expression,
-    /// The call site passes [`Snippet::expr`] unchanged: a statement sequence, evaluated
-    /// for its effect on the page. `page::js` wraps it only when it contains a `return `
-    /// anywhere, which for these snippets means a `return` inside a nested callback — so
-    /// the wrapped form evaluates to `undefined` and the call site must not use the value.
+    /// The call site passes [`Snippet::expr`] to [`crate::page::eval_expr`]: a statement
+    /// sequence evaluated for its effect on the page, whose value the call site must not
+    /// use.
     Statements,
 }
 
-/// The expression `page::js` will actually hand to Chrome for `code`.
+/// The exact string Chrome will parse for `code`, given the form the snippet declares.
 ///
-/// Mirrors the rule in [`crate::page::js`]: code containing a `return ` is wrapped as an
-/// async function body, anything else is evaluated as written. Duplicated here rather than
-/// shared so `tests/embedded_js.rs` can `node --check` the exact string Chrome parses; if
-/// `page::js` ever changes how it wraps, change this with it.
-pub fn as_page_js_evaluates(code: &str) -> String {
-    if code.contains("return ") {
-        format!("(async function(){{{code}}})()")
-    } else {
-        code.to_string()
+/// No heuristic: the form is declared once, per snippet, in [`all_snippets_for_test`], and
+/// both the runtime and this function follow it. `page::js` used to guess by looking for
+/// `return ` in the text, which meant this helper had to duplicate the guess and stay in
+/// sync with it. Splitting that function into [`crate::page::eval_body`] and
+/// [`crate::page::eval_expr`] removed the guess from every call site this crate owns, so
+/// there is nothing left here to mirror.
+///
+/// `tests/embedded_js.rs` uses this to `node --check` the wrapped form, which is the check
+/// whose absence let a broken refactor through: the bare `.js` file parsed fine while the
+/// string actually handed to Chrome did not.
+pub fn as_evaluated(code: &str, form: Form) -> String {
+    match form {
+        Form::Expression => format!("(async function(){{{code}}})()"),
+        Form::Statements => code.to_string(),
     }
 }
 
@@ -300,17 +304,31 @@ mod tests {
         );
     }
 
-    /// The wrapping mirror must agree with `page::js` on both branches.
+    /// The declared form decides the wrapping, and the text of the code does not.
+    ///
+    /// This replaces a test that asserted the old heuristic and its mirror agreed, including
+    /// the case where `return;` — no trailing space — was left unwrapped. That test verified
+    /// a guess was consistently wrong in the same way. The property worth holding is the
+    /// opposite one: identical code wraps differently depending only on what its call site
+    /// declared, so no future snippet can be misclassified by how it happens to be written.
     #[test]
-    fn the_wrapping_mirror_matches_page_js() {
+    fn the_declared_form_decides_the_wrapping_not_the_text() {
+        // Same text, both forms — the only difference is the declaration.
         assert_eq!(
-            as_page_js_evaluates("return 1"),
+            as_evaluated("return 1", Form::Expression),
             "(async function(){return 1})()"
         );
-        assert_eq!(as_page_js_evaluates("f()"), "f()");
-        // `return;` has no trailing space, so `page::js` does NOT wrap it — the mirror must
-        // reproduce that, not improve on it.
-        assert_eq!(as_page_js_evaluates("if (!x) return;"), "if (!x) return;");
+        assert_eq!(as_evaluated("return 1", Form::Statements), "return 1");
+
+        // Text that would have fooled the old heuristic: a `return` only inside a callback.
+        // Under the heuristic this was wrapped into a body that returned nothing, silently
+        // yielding `undefined`. Now it is wrapped only if its call site says it is a body.
+        let nested = "xs.map(function(x){ return x; });";
+        assert_eq!(as_evaluated(nested, Form::Statements), nested);
+        assert_eq!(
+            as_evaluated(nested, Form::Expression),
+            format!("(async function(){{{nested}}})()")
+        );
     }
 
     /// Every shipped snippet loads and has no placeholder that callers forgot to name.

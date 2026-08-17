@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::cdp::{CdpClient, CdpError};
 
-use super::eval::js;
+use super::eval::eval_body;
 
 /// Type into the focused element. `human=true` emits per-key keydown/keyup with a
 /// human-like cadence (isTrusted events anti-bot layers expect); `false` uses the
@@ -200,7 +200,7 @@ pub async fn set_control(
             "VALUE",
             &serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into()),
         );
-    let raw = js(client, &snippet.returning()).await?;
+    let raw = eval_body(client, &snippet.returning()).await?;
     Ok(match raw {
         Value::String(s) => s,
         other => other.to_string(),

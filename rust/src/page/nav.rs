@@ -14,7 +14,7 @@ use crate::cdp::{CdpClient, CdpError};
 
 use super::eval::nudge_frame;
 
-use super::eval::js;
+use super::eval::eval_body;
 
 /// Navigate to `url` and wait for the page to be usable, bounded by `budget`.
 ///
@@ -38,7 +38,7 @@ pub async fn navigate_budgeted(
     let mut interval = Duration::from_millis(50);
     let mut complete = false;
     while !budget.expired() {
-        if let Ok(Value::String(state)) = js(client, "return document.readyState").await {
+        if let Ok(Value::String(state)) = eval_body(client, "return document.readyState").await {
             if state == "complete" {
                 complete = true;
                 break;
@@ -67,7 +67,7 @@ async fn settle_dom(client: &CdpClient, budget: &crate::action::Budget) {
     let own_deadline = Instant::now() + Duration::from_secs(2);
     let mut last: Option<f64> = None;
     while !budget.expired() && Instant::now() < own_deadline {
-        let count = js(client, "return document.getElementsByTagName('*').length")
+        let count = eval_body(client, "return document.getElementsByTagName('*').length")
             .await
             .ok()
             .and_then(|v| v.as_f64());
@@ -94,7 +94,7 @@ pub async fn navigate(client: &CdpClient, url: &str, wait_s: f64) -> Result<(), 
 
 /// The current page URL.
 pub async fn current_url(client: &CdpClient) -> Result<String, CdpError> {
-    let v = js(client, "return location.href").await?;
+    let v = eval_body(client, "return location.href").await?;
     Ok(v.as_str().unwrap_or("").to_string())
 }
 
@@ -104,7 +104,7 @@ pub async fn read_text(client: &CdpClient, selector: &str) -> Result<String, Cdp
     nudge_frame(client).await;
     let sel = serde_json::to_string(selector).unwrap();
     let expr = format!("return document.querySelector({sel})?.innerText?.trim() || ''");
-    let v = js(client, &expr).await?;
+    let v = eval_body(client, &expr).await?;
     Ok(v.as_str().unwrap_or("").to_string())
 }
 
