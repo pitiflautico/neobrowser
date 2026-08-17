@@ -17,8 +17,8 @@
 //!   leaves the policy at its default is the worst possible failure for a security
 //!   setting: it looks configured and is not.
 //!
-//! Split into [`keys`] (the settings table and the schema generated from it), [`parse`]
-//! (reading and validating a file) and [`load`] (finding one, and the templates). The
+//! Split into [`keys`] (the settings table and the schema generated from it), [`mod@parse`]
+//! (reading and validating a file) and [`mod@load`] (finding one, and the templates). The
 //! `Config` type and the error live here.
 
 use std::collections::BTreeMap;

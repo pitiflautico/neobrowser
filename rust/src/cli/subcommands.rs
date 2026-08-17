@@ -3,10 +3,6 @@
 //! Each is small and each is a different transport or store, so they sit together rather
 //! than each claiming a file.
 
-//! NeoBrowser — a fast, stealthy MCP browser-automation server that drives real
-//! Chrome via CDP. `serve` runs the MCP server (default); `doctor` checks the
-//! environment; `tools` prints the tool catalog for humans/AIs.
-
 /// `http token` — print the bearer token for the MCP HTTP transport.
 pub fn http_cmd() {
     match std::env::args().nth(2).unwrap_or_default().as_str() {

@@ -4,12 +4,6 @@
 //! between fields; `submit` then has to decide whether anything actually happened, since a
 //! form that silently fails validation looks identical to one that succeeded.
 
-//! The core loop: navigate, observe, act, verify, extract.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -17,8 +11,6 @@ use crate::ops;
 use crate::tools::{ParamSpec, ParamType, Tool, ToolCtx, ToolError, ToolOutput, ToolSpec};
 
 use super::super::{arg_f64, arg_i64, arg_str, verified};
-
-// --- status --------------------------------------------------------------------
 
 pub struct FillTool;
 
@@ -51,8 +43,6 @@ impl Tool for FillTool {
         .await
     }
 }
-
-// --- form_fill -----------------------------------------------------------------
 
 // --- form_fill -----------------------------------------------------------------
 
@@ -100,8 +90,6 @@ impl Tool for FormFillTool {
 
 // --- submit --------------------------------------------------------------------
 
-// --- submit --------------------------------------------------------------------
-
 pub struct SubmitTool;
 
 #[async_trait]
@@ -138,7 +126,3 @@ impl Tool for SubmitTool {
         .await
     }
 }
-
-// --- find_and_click ------------------------------------------------------------
-
-// --- find_and_click ------------------------------------------------------------

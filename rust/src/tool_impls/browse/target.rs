@@ -3,12 +3,6 @@
 //! These are grouped because the reason a click misses is almost always obstruction rather
 //! than a wrong selector.
 
-//! The core loop: navigate, observe, act, verify, extract.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -16,8 +10,6 @@ use crate::ops;
 use crate::tools::{ParamSpec, ParamType, Tool, ToolCtx, ToolError, ToolOutput, ToolSpec};
 
 use super::super::{arg_bool, arg_f64, arg_i64, arg_str, verified};
-
-// --- status --------------------------------------------------------------------
 
 pub struct FindAndClickTool;
 
@@ -57,8 +49,6 @@ impl Tool for FindAndClickTool {
 
 // --- dismiss_overlay -----------------------------------------------------------
 
-// --- dismiss_overlay -----------------------------------------------------------
-
 pub struct DismissOverlayTool;
 
 #[async_trait]
@@ -80,8 +70,6 @@ impl Tool for DismissOverlayTool {
         Ok(ToolOutput::text(ops::dismiss_overlay(&tab, force).await?))
     }
 }
-
-// --- extract -------------------------------------------------------------------
 
 // --- wait ----------------------------------------------------------------------
 
@@ -124,8 +112,6 @@ impl Tool for WaitTool {
     }
 }
 
-// --- paginate ------------------------------------------------------------------
-
 // --- scroll --------------------------------------------------------------------
 
 pub struct ScrollTool;
@@ -157,5 +143,3 @@ impl Tool for ScrollTool {
 }
 
 // --- wait ----------------------------------------------------------------------
-
-// --- paginate ------------------------------------------------------------------

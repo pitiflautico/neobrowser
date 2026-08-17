@@ -19,8 +19,8 @@
 //! - **TTL.** A session snapshot has an expiry. Reading past it fails closed and the
 //!   plaintext is never produced, because a six-month-old cookie jar is a liability
 //!   with no upside.
-//! - **Revocation and verifiable deletion.** [`revoke`] overwrites the ciphertext
-//!   before unlinking, and [`is_revoked`] can prove afterwards that it is gone.
+//! - **Revocation and verifiable deletion.** [`super::seal::revoke`] overwrites the ciphertext
+//!   before unlinking, and [`super::seal::is_revoked`] can prove afterwards that it is gone.
 //!   "Deleted" that leaves a recoverable file is not deleted.
 //! - **No key on disk.** If the credential store is unavailable the vault refuses to
 //!   write rather than silently falling back to plaintext — a fallback is exactly how

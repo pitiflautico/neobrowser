@@ -5,22 +5,6 @@
 //! live file. The rows come back partially encrypted, with timestamps in Chrome's epoch and
 //! `sameSite` as an integer, so the conversions live here too.
 
-//! Cross-platform Chrome cookie decryption.
-//!
-//! The Python port only handled macOS. This closes the multi-OS gap the README
-//! promises: the Safe Storage key is retrieved per-platform (macOS Keychain, Linux
-//! secret-service, Windows DPAPI) and cookie values are decrypted with the scheme
-//! each platform uses:
-//!
-//! | OS      | key source          | KDF (pbkdf2-hmac-sha1)      | cipher        |
-//! |---------|---------------------|-----------------------------|---------------|
-//! | macOS   | `security` Keychain | salt "saltysalt", 1003 iter | AES-128-CBC   |
-//! | Linux   | secret-tool/peanuts | salt "saltysalt", 1 iter    | AES-128-CBC   |
-//! | Windows | DPAPI + Local State | (raw 256-bit key)           | AES-256-GCM   |
-//!
-//! On every platform Chrome prepends a 32-byte owner hash to the CBC plaintext
-//! before encrypting; GCM values are `nonce(12) || ciphertext || tag(16)`.
-
 use super::exclude::{host_under_domain, is_session_auth_excluded};
 use super::keys::get_decrypt_key;
 use super::CookieError;
@@ -181,5 +165,3 @@ fn read_cookie_rows(src: &std::path::Path) -> Result<Vec<CookieRow>, rusqlite::E
     let _ = std::fs::remove_dir_all(&tmp_dir);
     result
 }
-
-// --- platform key retrieval ----------------------------------------------------

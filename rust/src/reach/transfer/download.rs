@@ -4,12 +4,6 @@
 //! folder, so a page that triggers a download cannot overwrite something the user cares
 //! about by choosing a filename.
 
-//! Upload and download: the tools that move files between the machine and a page.
-//!
-//! Both are gated on the same allowlist (`resolve_upload_path`) so a second file-reading
-//! tool cannot end up with weaker validation than the first — which is exactly what
-//! nearly happened when `har_import` was added.
-
 use std::path::PathBuf;
 use std::time::Duration;
 

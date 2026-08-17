@@ -4,10 +4,6 @@
 //! profile and a real launch attempt, because the useful diagnostic is never a version
 //! string — it is whether Chrome actually came up on this machine.
 
-//! NeoBrowser — a fast, stealthy MCP browser-automation server that drives real
-//! Chrome via CDP. `serve` runs the MCP server (default); `doctor` checks the
-//! environment; `tools` prints the tool catalog for humans/AIs.
-
 use neobrowser::{chrome, paths, tool_impls};
 
 use super::report::{report_policy, report_sandbox, smoke_test};

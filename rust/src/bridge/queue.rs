@@ -4,46 +4,6 @@
 //! id on a loopback endpoint means a page that cannot read a response can still fabricate one —
 //! answering a command it never received and feeding the caller invented data.
 
-//! The agent half of the Chrome bridge: a localhost queue the extension polls.
-//!
-//! See `extension/README.md` for the security model. In short: instead of copying the
-//! user's cookies into a second browser, or opening `--remote-debugging-port` on their
-//! everyday Chrome and exposing every tab, the user shares one tab at a time from a
-//! popup and can revoke it.
-//!
-//! The transport is a poll rather than a socket, and that is forced by the platform: a
-//! Manifest V3 service worker is terminated when idle, so a long-lived WebSocket from
-//! the extension would be killed with it. The extension asks for work; this side hands
-//! out queued CDP commands and collects the results.
-//!
-//! Bound to `127.0.0.1` and **authenticated with a per-session token**.
-//!
-//! Loopback alone is not a boundary here, and it is worth being precise about why. Any
-//! web page the user visits can issue a request to `http://127.0.0.1:<port>` — a
-//! `text/plain` POST is a "simple" request, so there is no preflight, and while the
-//! browser blocks the page from *reading* the response, the side effect still happens.
-//! Without authentication a hostile page could therefore:
-//!
-//! * POST a forged result to `/bridge/results` and poison an in-flight CDP command,
-//!   feeding the agent a fabricated answer; or
-//! * POST to `/bridge` and drain the queue, so the real extension never receives the
-//!   commands and every action times out.
-//!
-//! Two things close that. Every request must carry `X-NeoBrowser-Token`, which is a
-//! *custom* header — that alone makes the request non-simple, so a page cannot send it
-//! without a preflight this server refuses. And command ids are random rather than
-//! sequential, so a forged result cannot address an outstanding waiter even if the
-//! token were known.
-//!
-//! The token lives in `~/.neobrowser/bridge.token` at 0600, so a same-uid process can
-//! read it — the same trust the MCP stdio transport already implies — while nothing
-//! else can. Per-tab consent is still enforced in the extension, where Chrome shows
-//! its own "being debugged" banner.
-//!
-//! Split so the listener sits apart from the queue it serves: [`server`] accepts
-//! connections and authenticates them, while the queue, its pending map and the token file
-//! stay here.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

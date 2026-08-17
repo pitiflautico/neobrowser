@@ -5,31 +5,6 @@
 //! alternative — an `Unknown` class that is permitted — means every new tool ships
 //! unrestricted until someone notices.
 
-//! Central policy engine: every tool call is classified and evaluated before it runs.
-//!
-//! Before this existed, security lived in scattered point-checks — an SSRF guard in
-//! `reach`, an https requirement in `login`, an upload-root check in `reach`. Each is
-//! correct, but there was no single place that could answer "is this call allowed?",
-//! so every new tool had to remember to re-implement the relevant guard.
-//!
-//! The engine sits in the MCP dispatch path (see `mcp::handle_tools_call`) between
-//! argument validation and execution. It does not replace the point-checks — defence
-//! in depth — it decides whether the call happens at all.
-//!
-//! Design constraints worth stating, because they shaped the defaults:
-//!
-//! - **A denial must be legible.** A model that gets an opaque failure retries; one
-//!   that is told which rule fired and what would satisfy it can adapt or ask.
-//! - **`ask` is only useful if someone can answer.** Most MCP clients do not
-//!   implement elicitation, so a profile that asks for confirmation on ordinary
-//!   actions would simply be a profile that fails. Confirmation is therefore
-//!   reserved for the `Safe` profile's elevated classes, and returns a structured
-//!   `requires_confirmation` the caller can act on rather than a dead end.
-//! - **The default profile does not break existing setups.** `Developer` enforces
-//!   the domain lists and logs elevated actions but does not gate them. Users who
-//!   want gating opt into `Safe`; unattended agents should use `Autonomous`, which
-//!   demands an explicit allowlist.
-
 /// What a tool call actually does, for policy purposes.
 ///
 /// Grouped by consequence rather than by implementation: `js` sits alone because

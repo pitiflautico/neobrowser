@@ -6,7 +6,7 @@
 //! and "what exactly did that request return", which is what a developer debugging
 //! their own app actually needs.
 //!
-//! Everything here is read-only and passes through [`crate::trace::redact`] before it
+//! Everything here is read-only and passes through [`mod@crate::trace::redact`] before it
 //! leaves, because a network waterfall is made of headers and query strings — i.e. of
 //! session tokens.
 //!

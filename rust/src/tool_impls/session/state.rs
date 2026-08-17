@@ -4,12 +4,6 @@
 //! the sealed cookie file behind, because its target list named only the legacy path. A
 //! revoke that reports success without revoking is worse than one that fails.
 
-//! Credentials and session state. Everything here is `ActionClass::Auth`.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 

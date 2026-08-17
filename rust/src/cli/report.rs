@@ -4,10 +4,6 @@
 //! what the policy profile actually permits, whether the renderer sandbox is on and why, and
 //! whether a real Chrome launch-and-navigate succeeds.
 
-//! NeoBrowser — a fast, stealthy MCP browser-automation server that drives real
-//! Chrome via CDP. `serve` runs the MCP server (default); `doctor` checks the
-//! environment; `tools` prints the tool catalog for humans/AIs.
-
 use neobrowser::{cdp, chrome, paths};
 
 use std::time::Duration;

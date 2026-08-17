@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Shadow form</title>
+<!--
+  Conformance fixture C5 — a field inside an OPEN shadow root.
+
+  A data: URL could hold this markup, but not the property that matters: the input is
+  unreachable from `document.querySelector` and its text is excluded from the host's
+  `innerText`. Both halves have to be true for the scenario to mean anything, so the
+  component is spelled out here rather than squeezed into one line of Rust.
+-->
+<contact-card></contact-card>
+<script>
+  class ContactCard extends HTMLElement {
+    connectedCallback() {
+      const root = this.attachShadow({ mode: 'open' });
+      root.innerHTML =
+        '<label>Email <input id="email" type="text" /></label>' +
+        '<p id="echo">(nothing entered)</p>';
+      const input = root.querySelector('#email');
+      const echo = root.querySelector('#echo');
+      // The echo exists so the fill has a visible consequence inside the shadow tree,
+      // not only a changed control value: an observation that cannot cross the boundary
+      // sees neither, and reports a successful fill as `uncertain`.
+      input.addEventListener('input', () => {
+        echo.textContent = 'entered: ' + input.value;
+      });
+    }
+  }
+  customElements.define('contact-card', ContactCard);
+</script>

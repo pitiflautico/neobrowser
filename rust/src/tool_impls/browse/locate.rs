@@ -4,12 +4,6 @@
 //! node id is invalidated by any re-render between observing and acting — and a stale id
 //! does not fail, it addresses something else.
 
-//! The core loop: navigate, observe, act, verify, extract.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 
@@ -17,8 +11,6 @@ use crate::page;
 use crate::tools::{ParamSpec, ParamType, Tool, ToolCtx, ToolError, ToolOutput, ToolSpec};
 
 use super::super::{arg_bool, arg_i64, arg_str};
-
-// --- status --------------------------------------------------------------------
 
 pub struct FindTool;
 
@@ -60,8 +52,6 @@ impl Tool for FindTool {
         }
     }
 }
-
-// --- revoke_session ------------------------------------------------------------
 
 // --- observe -------------------------------------------------------------------
 
@@ -127,7 +117,3 @@ impl Tool for ObserveTool {
         Ok(ToolOutput::text(out.to_string()))
     }
 }
-
-// --- click ---------------------------------------------------------------------
-
-// --- click ---------------------------------------------------------------------

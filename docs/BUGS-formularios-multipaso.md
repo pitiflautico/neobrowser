@@ -6,6 +6,22 @@
 > Los tests comprueban **efectos** (¿quedó marcado el checkbox?, ¿qué botón recibió el
 > click?), nunca el valor de retorno — que es justo lo que fallaba.
 
+> **Las rutas de este documento son de la versión `0.1.3`.** Las referencias
+> `archivo.rs:línea` describen el código del 2026-08-13, antes de que el crate se
+> reorganizase en módulos por responsabilidad. Los módulos citados siguen existiendo, pero la
+> lógica concreta se ha repartido: el click y su verificación (con el enum `ClickOutcome`)
+> están en [`rust/src/page/pointer.rs`](../rust/src/page/pointer.rs), el filtro de
+> visibilidad en [`rust/js/find_and_click.js`](../rust/js/find_and_click.js), el lock de
+> perfil en [`rust/src/chrome/lock.rs`](../rust/src/chrome/lock.rs), el reap del proceso en
+> [`rust/src/chrome/process.rs`](../rust/src/chrome/process.rs) y el heurístico de login en
+> [`rust/src/sessions/login.rs`](../rust/src/sessions/login.rs). Los números de línea ya no
+> valen: lo que conserva el valor es el diagnóstico, no la ubicación.
+
+> **La regla que sale de estos cuatro bugs está ahora escrita como especificación:**
+> [The Verified Action Contract](VERIFIED-ACTIONS.md). El bug nº2 es literalmente su
+> escenario C2 — un click sobre un target tapado por un overlay debe devolver `blocked`
+> nombrando la obstrucción, y le está prohibido devolver `succeeded`.
+
 Detectados el 2026-08-13 automatizando el alta de un proyecto en `thefwa.com` — un formulario React de 4 pasos con acordeón, overlays y elementos fuera del viewport. Versión afectada: `0.1.3`.
 
 Los cuatro comparten una misma raíz:

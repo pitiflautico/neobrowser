@@ -15,10 +15,10 @@
 //! **Redaction by default.** A trace of a browser session naturally contains cookies,
 //! `Authorization` headers, tokens in query strings and form values. A bundle exists
 //! to be shared — attached to a bug report, pasted into an issue — so redaction is
-//! not an option a user has to remember to switch on. [`redact`] runs on every value
+//! not an option a user has to remember to switch on. [`mod@redact`] runs on every value
 //! entering the trace, and the tests are the specification.
 //!
-//! Split into [`redact`] (removing secrets before anything is written), [`record`] (bounded
+//! Split into [`mod@redact`] (removing secrets before anything is written), [`record`] (bounded
 //! recording) and [`bundle`] (reading a trace back, refusing traversal in its id).
 
 pub mod bundle;

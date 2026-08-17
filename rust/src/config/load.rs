@@ -1,24 +1,5 @@
 //! Finding the config file, and the templates `config init` writes.
 
-//! Versioned configuration file, with environment variables as overrides.
-//!
-//! Everything was env-only, which is fine for one setting and unmanageable for
-//! fifteen: an MCP client config ends up with a wall of `NEOBROWSER_*` strings that
-//! cannot be commented, diffed usefully, or shared between the `safe` setup and the
-//! `ci` one. So there is a file, and the env still wins over it.
-//!
-//! Three deliberate choices:
-//!
-//! - **`version` is required.** A config format without a version marker cannot be
-//!   migrated later without guessing, so the field is mandatory from the first
-//!   release rather than added once it is already too late.
-//! - **Env overrides file, never the reverse.** A file is a project's default; an env
-//!   var is what an operator sets for one run. Inverting that would make a checked-in
-//!   file able to silently override what someone typed on the command line.
-//! - **Unknown keys are an error, not ignored.** A typo in `polcy` that silently
-//!   leaves the policy at its default is the worst possible failure for a security
-//!   setting: it looks configured and is not.
-
 use std::path::{Path, PathBuf};
 
 use super::parse::parse;

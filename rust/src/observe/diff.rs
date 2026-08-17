@@ -4,22 +4,6 @@
 //! the top would otherwise report every element below it as changed — which is
 //! indistinguishable from a page that actually changed everywhere.
 
-//! Accessibility snapshots with stable references, and diffs between them.
-//!
-//! Two problems this solves.
-//!
-//! **References that survive a re-render.** `find` returns a `backendNodeId`, which
-//! Chrome invalidates whenever the node is recreated — so on any SPA the id a model
-//! was handed a moment ago is already dead, and the click lands nowhere or, worse, on
-//! whatever now occupies that id. A [`StableRef`] is derived from what the element
-//! *is* (role, accessible name, position among its same-role siblings) rather than
-//! from a pointer, so it can be re-resolved against a fresh tree.
-//!
-//! **Context cost.** Returning the whole tree on every observation is what makes
-//! browser tools expensive to drive. A snapshot here has a character budget and a
-//! mode, and [`diff`] reports only what changed since the previous one — which is
-//! usually a handful of lines instead of a few thousand.
-
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};

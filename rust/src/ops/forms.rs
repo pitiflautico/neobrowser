@@ -19,34 +19,10 @@ use super::{bounded_secs_f64, js_lit, str_or};
 /// `fill` — set a field's value using the element's own prototype setter and fire
 /// input/change (React/Vue-safe), handling select/checkbox/radio/contenteditable.
 pub async fn fill(client: &CdpClient, selector: &str, value: &str) -> Result<String, CdpError> {
-    let code = format!(
-        r#"return (function() {{
-            var sel = {sel}; var v = {val};
-            var el = document.querySelector(sel);
-            if (!el) return JSON.stringify({{ok: false, error: "selector not found"}});
-            var tag = el.tagName.toLowerCase();
-            var type = (el.type || '').toLowerCase();
-            if (tag === 'select') {{
-                el.value = v; el.dispatchEvent(new Event('change', {{bubbles: true}}));
-            }} else if (type === 'checkbox' || type === 'radio') {{
-                el.checked = (v === 'true' || v === true);
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-            }} else if (el.isContentEditable) {{
-                el.focus(); el.textContent = v;
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                return JSON.stringify({{ok: true, tag: tag, type: 'contenteditable', value: el.textContent}});
-            }} else {{
-                var proto = tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                var setter = Object.getOwnPropertyDescriptor(proto, 'value');
-                if (setter && setter.set) {{ setter.set.call(el, v); }} else {{ el.value = v; }}
-                el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                el.dispatchEvent(new Event('change', {{bubbles: true}}));
-            }}
-            return JSON.stringify({{ok: true, tag: tag, type: type, value: el.value}});
-        }})()"#,
-        sel = js_lit(selector),
-        val = js_lit(value),
-    );
+    let code = crate::js::fill_control()
+        .with("SEL", &js_lit(selector))
+        .with("VAL", &js_lit(value))
+        .returning();
     Ok(str_or(
         page::js(client, &code).await?,
         r#"{"ok": false, "error": "js returned null"}"#,
@@ -65,40 +41,11 @@ pub async fn form_fill(
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        let code = format!(
-            r#"return (function() {{
-                var forms = document.querySelectorAll('form');
-                var form = forms[{idx}] || document;
-                var inputs = Array.from(form.querySelectorAll('input,select,textarea'));
-                var target = null; var lq = {label}.toLowerCase();
-                for (var i=0; i<inputs.length; i++) {{
-                    var el = inputs[i];
-                    var candidates = [el.name, el.id, el.placeholder, el.getAttribute('aria-label')];
-                    var lbl = '';
-                    if (el.id) {{ var l = document.querySelector('label[for="'+el.id+'"]'); if(l) lbl = l.textContent; }}
-                    candidates.push(lbl);
-                    for (var j=0; j<candidates.length; j++) {{
-                        if (candidates[j] && candidates[j].toLowerCase().indexOf(lq) !== -1) {{ target = el; break; }}
-                    }}
-                    if (target) break;
-                }}
-                if (!target) return JSON.stringify({{ok: false, error: 'field not found: '+{label}}});
-                var tag = target.tagName.toLowerCase(); var type = (target.type||'').toLowerCase(); var v = {val};
-                if (tag === 'select') {{ target.value = v; target.dispatchEvent(new Event('change', {{bubbles: true}})); }}
-                else if (type === 'checkbox' || type === 'radio') {{ target.checked = (v === 'true' || v === true); target.dispatchEvent(new Event('change', {{bubbles: true}})); }}
-                else {{
-                    var proto = tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                    var setter = Object.getOwnPropertyDescriptor(proto, 'value');
-                    if (setter && setter.set) {{ setter.set.call(target, v); }} else {{ target.value = v; }}
-                    target.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    target.dispatchEvent(new Event('change', {{bubbles: true}}));
-                }}
-                return JSON.stringify({{ok: true, field: {label}, value: target.value}});
-            }})()"#,
-            idx = form_index,
-            label = js_lit(label),
-            val = js_lit(&value_str),
-        );
+        let code = crate::js::form_fill_fields()
+            .with("IDX", &form_index.to_string())
+            .with("LABEL", &js_lit(label))
+            .with("VAL", &js_lit(&value_str))
+            .returning();
         let res = page::js(client, &code).await?;
         let parsed: Value = match &res {
             Value::String(s) => serde_json::from_str(s).unwrap_or(json!({ "ok": false })),
@@ -126,19 +73,7 @@ pub async fn submit(
         page::js(client, &code).await?;
         method = sel.to_string();
     } else {
-        let m = page::js(
-            client,
-            r#"return (function() {
-                var btn = document.querySelector('button[type=submit],input[type=submit]');
-                if (btn) { btn.click(); return "button_click"; }
-                var btn2 = document.querySelector('[aria-label*="submit" i],[aria-label*="send" i]');
-                if (btn2) { btn2.click(); return "aria_button"; }
-                var form = document.querySelector('form');
-                if (form) { form.submit(); return "form_submit"; }
-                return null;
-            })()"#,
-        )
-        .await?;
+        let m = page::js(client, &crate::js::submit_form().returning()).await?;
         method = m.as_str().unwrap_or("").to_string();
         if method.is_empty() {
             return Ok(

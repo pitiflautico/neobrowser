@@ -4,12 +4,6 @@
 //! that cannot be verified comes back as unverified, never as success — this is the whole
 //! point of the verified-action contract, and these are the tools where it is visible.
 
-//! The core loop: navigate, observe, act, verify, extract.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -17,8 +11,6 @@ use crate::page;
 use crate::tools::{ParamSpec, ParamType, Tool, ToolCtx, ToolError, ToolOutput, ToolSpec};
 
 use super::super::{arg_bool, arg_f64, arg_str, verified};
-
-// --- status --------------------------------------------------------------------
 
 pub struct ClickTool;
 
@@ -100,7 +92,9 @@ impl Tool for ClickTool {
         // no point waiting for a page reaction to an event we did not dispatch.
         let dispatched = match &outcome {
             page::ClickOutcome::Clicked | page::ClickOutcome::NoLayoutUsedJs => true,
-            page::ClickOutcome::NotFound | page::ClickOutcome::Obscured { .. } => false,
+            page::ClickOutcome::NotFound
+            | page::ClickOutcome::Obscured { .. }
+            | page::ClickOutcome::Disabled { .. } => false,
         };
         let detail = match &outcome {
             page::ClickOutcome::Clicked => "click dispatched as real mouse events".to_string(),
@@ -112,15 +106,34 @@ impl Tool for ClickTool {
                 "not clicked: target is covered by {by}. Dismiss the overlay \
                  (dismiss_overlay) or scroll it out of the way, then retry"
             ),
+            page::ClickOutcome::Disabled { reason } => format!(
+                "not clicked: {reason}. Change what keeps it disabled — a required field, a \
+                 pending validation — rather than retrying the click"
+            ),
+        };
+        // An obstruction is not a failure, and the difference is the caller's next move.
+        //
+        // `failed` means "this did not happen and will not on retry"; `blocked` means "clear
+        // the thing in the way and try again". The distinction was already encoded here — in
+        // `retryable`, and in the detail text — but the *status* lumped an overlay in with a
+        // target that does not exist. A caller switching on status therefore read a removable
+        // cookie banner as a dead end. Conformance scenario C2 is what caught it.
+        let status = match &outcome {
+            page::ClickOutcome::Obscured { .. } | page::ClickOutcome::Disabled { .. } => {
+                ActionStatus::Blocked
+            }
+            _ => ActionStatus::Failed,
         };
 
         if !dispatched {
             let after = crate::action::observe(&tab).await;
-            let mut r = crate::action::ActionResult::new("click", ActionStatus::Failed)
+            let mut r = crate::action::ActionResult::new("click", status)
                 .with_detail(detail)
                 .with_target(target_desc)
-                // An overlay is removable, so retrying after dismissing it is
-                // reasonable; a target that does not exist will not appear on retry.
+                // An overlay is removable, so retrying after dismissing it is reasonable; a
+                // target that does not exist will not appear on retry. A disabled control is
+                // blocked but NOT retryable — the same click will keep being refused until
+                // something else changes, and saying otherwise invites an infinite loop.
                 .retryable(matches!(outcome, page::ClickOutcome::Obscured { .. }));
             r.before = before;
             r.after = after;
@@ -153,8 +166,6 @@ impl Tool for ClickTool {
         Ok(ToolOutput::text(r.to_string_pretty()))
     }
 }
-
-// --- type ----------------------------------------------------------------------
 
 // --- type ----------------------------------------------------------------------
 
@@ -200,7 +211,5 @@ impl Tool for TypeTool {
         .await
     }
 }
-
-// --- js ------------------------------------------------------------------------
 
 // --- js ------------------------------------------------------------------------

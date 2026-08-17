@@ -4,15 +4,6 @@
 //! it, and the next action resolves `role:name#nth` against it rather than against a node id
 //! that a re-render has already invalidated.
 
-//! Tier 2: the browser session — a lazily-launched (or attached) Chrome plus one or
-//! more CDP tabs sharing it.
-//!
-//! The Chrome process is owned by the `Browser`, so multiple tabs share a single
-//! browser instance. Tools operate on the *active* tab (`tab()`); `new_tab`,
-//! `list_tabs`, `switch_tab`, and `close_tab` manage the set. In attach mode
-//! (`NEOBROWSER_ATTACH_PORT`) we connect to a Chrome we do not own — no launch, no
-//! stealth patching, no kill on shutdown.
-
 use super::{Browser, Recording};
 
 impl Browser {

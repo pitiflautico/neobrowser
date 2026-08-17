@@ -4,12 +4,6 @@
 //! and the runtime coercion. Declaring those separately is how a tool's documented signature
 //! drifts from the one it actually accepts.
 
-//! Tool registry, schemas, argument validation, and the `Tool` trait.
-//!
-//! Mirrors the Python `TOOLS` dict + `_validate_args` + `dispatch_tool`, but with
-//! typed specs and a trait-object registry so each tool is a self-contained unit
-//! that the MCP layer (see `mcp.rs`) can list and call generically.
-
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};

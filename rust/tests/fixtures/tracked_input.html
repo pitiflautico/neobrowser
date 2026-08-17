@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Tracked input</title>
+<!--
+  Conformance fixture C6 — a framework-controlled input, without a framework.
+
+  React cannot be pulled into this suite, so the mechanism is reproduced directly. Two
+  things make an input "controlled":
+
+    1. The component owns the value. A re-render writes its own state back into the DOM,
+       so anything the DOM holds that the state does not know about is destroyed.
+    2. The component installs its own `value` descriptor on the element instance, and
+       remembers what it last wrote through it. This is ReactDOM's `inputValueTracking`,
+       near enough. Its purpose is to decide whether an `input` event carries a real
+       user edit — and its consequence is the trap: an automation tool that assigns
+       `el.value = x` writes *through that descriptor*, so the tracker is updated, the
+       change detector sees no divergence, and the component never learns anything
+       happened. The pixels are right and the application's state is stale.
+
+  A tool that goes through the *prototype's* setter instead leaves the tracker stale, the
+  divergence is visible, the component's handler runs, and the value survives the next
+  re-render. That difference is what C6 measures.
+
+  `window.rerender()` and `window.componentState()` are exposed so a test can force the
+  re-render and read the state the component believes in.
+-->
+<input id="field" type="text" />
+<p id="mirror">state: (empty)</p>
+<script>
+  (function () {
+    const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    const field = document.getElementById('field');
+    const mirror = document.getElementById('mirror');
+
+    // What the component believes the value is. The only thing a re-render trusts.
+    let state = '';
+    // What the component last wrote through its own setter.
+    let tracked = '';
+
+    Object.defineProperty(field, 'value', {
+      configurable: true,
+      get() {
+        return proto.get.call(this);
+      },
+      set(v) {
+        tracked = String(v);
+        proto.set.call(this, v);
+      },
+    });
+
+    field.addEventListener('input', function () {
+      const live = proto.get.call(field);
+      // Indistinguishable from "nothing changed" — this is the branch a direct
+      // `.value =` assignment falls into, and why the edit is silently lost.
+      if (live === tracked) return;
+      tracked = live;
+      state = live;
+      render();
+    });
+
+    function render() {
+      proto.set.call(field, state);
+      mirror.textContent = 'state: ' + (state === '' ? '(empty)' : state);
+    }
+
+    window.rerender = render;
+    window.componentState = function () {
+      return state;
+    };
+  })();
+</script>

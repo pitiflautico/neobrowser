@@ -48,8 +48,6 @@ impl Tool for BrowseTool {
 
 // --- upload --------------------------------------------------------------------
 
-// --- upload --------------------------------------------------------------------
-
 pub struct UploadTool;
 
 #[async_trait]
@@ -99,8 +97,6 @@ impl Tool for UploadTool {
 
 // --- download ------------------------------------------------------------------
 
-// --- download ------------------------------------------------------------------
-
 pub struct DownloadTool;
 
 #[async_trait]
@@ -129,8 +125,6 @@ impl Tool for DownloadTool {
         ))
     }
 }
-
-// --- search --------------------------------------------------------------------
 
 pub struct ExtractPaginatedTool;
 

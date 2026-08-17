@@ -79,39 +79,9 @@ struct Signals {
 
 async fn gather(client: &CdpClient) -> Signals {
     // One evaluation collects everything, so detection is a single round-trip.
-    let v = page::js(
-        client,
-        r#"return JSON.stringify({
-            url: location.href,
-            title: document.title || '',
-            text: (document.body ? document.body.innerText.slice(0, 4000) : ''),
-            captcha: (function() {
-                // Only a VISIBLE challenge is a wall. Invisible captchas —
-                // Stripe's anti-fraud hCaptcha, reCAPTCHA v3, Turnstile in
-                // managed mode — sit on ordinary payment and login pages and
-                // never ask the user anything. Reporting those tells the agent
-                // to hand off to a human on a page with nothing in its way.
-                var els = document.querySelectorAll(
-                    'iframe[src*="recaptcha"], iframe[src*="hcaptcha"],' +
-                    'iframe[title*="challenge" i], div.cf-turnstile,' +
-                    '#challenge-form, iframe[src*="turnstile"]');
-                for (var i = 0; i < els.length; i++) {
-                    var e = els[i];
-                    var r = e.getBoundingClientRect();
-                    var s = getComputedStyle(e);
-                    // A real widget is at least checkbox-sized (~300x65).
-                    if (r.width > 40 && r.height > 40
-                        && s.visibility !== 'hidden' && s.display !== 'none'
-                        && s.opacity !== '0') return true;
-                }
-                return false;
-            })(),
-            password: !!document.querySelector('input[type=password]'),
-            cf: /just a moment|checking your browser|cf-browser-verification/i.test(document.body ? document.body.innerText : '')
-        })"#,
-    )
-    .await
-    .ok();
+    let v = page::js(client, &crate::js::wall_signals().returning())
+        .await
+        .ok();
     let obj = v.and_then(|v| match v {
         serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(&s).ok(),
         other => Some(other),

@@ -7,11 +7,12 @@
 //! `type_text(human=true)` emits per-key events with human-like cadence.//!
 //! The implementation is split by what each part is responsible for, not by size:
 //! [`eval`] runs JavaScript, [`nav`] arrives and settles, [`node`] resolves a target to
-//! coordinates, [`pointer`] dispatches and verifies one click, [`gesture`] builds the
+//! coordinates, [`mod@pointer`] dispatches and verifies one click, [`gesture`] builds the
 //! public pointer verbs on top, [`input`] enters values, and [`locate`] finds elements by
 //! intent. Everything is re-exported flat, so callers write `page::click_selector` and
 //! never need to know which file it lives in.
 
+pub mod diagnose;
 pub mod eval;
 pub mod gesture;
 pub mod input;

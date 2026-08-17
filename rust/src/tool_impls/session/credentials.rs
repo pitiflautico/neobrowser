@@ -4,12 +4,6 @@
 //! finished, because a page still showing the form might be mid-validation, mid-2FA, or simply
 //! rejected — and reporting success on any of those sends an agent onward as if authenticated.
 
-//! Credentials and session state. Everything here is `ActionClass::Auth`.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -53,8 +47,6 @@ impl Tool for LoginTool {
     }
 }
 
-// --- browse --------------------------------------------------------------------
-
 // --- save_cookies / restore_cookies -------------------------------------------
 
 pub struct SaveCookiesTool;
@@ -97,7 +89,3 @@ impl Tool for RestoreCookiesTool {
         Ok(ToolOutput::text(format!("Restored {n} cookies")))
     }
 }
-
-// --- save_session / session_info ----------------------------------------------
-
-// --- save_session / session_info ----------------------------------------------

@@ -3,26 +3,6 @@
 //! Capped at a fixed number of events on purpose: an unbounded trace on a long-running agent
 //! session is a memory leak that only shows up in the runs that matter most.
 
-//! Execution traces: correlated events, secret redaction, and shareable evidence
-//! bundles.
-//!
-//! When an agent run goes wrong, the question is always "what actually happened, in
-//! order?" — and the answer was previously spread across the model's transcript, the
-//! server's log lines, and nothing else. This module records the timeline itself:
-//! every action with its ids, the policy decisions, the walls hit, the URLs and
-//! redirects.
-//!
-//! Two properties do the work.
-//!
-//! **Correlation.** Every event carries `trace_id`, and where applicable `action_id`
-//! and `tab_id`. Without those, interleaved events from two tabs are unreadable.
-//!
-//! **Redaction by default.** A trace of a browser session naturally contains cookies,
-//! `Authorization` headers, tokens in query strings and form values. A bundle exists
-//! to be shared — attached to a bug report, pasted into an issue — so redaction is
-//! not an option a user has to remember to switch on. [`redact`] runs on every value
-//! entering the trace, and the tests are the specification.
-
 use std::collections::VecDeque;
 use std::sync::Mutex;
 

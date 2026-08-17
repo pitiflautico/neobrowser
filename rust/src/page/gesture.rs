@@ -12,7 +12,7 @@ use serde_json::json;
 
 use crate::cdp::{CdpClient, CdpError};
 
-use super::node::obscured_by;
+use super::diagnose::obscured_by;
 use super::pointer::human_mouse_move;
 
 use super::node::{backend_node_for_selector, box_center, scroll_into_view};
@@ -68,9 +68,10 @@ pub async fn click_selector(client: &CdpClient, selector: &str) -> Result<ClickO
     }
 }
 
-/// Resolve a CSS selector to a backendNodeId, or None if it matches nothing.
-/// Public alias for the CSS -> `backendNodeId` resolver, for tools that address elements by
-/// selector but need a node id (hover, drag, click variants).
+/// Hover over an element: move the real cursor there without pressing.
+///
+/// Needed for menus and tooltips that only appear on pointer-over, which a click
+/// cannot reveal because the click dismisses them.
 pub async fn hover(client: &CdpClient, backend_node_id: i64) -> Result<String, CdpError> {
     scroll_into_view(client, backend_node_id).await;
     let Some((cx, cy)) = box_center(client, backend_node_id).await? else {
@@ -124,11 +125,6 @@ pub async fn click_variant(
     Ok(format!("{button} click x{click_count} dispatched"))
 }
 
-/// Set a checkbox, radio or `<select>` to a value, through the property setter React and Vue
-/// listen to.
-///
-/// A bare `el.checked = true` does not notify a framework's state, so the control visually
-/// changes and the app never learns — the classic "the form submitted the old value" bug.
 /// Drag from one element to another with real mouse events.
 pub async fn drag_and_drop(client: &CdpClient, from: i64, to: i64) -> Result<String, CdpError> {
     scroll_into_view(client, from).await;

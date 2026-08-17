@@ -4,12 +4,6 @@
 //! page *usable* rather than merely loaded, because a tool that returns at the load event
 //! hands back an empty page as though it were the truth.
 
-//! The core loop: navigate, observe, act, verify, extract.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -43,8 +37,6 @@ impl Tool for StatusTool {
         ))
     }
 }
-
-// --- navigate ------------------------------------------------------------------
 
 // --- navigate ------------------------------------------------------------------
 
@@ -101,8 +93,37 @@ impl Tool for NavigateTool {
             (None, false) => ActionStatus::Uncertain,
         };
 
-        let mut result = crate::action::ActionResult::new("navigate", status)
-            .with_detail(format!("Navigated to {landed}"));
+        // The HTTP status of the document we landed on.
+        //
+        // Navigating to a 404 *is* a successful navigation — the browser went there and
+        // rendered what it was given — so the status stays `succeeded` and the spec agrees
+        // (§3: `failed` means the action did not take place). But an agent handed
+        // `succeeded` plus a blank page has no way to tell a 404 from a page that genuinely
+        // has no content, and the answer was sitting in the capture layer the whole time.
+        // Withholding evidence we already hold is the same defect the conformance suite
+        // found in `click` on a disabled control: a diagnosis available for free, not made.
+        let http_status = ctx
+            .browser
+            .network_entries(None, 200)
+            .await
+            .into_iter()
+            .find(|e| {
+                e.url == landed || e.url.trim_end_matches('/') == landed.trim_end_matches('/')
+            })
+            .and_then(|e| e.status);
+
+        let mut result =
+            crate::action::ActionResult::new("navigate", status).with_detail(match http_status {
+                Some(code) => format!("Navigated to {landed} (HTTP {code})"),
+                None => format!("Navigated to {landed}"),
+            });
+        if let Some(code) = http_status.filter(|c| *c >= 400) {
+            result = result.warn(format!(
+                "http_{code}: the server returned {code} for this URL. The navigation \
+                 happened, but the page is an error page — check the URL rather than \
+                 re-reading the content"
+            ));
+        }
         result.before = before;
         result.after = after;
         result.changes = crate::action::detect_changes(&result.before, &result.after);
@@ -124,8 +145,6 @@ impl Tool for NavigateTool {
         Ok(ToolOutput::text(result.to_string_pretty()))
     }
 }
-
-// --- read ----------------------------------------------------------------------
 
 // --- read ----------------------------------------------------------------------
 
@@ -180,8 +199,6 @@ impl Tool for ReadTool {
 
 // --- screenshot ----------------------------------------------------------------
 
-// --- screenshot ----------------------------------------------------------------
-
 pub struct ScreenshotTool;
 
 #[async_trait]
@@ -225,7 +242,3 @@ impl Tool for ScreenshotTool {
         })
     }
 }
-
-// --- find ----------------------------------------------------------------------
-
-// --- find ----------------------------------------------------------------------

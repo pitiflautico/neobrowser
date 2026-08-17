@@ -1,11 +1,5 @@
 //! Tools for getting structured data out of a page, and for advancing to the next one.
 
-//! The core loop: navigate, observe, act, verify, extract.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -13,8 +7,6 @@ use crate::ops;
 use crate::tools::{ParamSpec, ParamType, Tool, ToolCtx, ToolError, ToolOutput, ToolSpec};
 
 use super::super::{arg_i64, arg_str};
-
-// --- status --------------------------------------------------------------------
 
 pub struct PaginateTool;
 
@@ -37,8 +29,6 @@ impl Tool for PaginateTool {
         Ok(ToolOutput::text(ops::paginate(&tab, selector).await?))
     }
 }
-
-// --- console_logs --------------------------------------------------------------
 
 // --- extract -------------------------------------------------------------------
 
@@ -63,8 +53,6 @@ impl Tool for ExtractTool {
         Ok(ToolOutput::text(ops::extract(&tab, what).await?))
     }
 }
-
-// --- extract_table -------------------------------------------------------------
 
 // --- extract_table -------------------------------------------------------------
 
@@ -103,5 +91,3 @@ impl Tool for ExtractTableTool {
         ))
     }
 }
-
-// --- scroll --------------------------------------------------------------------

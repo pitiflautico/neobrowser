@@ -5,22 +5,6 @@
 //! The DPAPI path is implemented directly against the Win32 API because the alternative is a
 //! dependency that does the same three calls.
 
-//! Cross-platform Chrome cookie decryption.
-//!
-//! The Python port only handled macOS. This closes the multi-OS gap the README
-//! promises: the Safe Storage key is retrieved per-platform (macOS Keychain, Linux
-//! secret-service, Windows DPAPI) and cookie values are decrypted with the scheme
-//! each platform uses:
-//!
-//! | OS      | key source          | KDF (pbkdf2-hmac-sha1)      | cipher        |
-//! |---------|---------------------|-----------------------------|---------------|
-//! | macOS   | `security` Keychain | salt "saltysalt", 1003 iter | AES-128-CBC   |
-//! | Linux   | secret-tool/peanuts | salt "saltysalt", 1 iter    | AES-128-CBC   |
-//! | Windows | DPAPI + Local State | (raw 256-bit key)           | AES-256-GCM   |
-//!
-//! On every platform Chrome prepends a 32-byte owner hash to the CBC plaintext
-//! before encrypting; GCM values are `nonce(12) || ciphertext || tag(16)`.
-
 use super::crypto::{decrypt_value_cbc, decrypt_value_gcm, derive_key_cbc};
 use super::CookieError;
 

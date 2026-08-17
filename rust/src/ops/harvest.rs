@@ -15,13 +15,7 @@ use super::{js_lit, str_or};
 pub async fn extract(client: &CdpClient, what: &str) -> Result<String, CdpError> {
     if what == "links" {
         Ok(str_or(
-            page::js(
-                client,
-                r#"return JSON.stringify(Array.from(document.querySelectorAll('a[href]')).slice(0,100).map(function(a){
-                    return {text: a.textContent.trim().slice(0,80), href: a.href};
-                }));"#,
-            )
-            .await?,
+            page::js(client, &crate::js::extract_links().returning()).await?,
             "[]",
         ))
     } else {
@@ -42,67 +36,23 @@ pub async fn extract_table(
     selector: &str,
     index: i64,
 ) -> Result<String, CdpError> {
-    let code = format!(
-        r#"return (function() {{
-            var tables = document.querySelectorAll({sel});
-            var table = tables[{idx}];
-            if (!table) return JSON.stringify([]);
-            var headers = Array.from(table.querySelectorAll('th')).map(function(th){{ return th.textContent.trim(); }});
-            if (!headers.length) {{
-                var firstRow = table.querySelector('tr');
-                if (firstRow) headers = Array.from(firstRow.querySelectorAll('td')).map(function(td){{ return td.textContent.trim(); }});
-            }}
-            var rows = Array.from(table.querySelectorAll('tr')).slice(headers.length ? 1 : 0);
-            var data = rows.map(function(row) {{
-                var cells = Array.from(row.querySelectorAll('td')).map(function(td){{ return td.textContent.trim(); }});
-                var obj = {{}};
-                cells.forEach(function(c, i){{ obj[headers[i] || i] = c; }});
-                return obj;
-            }});
-            return JSON.stringify(data);
-        }})()"#,
-        sel = js_lit(selector),
-        idx = index,
-    );
+    let code = crate::js::extract_table()
+        .with("SEL", &js_lit(selector))
+        .with("IDX", &index.to_string())
+        .returning();
     Ok(str_or(page::js(client, &code).await?, "[]"))
 }
 
 /// `paginate` — click a "next" control (given selector or auto-detected), then frame.
 pub async fn paginate(client: &CdpClient, selector: Option<&str>) -> Result<String, CdpError> {
     let result = if let Some(sel) = selector {
-        let code = format!(
-            r#"return (function() {{
-                var el = document.querySelector({sel});
-                if (!el) return JSON.stringify({{ok: false, error: "selector not found"}});
-                el.click();
-                return JSON.stringify({{ok: true, method: "custom_selector"}});
-            }})()"#,
-            sel = js_lit(sel)
-        );
+        let code = crate::js::paginate_click()
+            .with("SEL", &js_lit(sel))
+            .returning();
         str_or(page::js(client, &code).await?, r#"{"ok": false}"#)
     } else {
         str_or(
-            page::js(
-                client,
-                r#"return (function() {
-                    var patterns = ['next','siguiente','→','›','>>','»','more','load more'];
-                    var els = Array.from(document.querySelectorAll('a,button,[role=button]'));
-                    for (var i=0; i<els.length; i++) {
-                        var txt = els[i].textContent.toLowerCase().trim();
-                        var aria = (els[i].getAttribute('aria-label')||'').toLowerCase();
-                        for (var j=0; j<patterns.length; j++) {
-                            if (txt === patterns[j] || aria === patterns[j]) {
-                                els[i].click();
-                                return JSON.stringify({ok: true, matched: patterns[j]});
-                            }
-                        }
-                    }
-                    var rel = document.querySelector('a[rel=next]');
-                    if (rel) { rel.click(); return JSON.stringify({ok: true, method: "rel_next"}); }
-                    return JSON.stringify({ok: false, error: "no next button found"});
-                })()"#,
-            )
-            .await?,
+            page::js(client, &crate::js::paginate_next().returning()).await?,
             r#"{"ok": false}"#,
         )
     };

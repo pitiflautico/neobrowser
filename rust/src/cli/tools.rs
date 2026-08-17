@@ -3,10 +3,6 @@
 //! The Markdown form is what generates docs/TOOLS.md, so the documentation cannot drift
 //! from the binary: it is produced by the binary.
 
-//! NeoBrowser — a fast, stealthy MCP browser-automation server that drives real
-//! Chrome via CDP. `serve` runs the MCP server (default); `doctor` checks the
-//! environment; `tools` prints the tool catalog for humans/AIs.
-
 use neobrowser::tool_impls;
 
 /// Print the tool catalog. `tools --markdown` renders a docs-friendly table.

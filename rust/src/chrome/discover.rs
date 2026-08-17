@@ -4,20 +4,6 @@
 //! because a UA claiming a Chrome version that does not match the browser's actual
 //! behaviour is a stronger automation signal than sending no UA at all.
 
-//! Tier 0: Chrome process manager.
-//!
-//! Port of the Python `chrome_process.py`. Design invariants kept:
-//! - No shared PID file that could kill sibling processes.
-//! - A `ChromeProcess` owns exactly the child it spawned and only ever kills that.
-//! - `health_check()` requires BOTH the process alive AND the debug port responding,
-//!   which prevents handing out a zombie ("GhostChrome").
-//!
-//! Improvements over the Python original:
-//! - The spawned child is owned, so `Drop` reaps it — no orphan Chromes if the
-//!   manager is dropped without an explicit `kill()`.
-//! - `kill()` sends SIGTERM first (Chrome flushes its profile/cookies) and only
-//!   escalates to SIGKILL after a grace period.
-
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -141,7 +127,7 @@ pub fn chrome_user_agent() -> Option<&'static str> {
 /// `--no-sandbox` is deliberately NOT here. NeoBrowser points a browser at
 /// arbitrary untrusted pages, so the renderer sandbox is the last line between a
 /// drive-by exploit and the user's machine — and in real-profile mode, their live
-/// sessions. It is added only through the audited opt-in in [`resolve_sandbox`].
+/// sessions. It is added only through the audited opt-in in `sandbox::resolve_sandbox`.
 pub const DEFAULT_CHROME_FLAGS: &[&str] = &[
     "--headless=new",
     "--disable-dev-shm-usage",

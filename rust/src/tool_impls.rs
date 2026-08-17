@@ -44,8 +44,6 @@ fn arg_bool(args: &Map<String, Value>, key: &str, default: bool) -> bool {
     args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
 }
 
-// --- status --------------------------------------------------------------------
-
 pub mod browse;
 pub mod debug;
 pub mod fetch;

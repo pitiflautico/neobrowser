@@ -80,6 +80,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: python3 ../scripts/check-orphan-attrs.py
 
+      # Documentation is half the value of an open-source crate, and a broken intra-doc
+      # link is invisible until someone reads the rendered docs. RUSTDOCFLAGS makes the
+      # warnings fatal.
+      - name: Docs build without warnings
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps
+
       - name: Format check
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check

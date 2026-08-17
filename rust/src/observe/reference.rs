@@ -19,7 +19,7 @@
 //!
 //! **Context cost.** Returning the whole tree on every observation is what makes
 //! browser tools expensive to drive. A snapshot here has a character budget and a
-//! mode, and [`diff`] reports only what changed since the previous one — which is
+//! mode, and [`mod@super::diff`] reports only what changed since the previous one — which is
 //! usually a handful of lines instead of a few thousand.
 
 use super::capture::snapshot;

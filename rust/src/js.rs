@@ -20,6 +20,18 @@
 //! Parameters use `__NAME__` placeholders substituted by [`Snippet::with`], not `format!`.
 //! A placeholder is inert JavaScript-wise, so the file still parses on its own — which is
 //! precisely what makes the syntax check meaningful.
+//!
+//! # Layout
+//!
+//! This file holds what is true of snippets in general: the [`Snippet`] type, the [`Form`] a
+//! snippet reaches the browser in, and [`all_snippets_for_test`] — the inventory every check
+//! iterates. The loaders themselves are grouped one module per domain ([`forms`],
+//! [`harvest`], [`inspect`], [`login`], [`page`]) and re-exported flat, so a call site still
+//! writes `js::fill_control()`.
+//!
+//! The grouping is a filing convenience, not a claim about the snippets: [`Form`] is the
+//! distinction that actually changes how a snippet must be used, and it cuts across the
+//! groups.
 
 /// A JS snippet with `__NAME__` placeholders.
 pub struct Snippet {
@@ -102,50 +114,93 @@ impl Snippet {
     }
 }
 
-/// The page-state digest used by every verified action.
-pub fn state_digest() -> Snippet {
-    Snippet::new(include_str!("../js/state_digest.js"))
+pub mod forms;
+pub mod harvest;
+pub mod inspect;
+pub mod login;
+pub mod page;
+
+// Re-exported flat, because a snippet's group is a filing decision and not part of its
+// identity: `js::fill_control()` reads better at a call site than `js::forms::fill_control()`,
+// and moving a snippet between groups then costs nothing at the call sites.
+pub use forms::{fill_control, find_and_click, form_fill_fields, submit_form};
+pub use harvest::{extract_links, extract_table, paginate_click, paginate_next};
+pub use inspect::{computed_style, debug_capture_off, debug_capture_on, fetch_source_map, vitals};
+pub use login::{login_fill_field, login_find_field, login_state, login_submit};
+pub use page::{frame_access, pierce, set_control, state_digest, wall_signals};
+
+/// How a snippet is handed to `page::js`, which is not uniform and cannot be made so.
+///
+/// The distinction decides what "correct" even means for a snippet, so it is recorded
+/// rather than inferred: an [`Expression`](Form::Expression) with its value dropped on the
+/// floor and a [`Statements`](Form::Statements) snippet look identical from the Rust side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    /// The call site passes [`Snippet::returning`], so `page::js` receives
+    /// `return <expr>` and wraps it in an async IIFE. The expression MUST begin on the
+    /// same line as `return` — that is the ASI hazard this module exists to prevent.
+    Expression,
+    /// The call site passes [`Snippet::expr`] unchanged: a statement sequence, evaluated
+    /// for its effect on the page. `page::js` wraps it only when it contains a `return `
+    /// anywhere, which for these snippets means a `return` inside a nested callback — so
+    /// the wrapped form evaluates to `undefined` and the call site must not use the value.
+    Statements,
 }
 
-/// Shadow-DOM and same-origin-iframe piercing.
-pub fn pierce() -> Snippet {
-    Snippet::new(include_str!("../js/pierce.js"))
+/// The expression `page::js` will actually hand to Chrome for `code`.
+///
+/// Mirrors the rule in [`crate::page::js`]: code containing a `return ` is wrapped as an
+/// async function body, anything else is evaluated as written. Duplicated here rather than
+/// shared so `tests/embedded_js.rs` can `node --check` the exact string Chrome parses; if
+/// `page::js` ever changes how it wraps, change this with it.
+pub fn as_page_js_evaluates(code: &str) -> String {
+    if code.contains("return ") {
+        format!("(async function(){{{code}}})()")
+    } else {
+        code.to_string()
+    }
 }
 
-/// Web Vitals and navigation timing.
-pub fn vitals() -> Snippet {
-    Snippet::new(include_str!("../js/vitals.js"))
-}
-
-/// Frame reachability, for `list_frames`.
-pub fn frame_access() -> Snippet {
-    Snippet::new(include_str!("../js/frame_access.js"))
-}
-
-/// Resolved CSS for one element, plus why it is invisible when it is.
-pub fn computed_style() -> Snippet {
-    Snippet::new(include_str!("../js/computed_style.js"))
-}
-
-/// Set a checkbox, radio, select or contenteditable through the framework-visible setter.
-pub fn set_control() -> Snippet {
-    Snippet::new(include_str!("../js/set_control.js"))
-}
-
-/// Every shipped snippet as `(name, returning_form)`, for the integration test that
-/// verifies the form actually handed to Chrome.
+/// Every shipped snippet as `(name, form, code)`, where `code` is the exact string its
+/// call site hands to `page::js` — `returning()` for an expression, `expr()` for
+/// statements.
 ///
 /// Public because `tests/embedded_js.rs` is a separate binary and cannot reach a
-/// `#[cfg(test)]` item — and the check it performs (does this parse *wrapped*) is the one
-/// whose absence let a broken refactor through.
-pub fn all_snippets_for_test() -> Vec<(&'static str, String)> {
+/// `#[cfg(test)]` item — and the check it performs (does this parse *in the form Chrome
+/// receives*) is the one whose absence let a broken refactor through.
+pub fn all_snippets_for_test() -> Vec<(&'static str, Form, String)> {
+    use Form::{Expression, Statements};
     vec![
-        ("state_digest", state_digest().returning()),
-        ("pierce", pierce().returning()),
-        ("vitals", vitals().returning()),
-        ("frame_access", frame_access().returning()),
-        ("computed_style", computed_style().returning()),
-        ("set_control", set_control().returning()),
+        ("state_digest", Expression, state_digest().returning()),
+        ("pierce", Expression, pierce().returning()),
+        ("vitals", Expression, vitals().returning()),
+        ("frame_access", Expression, frame_access().returning()),
+        ("computed_style", Expression, computed_style().returning()),
+        ("set_control", Expression, set_control().returning()),
+        ("fill_control", Expression, fill_control().returning()),
+        (
+            "form_fill_fields",
+            Expression,
+            form_fill_fields().returning(),
+        ),
+        ("submit_form", Expression, submit_form().returning()),
+        ("find_and_click", Expression, find_and_click().returning()),
+        ("extract_links", Expression, extract_links().returning()),
+        ("extract_table", Expression, extract_table().returning()),
+        ("paginate_click", Expression, paginate_click().returning()),
+        ("paginate_next", Expression, paginate_next().returning()),
+        ("login_state", Expression, login_state().returning()),
+        (
+            "fetch_source_map",
+            Expression,
+            fetch_source_map().returning(),
+        ),
+        ("wall_signals", Expression, wall_signals().returning()),
+        ("debug_capture_on", Statements, debug_capture_on().expr()),
+        ("debug_capture_off", Statements, debug_capture_off().expr()),
+        ("login_find_field", Statements, login_find_field().expr()),
+        ("login_fill_field", Statements, login_fill_field().expr()),
+        ("login_submit", Statements, login_submit().expr()),
     ]
 }
 
@@ -190,24 +245,72 @@ mod tests {
 
     /// Every shipped snippet, in the form it actually reaches the browser, must have its
     /// expression on the same line as `return`.
+    ///
+    /// Checked per [`Form`] rather than uniformly: only an expression snippet is prefixed
+    /// with `return`, so demanding `return (` of every snippet would either be a lie about
+    /// the statement ones or force them into a shape they do not have.
     #[test]
     fn no_shipped_snippet_has_the_asi_hazard() {
-        for (name, snippet) in [
-            ("state_digest", state_digest()),
-            ("pierce", pierce()),
-            ("vitals", vitals()),
-            ("frame_access", frame_access()),
-            ("computed_style", computed_style()),
-            ("set_control", set_control()),
-        ] {
-            let wrapped = snippet.returning();
-            let first = wrapped.lines().next().unwrap_or("");
-            assert!(
-                first.starts_with("return (") || first.starts_with("return ("),
-                "{name}: `return` is not followed by the expression on the same line: {first:?}"
-            );
-            assert!(!wrapped.contains("return //"), "{name}: ASI hazard");
+        for (name, form, code) in all_snippets_for_test() {
+            if form == Form::Expression {
+                let first = code.lines().next().unwrap_or("");
+                let after = first.strip_prefix("return ").unwrap_or_else(|| {
+                    panic!("{name}: an expression snippet must start with `return `: {first:?}")
+                });
+                assert!(
+                    !after.trim().is_empty() && !after.trim_start().starts_with("//"),
+                    "{name}: `return` is not followed by the expression on the same line: \
+                     {first:?}"
+                );
+            }
+            assert!(!code.contains("return //"), "{name}: ASI hazard");
+            for (i, line) in code.lines().enumerate() {
+                assert!(
+                    line.trim_end() != "return",
+                    "{name}: line {} is a bare `return` at end of line; automatic semicolon \
+                     insertion makes it `return;` and the value below is never returned",
+                    i + 1
+                );
+            }
         }
+    }
+
+    /// A statement snippet whose only `return` sits in a nested callback is wrapped by
+    /// `page::js` as a function body that returns nothing. That is fine — but only because
+    /// no call site reads the value, and this records which snippets that applies to so the
+    /// next person to want a value back knows they cannot just take one.
+    #[test]
+    fn statement_snippets_are_the_ones_whose_value_is_unused() {
+        let statements: Vec<&str> = all_snippets_for_test()
+            .into_iter()
+            .filter(|(_, form, _)| *form == Form::Statements)
+            .map(|(name, _, _)| name)
+            .collect();
+        assert_eq!(
+            statements,
+            vec![
+                "debug_capture_on",
+                "debug_capture_off",
+                "login_find_field",
+                "login_fill_field",
+                "login_submit",
+            ],
+            "the set of snippets evaluated for effect changed; confirm the new one's return \
+             value really is unused at its call site before updating this list"
+        );
+    }
+
+    /// The wrapping mirror must agree with `page::js` on both branches.
+    #[test]
+    fn the_wrapping_mirror_matches_page_js() {
+        assert_eq!(
+            as_page_js_evaluates("return 1"),
+            "(async function(){return 1})()"
+        );
+        assert_eq!(as_page_js_evaluates("f()"), "f()");
+        // `return;` has no trailing space, so `page::js` does NOT wrap it — the mirror must
+        // reproduce that, not improve on it.
+        assert_eq!(as_page_js_evaluates("if (!x) return;"), "if (!x) return;");
     }
 
     /// Every shipped snippet loads and has no placeholder that callers forgot to name.
@@ -222,7 +325,40 @@ mod tests {
             ("frame_access", frame_access(), vec![]),
             ("computed_style", computed_style(), vec!["SEL", "PROPS"]),
             ("set_control", set_control(), vec!["SEL", "VALUE"]),
+            ("fill_control", fill_control(), vec!["SEL", "VAL"]),
+            (
+                "form_fill_fields",
+                form_fill_fields(),
+                vec!["IDX", "LABEL", "VAL"],
+            ),
+            ("submit_form", submit_form(), vec![]),
+            (
+                "find_and_click",
+                find_and_click(),
+                vec!["NTH", "ROLE", "TEXTQ", "TEXTRAW"],
+            ),
+            ("extract_links", extract_links(), vec![]),
+            ("extract_table", extract_table(), vec!["IDX", "SEL"]),
+            ("paginate_click", paginate_click(), vec!["SEL"]),
+            ("paginate_next", paginate_next(), vec![]),
+            ("debug_capture_on", debug_capture_on(), vec![]),
+            ("debug_capture_off", debug_capture_off(), vec![]),
+            ("login_find_field", login_find_field(), vec!["V"]),
+            ("login_fill_field", login_fill_field(), vec!["V"]),
+            ("login_submit", login_submit(), vec![]),
+            ("login_state", login_state(), vec![]),
+            ("fetch_source_map", fetch_source_map(), vec!["URL"]),
+            ("wall_signals", wall_signals(), vec![]),
         ];
+        // Every snippet reachable through `all_snippets_for_test` must be listed, or a
+        // half-substituted one ships unnoticed.
+        let declared: Vec<&str> = cases.iter().map(|(n, _, _)| *n).collect();
+        for (name, _, _) in all_snippets_for_test() {
+            assert!(
+                declared.contains(&name),
+                "{name} ships but its placeholders are undeclared here"
+            );
+        }
         for (name, snippet, expected) in cases {
             assert!(!snippet.expr().is_empty(), "{name} is empty");
             let mut found = snippet.unresolved();

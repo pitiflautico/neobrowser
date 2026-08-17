@@ -43,8 +43,6 @@ impl Tool for SearchTool {
 
 // --- search_images -------------------------------------------------------------
 
-// --- search_images -------------------------------------------------------------
-
 pub struct SearchImagesTool;
 
 #[async_trait]
@@ -76,8 +74,6 @@ impl Tool for SearchImagesTool {
 
 // --- search_videos -------------------------------------------------------------
 
-// --- search_videos -------------------------------------------------------------
-
 pub struct SearchVideosTool;
 
 #[async_trait]
@@ -106,8 +102,6 @@ impl Tool for SearchVideosTool {
         ))
     }
 }
-
-// --- search_twitter_videos -----------------------------------------------------
 
 // --- search_twitter_videos -----------------------------------------------------
 
@@ -145,5 +139,3 @@ impl Tool for SearchTwitterVideosTool {
         ))
     }
 }
-
-// --- record_task / stop_recording / replay ------------------------------------

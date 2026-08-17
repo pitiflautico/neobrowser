@@ -5,27 +5,6 @@
 //! is checked *before* decrypting, so an expired secret is never briefly in memory in plain
 //! form on its way to being rejected.
 
-//! Encrypted-at-rest storage for session material, keyed by the OS credential store.
-//!
-//! `0600` permissions stop another *user* reading the cookie snapshots. They do not
-//! stop anything that already runs as this user — a malicious npm postinstall, a
-//! backup that syncs the home directory to a cloud drive, a stolen disk without full
-//! disk encryption. Session cookies are as good as a password, so they get encrypted
-//! with a key that lives in the Keychain / Secret Service / DPAPI rather than on
-//! disk beside the data.
-//!
-//! Three properties the PRD asks for and that shaped this:
-//!
-//! - **TTL.** A session snapshot has an expiry. Reading past it fails closed and the
-//!   plaintext is never produced, because a six-month-old cookie jar is a liability
-//!   with no upside.
-//! - **Revocation and verifiable deletion.** [`revoke`] overwrites the ciphertext
-//!   before unlinking, and [`is_revoked`] can prove afterwards that it is gone.
-//!   "Deleted" that leaves a recoverable file is not deleted.
-//! - **No key on disk.** If the credential store is unavailable the vault refuses to
-//!   write rather than silently falling back to plaintext — a fallback is exactly how
-//!   "encrypted at rest" becomes a claim instead of a fact.
-
 use std::path::Path;
 
 use super::keys::vault_key;

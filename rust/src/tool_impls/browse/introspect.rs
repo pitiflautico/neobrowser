@@ -1,11 +1,5 @@
 //! Tools that ask the page about itself: run script, summarise, analyse.
 
-//! The core loop: navigate, observe, act, verify, extract.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -13,8 +7,6 @@ use crate::ops;
 use crate::tools::{ParamSpec, ParamType, Tool, ToolCtx, ToolError, ToolOutput, ToolSpec};
 
 use super::super::arg_str;
-
-// --- status --------------------------------------------------------------------
 
 pub struct JsTool;
 
@@ -41,8 +33,6 @@ impl Tool for JsTool {
 
 // --- page_info -----------------------------------------------------------------
 
-// --- page_info -----------------------------------------------------------------
-
 pub struct PageInfoTool;
 
 #[async_trait]
@@ -62,8 +52,6 @@ impl Tool for PageInfoTool {
 
 // --- analyze -------------------------------------------------------------------
 
-// --- analyze -------------------------------------------------------------------
-
 pub struct AnalyzeTool;
 
 #[async_trait]
@@ -80,7 +68,3 @@ impl Tool for AnalyzeTool {
         Ok(ToolOutput::text(ops::analyze(&tab).await?))
     }
 }
-
-// --- fill ----------------------------------------------------------------------
-
-// --- fill ----------------------------------------------------------------------

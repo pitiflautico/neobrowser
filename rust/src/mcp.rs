@@ -5,7 +5,7 @@
 //! contract and the same 500k-char text cap. Screenshots return native MCP image
 //! content instead of the Python string-JSON round-trip.
 //!
-//! Split into [`serve`] (the stdio loop and cooperative shutdown), [`protocol`] (version
+//! Split into [`mod@serve`] (the stdio loop and cooperative shutdown), [`protocol`] (version
 //! negotiation) and [`dispatch`] (routing a request to a tool and shaping the response).
 //! The server identity and the instructions text stay here, since they are what the server
 //! *is* rather than what it does.

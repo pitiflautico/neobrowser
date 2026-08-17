@@ -4,8 +4,8 @@
 //! tool cannot end up with weaker validation than the first — which is exactly what
 //! nearly happened when `har_import` was added.
 //!
-//! Split by direction: [`upload`] sends a local file into a page and refuses the ones that
-//! should not leave the machine, [`download`] receives one.
+//! Split by direction: [`mod@upload`] sends a local file into a page and refuses the ones that
+//! should not leave the machine, [`mod@download`] receives one.
 
 pub mod download;
 pub mod stage;

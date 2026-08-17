@@ -5,14 +5,6 @@
 //! so the caller decides — and the values are sanitised anyway, because they end up on
 //! someone's terminal.
 
-//! Browser-driven search: text (Google → DuckDuckGo fallback), images, videos.
-//!
-//! Ported from the Python `_search_google`/`_search_duckduckgo` and
-//! `google_search.py`. Search runs through the real stealth browser because a raw
-//! HTTP fetch to Google/DDG gets bot-blocked. The Google image/video extraction
-//! blobs are Google-DOM-specific and ported verbatim; they (like the Python
-//! originals) may need selector updates when Google changes its markup.
-
 use serde_json::{json, Value};
 
 use super::web::{by_field, google_url, merge_providers, quote_plus, Provider};

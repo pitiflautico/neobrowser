@@ -4,12 +4,6 @@
 //! and a dependency that builds a full DOM to produce a paragraph of text is a large amount of
 //! new attack surface for input that is, by definition, hostile.
 
-//! Server-side fetching: redirect following, credential scoping, and HTML reduction.
-//!
-//! The credential-scoping rule lives here and is the reason this file exists separately:
-//! a cookie or an auth header must not survive a redirect off the origin the caller
-//! asked for, including an `https` → `http` downgrade on the same host.
-
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};

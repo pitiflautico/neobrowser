@@ -15,7 +15,7 @@
 //! and "what exactly did that request return", which is what a developer debugging
 //! their own app actually needs.
 //!
-//! Everything here is read-only and passes through [`crate::trace::redact`] before it
+//! Everything here is read-only and passes through [`mod@crate::trace::redact`] before it
 //! leaves, because a network waterfall is made of headers and query strings — i.e. of
 //! session tokens.
 
@@ -36,29 +36,12 @@ pub async fn resolve_source(
 ) -> Result<String, CdpError> {
     // Fetched in the page rather than from Rust: a source map is often same-origin only,
     // and the page already has the cookies and the origin to reach it.
-    let js = format!(
-        r#"return (async function(){{
-  var url = {url};
-  var text;
-  try {{ text = await (await fetch(url)).text(); }}
-  catch (e) {{ return JSON.stringify({{ ok: false, error: 'could not fetch the script: ' + e }}); }}
-  var m = /[#@]\s*sourceMappingURL=(\S+)/.exec(text.slice(-4000));
-  if (!m) return JSON.stringify({{ ok: false, error: 'the script declares no sourceMappingURL' }});
-  var mapUrl = new URL(m[1], url).href;
-  var map;
-  try {{ map = await (await fetch(mapUrl)).json(); }}
-  catch (e) {{ return JSON.stringify({{ ok: false, error: 'could not fetch the source map: ' + e }}); }}
-  return JSON.stringify({{
-    ok: true,
-    map_url: mapUrl,
-    sources: map.sources || [],
-    source_root: map.sourceRoot || '',
-    mappings: map.mappings || '',
-    has_content: !!(map.sourcesContent && map.sourcesContent.length),
-  }});
-}})()"#,
-        url = serde_json::to_string(script_url).unwrap_or_else(|_| "\"\"".into()),
-    );
+    let js = crate::js::fetch_source_map()
+        .with(
+            "URL",
+            &serde_json::to_string(script_url).unwrap_or_else(|_| "\"\"".into()),
+        )
+        .returning();
     let raw = crate::page::js(client, &js).await?;
     let fetched: Value = match &raw {
         Value::String(t) => serde_json::from_str(t).unwrap_or(Value::Null),

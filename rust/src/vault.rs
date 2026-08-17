@@ -19,7 +19,7 @@
 //!   write rather than silently falling back to plaintext — a fallback is exactly how
 //!   "encrypted at rest" becomes a claim instead of a fact.
 //!
-//! Split into [`keys`] (obtaining a key from the OS credential store) and [`seal`] (the
+//! Split into [`keys`] (obtaining a key from the OS credential store) and [`mod@seal`] (the
 //! AES-256-GCM envelope). The error type, the format tag and the paths live here.
 
 use std::path::{Path, PathBuf};

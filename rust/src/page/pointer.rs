@@ -13,8 +13,9 @@ use serde_json::json;
 
 use crate::cdp::{CdpClient, CdpError};
 
+use super::diagnose::{obscured_by, refuses_input};
 use super::input::Jitter;
-use super::node::{box_center, obscured_by, scroll_into_view};
+use super::node::{box_center, scroll_into_view};
 
 /// What actually happened when we tried to click — never just "we dispatched
 /// two mouse events". A caller (and an agent reading the tool result) has to be
@@ -31,6 +32,16 @@ pub enum ClickOutcome {
     /// Another element occupies the click point — typically a modal, a cookie
     /// banner or a sticky header. The click was NOT dispatched.
     Obscured { by: String },
+    /// The control refuses input: `disabled`, `aria-disabled`, or
+    /// `pointer-events: none`. The click was NOT dispatched.
+    ///
+    /// This is knowable *before* acting, which is the whole reason it is a distinct
+    /// outcome. Dispatching at a disabled button and then reporting "nothing changed"
+    /// is technically true and practically useless: the caller retries the identical
+    /// click forever instead of fixing whatever keeps the control disabled. The
+    /// conformance suite's C4 exists for exactly this, and this variant is what it
+    /// found missing.
+    Disabled { reason: String },
 }
 
 impl ClickOutcome {
@@ -62,6 +73,12 @@ pub async fn click_backend_node(
         };
     };
 
+    // A control that refuses input is knowable now, so say so now. Dispatching anyway and
+    // reporting `uncertain` afterwards withholds a diagnosis we already have.
+    if let Some(reason) = refuses_input(client, backend_node_id).await? {
+        return Ok(ClickOutcome::Disabled { reason });
+    }
+
     // Verify the point actually belongs to the target before pressing, so an
     // overlay can be reported instead of silently swallowing the click.
     if let Some(by) = obscured_by(client, backend_node_id, cx, cy).await? {
@@ -91,10 +108,8 @@ pub async fn click_backend_node(
     Ok(ClickOutcome::Clicked)
 }
 
-/// Scroll a node into the viewport before measuring or clicking it.
-///
-/// Failures are ignored on purpose: a node inside an unscrollable container is still
-/// clickable where it sits, and refusing would break those cases for no gain.
+/// Move the cursor to (tx, ty) over several eased, jittered steps with human-cadence
+/// pauses — approximating a real hand rather than an instantaneous jump.
 pub(super) async fn human_mouse_move(client: &CdpClient, tx: f64, ty: f64) -> Result<(), CdpError> {
     let mut j = Jitter::new(((tx as i64).wrapping_mul(31) ^ (ty as i64)) as u64);
     // Start from a plausible off-target origin (as if arriving from up-and-left).
@@ -119,7 +134,7 @@ pub(super) async fn human_mouse_move(client: &CdpClient, tx: f64, ty: f64) -> Re
     Ok(())
 }
 
-/// Center of an element's content box, or None if it has no layout.
+/// JS `.click()` fallback via DOM.resolveNode + Runtime.callFunctionOn.
 pub(super) async fn js_click_backend_node(
     client: &CdpClient,
     backend_node_id: i64,

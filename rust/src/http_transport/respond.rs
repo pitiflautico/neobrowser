@@ -4,30 +4,6 @@
 //! the dependency tree of a tool whose entire security posture rests on what it will and will
 //! not accept on a loopback port.
 
-//! MCP over Streamable HTTP, with authentication, origin validation and per-session
-//! isolation.
-//!
-//! stdio remains the primary local transport and nothing here changes it. This exists
-//! for the cases stdio cannot serve: a container, a remote dev box, several clients
-//! against one host.
-//!
-//! It is off unless a port is configured, and when on it enforces three things the MCP
-//! specification is explicit about, each of which is a real attack rather than a
-//! checkbox:
-//!
-//! 1. **Authentication.** A bearer token on every request. Without it, anything that can
-//!    reach the port drives a browser holding the user's sessions.
-//! 2. **Origin validation.** A browser page can POST to `127.0.0.1` — and with DNS
-//!    rebinding, a remote page can reach a LAN-bound port too. The `Origin` header is
-//!    what distinguishes a real client from a page, and an unexpected one is rejected.
-//! 3. **Session isolation.** Each `Mcp-Session-Id` gets its own [`Browser`], hence its
-//!    own Chrome profile and its own cookies. Sharing one browser between callers would
-//!    hand session A's logged-in state to session B.
-//!
-//! Binding defaults to loopback. A non-loopback bind is possible but requires an
-//! explicit opt-in, because exposing this on a LAN interface is a materially different
-//! decision from running it locally.
-
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 

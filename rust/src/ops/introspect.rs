@@ -46,33 +46,15 @@ pub async fn analyze(client: &CdpClient) -> Result<String, CdpError> {
 pub async fn debug(client: &CdpClient, action: &str) -> Result<String, CdpError> {
     match action {
         "start" => {
-            page::js(
-                client,
-                r#"if (!window.__neo_debug_logs) window.__neo_debug_logs = [];
-                window.__neo_debug_orig = {log: console.log, warn: console.warn, error: console.error};
-                ['log','warn','error'].forEach(function(l) {
-                    console[l] = function() {
-                        var msg = Array.from(arguments).map(function(a){ try{return JSON.stringify(a);}catch(e){return String(a);} }).join(' ');
-                        window.__neo_debug_logs.push({level: l, msg: msg, t: Date.now()});
-                        window.__neo_debug_orig[l].apply(console, arguments);
-                    };
-                });"#,
-            )
-            .await?;
+            // `expr()`, not `returning()`: this is a statement sequence run for its effect
+            // on the page. It does contain a `return ` inside the mapping callback, so
+            // `page::js` wraps it as a function body and the evaluation yields `undefined` —
+            // which is why the value is discarded rather than reported.
+            page::js(client, &crate::js::debug_capture_on().expr()).await?;
             Ok(json!({ "ok": true, "action": "interceptor_installed" }).to_string())
         }
         "stop" => {
-            page::js(
-                client,
-                r#"if (window.__neo_debug_orig) {
-                    console.log = window.__neo_debug_orig.log;
-                    console.warn = window.__neo_debug_orig.warn;
-                    console.error = window.__neo_debug_orig.error;
-                    delete window.__neo_debug_orig;
-                }
-                window.__neo_debug_logs = [];"#,
-            )
-            .await?;
+            page::js(client, &crate::js::debug_capture_off().expr()).await?;
             Ok(json!({ "ok": true, "action": "interceptor_removed" }).to_string())
         }
         _ => {

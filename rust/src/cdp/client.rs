@@ -4,23 +4,6 @@
 //! than leave their futures hanging forever, because a caller awaiting a reply that can never
 //! arrive does not error — it stops, silently, and takes the task with it.
 
-//! Tier 1: an isolated CDP (Chrome DevTools Protocol) connection to a single tab.
-//!
-//! Port of the concurrency core in the Python `chrome_tab.py`, redesigned around
-//! tokio instead of a background reader thread + per-request queues.
-//!
-//! Model: one owned "connection task" holds the WebSocket and multiplexes with a
-//! `select!` loop:
-//!   - outbound commands arrive over an mpsc channel and are written to the socket;
-//!   - inbound frames are parsed and routed — a frame carrying an `id` fulfills the
-//!     matching request's `oneshot`; a frame carrying a `method` is an event and is
-//!     published on a `broadcast` channel.
-//!
-//! This removes the fragile "who owns recv()" coordination of the threaded version:
-//! there is exactly one reader, responses and events never race, and when the socket
-//! dies every pending request is drained with a typed `Closed` error instead of
-//! hanging until timeout.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

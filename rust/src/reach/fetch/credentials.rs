@@ -5,12 +5,6 @@
 //! So the origin is recorded when the request starts, and anything origin-sensitive is dropped
 //! the moment the origin changes.
 
-//! Server-side fetching: redirect following, credential scoping, and HTML reduction.
-//!
-//! The credential-scoping rule lives here and is the reason this file exists separately:
-//! a cookie or an auth header must not survive a redirect off the origin the caller
-//! asked for, including an `https` → `http` downgrade on the same host.
-
 use super::CROSS_ORIGIN_SAFE_HEADERS;
 
 /// Scheme + host + port, the unit credentials are scoped to. Compared as a whole

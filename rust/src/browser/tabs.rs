@@ -5,15 +5,6 @@
 //! a loop opening tabs will exhaust memory long before it notices, and the failure mode of a
 //! swapping machine is far worse than a refused open.
 
-//! Tier 2: the browser session — a lazily-launched (or attached) Chrome plus one or
-//! more CDP tabs sharing it.
-//!
-//! The Chrome process is owned by the `Browser`, so multiple tabs share a single
-//! browser instance. Tools operate on the *active* tab (`tab()`); `new_tab`,
-//! `list_tabs`, `switch_tab`, and `close_tab` manage the set. In attach mode
-//! (`NEOBROWSER_ATTACH_PORT`) we connect to a Chrome we do not own — no launch, no
-//! stealth patching, no kill on shutdown.
-
 use serde_json::json;
 
 use crate::chrome::{self};

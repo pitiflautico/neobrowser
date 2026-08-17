@@ -4,20 +4,6 @@
 //! remains with no process behind it, and clearing it blindly would corrupt a profile that
 //! a *running* Chrome still owns — so the holder's pid is checked for liveness first.
 
-//! Tier 0: Chrome process manager.
-//!
-//! Port of the Python `chrome_process.py`. Design invariants kept:
-//! - No shared PID file that could kill sibling processes.
-//! - A `ChromeProcess` owns exactly the child it spawned and only ever kills that.
-//! - `health_check()` requires BOTH the process alive AND the debug port responding,
-//!   which prevents handing out a zombie ("GhostChrome").
-//!
-//! Improvements over the Python original:
-//! - The spawned child is owned, so `Drop` reaps it — no orphan Chromes if the
-//!   manager is dropped without an explicit `kill()`.
-//! - `kill()` sends SIGTERM first (Chrome flushes its profile/cookies) and only
-//!   escalates to SIGKILL after a grace period.
-
 use std::path::Path;
 
 /// Remove `Singleton*` from a profile when the process that created them is

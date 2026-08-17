@@ -5,18 +5,6 @@
 //! colleague's machine. `from_har` completes the round trip, so a captured session can be
 //! replayed and diffed rather than only looked at.
 
-//! Deep debugging: performance traces with Web Vitals, network waterfalls with
-//! bounded response bodies, computed styles, and HAR export.
-//!
-//! This is the gap against Chrome DevTools MCP. The existing `console_logs` /
-//! `network_log` tools answer "what happened"; this module answers "why is it slow"
-//! and "what exactly did that request return", which is what a developer debugging
-//! their own app actually needs.
-//!
-//! Everything here is read-only and passes through [`crate::trace::redact`] before it
-//! leaves, because a network waterfall is made of headers and query strings — i.e. of
-//! session tokens.
-
 use serde_json::{json, Value};
 
 use crate::cdp::{CdpClient, CdpError};

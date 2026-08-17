@@ -184,10 +184,8 @@ pub async fn press_key(
     Ok(format!("pressed {key_name} with modifiers {modifiers:?}"))
 }
 
-/// Hover over an element: move the real cursor there without pressing.
-///
-/// Needed for menus and tooltips that only render on `mouseover`; a JS `dispatchEvent` is
-/// not `isTrusted` and many libraries check.
+/// Set a checkbox, radio or `<select>` to a value, through the property setter React and
+/// Vue listen to.
 pub async fn set_control(
     client: &CdpClient,
     selector: &str,

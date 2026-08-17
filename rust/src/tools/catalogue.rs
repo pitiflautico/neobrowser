@@ -4,12 +4,6 @@
 //! than one handed the twenty-six it usually needs, so the rest are opt-in — the capability
 //! is there without the cognitive cost of listing it.
 
-//! Tool registry, schemas, argument validation, and the `Tool` trait.
-//!
-//! Mirrors the Python `TOOLS` dict + `_validate_args` + `dispatch_tool`, but with
-//! typed specs and a trait-object registry so each tool is a self-contained unit
-//! that the MCP layer (see `mcp.rs`) can list and call generically.
-
 use std::sync::Arc;
 
 use serde_json::Value;

@@ -4,12 +4,6 @@
 //! refusal is not a transport error, and neither is a page that simply did not have the
 //! element. Flattening them into one string means an agent cannot tell "retry" from "never".
 
-//! Tool registry, schemas, argument validation, and the `Tool` trait.
-//!
-//! Mirrors the Python `TOOLS` dict + `_validate_args` + `dispatch_tool`, but with
-//! typed specs and a trait-object registry so each tool is a self-contained unit
-//! that the MCP layer (see `mcp.rs`) can list and call generically.
-
 use thiserror::Error;
 
 /// What a tool produces on success.

@@ -1,12 +1,5 @@
 //! Tools for mapping runtime locations back to source, and for exporting a trace bundle.
 
-//! Debugging and performance: console, network, Web Vitals, CPU and heap,
-//! computed styles, source maps, HAR, evidence bundles.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -68,5 +61,3 @@ impl Tool for TraceBundleTool {
         Ok(ToolOutput::text(ctx.trace.bundle().to_string()))
     }
 }
-
-// --- observe -------------------------------------------------------------------

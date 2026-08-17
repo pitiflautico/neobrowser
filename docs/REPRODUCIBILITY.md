@@ -61,4 +61,7 @@ cargo build --release --locked      # --locked: fail rather than silently updati
 ```
 
 Comparing behaviour rather than bytes: `cargo test` runs the full suite, including the
-live-Chrome integration tests and the property/fuzz suite.
+live-Chrome integration tests and the property/fuzz suite. `cargo test --test conformance`
+additionally checks the scenarios in [VERIFIED-ACTIONS.md](VERIFIED-ACTIONS.md), which is the
+behavioural claim most worth reproducing independently — it needs a real Chrome and self-skips
+without one, and a skip is not a pass.

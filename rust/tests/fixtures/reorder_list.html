@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Reorder list</title>
+<!--
+  Conformance fixture C12 — a re-render that invalidates every node handle AND makes
+  acting on the wrong element detectable.
+
+  Two buttons with distinct accessible names and opposite consequences: "Archive" and
+  "Delete". `rebuild()` throws away the whole subtree — so every backendNodeId handed out
+  before it is dead — and swaps the two, so whatever handle previously meant "the first
+  button" now addresses the other one.
+
+  That last part is what makes the scenario a test rather than a demonstration. If an
+  implementation acts on a cached handle, it does not fail: it archives nothing and
+  deletes something, and reports success. The log records which button actually ran, so
+  the difference is visible instead of theoretical.
+-->
+<div id="rows"></div>
+<p id="log">clicked: (nothing)</p>
+<script>
+  let order = ['Archive', 'Delete'];
+
+  function record(name) {
+    document.getElementById('log').textContent = 'clicked: ' + name;
+  }
+
+  function render() {
+    document.getElementById('rows').innerHTML = order
+      .map(function (name) {
+        return '<button onclick="record(\'' + name + '\')">' + name + '</button> ';
+      })
+      .join('');
+  }
+
+  // Rebuild from scratch and swap the order: new nodes, new ids, opposite positions.
+  function rebuild() {
+    order = order.slice().reverse();
+    render();
+  }
+
+  window.rebuild = rebuild;
+  render();
+</script>

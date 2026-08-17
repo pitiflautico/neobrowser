@@ -23,7 +23,7 @@
 //! 2. **Origin validation.** A browser page can POST to `127.0.0.1` — and with DNS
 //!    rebinding, a remote page can reach a LAN-bound port too. The `Origin` header is
 //!    what distinguishes a real client from a page, and an unexpected one is rejected.
-//! 3. **Session isolation.** Each `Mcp-Session-Id` gets its own [`Browser`], hence its
+//! 3. **Session isolation.** Each `Mcp-Session-Id` gets its own [`crate::browser::Browser`], hence its
 //!    own Chrome profile and its own cookies. Sharing one browser between callers would
 //!    hand session A's logged-in state to session B.
 //!

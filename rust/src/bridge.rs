@@ -34,14 +34,9 @@
 //! else can. Per-tab consent is still enforced in the extension, where Chrome shows
 //! its own "being debugged" banner.
 //!
-//! Split so the listener sits apart from the queue it serves: [`server`] accepts
-//! connections and authenticates them, while the queue, its pending map and the token file
-//! stay here.
-//!
 //! Split so the queue sits apart from the listener that serves it: [`queue`] holds the
 //! pending commands and their random ids, [`server`] accepts and authenticates connections,
 //! and the token file stays here.
-
 pub mod queue;
 pub mod server;
 

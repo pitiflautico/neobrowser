@@ -3,13 +3,6 @@
 //! HAR import and export are here together on purpose: a captured network log is only useful
 //! if it can leave, and only trustworthy if it can come back and be compared.
 
-//! Debugging and performance: console, network, Web Vitals, CPU and heap,
-//! computed styles, source maps, HAR, evidence bundles.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 

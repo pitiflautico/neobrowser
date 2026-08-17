@@ -3,13 +3,6 @@
 //! Dialogs get a tool because a native `alert()` blocks everything — including this tool's own
 //! next command — so there has to be a way to answer one deliberately rather than deadlock.
 
-//! Interaction coverage beyond a plain click: keys, hover, drag, native
-//! controls, shadow DOM and iframes, blocking dialogs, device emulation.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 

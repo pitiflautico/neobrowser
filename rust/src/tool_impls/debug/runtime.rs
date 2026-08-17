@@ -4,13 +4,6 @@
 //! answer is usually already recorded — a failed request, a thrown exception — and invisible
 //! in a screenshot.
 
-//! Debugging and performance: console, network, Web Vitals, CPU and heap,
-//! computed styles, source maps, HAR, evidence bundles.
-//!
-//! Split out of a single 2700-line `tool_impls.rs`: at 67 tools that file had
-//! stopped being navigable, and a reviewer could not tell which tools a change
-//! touched.
-
 use async_trait::async_trait;
 use serde_json::{Map, Value};
 
@@ -58,8 +51,6 @@ impl Tool for ConsoleLogsTool {
 
 // --- network_log ---------------------------------------------------------------
 
-// --- network_log ---------------------------------------------------------------
-
 pub struct NetworkLogTool;
 
 #[async_trait]
@@ -93,8 +84,6 @@ impl Tool for NetworkLogTool {
 
 // --- metrics -------------------------------------------------------------------
 
-// --- metrics -------------------------------------------------------------------
-
 pub struct MetricsTool;
 
 #[async_trait]
@@ -122,8 +111,6 @@ impl Tool for MetricsTool {
 
 // --- debug ---------------------------------------------------------------------
 
-// --- debug ---------------------------------------------------------------------
-
 pub struct DebugTool;
 
 #[async_trait]
@@ -145,5 +132,3 @@ impl Tool for DebugTool {
         Ok(ToolOutput::text(ops::debug(&tab, action).await?))
     }
 }
-
-// --- save_cookies / restore_cookies -------------------------------------------

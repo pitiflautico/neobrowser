@@ -6,18 +6,52 @@
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=neobrowser&config=%7B%22command%22%3A%22neobrowser%22%7D)
 [![Install in Cursor](https://img.shields.io/badge/Cursor-Install-000000?style=flat-square&logo=cursor&logoColor=white)](https://cursor.com/en/install-mcp?name=neobrowser&config=eyJjb21tYW5kIjoibmVvYnJvd3NlciJ9)
 
-**Your AI drives a real Chrome with your real logged-in sessions — it wins the fingerprint game (passes bot.sannysoft with a genuine fingerprint), moves the mouse like a human, and lands already authenticated, so it isn't flagged like a stock headless bot.** An MCP server for AI models to use the web the way you do.
+**An MCP server that drives a real Google Chrome with your real logged-in sessions — and that reports what actually happened, not what it attempted.**
+
+```jsonc
+// Add to your MCP client (Claude Code, Claude Desktop, Cursor, …)
+{ "mcpServers": { "neobrowser": { "command": "neobrowser" } } }
+```
+
+## A status the caller can act on
+
+Ask any browser-automation tool to click a button and it will usually tell you it succeeded. What it means is that it dispatched two mouse events at some coordinates. Whether the click landed, whether the page changed, whether the button was there at all — none of that is in the answer.
+
+A human driving a browser never notices the gap, because a human looks at the screen. An agent cannot. It takes the success at face value and continues into a page it never changed, so every step after that reasons from a state that does not exist — and the final report says the task was completed. An error stops an agent; a false success makes it keep going.
+
+So every mutating action here returns a status derived from an observation taken *before* the action, an observation taken *after*, and a detected difference between them — plus the evidence behind it. A click that dispatched but changed nothing reports `uncertain`, never success. `uncertain` is not a failure: it is the honest answer when the tool did its part and could not see the result, and it is one a caller can do something with — retry, escalate, ask a human. There is no recovery from a confident wrong answer.
+
+`ok` is not a field that code can set. It is derived from the status, so an envelope claiming `ok: true` alongside `status: "uncertain"` is unrepresentable rather than merely discouraged (`uncertain_never_serializes_as_ok` holds it that way).
+
+### The Verified Action Contract
+
+That rule is written down as a specification rather than left as an implementation detail: **[docs/VERIFIED-ACTIONS.md](docs/VERIFIED-ACTIONS.md)** — version 1.0, 6 statuses, 10 normative invariants, 13 conformance scenarios, published under CC0. It is implementation-neutral: NeoBrowser is one implementation, and the contract says nothing about how a page must be observed, only about what the report must mean.
+
+The invariants are the things that are easy to lose under pressure. `uncertain` is never promoted to `succeeded` — not on retry, not by a default. `succeeded` requires two observations and a difference between them. A page that cannot be observed yields an *empty* observation, never a cached earlier one, because returning the last known state makes an action that did nothing look like one that worked. `blocked` must name the obstruction. A human gate is reported, never defeated. And the status never depends on which mechanism was used, so a fallback that happens to be easier to verify cannot earn a stronger status than the primary path.
+
+Each invariant maps to a conformance scenario, and several scenarios are defined by what must *not* come back: clicking a button with no handler must report `uncertain` and must not report `succeeded`; clicking under an overlay must report `blocked` and say what covered it.
+
+### How the claim is checked
+
+The scenarios are executable, so the claim is a test result rather than a paragraph in a README:
+
+```bash
+cd rust && cargo test --test conformance
+```
+
+The suite drives a real Chrome, because that is the only place the failures it looks for actually appear — a shadow root the state digest could not see into, a text change of identical length, a page that never settles, a browser killed mid-action. It **self-skips when no Chrome is present**, the same way the other live tests do, so a partial setup still gives a useful run. That has a consequence worth stating plainly: **a skip is not a pass.** A conformance claim requires the run to have executed, and per §6.2 of the contract a partial pass is reported as a partial pass — there is no "mostly conformant".
+
+The contract is CC0 so that a tool competing with this one can adopt it without asking. A contract only becomes a standard if other people can implement it.
+
+## Real Chrome, real sessions
+
+**A report is only as useful as the page it describes, and an agent that spends its run on a login wall never gets to the task.** So the other half of this tool is getting in: it wins the fingerprint game (passes bot.sannysoft with a genuine fingerprint), moves the mouse like a human, and lands already authenticated, so it isn't flagged like a stock headless bot.
 
 It doesn't pretend to be invisible: when a site throws an interactive challenge (reCAPTCHA, Turnstile) NeoBrowser **detects** it and hands control back with a real-session or human path — that honesty is what makes it dependable.
 
 Most browser tools for LLMs launch a fresh, fingerprintable headless browser with no cookies, so the model hits login walls and bot checks constantly. NeoBrowser drives the **real Google Chrome binary** and can reuse **your actual logged-in profile**, so the model lands already authenticated and looks like a genuine user — because it *is* one.
 
 One deliberate exception, so the promise stays accurate: **Google, LinkedIn and Microsoft session-identity cookies are excluded** from the import. Copying those would log you out of your own browser, and the single-session enforcement on those providers makes a clone a liability rather than a shortcut. Everything else comes across; for those three, expect to log in inside the agent profile once. `session_info` reports a per-provider coverage state (`authenticated` / `partially_authenticated` / `no_session`) and names which excluded providers appear, so an agent can log in once instead of looping on an auth wall. `profile_mode` states which of the three session modes is active and what it means for your credentials.
-
-```jsonc
-// Add to your MCP client (Claude Code, Claude Desktop, Cursor, …)
-{ "mcpServers": { "neobrowser": { "command": "neobrowser" } } }
-```
 
 > Rust rewrite: a single ~6.3 MB binary — no Node, no Python, no browser download. The default Linux build links glibc; a **genuinely static** musl build (`neobrowser-x86_64-unknown-linux-musl`) is published per release for Alpine and for older hosts, and CI fails the release if that artifact turns out not to be static. (The original Python implementation is archived under [`archive/python-oracle/`](archive/python-oracle/).)
 
@@ -99,7 +133,7 @@ were already logged into.
 - **Bot-wall aware** — `navigate` detects bot walls, CAPTCHAs, consent gates, rate-limits and login gates on any site and tells the model how to react.
 - **Multi-source search** — text (DuckDuckGo + Google), images (Bing + Google), videos (YouTube + Google): walled sources are skipped, results merged. No single site is a hard dependency.
 - **Real multi-tab** — `new_tab` / `list_tabs` / `switch_tab` / `close_tab`, all sharing one Chrome.
-- **Verified actions** — every mutating action returns a typed envelope with `status` (`succeeded` / `uncertain` / `failed` / `blocked` / `needs_human`) and the evidence behind it. A click that dispatched but changed nothing reports `uncertain`, never success.
+- **Verified actions** — every mutating action returns a typed envelope with `status` (`succeeded` / `failed` / `blocked` / `needs_human` / `requires_confirmation` / `uncertain`) and the evidence behind it. A click that dispatched but changed nothing reports `uncertain`, never success. The rule is specified in [The Verified Action Contract](docs/VERIFIED-ACTIONS.md) and checked by the conformance suite.
 - **Stable element references** — `observe` returns refs like `button:Continue#0` that are re-resolved against the live tree on every use, so they survive the re-render that invalidates a `backendNodeId`. `observe(diff=true)` returns only what changed.
 - **Central policy engine** — every call is classified and evaluated before it runs: domain allow/deny lists plus `developer` / `safe` / `autonomous` profiles. Refusals are structured, with a `remedy`.
 - **Encrypted session vault** — cookies and localStorage sealed with a key from the OS credential store, with a TTL and verifiable revocation.
@@ -110,6 +144,7 @@ were already logged into.
 
 ## Documentation
 
+- **[docs/VERIFIED-ACTIONS.md](docs/VERIFIED-ACTIONS.md)** — The Verified Action Contract: the statuses, the invariants behind them, and the conformance scenarios. CC0, versioned independently of this implementation.
 - **[docs/TOOLS.md](docs/TOOLS.md)** — full reference for all 67 tools (params + descriptions). Regenerate with `neobrowser tools --markdown`; introspect live with `neobrowser tools`.
 - **[AGENTS.md](AGENTS.md)** — architecture, build/test, and conventions for contributors and AI agents.
 - **[extension/README.md](extension/README.md)** — the Chrome Bridge and its security model.
@@ -329,7 +364,9 @@ Real-session mode reads cookies from your Chrome profile and injects them into a
 
 ```bash
 # Rust (primary):
-cd rust && cargo test          # unit + one live-Chrome integration test (self-skips without Chrome)
+cd rust && cargo test          # unit + live-Chrome + property/fuzz + embedded-JS (each self-skips
+                               # when Chrome or Node is absent, rather than failing)
+cargo test --test conformance                   # the Verified Action Contract scenarios
 cargo test --test stealth_verify -- --ignored   # real bot.sannysoft detector
 
 # Archived Python implementation (NOT the product; see archive/python-oracle/README.md):
