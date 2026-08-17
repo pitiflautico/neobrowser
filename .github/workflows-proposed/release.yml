@@ -1,0 +1,184 @@
+name: Release
+
+# Publish cross-platform binaries when a version tag is pushed (e.g. v0.1.2).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write        # create the release + upload assets
+  id-token: write        # sign build provenance attestations
+  attestations: write    # store the attestations
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # A genuinely static Linux build. The README used to claim "static binary"
+          # while shipping only the glibc target, which fails on Alpine and on any host
+          # older than the builder's glibc. musl makes the claim true; the gnu target
+          # stays because it is faster and it is what most users want.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches Cargo version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          echo "tag=$TAG cargo=$VER"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::git tag v$TAG does not match Cargo.toml version $VER"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # musl and cross-arm64 need a linker the runner does not ship. `cross` handles
+      # both without a bespoke toolchain setup per target.
+      - name: Install cross-compilation support
+        if: contains(matrix.target, 'musl') || contains(matrix.target, 'aarch64-unknown-linux')
+        run: |
+          cargo install cross --locked
+          echo "CARGO=cross" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build
+        # ${CARGO:-cargo} so the cross-compiled targets use `cross` and the native ones
+        # keep using cargo directly.
+        shell: bash
+        run: ${CARGO:-cargo} build --release --target ${{ matrix.target }}
+
+      # Prove the static claim rather than asserting it: a musl build that turns out to
+      # be dynamically linked must fail the release, not ship with a false README.
+      - name: Verify the musl build is actually static
+        if: contains(matrix.target, 'musl')
+        run: |
+          BIN=target/${{ matrix.target }}/release/neobrowser
+          file "$BIN"
+          if file "$BIN" | grep -q "dynamically linked"; then
+            echo "::error::the musl target produced a dynamically linked binary"
+            exit 1
+          fi
+          echo "confirmed: statically linked"
+
+      - name: Package + checksum
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            ART="neobrowser-${{ matrix.target }}.zip"
+            7z a "$ART" neobrowser.exe
+          else
+            ART="neobrowser-${{ matrix.target }}.tar.gz"
+            tar -czf "$ART" neobrowser
+          fi
+          sha256sum "$ART" > "$ART.sha256"
+          echo "ART=rust/target/${{ matrix.target }}/release/$ART" >> "$GITHUB_ENV"
+
+      # A7: an SBOM per release, so a consumer can answer "does this ship the crate that
+      # just got a CVE" without rebuilding it.
+      - name: Generate SBOM
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json
+          cp neobrowser.cdx.json "target/${{ matrix.target }}/release/neobrowser-sbom.cdx.json" ||             find . -name '*.cdx.json' -exec cp {} "target/${{ matrix.target }}/release/neobrowser-sbom.cdx.json" \;
+
+      # macOS notarization. Gated on the secrets existing, so a fork or a maintainer
+      # without an Apple Developer account still gets a working release rather than a
+      # red build — the signature is an improvement, not a prerequisite.
+      - name: Sign and notarize (macOS)
+        if: startsWith(matrix.target, 'aarch64-apple') || startsWith(matrix.target, 'x86_64-apple')
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -z "$APPLE_CERT_P12" ]; then
+            echo "note: no Apple signing secrets configured; shipping an unsigned binary."
+            echo "      Users will need to clear the quarantine flag on first run."
+            exit 0
+          fi
+          BIN=target/${{ matrix.target }}/release/neobrowser
+          # Import the certificate into a throwaway keychain, never the default one.
+          echo "$APPLE_CERT_P12" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p actions /tmp/build.keychain
+          security default-keychain -s /tmp/build.keychain
+          security unlock-keychain -p actions /tmp/build.keychain
+          security import /tmp/cert.p12 -k /tmp/build.keychain -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions \
+            /tmp/build.keychain
+          # Hardened runtime + a secure timestamp, which notarization requires.
+          codesign --force --options runtime --timestamp \
+            --sign "Developer ID Application" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+          echo "$APPLE_API_KEY_P8" | base64 --decode > /tmp/key.p8
+          ditto -c -k --keepParent "$BIN" /tmp/notarize.zip
+          xcrun notarytool submit /tmp/notarize.zip --wait \
+            --key /tmp/key.p8 --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"
+          # A bare binary cannot be stapled (only bundles/dmg/pkg can), so the ticket is
+          # served from Apple's CDN and Gatekeeper checks online. Stated rather than
+          # silently skipped.
+          echo "notarized. A standalone binary cannot be stapled; Gatekeeper verifies online."
+          rm -f /tmp/cert.p12 /tmp/key.p8
+
+      - name: Sign (Windows)
+        if: startsWith(matrix.target, 'x86_64-pc-windows')
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -z "$WINDOWS_CERT_PFX" ]; then
+            echo "note: no Windows signing certificate configured; shipping unsigned."
+            echo "      SmartScreen will warn on first run until the binary earns reputation."
+            exit 0
+          fi
+          echo "$WINDOWS_CERT_PFX" | base64 --decode > cert.pfx
+          signtool sign /f cert.pfx /p "$WINDOWS_CERT_PASSWORD" /fd SHA256 \
+            /tr http://timestamp.digicert.com /td SHA256 \
+            "target/${{ matrix.target }}/release/neobrowser.exe"
+          signtool verify /pa "target/${{ matrix.target }}/release/neobrowser.exe"
+          rm -f cert.pfx
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ env.ART }}
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ART }}
+            ${{ env.ART }}.sha256
+            rust/target/${{ matrix.target }}/release/neobrowser-sbom.cdx.json

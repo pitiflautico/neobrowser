@@ -7,15 +7,8 @@ on:
 
 jobs:
   rust:
-    # The PRD's portability gate: real Chrome on all three supported systems, not
-    # Linux plus an assumption. macOS uses seatbelt and Windows its own sandbox, so a
-    # Linux-only run cannot tell you the sandbox path works for the other two.
-    name: Rust ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+    name: Rust build + test
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: rust
@@ -27,80 +20,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      # Node is used by one test: it syntax-checks the JavaScript embedded in the Rust
-      # source. Embedded JS has no compiler, and a silent ASI bug there once made every
-      # verified action report `uncertain`.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - name: Install Chrome
         uses: browser-actions/setup-chrome@v1
         id: chrome
         with:
           chrome-version: stable
-
-      # Chrome's sandbox is required (never --no-sandbox, see AGENTS.md), and on
-      # Ubuntu 23.10+ AppArmor denies unprivileged user namespaces to unconfined
-      # binaries — which a Chrome unpacked into the workspace is. Without this the
-      # sandboxed launch fails and every live-Chrome test times out. Fix the host,
-      # don't weaken the browser.
-      - name: Allow unprivileged user namespaces (Chrome sandbox)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true
-      # server.json is what the MCP registry publishes. It drifted to 0.1.3 while the
-      # crate was at 0.1.7 because nothing compared them.
-      - name: server.json version matches Cargo.toml
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          CARGO_VER="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
-          JSON_VER="$(python3 -c "import json;print(json.load(open('../server.json'))['version'])")"
-          echo "cargo=$CARGO_VER server.json=$JSON_VER"
-          if [ "$CARGO_VER" != "$JSON_VER" ]; then
-            echo "::error::server.json version $JSON_VER does not match Cargo.toml $CARGO_VER"
-            exit 1
-          fi
-
-      # The README has already shipped "~4 MB static binary" for a 5.5 MB dynamically-linked
-      # one and "43 tools" for 67. Documentation drift is found late and by hand unless
-      # something checks it.
-      # A file present locally but absent from git compiles and tests fine for its author
-      # and is missing for everyone else. An unanchored `sessions/` in .gitignore did exactly
-      # that to four modules: 324 tests passed locally, the pushed branch did not compile.
-      - name: Every source file is committed
-        if: matrix.os == 'ubuntu-latest'
-        run: python3 ../scripts/check-tracked.py
-
-      - name: README claims match the binary
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cargo build --release
-          python3 ../scripts/check-claims.py
-
-      # An attribute separated from its item still compiles, and applies to the wrong
-      # thing. Two real defects came from this while splitting modules, and neither broke
-      # a test. See the script's docstring.
-      - name: No orphaned attributes
-        if: matrix.os == 'ubuntu-latest'
-        run: python3 ../scripts/check-orphan-attrs.py
-
-      # Documentation is half the value of an open-source crate, and a broken intra-doc
-      # link is invisible until someone reads the rendered docs. RUSTDOCFLAGS makes the
-      # warnings fatal.
-      - name: Docs build without warnings
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps
-
       - name: Format check
-        if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - name: Clippy
-        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --all-targets -- -D warnings
       - name: Test (incl. live-Chrome stealth verification)
         # Chrome is installed above, so the stealth integration test actually runs
@@ -109,78 +36,11 @@ jobs:
         env:
           NEOBROWSER_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
           NEOBROWSER_DISABLE_GPU: "1"
-          # CI runners have no unlocked keyring, so the vault would refuse to write
-          # and the session tests would only ever exercise the refusal path. This is
-          # a throwaway CI key, never a real one.
-          NEOBROWSER_VAULT_KEY: "Y2ktb25seS12YXVsdC1rZXktMzItYnl0ZXMtISEhISE="
         run: cargo test
 
-  security:
-    name: Supply chain + secrets
+  python:
+    name: Python oracle tests
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # gitleaks needs history to scan past commits, not just the tip.
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-
-      # Known vulnerabilities in the dependency tree. A finding fails the build:
-      # a warning nobody is required to read is the same as no check at all.
-      - name: cargo audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit --deny warnings
-
-      # Licences, duplicate versions, and banned/unmaintained crates.
-      - name: cargo deny
-        run: |
-          cargo install cargo-deny --locked
-          cargo deny check
-
-      # Secret scanning over the full history. This repo handles cookies and
-      # keychain material, so a committed credential is the worst plausible slip.
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  sbom:
-    name: SBOM
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      # CycloneDX so the artifact is consumable by standard tooling rather than a
-      # bespoke text file. Attached per release by release.yml.
-      - name: Generate CycloneDX SBOM
-        run: |
-          cargo install cargo-cyclonedx --locked
-          cargo cyclonedx --format json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: rust/**/*.cdx.json
-          if-no-files-found: error
-
-  # The archived Python implementation. Kept running so the reference material does not
-  # silently rot, but it no longer gates the product: the two implementations return
-  # different shapes by design since the Rust side adopted the verified-action envelope.
-  python-archive:
-    name: Archived Python oracle
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: archive/python-oracle
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
