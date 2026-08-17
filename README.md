@@ -19,7 +19,7 @@ One deliberate exception, so the promise stays accurate: **Google, LinkedIn and 
 { "mcpServers": { "neobrowser": { "command": "neobrowser" } } }
 ```
 
-> Rust rewrite: a single ~6.2 MB binary — no Node, no Python, no browser download. The default Linux build links glibc; a **genuinely static** musl build (`neobrowser-x86_64-unknown-linux-musl`) is published per release for Alpine and for older hosts, and CI fails the release if that artifact turns out not to be static. (The original Python implementation is archived under [`archive/python-oracle/`](archive/python-oracle/).)
+> Rust rewrite: a single ~6.3 MB binary — no Node, no Python, no browser download. The default Linux build links glibc; a **genuinely static** musl build (`neobrowser-x86_64-unknown-linux-musl`) is published per release for Alpine and for older hosts, and CI fails the release if that artifact turns out not to be static. (The original Python implementation is archived under [`archive/python-oracle/`](archive/python-oracle/).)
 
 ---
 
@@ -206,6 +206,11 @@ What no tool can promise is defeating *interactive challenges* — reCAPTCHA, Tu
 | `NEOBROWSER_MAX_TABS` | `20` | Concurrent tab ceiling. Each tab is a renderer process |
 | `NEOBROWSER_MAX_MEMORY_MB` | *(unset)* | Refuse to open more tabs once the browser tree exceeds this. Recommended for unattended agents |
 | `NEOBROWSER_BRIDGE_PORT` | *(unset)* | Enable the [Chrome Bridge](#chrome-bridge-optional) on this loopback port |
+| `NEOBROWSER_UPLOAD_DIR` | *(a default set)* | The **only** directory `upload` may read from. Recommended for unattended agents; otherwise Downloads, Desktop, Documents and the MCP roots the client declared |
+| `NEOBROWSER_MAX_UPLOAD_MB` | `100` | Maximum size of a file `upload` will stage |
+| `NEOBROWSER_HTTP_PORT` | *(unset)* | Enable the [MCP HTTP transport](#mcp-over-http-optional) on this port |
+| `NEOBROWSER_HTTP_BIND` | `127.0.0.1` | Address the HTTP transport binds to. A non-loopback value is an explicit decision and warns on every start |
+| `NEOBROWSER_INCLUDE_IDENTITY_COOKIES` | *(unset)* | **Risky escape hatch.** Setting it to `1` also imports Google/LinkedIn/Microsoft session-identity cookies, which those providers may flag as a duplicate session and log your real browser out. Off by default for that reason |
 | `NEOBROWSER_VAULT_KEY` | *(unset)* | Base64 32-byte key, for hosts with no OS credential store (CI). Without it and without a keyring, session saves refuse rather than writing plaintext |
 | `NEOBROWSER_LOG_FORMAT` | `text` | `json` emits structured logs carrying `trace_id` |
 | `NEOBROWSER_CONFIG` | *(unset)* | Explicit config file path; see `neobrowser config init` |
@@ -264,6 +269,39 @@ neobrowser bridge token                        # paste this into the extension p
 The bridge is authenticated with a per-session token in an `X-NeoBrowser-Token` header. That is not decoration: any web page you visit can reach `http://127.0.0.1`, and a `text/plain` POST is a "simple" request with no preflight — so without a custom header requirement, a hostile page could forge CDP results or drain the command queue. Requiring a custom header makes such a request impossible for a page to send at all.
 
 `profile_mode` reports which mode is active and what it implies for your credentials.
+
+## MCP over HTTP (optional)
+
+stdio stays the primary local transport and nothing here changes it. The HTTP transport
+exists for what stdio cannot serve: a container, a remote dev box, several clients against
+one host.
+
+```bash
+NEOBROWSER_HTTP_PORT=8931 neobrowser serve
+neobrowser http token                  # the bearer token to send
+```
+
+```bash
+curl -X POST http://127.0.0.1:8931/mcp \
+  -H "Authorization: Bearer $(neobrowser http token)" \
+  -H "Mcp-Session-Id: my-client" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Three properties, each answering a real attack rather than a checkbox:
+
+- **Authentication.** A bearer token on every request. Without it, anything that can reach
+  the port drives a browser holding your sessions.
+- **Origin validation.** A web page can POST to `127.0.0.1`, and with DNS rebinding a
+  remote page can reach a LAN-bound port. `Origin` is compared by **exact host** — a prefix
+  check would accept `http://localhost.evil.test`.
+- **Session isolation.** Each `Mcp-Session-Id` gets its own browser, hence its own Chrome
+  profile and cookies. Sharing one would hand session A's logged-in state to session B.
+  Idle sessions are reaped, since each one holds a Chrome.
+
+`DELETE /mcp` ends a session. Binding is loopback unless you override it, and a
+non-loopback bind warns loudly on every start — put it behind a TLS proxy and treat the
+token as a production credential.
 
 ## Sandbox
 

@@ -64,6 +64,15 @@ jobs:
             exit 1
           fi
 
+      # The README has already shipped "~4 MB static binary" for a 5.5 MB dynamically-linked
+      # one and "43 tools" for 67. Documentation drift is found late and by hand unless
+      # something checks it.
+      - name: README claims match the binary
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo build --release
+          python3 ../scripts/check-claims.py
+
       - name: Format check
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
