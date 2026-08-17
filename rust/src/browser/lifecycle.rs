@@ -169,3 +169,62 @@ impl Browser {
         }
     }
 }
+
+impl Browser {
+    /// Replace the active tab with a fresh one showing the same URL, and return its client.
+    ///
+    /// The recovery for a Chrome state that has no other cure: a tab whose input pipeline has
+    /// stopped delivering events (see [`crate::page::input_is_alive`]). Reload, re-navigation,
+    /// re-attaching and every `Emulation`/`Input` reset leave it dead; a different tab works
+    /// immediately.
+    ///
+    /// Cookies and storage live in the profile rather than the tab, so a session survives this
+    /// — an authenticated page comes back authenticated. What does NOT survive is anything the
+    /// old document held only in memory: unsaved form input, scroll position, JS state. So this
+    /// is a last resort, and the caller must report that it happened rather than pretend the
+    /// action simply worked.
+    pub async fn replace_active_tab(
+        &self,
+    ) -> Result<(Arc<CdpClient>, String), crate::tools::ToolError> {
+        let url = {
+            let st = self.state.lock().await;
+            let idx = st.active.min(st.tabs.len().saturating_sub(1));
+            match st.tabs.get(idx) {
+                Some(t) => crate::page::current_url(&t.client)
+                    .await
+                    .unwrap_or_default(),
+                None => String::new(),
+            }
+        };
+
+        let mut st = self.state.lock().await;
+        self.ensure(&mut st).await?;
+        let port = st.port;
+        // `attached` means we are driving the user's real Chrome, where we must not inject
+        // the stealth patch or their cookies a second time.
+        let owned = !st.attached;
+        let fresh = Self::open_tab(port, owned, false).await?;
+        let idx = st.active.min(st.tabs.len().saturating_sub(1));
+        if let Some(old) = st.tabs.get(idx) {
+            let (p, id) = (port, old.id.clone());
+            // Best-effort: a tab we cannot close is a leak, not a failure of the recovery.
+            tokio::spawn(async move {
+                let _ = crate::chrome::close_tab(p, &id).await;
+            });
+        }
+        let client = fresh.client.clone();
+        if st.tabs.is_empty() {
+            st.tabs.push(fresh);
+            st.active = 0;
+        } else {
+            st.tabs[idx] = fresh;
+        }
+        drop(st);
+
+        if !url.is_empty() && url != "about:blank" {
+            let budget = crate::action::Budget::from_secs(20.0);
+            let _ = crate::page::navigate_budgeted(&client, &url, &budget).await;
+        }
+        Ok((client, url))
+    }
+}

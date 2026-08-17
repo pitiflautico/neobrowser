@@ -382,6 +382,100 @@ pub fn detect_changes(before: &PageState, after: &PageState) -> Vec<String> {
 /// Polling with a bounded, growing interval rather than one fixed sleep: a fast page
 /// is detected in ~50ms instead of always paying the worst case, and a slow one is
 /// not hammered. Returns the final observation and whether a change was seen.
+/// Observe until the page stops changing by itself, and return that quiet state.
+///
+/// The baseline an action is judged against must be a state the page has settled into. If it
+/// is taken while the page is still finishing — images arriving, a framework hydrating, a
+/// route transition completing — then the settling shows up in the "after" observation and is
+/// credited to the action.
+///
+/// That is not theoretical. On a real site, an `add to cart` click that never landed reported
+/// `succeeded` on a `text` change: the page was still settling from the login navigation that
+/// preceded it, and the residue was attributed to the click. The digest itself was stable
+/// (six consecutive observations agreed), so this was not flakiness — it was a baseline taken
+/// too early.
+///
+/// Returns as soon as two consecutive observations agree. A page that never agrees with itself
+/// is handled by [`ambient_noise`] instead: this returns the last state it saw, and the
+/// caller discounts whatever kept moving.
+pub async fn quiesce(client: &CdpClient, budget: &Budget) -> (PageState, bool) {
+    let mut prev = observe(client).await;
+    let mut interval = Duration::from_millis(60);
+    loop {
+        if budget.expired() {
+            return (prev, false);
+        }
+        tokio::time::sleep(budget.capped_at(interval)).await;
+        let next = observe(client).await;
+        if detect_changes(&prev, &next).is_empty() {
+            return (next, true);
+        }
+        prev = next;
+        interval = (interval * 2).min(Duration::from_millis(250));
+    }
+}
+
+/// The digest components a page changes on its own, without anybody acting on it.
+///
+/// This closes a false-success channel that made the whole contract unsound, and it was found
+/// on a real site rather than in a test: an `add to cart` click that never landed reported
+/// `succeeded` because `text` had changed — not from the click, but from something the page
+/// was already doing. Every action on a page with a countdown, a rotating advert, a polling
+/// widget or a lazily-arriving image was reported as a success whether it worked or not.
+///
+/// Invariant I2 of `docs/VERIFIED-ACTIONS.md` requires "a detected difference", and the
+/// letter of that is satisfiable by a difference the action did not cause. Measuring what the
+/// page does by itself, and refusing to count those components as evidence, is what makes the
+/// requirement mean what it was written to mean.
+///
+/// Two observations separated by `gap`. Anything that moved between them is noise for the
+/// purposes of the action about to be taken.
+pub async fn ambient_noise(client: &CdpClient, gap: Duration) -> Vec<String> {
+    let a = observe(client).await;
+    tokio::time::sleep(gap).await;
+    let b = observe(client).await;
+    detect_changes(&a, &b)
+}
+
+/// [`detect_changes`], with components the page was already changing on its own removed.
+///
+/// An empty result on a page whose every component is noisy is the honest answer: the action
+/// is unverifiable here, which the caller sees as `uncertain`. That is strictly better than a
+/// `succeeded` derived from a clock.
+pub fn detect_changes_discounting(
+    before: &PageState,
+    after: &PageState,
+    noise: &[String],
+) -> Vec<String> {
+    detect_changes(before, after)
+        .into_iter()
+        .filter(|c| !noise.iter().any(|n| n == c))
+        .collect()
+}
+
+/// Like [`wait_for_change`], but a change only counts in a component the page was not
+/// already changing by itself.
+pub async fn wait_for_change_discounting(
+    client: &CdpClient,
+    before: &PageState,
+    budget: &Budget,
+    noise: &[String],
+) -> (PageState, bool) {
+    let mut interval = Duration::from_millis(50);
+    let mut last = observe(client).await;
+    loop {
+        if !detect_changes_discounting(before, &last, noise).is_empty() {
+            return (last, true);
+        }
+        if budget.expired() {
+            return (last, false);
+        }
+        tokio::time::sleep(budget.capped_at(interval)).await;
+        interval = (interval * 2).min(Duration::from_millis(400));
+        last = observe(client).await;
+    }
+}
+
 pub async fn wait_for_change(
     client: &CdpClient,
     before: &PageState,

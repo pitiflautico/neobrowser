@@ -95,14 +95,21 @@ pub async fn click_backend_node(
     client
         .send(
             "Input.dispatchMouseEvent",
-            json!({ "type": "mousePressed", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
+            // `buttons` is the bitmask of buttons held down, and omitting it means Chrome is
+            // told the left button is being pressed while no button is held — a contradiction
+            // it carries in its internal mouse state. Puppeteer and Playwright both send it;
+            // this did not, and the symptom was a tab that stopped delivering input entirely
+            // after the first click.
+            json!({ "type": "mousePressed", "x": cx, "y": cy, "button": "left",
+                    "buttons": 1, "clickCount": 1 }),
         )
         .await?;
     tokio::time::sleep(Duration::from_millis(20 + j.next() % 60)).await;
     client
         .send(
             "Input.dispatchMouseEvent",
-            json!({ "type": "mouseReleased", "x": cx, "y": cy, "button": "left", "clickCount": 1 }),
+            json!({ "type": "mouseReleased", "x": cx, "y": cy, "button": "left",
+                    "buttons": 0, "clickCount": 1 }),
         )
         .await?;
     Ok(ClickOutcome::Clicked)
@@ -126,7 +133,8 @@ pub(super) async fn human_mouse_move(client: &CdpClient, tx: f64, ty: f64) -> Re
         client
             .send(
                 "Input.dispatchMouseEvent",
-                json!({ "type": "mouseMoved", "x": x.max(0.0), "y": y.max(0.0) }),
+                json!({ "type": "mouseMoved", "x": x.max(0.0), "y": y.max(0.0),
+                        "buttons": 0 }),
             )
             .await?;
         tokio::time::sleep(Duration::from_millis(6 + j.next() % 12)).await;

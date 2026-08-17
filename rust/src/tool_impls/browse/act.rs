@@ -78,8 +78,23 @@ impl Tool for ClickTool {
             resolve_warning = Some(format!("resolved `{r}` against the live tree"));
         }
 
-        // Observe first: the whole point is to compare against this.
-        let before = crate::action::observe(&tab).await;
+        // Two things have to be true before this click can be judged, and both were missing.
+        //
+        // First the baseline must be a state the page has settled into. Taken too early, the
+        // page's own finishing — images arriving, a route transition completing — lands in the
+        // "after" observation and gets credited to the click. On a real site an `add to cart`
+        // that never landed reported `succeeded` for exactly that reason: the page was still
+        // settling from the login navigation before it.
+        //
+        // Second, a page that never settles still has to be actionable, so whatever keeps
+        // moving on its own is measured and excluded from the evidence rather than counted.
+        let settle_budget = crate::action::Budget::from_secs(2.0);
+        let (before, quiet) = crate::action::quiesce(&tab, &settle_budget).await;
+        let noise = if quiet {
+            Vec::new()
+        } else {
+            crate::action::ambient_noise(&tab, std::time::Duration::from_millis(350)).await
+        };
         let outcome = if let Some(id) = resolved_id {
             page::click_backend_node(&tab, id).await?
         } else if let Some(id) = args.get("backend_node_id").and_then(|v| v.as_i64()) {
@@ -141,7 +156,8 @@ impl Tool for ClickTool {
         }
 
         // Dispatched: now find out whether the page agreed.
-        let (after, changed) = crate::action::wait_for_change(&tab, &before, &budget).await;
+        let (after, changed) =
+            crate::action::wait_for_change_discounting(&tab, &before, &budget, &noise).await;
         let status = if changed {
             ActionStatus::Succeeded
         } else {
@@ -152,16 +168,60 @@ impl Tool for ClickTool {
             .with_target(target_desc);
         r.before = before;
         r.after = after;
-        r.changes = crate::action::detect_changes(&r.before, &r.after);
+        r.changes = crate::action::detect_changes_discounting(&r.before, &r.after, &noise);
+        if !quiet {
+            r = r.warn(format!(
+                "ambient_change: this page never stopped changing on its own, so {} could not \
+                 serve as evidence and was excluded. A `succeeded` here rests on the remaining \
+                 components only",
+                if noise.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    noise.join(", ")
+                }
+            ));
+        }
         if let Some(note) = resolve_warning {
             r.warnings.push(note);
         }
         if !changed {
-            r = r.retryable(true).warn(
-                "no_observable_change: the mouse events were delivered but nothing on the \
-                 page changed. The element may be inert, or its handler may not be bound \
-                 yet. Do NOT assume this click took effect",
-            );
+            // Before blaming the element, check whether the tab is still receiving input at
+            // all. Chrome 151 can reach a state where every `Input.*` command is accepted and
+            // silently dropped — see `page::input_is_alive`. From the outside that is
+            // indistinguishable from a click on an inert button, and the two need opposite
+            // responses: retry the one, replace the tab for the other. Telling a caller to
+            // "try a different target" when no target can ever work is the kind of advice
+            // that turns one failure into a loop.
+            //
+            // The probe costs three round trips, so it runs only here, where the answer
+            // changes what the caller should do.
+            if page::input_is_alive(&tab).await {
+                r = r.retryable(true).warn(
+                    "no_observable_change: the mouse events were delivered but nothing on the \
+                     page changed. The element may be inert, or its handler may not be bound \
+                     yet. Do NOT assume this click took effect",
+                );
+            } else {
+                match ctx.browser.replace_active_tab().await {
+                    Ok((_, url)) => {
+                        r = r.retryable(true).warn(format!(
+                            "input_pipeline_stalled: this tab had stopped delivering mouse and \
+                             keyboard events — a Chrome-level fault, not a property of the \
+                             element. It has been replaced with a fresh tab reloaded at {url}. \
+                             Cookies and storage survived, but anything the old document held \
+                             only in memory (unsaved input, scroll position) did not. \
+                             Re-observe, then retry"
+                        ));
+                    }
+                    Err(e) => {
+                        r = r.retryable(false).warn(format!(
+                            "input_pipeline_stalled: this tab had stopped delivering mouse and \
+                             keyboard events, and replacing it failed ({e}). No click can \
+                             succeed here until the browser is restarted"
+                        ));
+                    }
+                }
+            }
         }
         Ok(ToolOutput::text(r.to_string_pretty()))
     }
