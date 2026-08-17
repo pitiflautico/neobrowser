@@ -54,16 +54,57 @@ fn attach_port() -> Option<u16> {
 
 /// The browser handle shared across all tool calls.
 pub struct Browser {
+    /// Profile directory override. `None` means the process-wide
+    /// `NEOBROWSER_PROFILE`, which is the stdio case. The HTTP transport sets one per
+    /// session, because Chrome takes an exclusive lock on a user-data dir — two
+    /// sessions sharing one could not both run, and sharing one deliberately would
+    /// leak cookies between callers.
+    profile_override: Option<std::path::PathBuf>,
     state: Mutex<State>,
     recording: Mutex<Option<Recording>>,
+    /// The last accessibility snapshot, so `observe(diff=true)` has a baseline to
+    /// compare against. Lives on the browser rather than in the tool because it must
+    /// outlive a single call, and is per-session so two clients cannot see each
+    /// other's baseline.
+    last_snapshot: Mutex<Option<crate::observe::Snapshot>>,
 }
 
 impl Browser {
     pub fn new() -> Self {
         Self {
+            profile_override: None,
             state: Mutex::new(State::default()),
             recording: Mutex::new(None),
+            last_snapshot: Mutex::new(None),
         }
+    }
+
+    /// A browser pinned to its own profile directory, for session isolation.
+    pub fn with_profile(name: &str) -> Self {
+        let mut b = Self::new();
+        // Validated through the same whitelist as NEOBROWSER_PROFILE: a session id
+        // arrives over the network, and an unvalidated one would point Chrome's
+        // user-data dir at an arbitrary path.
+        let safe = crate::paths::sanitize_profile_name(name);
+        b.profile_override = Some(crate::paths::profiles_base().join(safe));
+        b
+    }
+
+    fn profile_dir(&self) -> std::path::PathBuf {
+        self.profile_override
+            .clone()
+            .unwrap_or_else(paths::profile_dir)
+    }
+
+    // --- snapshot baseline for incremental observation --------------------------
+
+    /// Read the stored baseline without consuming it.
+    pub async fn take_snapshot(&self) -> Option<crate::observe::Snapshot> {
+        self.last_snapshot.lock().await.clone()
+    }
+
+    pub async fn store_snapshot(&self, snap: crate::observe::Snapshot) {
+        *self.last_snapshot.lock().await = Some(snap);
     }
 
     // --- playbook recording ----------------------------------------------------
@@ -131,7 +172,7 @@ impl Browser {
                 (None, port, true)
             }
             None => {
-                let proc = ChromeProcess::launch(paths::profile_dir()).await?;
+                let proc = ChromeProcess::launch(self.profile_dir()).await?;
                 let port = proc.port;
                 chrome::wait_for_chrome(port, Duration::from_secs(15)).await?;
                 (Some(proc), port, false)
@@ -178,7 +219,7 @@ impl Browser {
             let _ = client
                 .send(
                     "Page.addScriptToEvaluateOnNewDocument",
-                    json!({ "source": crate::stealth::STEALTH_JS }),
+                    json!({ "source": crate::stealth::stealth_js() }),
                 )
                 .await;
 
@@ -218,9 +259,37 @@ impl Browser {
     // --- multi-tab management --------------------------------------------------
 
     /// Open a new tab on the shared Chrome and make it active. Returns its index/id.
+    /// Maximum concurrent tabs, from `NEOBROWSER_MAX_TABS`.
+    ///
+    /// A limit has to exist: each tab is a renderer process with its own memory, and an
+    /// agent in a loop calling `new_tab` will exhaust the machine long before it
+    /// notices. Refusing with a clear message beats a host that starts swapping.
+    fn max_tabs() -> usize {
+        std::env::var("NEOBROWSER_MAX_TABS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(20)
+    }
+
     pub async fn new_tab(&self) -> Result<String, crate::tools::ToolError> {
         let mut st = self.state.lock().await;
         self.ensure(&mut st).await?;
+        // Checked before opening, so the limit is a refusal rather than a machine that
+        // has already started swapping.
+        let cap = Self::max_tabs();
+        // Released before the async memory probe so the guard does not hold the state
+        // lock across a subprocess call.
+        drop(st);
+        self.memory_guard().await?;
+        let mut st = self.state.lock().await;
+        if st.tabs.len() >= cap {
+            return Err(crate::tools::ToolError::Failed(format!(
+                "tab limit reached ({cap} open). Close a tab with close_tab, or raise \
+                 NEOBROWSER_MAX_TABS. Each tab is a renderer process, so this cap is \
+                 what keeps a loop calling new_tab from exhausting the host"
+            )));
+        }
         let handle = Self::open_tab(st.port, !st.attached, false).await?;
         let id = handle.id.clone();
         st.tabs.push(handle);
@@ -313,6 +382,92 @@ impl Browser {
         let cap = self.capture().await?;
         let logs = cap.network_log(pattern, limit).await;
         Ok(serde_json::to_string(&logs).unwrap_or_else(|_| "[]".into()))
+    }
+
+    /// The captured network entries as typed values, for the HAR exporter.
+    ///
+    /// `network_log` serialises to a JSON string for the tool output; HAR needs the
+    /// structs, and re-parsing our own JSON to get them back would be silly.
+    pub async fn network_entries(
+        &self,
+        pattern: Option<&str>,
+        limit: usize,
+    ) -> Vec<crate::capture::NetworkEntry> {
+        match self.capture().await {
+            Ok(cap) => cap.network_log(pattern, limit).await,
+            // No live capture yet means no traffic recorded, which is an empty HAR
+            // rather than an error.
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Resident memory of the Chrome process tree, in MiB, or `None` when it cannot be
+    /// measured on this platform.
+    ///
+    /// Measured from the OS rather than from Chrome's own metrics: the JS heap is only
+    /// part of the cost, and what exhausts a machine is the sum of the renderer
+    /// processes.
+    pub async fn memory_mb(&self) -> Option<u64> {
+        // In attach mode NeoBrowser does not own the process, so there is no tree of
+        // ours to measure and no business limiting the user's own browser.
+        let pid = { self.state.lock().await.proc.as_ref().and_then(|p| p.pid()) }?;
+        #[cfg(unix)]
+        {
+            // One `ps` over the whole tree: summing per-process RSS is close enough for
+            // a guard rail, and shared pages being double-counted errs on the safe side.
+            let out = std::process::Command::new("ps")
+                .args(["-Ao", "ppid,pid,rss"])
+                .output()
+                .ok()?;
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut total_kb: u64 = 0;
+            for line in text.lines().skip(1) {
+                let mut f = line.split_whitespace();
+                let ppid: u32 = f.next()?.parse().unwrap_or(0);
+                let this: u32 = f.next()?.parse().unwrap_or(0);
+                let rss: u64 = f.next().unwrap_or("0").parse().unwrap_or(0);
+                if this == pid || ppid == pid {
+                    total_kb += rss;
+                }
+            }
+            Some(total_kb / 1024)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            None
+        }
+    }
+
+    /// Memory ceiling for the browser tree, from `NEOBROWSER_MAX_MEMORY_MB`.
+    ///
+    /// Unset by default: guessing a limit would break large legitimate sessions, and an
+    /// unattended agent is exactly the case where an operator should choose one.
+    fn max_memory_mb() -> Option<u64> {
+        std::env::var("NEOBROWSER_MAX_MEMORY_MB")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|m| *m > 0)
+    }
+
+    /// Refuse to open more tabs once the configured ceiling is passed.
+    ///
+    /// Checked at `new_tab` rather than continuously: a background watchdog that killed
+    /// the browser mid-action would lose the user's work, whereas declining to grow is
+    /// recoverable and says why.
+    async fn memory_guard(&self) -> Result<(), crate::tools::ToolError> {
+        let Some(limit) = Self::max_memory_mb() else {
+            return Ok(());
+        };
+        let Some(used) = self.memory_mb().await else {
+            return Ok(());
+        };
+        if used > limit {
+            return Err(crate::tools::ToolError::Failed(format!(
+                "the browser tree is using {used} MiB, over the {limit} MiB NEOBROWSER_MAX_MEMORY_MB ceiling. Close tabs with close_tab, or raise the limit. Refusing to open another renderer rather than pushing this host into swap"
+            )));
+        }
+        Ok(())
     }
 
     pub async fn metrics(&self, key: Option<&str>) -> Result<String, crate::tools::ToolError> {

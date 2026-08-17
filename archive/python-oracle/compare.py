@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+# ARCHIVED — this parity gate cannot pass, by design.
+#
+# It drove the Rust and Python implementations through identical steps and compared their
+# outputs. That worked while the Rust port was catching up. It stopped working when the
+# Rust mutating tools adopted the verified-action envelope: `click` now returns
+# {"status": "succeeded", "evidence": {...}} where the Python returns "Clicked". The
+# difference is the improvement, so a script that reports it as a failure is measuring the
+# wrong thing.
+#
+# Kept for reference on how the two were compared. See ../README.md.
 """
 Parity gate: run the same MCP tool calls through the Python and Rust servers on a
 hermetic (network-free) page and diff the core-tool outputs.

@@ -34,49 +34,27 @@ fn google_url(query: &str, udm: u8) -> String {
     )
 }
 
-const DISMISS_CONSENT_JS: &str = r#"(function() {
-    const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
-    const accept = btns.find(b => /accept all|aceptar todo|tout accepter|alle akzeptieren/i.test(b.innerText));
-    if (accept) { accept.click(); return true; }
-    return false;
-})();"#;
-
-async fn dismiss_consent(client: &CdpClient) {
-    let _ = page::js(client, DISMISS_CONSENT_JS).await;
+/// Loaded from `js/dismiss_consent.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn dismiss_consent_js() -> &'static str {
+    include_str!("../js/dismiss_consent.js")
 }
 
-const GOOGLE_TEXT_JS: &str = r#"return JSON.stringify((function(limit){
-    const out = [], seen = new Set();
-    document.querySelectorAll('a h3').forEach(function(h3){
-        if (out.length >= limit) return;
-        const a = h3.closest('a[href]'); if (!a) return;
-        let href = a.href || '';
-        if (!href || href.indexOf('https://www.google.') === 0 || seen.has(href)) return;
-        seen.add(href);
-        let snip = '';
-        const c = a.closest('div.g, div.MjjYud, div[data-hveid]');
-        if (c) { const s = c.querySelector('.VwiC3b, div[data-sncf], span'); if (s) snip = s.textContent.slice(0,220); }
-        out.push({title: h3.textContent.trim(), url: href, snippet: snip.trim()});
-    });
-    return out;
-})(LIMIT))"#;
+async fn dismiss_consent(client: &CdpClient) {
+    let _ = page::js(client, dismiss_consent_js()).await;
+}
 
-const DDG_TEXT_JS: &str = r#"return JSON.stringify((function(limit){
-    const out = [], seen = new Set();
-    document.querySelectorAll('.result__body, .result').forEach(function(r){
-        if (out.length >= limit) return;
-        if ((r.className || '').indexOf('result--ad') !== -1) return;
-        const a = r.querySelector('.result__a'); if (!a) return;
-        let href = a.href || '';
-        if (href.indexOf('/y.js') !== -1 || href.indexOf('ad_domain') !== -1) return;
-        try { const u = new URL(href); if (u.searchParams.get('uddg')) href = u.searchParams.get('uddg'); } catch(e){}
-        if (!href || seen.has(href)) return;
-        seen.add(href);
-        const sn = r.querySelector('.result__snippet');
-        out.push({title: a.textContent.trim(), url: href, snippet: sn ? sn.textContent.trim() : ''});
-    });
-    return out;
-})(LIMIT))"#;
+/// Loaded from `js/search_google_text.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn google_text_js() -> &'static str {
+    include_str!("../js/search_google_text.js")
+}
+
+/// Loaded from `js/search_ddg_text.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn ddg_text_js() -> &'static str {
+    include_str!("../js/search_ddg_text.js")
+}
 
 async fn js_array(client: &CdpClient, code: &str) -> Vec<Value> {
     match page::js(client, code).await {
@@ -155,7 +133,7 @@ pub async fn search(client: &CdpClient, query: &str, limit: usize) -> String {
         Provider {
             name: "duckduckgo",
             url: format!("https://html.duckduckgo.com/html/?q={}", quote_plus(query)),
-            extract_js: DDG_TEXT_JS.replace("LIMIT", &limit.to_string()),
+            extract_js: ddg_text_js().replace("LIMIT", &limit.to_string()),
             consent: false,
         },
         Provider {
@@ -164,7 +142,7 @@ pub async fn search(client: &CdpClient, query: &str, limit: usize) -> String {
                 "https://www.google.com/search?q={}&hl=en&num=20",
                 quote_plus(query)
             ),
-            extract_js: GOOGLE_TEXT_JS.replace("LIMIT", &limit.to_string()),
+            extract_js: google_text_js().replace("LIMIT", &limit.to_string()),
             consent: true,
         },
     ];
@@ -173,106 +151,33 @@ pub async fn search(client: &CdpClient, query: &str, limit: usize) -> String {
     json!({ "query": query, "results": results, "engines": engines }).to_string()
 }
 
-const IMAGE_EXTRACT_JS: &str = r#"return (function(count) {
-    const results = [];
-    const seen = new Set();
-    const scriptText = Array.from(document.querySelectorAll('script')).map(s => s.text).join('\n');
-    const imgPattern = /https?:\/\/(?!encrypted-tbn)[\w.\-/%?=&+@#!:,;~]+\.(?:jpg|jpeg|png|webp)(?:[?&][^"'\s<>\\]{0,120})?/gi;
-    const rawUrls = [...new Set(scriptText.match(imgPattern) || [])];
-    const sourcePairs = Array.from(document.querySelectorAll('a[href^="http"]'))
-        .filter(a => !a.href.includes('google.com'))
-        .map(a => ({href: a.href, text: a.innerText?.trim() || ''}));
-    const imgMeta = {};
-    Array.from(document.querySelectorAll('img[alt], img[title]')).forEach(img => {
-        const key = (img.src || '').split('?')[0];
-        if (key) imgMeta[key] = img.alt || img.title || '';
-    });
-    const filtered = rawUrls
-        .filter(u => !u.includes('gstatic.com') && !u.includes('google.com') && !u.includes('googleapis.com') && u.length > 30)
-        .slice(0, count * 3);
-    for (const imgUrl of filtered) {
-        if (seen.has(imgUrl)) continue;
-        seen.add(imgUrl);
-        let host = '';
-        try { host = new URL(imgUrl).hostname.replace(/^www\./, ''); } catch(e) {}
-        const sourcePair = sourcePairs.find(p => {
-            try { const ph = new URL(p.href).hostname.replace(/^www\./, ''); return ph.includes(host) || host.includes(ph); }
-            catch { return false; }
-        });
-        results.push({
-            image_url: imgUrl,
-            source_url: sourcePair?.href || '',
-            source_host: host,
-            title: imgMeta[imgUrl.split('?')[0]] || sourcePair?.text?.split('\n')[0] || '',
-            description: sourcePair?.text || '',
-        });
-        if (results.length >= count) break;
-    }
-    return JSON.stringify(results);
-})(COUNT);"#;
+/// Loaded from `js/search_images_extract.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn image_extract_js() -> &'static str {
+    include_str!("../js/search_images_extract.js")
+}
 
-const VIDEO_EXTRACT_JS: &str = r#"return (function(count) {
-    const results = [];
-    const seen = new Set();
-    const durationRe = /^\d{1,2}:\d{2}(:\d{2})?$/;
-    const headings = Array.from(document.querySelectorAll('h3'));
-    for (const h3 of headings) {
-        if (results.length >= count) break;
-        const a = h3.closest('a') || h3.parentElement?.querySelector('a');
-        const url = a?.href || '';
-        if (!url || seen.has(url)) continue;
-        seen.add(url);
-        let card = h3.parentElement;
-        for (let i = 0; i < 8; i++) { if (!card) break; if (card.innerText?.length > 60) break; card = card.parentElement; }
-        const lines = (card?.innerText || '').split('\n').map(l => l.trim()).filter(l => l);
-        let duration = '', description = '', channel = '';
-        const bodyLines = lines.filter(l => l !== h3.innerText && !l.includes('www.') && !l.startsWith('›'));
-        for (const line of bodyLines) {
-            if (!duration && durationRe.test(line)) { duration = line; continue; }
-            if (line.includes('·')) {
-                const parts = line.split('·').map(p => p.trim());
-                if (parts.length >= 2 && !channel) {
-                    const candidate = parts[1] || parts[0] || '';
-                    if (candidate.length < 60 && !/\d+\s*(year|month|day|view|ago)/i.test(candidate)) channel = candidate;
-                }
-                continue;
-            }
-            if (!description && line.length > 20) description = line;
-        }
-        results.push({ title: h3.innerText, url, channel, duration, description: description.slice(0, 300) });
-    }
-    return JSON.stringify(results);
-})(COUNT);"#;
+/// Loaded from `js/search_videos_extract.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn video_extract_js() -> &'static str {
+    include_str!("../js/search_videos_extract.js")
+}
 
 // --- Google-free fallbacks (no /sorry/ wall on a clean profile) ---------------
 
 /// Bing Images — results carry a JSON `m` attribute with the real media URL.
-const BING_IMAGES_JS: &str = r#"return JSON.stringify((function(count){
-    const out = [], seen = new Set();
-    document.querySelectorAll('a.iusc').forEach(function(a){
-        if (out.length >= count) return;
-        let m = {}; try { m = JSON.parse(a.getAttribute('m') || '{}'); } catch(e) {}
-        const img = m.murl || ''; if (!img || seen.has(img)) return; seen.add(img);
-        let host = ''; try { host = new URL(img).hostname.replace(/^www\./,''); } catch(e) {}
-        out.push({ image_url: img, source_url: m.purl || '', source_host: host, title: m.t || '', description: m.desc || '' });
-    });
-    return out;
-})(COUNT))"#;
+/// Loaded from `js/search_bing_images.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn bing_images_js() -> &'static str {
+    include_str!("../js/search_bing_images.js")
+}
 
 /// YouTube results — genuine browser is not walled; gives real watch URLs + titles.
-const YOUTUBE_VIDEOS_JS: &str = r#"return JSON.stringify((function(count){
-    const out = [], seen = new Set();
-    document.querySelectorAll('a#video-title, a#video-title-link, a.yt-simple-endpoint#video-title').forEach(function(a){
-        if (out.length >= count) return;
-        let href = a.href || ''; if (!href.includes('/watch') || seen.has(href)) return; seen.add(href);
-        const title = (a.getAttribute('title') || a.textContent || '').trim();
-        let channel = '';
-        const card = a.closest('ytd-video-renderer, ytd-rich-item-renderer');
-        if (card) { const ch = card.querySelector('ytd-channel-name a, #channel-name a'); if (ch) channel = ch.textContent.trim(); }
-        out.push({ url: href, title: title, channel: channel, duration: '', description: '' });
-    });
-    return out;
-})(COUNT))"#;
+/// Loaded from `js/search_youtube_videos.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn youtube_videos_js() -> &'static str {
+    include_str!("../js/search_youtube_videos.js")
+}
 
 fn platform(url: &str) -> &'static str {
     for (host, name) in [
@@ -357,13 +262,13 @@ pub async fn search_images(client: &CdpClient, query: &str, count: usize) -> Str
         Provider {
             name: "bing",
             url: format!("https://www.bing.com/images/search?q={}", quote_plus(query)),
-            extract_js: BING_IMAGES_JS.replace("COUNT", &count.to_string()),
+            extract_js: bing_images_js().replace("COUNT", &count.to_string()),
             consent: true,
         },
         Provider {
             name: "google",
             url: google_url(query, 2),
-            extract_js: IMAGE_EXTRACT_JS.replace("COUNT", &count.to_string()),
+            extract_js: image_extract_js().replace("COUNT", &count.to_string()),
             consent: true,
         },
     ];
@@ -397,13 +302,13 @@ pub async fn search_videos(client: &CdpClient, query: &str, count: usize) -> Str
                 "https://www.youtube.com/results?search_query={}",
                 quote_plus(query)
             ),
-            extract_js: YOUTUBE_VIDEOS_JS.replace("COUNT", &count.to_string()),
+            extract_js: youtube_videos_js().replace("COUNT", &count.to_string()),
             consent: true,
         },
         Provider {
             name: "google",
             url: google_url(query, 7),
-            extract_js: VIDEO_EXTRACT_JS.replace("COUNT", &count.to_string()),
+            extract_js: video_extract_js().replace("COUNT", &count.to_string()),
             consent: true,
         },
     ];
@@ -436,7 +341,7 @@ pub async fn search_twitter_videos(client: &CdpClient, query: &str, count: usize
         Provider {
             name: "google_scoped",
             url: google_url(&format!("{query} (site:x.com OR site:twitter.com)"), 7),
-            extract_js: VIDEO_EXTRACT_JS.replace("COUNT", &(count * 3).to_string()),
+            extract_js: video_extract_js().replace("COUNT", &(count * 3).to_string()),
             consent: true,
         },
         Provider {
@@ -445,7 +350,7 @@ pub async fn search_twitter_videos(client: &CdpClient, query: &str, count: usize
                 "https://www.youtube.com/results?search_query={}",
                 quote_plus(&format!("{query} twitter"))
             ),
-            extract_js: YOUTUBE_VIDEOS_JS.replace("COUNT", &(count * 3).to_string()),
+            extract_js: youtube_videos_js().replace("COUNT", &(count * 3).to_string()),
             consent: true,
         },
     ];

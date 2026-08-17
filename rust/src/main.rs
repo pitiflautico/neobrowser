@@ -12,6 +12,15 @@ neobrowser — MCP browser automation over real Chrome
 USAGE:
   neobrowser [serve]     Run the MCP server on stdio (default)
   neobrowser doctor      Check Chrome discovery + a live CDP smoke test
+  neobrowser doctor --json   Same checks as machine-readable JSON (exit 1 if any fail)
+  neobrowser config schema      Print the config file's JSON Schema
+  neobrowser config init <safe|developer|autonomous|ci>
+                                Write a starter neobrowser.toml
+  neobrowser config show        Show the resolved config and where it came from
+  neobrowser trace list         List recorded evidence bundles, newest first
+  neobrowser trace open <id>    Print one bundle (redacted, shareable)
+  neobrowser bridge token       Print the bridge token to paste into the extension
+  neobrowser http token         Print the MCP HTTP transport bearer token
   neobrowser tools       Print the tool catalog as JSON
   neobrowser tools --markdown   Print the tool catalog as Markdown
   neobrowser --version   Print the version
@@ -21,18 +30,59 @@ NEOBROWSER_CHROME_BIN, NEOBROWSER_HOME, NEOBROWSER_PROXY, ANTHROPIC_API_KEY.";
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    // stderr, always: stdout is the MCP transport, and a log line written there
+    // corrupts the protocol stream.
+    if std::env::var("NEOBROWSER_LOG_FORMAT").as_deref() == Ok("json") {
+        tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
+    }
+
+    // Config is applied BEFORE anything reads the environment, so a file-provided
+    // policy or vault setting is in place by the time the server or doctor look.
+    // A broken config is fatal rather than ignored: continuing with silently
+    // different settings than the file asked for is the worse outcome.
+    match neobrowser::config::load() {
+        Ok(Some((path, cfg))) => {
+            let applied = cfg.apply_to_env();
+            tracing::info!(
+                config = %path.display(),
+                version = cfg.version,
+                applied = ?applied,
+                "loaded configuration"
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("neobrowser: {e}");
+            std::process::exit(2);
+        }
+    }
 
     let arg = std::env::args().nth(1).unwrap_or_default();
     match arg.as_str() {
-        "doctor" => doctor().await,
+        "doctor" => {
+            if std::env::args().any(|a| a == "--json") {
+                doctor_json().await
+            } else {
+                doctor().await
+            }
+        }
         "tools" => print_tools(),
+        "config" => config_cmd(),
+        "trace" => trace_cmd(),
+        "bridge" => bridge_cmd(),
+        "http" => http_cmd(),
         "--version" | "-v" => println!("{}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" => println!("{HELP}"),
         "" | "serve" => mcp::serve().await,
@@ -97,7 +147,7 @@ fn print_tools() {
 async fn doctor() {
     let bin = chrome::chrome_bin();
     println!("NeoBrowser doctor");
-    println!("  home:        {}", paths::home().display());
+    println!(" home: {}", paths::home().display());
     println!("  chrome bin:  {}", bin.display());
     println!("  chrome found: {}", bin.exists());
     match chrome::detect_chrome_major(bin) {
@@ -108,12 +158,342 @@ async fn doctor() {
         Some(ua) => println!("  user-agent:  {ua}"),
         None => println!("  user-agent:  <default>"),
     }
+    report_sandbox();
+    report_policy();
     // Prove the process/CDP path works end-to-end if Chrome is present.
     if bin.exists() {
         print!("  launch+CDP:  ");
         match smoke_test().await {
             Ok(title) => println!("ok (about:blank title={title:?})"),
             Err(e) => println!("FAILED: {e}"),
+        }
+    }
+}
+
+/// `http token` — print the bearer token for the MCP HTTP transport.
+fn http_cmd() {
+    match std::env::args().nth(2).unwrap_or_default().as_str() {
+        "token" => match neobrowser::http_transport::read_token_file() {
+            Ok(t) if !t.is_empty() => println!("{t}"),
+            _ => {
+                eprintln!(
+                    "no HTTP token yet. Start the server with NEOBROWSER_HTTP_PORT set, then run this again."
+                );
+                std::process::exit(2);
+            }
+        },
+        other => {
+            eprintln!("neobrowser http: unknown subcommand {other:?}. Use token.");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// `bridge token` — print the token the extension needs.
+///
+/// A manual copy/paste, deliberately: the extension cannot read a file, and any
+/// automatic handover over the same loopback port would be readable by exactly the
+/// attacker the token exists to stop.
+fn bridge_cmd() {
+    match std::env::args().nth(2).unwrap_or_default().as_str() {
+        "token" => match neobrowser::bridge::read_token_file() {
+            Ok(t) if !t.is_empty() => println!("{t}"),
+            _ => {
+                eprintln!(
+                    "no bridge token yet. Start the server with NEOBROWSER_BRIDGE_PORT set, \
+                     then run this again."
+                );
+                std::process::exit(2);
+            }
+        },
+        other => {
+            eprintln!("neobrowser bridge: unknown subcommand {other:?}. Use token.");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// `trace list | open <id>` — inspect a recorded run.
+///
+/// Bundles are redacted when written, so `open` prints something that can be attached
+/// to a bug report without a second review pass.
+fn trace_cmd() {
+    use neobrowser::trace;
+    match std::env::args().nth(2).unwrap_or_default().as_str() {
+        "list" => {
+            let ids = trace::list_bundles();
+            if ids.is_empty() {
+                println!("no traces recorded yet (they are written when a session exits)");
+                return;
+            }
+            for id in ids {
+                println!("{id}");
+            }
+        }
+        "open" => {
+            let Some(id) = std::env::args().nth(3) else {
+                eprintln!("neobrowser trace open: needs a trace id (see `trace list`)");
+                std::process::exit(2);
+            };
+            match trace::read_bundle(&id) {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+                Err(e) => {
+                    eprintln!("neobrowser trace open {id}: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        other => {
+            eprintln!("neobrowser trace: unknown subcommand {other:?}. Use list | open <id>.");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// `config schema | init <profile> | show`.
+fn config_cmd() {
+    use neobrowser::config;
+    let sub = std::env::args().nth(2).unwrap_or_default();
+    match sub.as_str() {
+        "schema" => println!(
+            "{}",
+            serde_json::to_string_pretty(&config::json_schema()).unwrap_or_default()
+        ),
+        "init" => {
+            let name = std::env::args()
+                .nth(3)
+                .unwrap_or_else(|| "developer".into());
+            let path = std::path::PathBuf::from("neobrowser.toml");
+            match config::write_template(&path, &name) {
+                Ok(()) => println!("wrote {} ({name} profile)", path.display()),
+                Err(e) => {
+                    eprintln!("neobrowser config init: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        "show" => match config::load() {
+            Ok(Some((path, cfg))) => {
+                println!("config:  {}", path.display());
+                println!("version: {}", cfg.version);
+                for key in cfg.keys() {
+                    println!("  {key} = {}", cfg.get(key).unwrap_or(""));
+                }
+            }
+            Ok(None) => {
+                println!("no config file found. Searched:");
+                for p in config::candidate_paths() {
+                    println!("  {}", p.display());
+                }
+            }
+            Err(e) => {
+                eprintln!("neobrowser config show: {e}");
+                std::process::exit(2);
+            }
+        },
+        other => {
+            eprintln!("neobrowser config: unknown subcommand {other:?}. Use schema | init | show.");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// `doctor --json` — every environment check as one machine-readable document.
+///
+/// Exists so CI and installers can gate on the result instead of grepping prose. Each
+/// check reports `ok` plus a `detail`, and the process exits non-zero if any check
+/// failed — a doctor that always exits 0 is decoration.
+async fn doctor_json() {
+    use serde_json::{json, Value};
+
+    let bin = chrome::chrome_bin();
+    let mut checks: Vec<Value> = Vec::new();
+
+    let major = chrome::detect_chrome_major(bin);
+    checks.push(
+        json!({ "check": "chrome_found", "ok": bin.exists(), "detail": bin.display().to_string() }),
+    );
+    checks.push(json!({
+        "check": "chrome_version",
+        "ok": major.is_some(),
+        "detail": major.clone().unwrap_or_else(|| "unknown".into()),
+    }));
+
+    let support = chrome::sandbox_support();
+    let opted_out = chrome::no_sandbox_opt_in_active();
+    checks.push(json!({
+        "check": "sandbox",
+        "ok": !opted_out && support == chrome::SandboxSupport::Available,
+        "detail": if opted_out {
+            "DISABLED via NEOBROWSER_ALLOW_NO_SANDBOX".to_string()
+        } else {
+            format!("{support:?}")
+        },
+    }));
+
+    let policy = neobrowser::policy::Policy::from_env();
+    checks.push(json!({
+        "check": "policy",
+        "ok": true,
+        "detail": format!(
+            "profile={} allow={:?} deny={:?}",
+            policy.profile.label(),
+            policy.allow_list(),
+            policy.deny_list()
+        ),
+    }));
+    // The one policy configuration that silently refuses everything.
+    let autonomous_without_list =
+        policy.profile == neobrowser::policy::Profile::Autonomous && policy.allow_list().is_empty();
+    checks.push(json!({
+        "check": "policy_usable",
+        "ok": !autonomous_without_list,
+        "detail": if autonomous_without_list {
+            "autonomous profile with an empty NEOBROWSER_ALLOW_DOMAINS refuses every call"
+        } else {
+            "ok"
+        },
+    }));
+
+    let vault_ok = neobrowser::vault::available();
+    checks.push(json!({
+        "check": "vault",
+        "ok": vault_ok,
+        "detail": if vault_ok {
+            "OS credential store reachable; session material is encrypted at rest"
+        } else {
+            "no OS credential store and no NEOBROWSER_VAULT_KEY: save_cookies/save_session will refuse rather than write plaintext"
+        },
+    }));
+
+    let home = paths::home();
+    let writable = neobrowser::sessions::probe_writable(&home).is_ok();
+    checks.push(
+        json!({ "check": "home_writable", "ok": writable, "detail": home.display().to_string() }),
+    );
+
+    let roots = neobrowser::reach::upload_roots_for_report();
+    checks.push(
+        json!({ "check": "upload_roots", "ok": !roots.is_empty(), "detail": roots.join(", ") }),
+    );
+
+    let profile_dir = paths::profile_dir();
+    let locked = chrome::profile_lock_holder(&profile_dir);
+    checks.push(json!({
+        "check": "profile_free",
+        "ok": locked.is_none(),
+        "detail": match locked {
+            Some(pid) => format!("{} is held by pid {pid}", profile_dir.display()),
+            None => profile_dir.display().to_string(),
+        },
+    }));
+
+    let registry = tool_impls::build_registry();
+    checks.push(json!({
+        "check": "mcp_tools",
+        "ok": !registry.is_empty(),
+        "detail": format!("{} tools registered", registry.len()),
+    }));
+
+    if bin.exists() {
+        let (ok, detail) = match smoke_test().await {
+            Ok(title) => (true, format!("about:blank title={title:?}")),
+            Err(e) => (false, e),
+        };
+        checks.push(json!({ "check": "launch_cdp", "ok": ok, "detail": detail }));
+    } else {
+        checks.push(
+            json!({ "check": "launch_cdp", "ok": false, "detail": "skipped: no Chrome binary" }),
+        );
+    }
+
+    let failed: Vec<Value> = checks
+        .iter()
+        .filter(|c| c["ok"] == Value::Bool(false))
+        .map(|c| c["check"].clone())
+        .collect();
+    let report = json!({
+        "ok": failed.is_empty(),
+        "version": env!("CARGO_PKG_VERSION"),
+        "failed": failed,
+        "checks": checks,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
+    );
+    if !failed.is_empty() {
+        std::process::exit(1);
+    }
+}
+
+/// Report the policy profile and domain rules that will govern this session.
+///
+/// Shown even when everything is permissive: "no rules are configured" is itself a
+/// posture the operator should see stated, not have to infer from silence.
+fn report_policy() {
+    let policy = neobrowser::policy::Policy::from_env();
+    println!(" policy: {}", policy.profile.label());
+    if policy.has_domain_rules() {
+        let allow = policy.allow_list();
+        let deny = policy.deny_list();
+        println!(
+            "               allow: {}",
+            if allow.is_empty() {
+                "(any)".to_string()
+            } else {
+                allow.join(", ")
+            }
+        );
+        if !deny.is_empty() {
+            println!("               deny:  {}", deny.join(", "));
+        }
+    } else if policy.profile == neobrowser::policy::Profile::Autonomous {
+        // The one combination that denies everything: worth flagging here rather
+        // than letting the operator discover it through a wall of refusals.
+        println!(
+            "               *** no allowlist set — the autonomous profile will refuse \
+             every call ***"
+        );
+    } else {
+        println!("               no domain rules (any destination allowed)");
+    }
+}
+
+/// Report whether Chrome's renderer sandbox will actually be active.
+///
+/// Printed unconditionally, and loudly when it is off: an operator who cannot see
+/// that the sandbox is disabled has no way to know the browser is one renderer bug
+/// away from the whole machine.
+fn report_sandbox() {
+    let support = chrome::sandbox_support();
+    let opted_out = chrome::no_sandbox_opt_in_active();
+    let real_profile = std::env::var("NEOBROWSER_REAL_PROFILE")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+
+    print!("  sandbox:     ");
+    match (opted_out, support) {
+        (false, chrome::SandboxSupport::Available) => println!("ON (host supports it)"),
+        (false, blocked) => {
+            println!("host CANNOT sandbox — launches will be refused ({blocked:?})");
+            println!(
+                "               fix the host rather than disabling the sandbox; \
+                 `neobrowser doctor` after the fix should read ON"
+            );
+        }
+        (true, _) => {
+            println!("*** OFF — NEOBROWSER_ALLOW_NO_SANDBOX is set ***");
+            println!(
+                "               a compromised page can escape the renderer and reach \
+                 this machine"
+            );
+            if let Some(p) = real_profile {
+                println!(
+                    "               and it is holding real cookies from profile {p:?} — \
+                     unset one of the two"
+                );
+            }
         }
     }
 }

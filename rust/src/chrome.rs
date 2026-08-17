@@ -41,10 +41,194 @@ pub enum ChromeError {
         pid: i32,
         port_hint: String,
     },
+    #[error(
+        "refusing to launch Chrome without its sandbox: {reason}. The sandbox is what \
+         keeps a compromised renderer — i.e. any page NeoBrowser visits — from reaching \
+         the rest of this machine. {hint}"
+    )]
+    SandboxUnavailable {
+        reason: &'static str,
+        hint: &'static str,
+    },
+    #[error(
+        "refusing to combine an unsandboxed Chrome with real-profile cookies. \
+         NEOBROWSER_ALLOW_NO_SANDBOX drops the barrier between a hostile page and this \
+         machine, while NEOBROWSER_REAL_PROFILE={profile:?} hands that same browser your \
+         logged-in sessions — together they turn one renderer bug into full account and \
+         host compromise. Drop one of the two, or, if you accept that risk, set \
+         NEOBROWSER_ALLOW_NO_SANDBOX=with-real-profile."
+    )]
+    NoSandboxWithRealProfile { profile: String },
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
     #[error("http error talking to chrome debug endpoint: {0}")]
     Http(#[from] reqwest::Error),
+}
+
+/// Whether this host looks able to run Chrome's own sandbox.
+///
+/// Deliberately conservative: it only reports a blocker it can prove, because a
+/// false negative here would refuse to start for a user whose sandbox is fine.
+/// Anything undetectable resolves to `Available` and, if Chrome then fails to
+/// come up, `ChromeError::NotReady` carries Chrome's own stderr.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxSupport {
+    /// No detectable blocker.
+    Available,
+    /// Chrome refuses to enable its sandbox under uid 0 and exits immediately.
+    BlockedRunningAsRoot,
+    /// Linux with unprivileged user namespaces disabled and no setuid helper.
+    BlockedNoUserNamespaces,
+}
+
+impl SandboxSupport {
+    /// Why the sandbox can't run, and what the operator can do about it.
+    fn explain(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            SandboxSupport::Available => None,
+            SandboxSupport::BlockedRunningAsRoot => Some((
+                "this process runs as root (uid 0), and Chrome will not enable its \
+                 sandbox for a root user",
+                "Run NeoBrowser as an unprivileged user. In a container, add a non-root \
+                 user and `USER` it, or grant the container SYS_ADMIN and unprivileged \
+                 user namespaces. Only as a last resort, set \
+                 NEOBROWSER_ALLOW_NO_SANDBOX=1 to run unsandboxed.",
+            )),
+            SandboxSupport::BlockedNoUserNamespaces => Some((
+                "this Linux host has unprivileged user namespaces disabled and no \
+                 setuid chrome-sandbox helper next to the Chrome binary",
+                "Enable them with `sysctl -w kernel.unprivileged_userns_clone=1` (or \
+                 `user.max_user_namespaces=15000`), or install Chrome's setuid sandbox \
+                 helper. Only as a last resort, set NEOBROWSER_ALLOW_NO_SANDBOX=1 to run \
+                 unsandboxed.",
+            )),
+        }
+    }
+}
+
+/// Detect whether Chrome's sandbox can run here. See [`SandboxSupport`].
+pub fn sandbox_support() -> SandboxSupport {
+    // Root is the real reason nearly every tool ends up shipping --no-sandbox:
+    // Chrome hard-refuses the sandbox as uid 0. This check is exact, not a guess.
+    #[cfg(unix)]
+    // SAFETY: `geteuid` takes no arguments, cannot fail, and returns a plain integer. It
+    // touches no memory we own. This is the minimum-risk shape an FFI call can have.
+    if unsafe { libc::geteuid() } == 0 {
+        return SandboxSupport::BlockedRunningAsRoot;
+    }
+    #[cfg(target_os = "linux")]
+    if !linux_userns_available() && !setuid_sandbox_helper_present() {
+        return SandboxSupport::BlockedNoUserNamespaces;
+    }
+    SandboxSupport::Available
+}
+
+/// Can an unprivileged process create a user namespace? Unreadable sysctls mean
+/// "can't tell", which resolves to `true` — never refuse on missing evidence.
+#[cfg(target_os = "linux")]
+fn linux_userns_available() -> bool {
+    fn sysctl(path: &str) -> Option<i64> {
+        std::fs::read_to_string(path).ok()?.trim().parse().ok()
+    }
+    // Debian/Ubuntu's downstream toggle: an explicit 0 is a hard block.
+    if sysctl("/proc/sys/kernel/unprivileged_userns_clone") == Some(0) {
+        return false;
+    }
+    // Ubuntu 23.10+ (so ubuntu-24.04 runners, the default GitHub image) leaves
+    // max_user_namespaces high but has AppArmor deny userns to unconfined
+    // binaries. Chrome downloaded to a CI workspace is unconfined, so its sandbox
+    // fails here while the two sysctls above look perfectly healthy — this is the
+    // check whose absence turns into an opaque launch timeout.
+    if sysctl("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") == Some(1) {
+        return false;
+    }
+    // Upstream limit: 0 means no user namespaces for anyone.
+    sysctl("/proc/sys/user/max_user_namespaces").is_none_or(|max| max > 0)
+}
+
+/// Chrome's SUID sandbox helper, the fallback when user namespaces are off.
+#[cfg(target_os = "linux")]
+fn setuid_sandbox_helper_present() -> bool {
+    use std::os::unix::fs::MetadataExt;
+    chrome_bin()
+        .parent()
+        .map(|dir| dir.join("chrome-sandbox"))
+        .and_then(|helper| std::fs::metadata(helper).ok())
+        // setuid bit AND owned by root, or it grants nothing.
+        .is_some_and(|m| m.mode() & 0o4000 != 0 && m.uid() == 0)
+}
+
+/// How far the operator has opted out of the sandbox via
+/// `NEOBROWSER_ALLOW_NO_SANDBOX`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoSandboxOptIn {
+    /// Default: the sandbox is required.
+    No,
+    /// Unsandboxed is allowed, but not together with real-profile cookies.
+    Yes,
+    /// Unsandboxed is allowed even while importing real sessions.
+    YesWithRealProfile,
+}
+
+/// Has the operator opted out of the sandbox at all? For `doctor` and any other
+/// surface that has to disclose the effective security posture.
+pub fn no_sandbox_opt_in_active() -> bool {
+    no_sandbox_opt_in() != NoSandboxOptIn::No
+}
+
+fn no_sandbox_opt_in() -> NoSandboxOptIn {
+    match std::env::var("NEOBROWSER_ALLOW_NO_SANDBOX") {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "with-real-profile" => NoSandboxOptIn::YesWithRealProfile,
+            "1" | "true" | "yes" | "on" => NoSandboxOptIn::Yes,
+            _ => NoSandboxOptIn::No,
+        },
+        Err(_) => NoSandboxOptIn::No,
+    }
+}
+
+/// Is a real Chrome profile being used as a cookie source for this session?
+fn real_profile_requested() -> Option<String> {
+    std::env::var("NEOBROWSER_REAL_PROFILE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// Decide whether this launch passes `--no-sandbox`, refusing the combinations
+/// that would quietly trade the user's machine for convenience.
+///
+/// The matrix, in one place so it can be tested without spawning Chrome:
+/// - sandbox available, no opt-in      -> sandboxed (the ordinary path)
+/// - sandbox blocked, no opt-in        -> refuse, with the blocker and the fix
+/// - opt-in, no real profile           -> unsandboxed, warn on every launch
+/// - opt-in + real profile             -> refuse unless the opt-in names that case
+fn resolve_sandbox() -> Result<bool, ChromeError> {
+    let opt_in = no_sandbox_opt_in();
+    let support = sandbox_support();
+    if opt_in == NoSandboxOptIn::No {
+        return match support.explain() {
+            None => Ok(false),
+            Some((reason, hint)) => Err(ChromeError::SandboxUnavailable { reason, hint }),
+        };
+    }
+    if let Some(profile) = real_profile_requested() {
+        if opt_in != NoSandboxOptIn::YesWithRealProfile {
+            return Err(ChromeError::NoSandboxWithRealProfile { profile });
+        }
+        tracing::warn!(
+            profile = %profile,
+            "SECURITY: Chrome is running WITHOUT its sandbox while holding real-profile \
+             cookies. A single renderer exploit on any page reaches both this machine and \
+             those logged-in sessions. Unset NEOBROWSER_ALLOW_NO_SANDBOX as soon as you can."
+        );
+        return Ok(true);
+    }
+    tracing::warn!(
+        "SECURITY: Chrome is running WITHOUT its sandbox (NEOBROWSER_ALLOW_NO_SANDBOX). \
+         A compromised page can escape the renderer and reach this machine. This is not a \
+         supported configuration for untrusted browsing."
+    );
+    Ok(true)
 }
 
 /// Locate a Chrome/Chromium binary cross-platform.
@@ -163,9 +347,13 @@ pub fn chrome_user_agent() -> Option<&'static str> {
 /// `--disable-gpu` is intentionally absent: under `--headless=new` the GPU works and
 /// software WebGL (SwiftShader) is itself a headless fingerprint. Opt in via
 /// `NEOBROWSER_DISABLE_GPU` on GPU-less CI hosts.
+///
+/// `--no-sandbox` is deliberately NOT here. NeoBrowser points a browser at
+/// arbitrary untrusted pages, so the renderer sandbox is the last line between a
+/// drive-by exploit and the user's machine — and in real-profile mode, their live
+/// sessions. It is added only through the audited opt-in in [`resolve_sandbox`].
 pub const DEFAULT_CHROME_FLAGS: &[&str] = &[
     "--headless=new",
-    "--no-sandbox",
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
@@ -248,7 +436,21 @@ fn chrome_stderr_tail(port: u16) -> String {
         return String::new();
     }
     let body: Vec<&str> = tail.into_iter().rev().collect();
-    format!(".\nchrome stderr:\n  {}", body.join("\n  "))
+    let joined = body.join("\n  ");
+    // `sandbox_support` only reports blockers it can prove, so a host it cleared
+    // can still fail on one it couldn't see (seccomp filters, restricted
+    // containers, an unreadable /proc). Chrome names the sandbox in stderr when
+    // that happens — turn that into the same actionable advice instead of an
+    // opaque timeout that invites the user to reach for --no-sandbox blindly.
+    let sandbox_hint = if joined.to_ascii_lowercase().contains("sandbox") {
+        "\nThis looks like a sandbox failure. Prefer fixing the host (run as a \
+         non-root user; enable unprivileged user namespaces) over disabling the \
+         sandbox. NEOBROWSER_ALLOW_NO_SANDBOX=1 exists as a last resort and is \
+         refused outright together with NEOBROWSER_REAL_PROFILE."
+    } else {
+        ""
+    };
+    format!(".\nchrome stderr:\n  {joined}{sandbox_hint}")
 }
 
 /// Does Chrome's HTTP debug endpoint on `port` respond? (Standalone; used for
@@ -344,12 +546,19 @@ impl ChromeProcess {
             });
         }
 
+        // Resolved before spawning: an unsandboxed launch must be an explicit,
+        // logged decision, never a silent default.
+        let unsandboxed = resolve_sandbox()?;
+
         let port = find_free_port()?;
         let mut cmd = Command::new(chrome_bin());
         cmd.arg(format!("--remote-debugging-port={port}"))
             .arg(format!("--user-data-dir={}", profile_dir.display()));
         for flag in DEFAULT_CHROME_FLAGS {
             cmd.arg(flag);
+        }
+        if unsandboxed {
+            cmd.arg("--no-sandbox");
         }
         if let Some(ua) = chrome_user_agent() {
             cmd.arg(format!("--user-agent={ua}"));
@@ -540,6 +749,14 @@ pub fn clear_stale_lock_for_test(profile_dir: &Path) {
     clear_stale_lock(profile_dir);
 }
 
+/// Public view of the profile lock, for `doctor --json`.
+///
+/// Returns the pid holding the profile, if any. Reported rather than cleared: doctor
+/// diagnoses, it does not mutate the environment it is inspecting.
+pub fn profile_lock_holder(profile_dir: &Path) -> Option<i32> {
+    lock_holder_pid(profile_dir)
+}
+
 /// Does a process with this pid exist? Signal 0 checks for existence without
 /// delivering anything.
 fn pid_alive(pid: i32) -> bool {
@@ -548,6 +765,10 @@ fn pid_alive(pid: i32) -> bool {
         if pid <= 0 {
             return false;
         }
+        // SAFETY: signal 0 is the documented "does this process exist" probe — it
+        // delivers nothing and cannot affect the target. `pid` is checked positive above,
+        // so this can never become the `kill(0, ..)` form that signals the whole process
+        // group, nor the negative form that signals a group by id.
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
     }
     #[cfg(not(unix))]
@@ -559,6 +780,11 @@ fn pid_alive(pid: i32) -> bool {
 
 fn term(pid: u32) {
     #[cfg(unix)]
+    // SAFETY: `pid` comes from `Child::id()` on a process this manager spawned, so it is
+    // positive and ours. Positivity matters beyond type-correctness: `kill(0, ..)` would
+    // signal our entire process group and a negative value would signal a group by id —
+    // either would take down the caller's own process tree. A `u32` from `Child::id()`
+    // cannot be zero or negative, which is what makes this call sound.
     unsafe {
         libc::kill(pid as libc::pid_t, libc::SIGTERM);
     }
@@ -590,6 +816,123 @@ mod tests {
         assert!(DEFAULT_CHROME_FLAGS.contains(&"--headless=new"));
         // --disable-gpu must NOT be a default (software WebGL is a headless tell).
         assert!(!DEFAULT_CHROME_FLAGS.contains(&"--disable-gpu"));
+    }
+
+    /// The regression that matters most: no build may ship --no-sandbox as a
+    /// default. If this ever fails, every page NeoBrowser visits runs unconfined.
+    #[test]
+    fn no_sandbox_is_never_a_default_flag() {
+        assert!(
+            !DEFAULT_CHROME_FLAGS.contains(&"--no-sandbox"),
+            "--no-sandbox must only come from the resolve_sandbox opt-in"
+        );
+    }
+
+    /// Scoped env setter that restores the previous value on drop, so a failing
+    /// assertion can't leak NEOBROWSER_ALLOW_NO_SANDBOX into later tests.
+    struct EnvVar {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVar {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn opt_in_parses_only_explicit_affirmatives() {
+        let _g = crate::env_test_guard();
+        for (value, expected) in [
+            ("1", NoSandboxOptIn::Yes),
+            ("true", NoSandboxOptIn::Yes),
+            ("YES", NoSandboxOptIn::Yes),
+            ("with-real-profile", NoSandboxOptIn::YesWithRealProfile),
+            ("With-Real-Profile", NoSandboxOptIn::YesWithRealProfile),
+            // Anything else must fall back to the secure default, so a typo or a
+            // "0" never silently disables the sandbox.
+            ("0", NoSandboxOptIn::No),
+            ("false", NoSandboxOptIn::No),
+            ("", NoSandboxOptIn::No),
+            ("maybe", NoSandboxOptIn::No),
+        ] {
+            let _e = EnvVar::set("NEOBROWSER_ALLOW_NO_SANDBOX", value);
+            assert_eq!(no_sandbox_opt_in(), expected, "value {value:?}");
+        }
+    }
+
+    #[test]
+    fn default_launch_is_sandboxed_when_the_host_allows_it() {
+        let _g = crate::env_test_guard();
+        let _a = EnvVar::unset("NEOBROWSER_ALLOW_NO_SANDBOX");
+        let _r = EnvVar::unset("NEOBROWSER_REAL_PROFILE");
+        // Skip where the host genuinely can't sandbox (root CI, locked-down
+        // kernel): there the correct behavior is the error asserted below.
+        if sandbox_support() == SandboxSupport::Available {
+            assert!(!resolve_sandbox().unwrap(), "must not pass --no-sandbox");
+        } else {
+            assert!(matches!(
+                resolve_sandbox(),
+                Err(ChromeError::SandboxUnavailable { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn opt_in_alone_allows_unsandboxed() {
+        let _g = crate::env_test_guard();
+        let _a = EnvVar::set("NEOBROWSER_ALLOW_NO_SANDBOX", "1");
+        let _r = EnvVar::unset("NEOBROWSER_REAL_PROFILE");
+        assert!(resolve_sandbox().unwrap());
+    }
+
+    /// The dangerous combination: no sandbox AND the user's live cookies. One
+    /// renderer bug would take both the machine and the accounts, so the plain
+    /// opt-in is not enough to authorize it.
+    #[test]
+    fn real_profile_plus_opt_in_is_refused_without_the_specific_token() {
+        let _g = crate::env_test_guard();
+        let _a = EnvVar::set("NEOBROWSER_ALLOW_NO_SANDBOX", "1");
+        let _r = EnvVar::set("NEOBROWSER_REAL_PROFILE", "Default");
+        assert!(matches!(
+            resolve_sandbox(),
+            Err(ChromeError::NoSandboxWithRealProfile { .. })
+        ));
+    }
+
+    #[test]
+    fn real_profile_plus_specific_token_is_allowed() {
+        let _g = crate::env_test_guard();
+        let _a = EnvVar::set("NEOBROWSER_ALLOW_NO_SANDBOX", "with-real-profile");
+        let _r = EnvVar::set("NEOBROWSER_REAL_PROFILE", "Default");
+        assert!(resolve_sandbox().unwrap());
+    }
+
+    /// An empty NEOBROWSER_REAL_PROFILE is not a real profile, so it must not
+    /// trip the stricter branch.
+    #[test]
+    fn blank_real_profile_is_not_a_real_profile() {
+        let _g = crate::env_test_guard();
+        let _a = EnvVar::set("NEOBROWSER_ALLOW_NO_SANDBOX", "1");
+        let _r = EnvVar::set("NEOBROWSER_REAL_PROFILE", "   ");
+        assert!(resolve_sandbox().unwrap());
     }
 
     #[test]
@@ -624,6 +967,7 @@ mod tests {
         proc.kill(true).await;
         assert!(proc.child.is_none());
         // Reaped and gone: signalling the pid must fail with ESRCH.
+        // SAFETY: signal 0 only probes for existence; `pid` is a spawned child's.
         let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
         assert!(rc != 0, "process {pid} still exists after kill(true)");
     }
@@ -637,6 +981,7 @@ mod tests {
             let proc = proc_of(child);
             pid = proc.pid().unwrap();
         } // Drop runs here: SIGTERM + bounded reap.
+          // SAFETY: as above — an existence probe on a pid we spawned.
         let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
         assert!(rc != 0, "process {pid} survived ChromeProcess drop");
     }

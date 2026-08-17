@@ -39,6 +39,21 @@ impl Wall {
         }
     }
 
+    /// Which action status this wall implies.
+    ///
+    /// The distinction that matters: a captcha or a login gate needs *a person*,
+    /// while a bot wall or a rate limit needs a different approach (another source,
+    /// a warmed profile, backing off). Collapsing both into "failed" is what makes a
+    /// model retry the same blocked request in a loop.
+    pub fn action_status(self) -> crate::action::ActionStatus {
+        match self {
+            Wall::Captcha | Wall::LoginRequired => crate::action::ActionStatus::NeedsHuman,
+            Wall::BotWall | Wall::RateLimited | Wall::Consent | Wall::Error => {
+                crate::action::ActionStatus::Blocked
+            }
+        }
+    }
+
     /// A short, actionable hint for the model.
     pub fn hint(self) -> &'static str {
         match self {

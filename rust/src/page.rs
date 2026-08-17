@@ -72,25 +72,79 @@ pub async fn nudge_frame(client: &CdpClient) {
     }
 }
 
-/// Navigate to `url`, wait for `document.readyState === "complete"` (up to 15s),
-/// then a short SPA-hydration buffer (capped at 2s), matching `ChromeTab.navigate`.
-pub async fn navigate(client: &CdpClient, url: &str, wait_s: f64) -> Result<(), CdpError> {
+/// Navigate to `url` and wait for the page to be usable, bounded by `budget`.
+///
+/// Returns whether the load actually completed. A `false` means the budget ran out first —
+/// the caller reports that rather than presenting a half-loaded page as ready.
+///
+/// Two things differ from a naive implementation, both learned the hard way. The wait is
+/// bounded by a caller-supplied [`crate::action::Budget`] instead of a hardcoded 15s, so a
+/// slow site can no longer burn a fixed quarter-minute regardless of what the caller had
+/// time for. And the fixed post-load sleep is gone: `readyState === "complete"` is followed
+/// by a *condition* wait for the DOM to stop growing, which returns immediately on a static
+/// page and only pays for hydration when hydration is actually happening.
+pub async fn navigate_budgeted(
+    client: &CdpClient,
+    url: &str,
+    budget: &crate::action::Budget,
+) -> Result<bool, CdpError> {
     client.send("Page.navigate", json!({ "url": url })).await?;
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
+
+    // Bounded backoff, never past the deadline.
+    let mut interval = Duration::from_millis(50);
+    let mut complete = false;
+    while !budget.expired() {
         if let Ok(Value::String(state)) = js(client, "return document.readyState").await {
             if state == "complete" {
+                complete = true;
                 break;
             }
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(budget.capped_at(interval)).await;
+        interval = (interval * 2).min(Duration::from_millis(400));
     }
-    if wait_s > 0.0 {
-        let buf = wait_s.min(2.0);
-        tokio::time::sleep(Duration::from_secs_f64(buf)).await;
+
+    if complete {
+        settle_dom(client, budget).await;
     }
     // Force frames so any above-the-fold deferred content paints before tools read.
     nudge_frame(client).await;
+    Ok(complete)
+}
+
+/// Wait for the DOM to stop changing: two consecutive identical element counts, or the
+/// budget, whichever comes first.
+///
+/// This replaces a blind `sleep(wait_s)`. On a static page the second sample matches the
+/// first and it costs one round trip; on a hydrating SPA it keeps sampling until the tree
+/// settles. Capped at 2s of its own so a page that mutates forever — a carousel, a live
+/// ticker — cannot hold the navigation open.
+async fn settle_dom(client: &CdpClient, budget: &crate::action::Budget) {
+    let own_deadline = Instant::now() + Duration::from_secs(2);
+    let mut last: Option<f64> = None;
+    while !budget.expired() && Instant::now() < own_deadline {
+        let count = js(client, "return document.getElementsByTagName('*').length")
+            .await
+            .ok()
+            .and_then(|v| v.as_f64());
+        match (last, count) {
+            (Some(prev), Some(now)) if prev == now => return,
+            (_, Some(now)) => last = Some(now),
+            // Cannot read the page: stop waiting rather than spinning on errors.
+            (_, None) => return,
+        }
+        tokio::time::sleep(budget.capped_at(Duration::from_millis(120))).await;
+    }
+}
+
+/// Backwards-compatible wrapper: `wait_s` becomes the budget.
+///
+/// Kept so older call sites keep working while tools move to explicit budgets. The budget is
+/// the LARGER of `wait_s` and 15s, so this wrapper cannot make an existing caller *more*
+/// likely to time out than before.
+pub async fn navigate(client: &CdpClient, url: &str, wait_s: f64) -> Result<(), CdpError> {
+    let budget = crate::action::Budget::from_secs(wait_s.max(15.0));
+    navigate_budgeted(client, url, &budget).await?;
     Ok(())
 }
 
@@ -223,14 +277,8 @@ pub async fn click_backend_node(
 ) -> Result<ClickOutcome, CdpError> {
     // Bring the node into the viewport FIRST. `DOM.getBoxModel` returns
     // viewport-relative coordinates, so a node below the fold yields a `y` that
-    // is off-screen and the dispatched event lands nowhere. Ignore failures:
-    // the node may be unscrollable but still clickable where it sits.
-    let _ = client
-        .send(
-            "DOM.scrollIntoViewIfNeeded",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await;
+    // is off-screen and the dispatched event lands nowhere.
+    scroll_into_view(client, backend_node_id).await;
 
     // Re-read the box AFTER scrolling — any coordinates from before are stale.
     let Some((cx, cy)) = box_center(client, backend_node_id).await? else {
@@ -269,6 +317,19 @@ pub async fn click_backend_node(
         )
         .await?;
     Ok(ClickOutcome::Clicked)
+}
+
+/// Scroll a node into the viewport before measuring or clicking it.
+///
+/// Failures are ignored on purpose: a node inside an unscrollable container is still
+/// clickable where it sits, and refusing would break those cases for no gain.
+async fn scroll_into_view(client: &CdpClient, backend_node_id: i64) {
+    let _ = client
+        .send(
+            "DOM.scrollIntoViewIfNeeded",
+            json!({ "backendNodeId": backend_node_id }),
+        )
+        .await;
 }
 
 /// Hit-test (cx, cy): return a description of the element on top when it is
@@ -518,6 +579,15 @@ pub async fn click_selector(client: &CdpClient, selector: &str) -> Result<ClickO
 }
 
 /// Resolve a CSS selector to a backendNodeId, or None if it matches nothing.
+/// Public alias for the CSS -> `backendNodeId` resolver, for tools that address elements by
+/// selector but need a node id (hover, drag, click variants).
+pub async fn backend_node_for_css(
+    client: &CdpClient,
+    selector: &str,
+) -> Result<Option<i64>, CdpError> {
+    backend_node_for_selector(client, selector).await
+}
+
 async fn backend_node_for_selector(
     client: &CdpClient,
     selector: &str,
@@ -715,6 +785,232 @@ impl Jitter {
         self.0 = x;
         x
     }
+}
+
+// --- B3: interaction coverage ---------------------------------------------------
+
+/// Named keys mapped to the fields CDP needs.
+///
+/// `Input.dispatchKeyEvent` wants `key`, `code`, `windowsVirtualKeyCode` and
+/// `nativeVirtualKeyCode` to agree; sending only `key` produces an event a page's handler
+/// ignores, which looks like a working keypress that does nothing.
+fn key_spec(name: &str) -> Option<(&'static str, &'static str, i64)> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "enter" | "return" => ("Enter", "Enter", 13),
+        "tab" => ("Tab", "Tab", 9),
+        "escape" | "esc" => ("Escape", "Escape", 27),
+        "backspace" => ("Backspace", "Backspace", 8),
+        "delete" | "del" => ("Delete", "Delete", 46),
+        "arrowup" | "up" => ("ArrowUp", "ArrowUp", 38),
+        "arrowdown" | "down" => ("ArrowDown", "ArrowDown", 40),
+        "arrowleft" | "left" => ("ArrowLeft", "ArrowLeft", 37),
+        "arrowright" | "right" => ("ArrowRight", "ArrowRight", 39),
+        "home" => ("Home", "Home", 36),
+        "end" => ("End", "End", 35),
+        "pageup" => ("PageUp", "PageUp", 33),
+        "pagedown" => ("PageDown", "PageDown", 34),
+        "space" => (" ", "Space", 32),
+        _ => return None,
+    })
+}
+
+/// CDP modifier bitmask: Alt=1, Ctrl=2, Meta=4, Shift=8.
+fn modifier_mask(modifiers: &[String]) -> i64 {
+    modifiers.iter().fold(0, |acc, m| {
+        acc | match m.trim().to_ascii_lowercase().as_str() {
+            "alt" => 1,
+            "ctrl" | "control" => 2,
+            "meta" | "cmd" | "command" => 4,
+            "shift" => 8,
+            _ => 0,
+        }
+    })
+}
+
+/// Press a named key, optionally with modifiers — `press("Enter")`, `press("a", ["ctrl"])`.
+pub async fn press_key(
+    client: &CdpClient,
+    key: &str,
+    modifiers: &[String],
+) -> Result<String, CdpError> {
+    let mask = modifier_mask(modifiers);
+    let (key_name, code, vk) = match key_spec(key) {
+        Some(spec) => spec,
+        None => {
+            // A single printable character: send it as itself rather than refusing, since
+            // `press("a", ["ctrl"])` is the natural way to express a shortcut.
+            let mut chars = key.chars();
+            let (Some(c), None) = (chars.next(), chars.next()) else {
+                return Err(CdpError::Closed(format!(
+                    "press: unknown key {key:?}. Use a printable character or one of \
+                     Enter/Tab/Escape/Backspace/Delete/Arrow*/Home/End/PageUp/PageDown/Space"
+                )));
+            };
+            let upper = c.to_ascii_uppercase() as i64;
+            for ty in ["keyDown", "keyUp"] {
+                client
+                    .send(
+                        "Input.dispatchKeyEvent",
+                        json!({
+                            "type": ty,
+                            "key": c.to_string(),
+                            // With a modifier held, a printable key must NOT carry text, or
+                            // Ctrl+A would also insert an "a".
+                            "text": if mask == 0 { c.to_string() } else { String::new() },
+                            "modifiers": mask,
+                            "windowsVirtualKeyCode": upper,
+                            "nativeVirtualKeyCode": upper,
+                        }),
+                    )
+                    .await?;
+            }
+            return Ok(format!("pressed {c:?} with modifiers {modifiers:?}"));
+        }
+    };
+    for ty in ["keyDown", "keyUp"] {
+        client
+            .send(
+                "Input.dispatchKeyEvent",
+                json!({
+                    "type": ty,
+                    "key": key_name,
+                    "code": code,
+                    // `text` is what makes a printable key insert; a named key like Enter
+                    // must NOT carry text, or it types a character instead of acting.
+                    "text": if key_name.len() == 1 && mask == 0 { key_name } else { "" },
+                    "modifiers": mask,
+                    "windowsVirtualKeyCode": vk,
+                    "nativeVirtualKeyCode": vk,
+                }),
+            )
+            .await?;
+    }
+    Ok(format!("pressed {key_name} with modifiers {modifiers:?}"))
+}
+
+/// Hover over an element: move the real cursor there without pressing.
+///
+/// Needed for menus and tooltips that only render on `mouseover`; a JS `dispatchEvent` is
+/// not `isTrusted` and many libraries check.
+pub async fn hover(client: &CdpClient, backend_node_id: i64) -> Result<String, CdpError> {
+    scroll_into_view(client, backend_node_id).await;
+    let Some((cx, cy)) = box_center(client, backend_node_id).await? else {
+        return Err(CdpError::Closed(
+            "hover: element has no box model (it may be hidden)".into(),
+        ));
+    };
+    human_mouse_move(client, cx, cy).await?;
+    client
+        .send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mouseMoved", "x": cx, "y": cy }),
+        )
+        .await?;
+    Ok(format!("hovered at ({cx:.0}, {cy:.0})"))
+}
+
+/// Double or right click, reusing the same scroll + hit-test discipline as `click`.
+pub async fn click_variant(
+    client: &CdpClient,
+    backend_node_id: i64,
+    button: &str,
+    click_count: i64,
+) -> Result<String, CdpError> {
+    scroll_into_view(client, backend_node_id).await;
+    let Some((cx, cy)) = box_center(client, backend_node_id).await? else {
+        return Err(CdpError::Closed(
+            "click: element has no box model (it may be hidden)".into(),
+        ));
+    };
+    if let Some(by) = obscured_by(client, backend_node_id, cx, cy).await? {
+        return Err(CdpError::Closed(format!(
+            "not clicked: target is covered by {by}"
+        )));
+    }
+    human_mouse_move(client, cx, cy).await?;
+    for ty in ["mousePressed", "mouseReleased"] {
+        client
+            .send(
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": ty,
+                    "x": cx,
+                    "y": cy,
+                    "button": button,
+                    "clickCount": click_count,
+                }),
+            )
+            .await?;
+    }
+    Ok(format!("{button} click x{click_count} dispatched"))
+}
+
+/// Set a checkbox, radio or `<select>` to a value, through the property setter React and Vue
+/// listen to.
+///
+/// A bare `el.checked = true` does not notify a framework's state, so the control visually
+/// changes and the app never learns — the classic "the form submitted the old value" bug.
+pub async fn set_control(
+    client: &CdpClient,
+    selector: &str,
+    value: &str,
+) -> Result<String, CdpError> {
+    let snippet = crate::js::set_control()
+        .with(
+            "SEL",
+            &serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".into()),
+        )
+        .with(
+            "VALUE",
+            &serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into()),
+        );
+    let raw = js(client, &snippet.returning()).await?;
+    Ok(match raw {
+        Value::String(s) => s,
+        other => other.to_string(),
+    })
+}
+
+/// Drag from one element to another with real mouse events.
+pub async fn drag_and_drop(client: &CdpClient, from: i64, to: i64) -> Result<String, CdpError> {
+    scroll_into_view(client, from).await;
+    let Some((fx, fy)) = box_center(client, from).await? else {
+        return Err(CdpError::Closed("drag: source has no box model".into()));
+    };
+    let Some((tx, ty)) = box_center(client, to).await? else {
+        return Err(CdpError::Closed("drag: target has no box model".into()));
+    };
+    human_mouse_move(client, fx, fy).await?;
+    client
+        .send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mousePressed", "x": fx, "y": fy, "button": "left", "clickCount": 1 }),
+        )
+        .await?;
+    // Intermediate moves while held: HTML5 drag-and-drop and every JS drag library start
+    // tracking on movement, so a press-then-release at the destination does nothing at all.
+    for step in 1..=10 {
+        let t = step as f64 / 10.0;
+        client
+            .send(
+                "Input.dispatchMouseEvent",
+                json!({
+                    "type": "mouseMoved",
+                    "x": fx + (tx - fx) * t,
+                    "y": fy + (ty - fy) * t,
+                    "button": "left",
+                }),
+            )
+            .await?;
+        tokio::time::sleep(Duration::from_millis(16)).await;
+    }
+    client
+        .send(
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mouseReleased", "x": tx, "y": ty, "button": "left", "clickCount": 1 }),
+        )
+        .await?;
+    Ok(format!("dragged ({fx:.0},{fy:.0}) -> ({tx:.0},{ty:.0})"))
 }
 
 #[cfg(test)]

@@ -1,0 +1,117 @@
+name: Nightly matrix
+
+# The PRD's nightly matrix (§11). Separate from CI on purpose: CI must stay fast enough
+# that people run it on every push, while this trades ~40 minutes for the coverage that
+# only breaks occasionally — a Chrome beta regression, a Windows-only path bug, a
+# headed-vs-headless difference.
+on:
+  schedule:
+    # 03:00 UTC. Chrome's beta channel usually promotes mid-week, so a nightly catches a
+    # breaking change within a day of it landing rather than at release time.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      chrome-version:
+        description: "Chrome channel to test (stable | beta | dev)"
+        default: "beta"
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: ${{ matrix.os }} · chrome-${{ matrix.chrome }} · ${{ matrix.mode }}
+    runs-on: ${{ matrix.os }}
+    # A beta-channel failure must not hide a stable-channel failure, and vice versa.
+    continue-on-error: ${{ matrix.chrome != 'stable' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        chrome: [stable, beta]
+        mode: [isolated, persistent]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Chrome (${{ matrix.chrome }})
+        uses: browser-actions/setup-chrome@v1
+        id: chrome
+        with:
+          chrome-version: ${{ matrix.chrome }}
+
+      # Chrome's sandbox is required. On Ubuntu 23.10+ AppArmor denies unprivileged user
+      # namespaces to unconfined binaries, which a Chrome unpacked into the workspace is.
+      - name: Allow unprivileged user namespaces
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Report the environment
+        shell: bash
+        env:
+          NEOBROWSER_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          cargo build --release
+          # `doctor --json` exits non-zero when a check fails, which is exactly the signal
+          # wanted here: a matrix cell that cannot sandbox should go red.
+          ./target/release/neobrowser doctor --json
+
+      - name: Test suite
+        shell: bash
+        env:
+          NEOBROWSER_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+          NEOBROWSER_DISABLE_GPU: "1"
+          NEOBROWSER_VAULT_KEY: "Y2ktb25seS12YXVsdC1rZXktMzItYnl0ZXMtISEhISE="
+          # `persistent` reuses one named profile across the run, which is the mode a real
+          # user is in; `isolated` is the default ephemeral one. They exercise different
+          # lock and cookie paths.
+          NEOBROWSER_PROFILE: ${{ matrix.mode == 'persistent' && 'nightly' || '' }}
+        run: cargo test --release
+
+      # The real bot-detector check, which CI skips because it depends on a third-party
+      # site being up. A nightly can absorb that flakiness; a per-push gate cannot.
+      - name: Live stealth verification
+        if: matrix.chrome == 'stable'
+        continue-on-error: true
+        shell: bash
+        env:
+          NEOBROWSER_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+          NEOBROWSER_DISABLE_GPU: "1"
+        run: cargo test --release --test stealth_verify -- --ignored --nocapture
+
+      - name: Report orphaned Chrome processes
+        if: always()
+        shell: bash
+        run: |
+          # A leaked Chrome is a real bug (the manager reaps its own child on Drop), and a
+          # matrix run is where a platform-specific leak would show up.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            tasklist | grep -ci chrome || true
+          else
+            pgrep -fc "[Cc]hrome" || true
+          fi
+
+  summary:
+    name: Nightly summary
+    needs: matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if a stable-channel cell failed
+        run: |
+          # `needs.matrix.result` is 'success' only when every non-continue-on-error cell
+          # passed. Beta cells are allowed to fail; stable cells are not.
+          if [ "${{ needs.matrix.result }}" != "success" ]; then
+            echo "::error::a stable-channel matrix cell failed; see the run for which"
+            exit 1
+          fi
+          echo "all stable-channel cells passed"

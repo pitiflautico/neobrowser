@@ -1,0 +1,39 @@
+name: False success
+description: A tool reported success but nothing actually happened
+labels: ["bug", "false-success"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most important bug class in the project, and it gets its own template.
+
+        A tool that returns `status: "succeeded"` when the page did not change is a
+        correctness bug of the worst kind: the agent builds on it and fails much later,
+        far from the cause.
+
+        The opposite case — a genuinely successful action reporting `uncertain` — is also
+        worth filing here. It means the state digest cannot see the change, which pushes
+        users toward ignoring `uncertain` altogether.
+  - type: textarea
+    id: envelope
+    attributes:
+      label: The envelope the tool returned
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: reality
+    attributes:
+      label: What the page actually did
+      description: |
+        How did you confirm it? A `js` snippet reading the relevant DOM state is the most
+        useful evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: A minimal page that reproduces it
+      description: |
+        A `data:text/html,…` URL if possible — that makes it a hermetic regression test we
+        can add permanently.

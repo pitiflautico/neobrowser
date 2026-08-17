@@ -168,6 +168,23 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
     ),
 ];
 
+/// Does a cookie's `host_key` fall under a domain from the exclusion list?
+///
+/// The leading dot has to be normalised on both sides, and getting this wrong fails in the
+/// dangerous direction. Chrome stores a *domain* cookie as `.google.com` and a *host-only*
+/// cookie as `google.com`. The exclusion entries are written with the dot, so a bare
+/// `host_key.ends_with(".google.com")` misses the host-only form entirely — a `SID` cookie
+/// scoped to exactly `google.com` would sail through the exclusion and be injected into the
+/// agent's browser, which is the specific outcome this list exists to prevent.
+///
+/// Matching is still label-aware: `evilgoogle.com` must not match `google.com`, the same
+/// near-miss the policy engine's domain matching has to defend against.
+fn host_under_domain(host_key: &str, domain: &str) -> bool {
+    let host = host_key.trim_start_matches('.').to_ascii_lowercase();
+    let dom = domain.trim_start_matches('.').to_ascii_lowercase();
+    host == dom || host.ends_with(&format!(".{dom}"))
+}
+
 /// True if this cookie is a session-identity cookie we must not inject.
 ///
 /// Escape hatch: `NEOBROWSER_INCLUDE_IDENTITY_COOKIES=1` disables the exclusion,
@@ -179,7 +196,7 @@ pub fn is_session_auth_excluded(host_key: &str, name: &str) -> bool {
         return false;
     }
     SESSION_AUTH_EXCLUSIONS.iter().any(|(domains, names)| {
-        names.contains(&name) && domains.iter().any(|d| host_key.ends_with(d))
+        names.contains(&name) && domains.iter().any(|d| host_under_domain(host_key, d))
     })
 }
 
@@ -241,7 +258,10 @@ pub fn read_real_profile_cookies(
             continue;
         }
         if let Some(doms) = domains {
-            if !doms.iter().any(|d| r.host_key.ends_with(d)) {
+            // Same normalisation for the caller's domain filter: asking for
+            // "google.com" must also match the `.google.com` cookies, or an import
+            // silently returns nothing and looks like the profile had no cookies.
+            if !doms.iter().any(|d| host_under_domain(&r.host_key, d)) {
                 continue;
             }
         }
@@ -475,6 +495,11 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, CookieError> {
         cb_data: 0,
         pb_data: core::ptr::null_mut(),
     };
+    // SAFETY: `input` borrows `data` for the duration of the call and Windows does not
+    // retain it. `output` is zeroed beforehand, and DPAPI either fills it and returns
+    // non-zero or leaves it untouched and returns zero — which is checked immediately
+    // below before anything reads it. The four null pointers are the documented "no
+    // entropy, no prompt, no reserved" arguments.
     let ok = unsafe {
         CryptUnprotectData(
             &mut input,
@@ -489,8 +514,14 @@ fn dpapi_unprotect(data: &[u8]) -> Result<Vec<u8>, CookieError> {
     if ok == 0 {
         return Err(CookieError::NoKey("CryptUnprotectData failed".into()));
     }
+    // SAFETY: reached only when `ok != 0`, which is DPAPI's contract for "pb_data points
+    // to cb_data valid bytes that I allocated". `.to_vec()` copies them out before the
+    // `LocalFree` below, so the slice never outlives the allocation.
     let out =
         unsafe { std::slice::from_raw_parts(output.pb_data, output.cb_data as usize).to_vec() };
+    // SAFETY: DPAPI allocates `pb_data` with LocalAlloc, so LocalFree is the matching
+    // deallocator. It runs exactly once, after the copy above, and `output` is not used
+    // again — so no double free and no use-after-free.
     unsafe {
         LocalFree(output.pb_data as *mut core::ffi::c_void);
     }
@@ -585,8 +616,70 @@ mod tests {
         assert_ne!(derive_key_cbc(b"pw", 1003), derive_key_cbc(b"pw", 1));
     }
 
+    /// Regression: the exclusion list is written with leading dots, so matching with a
+    /// bare `ends_with` missed HOST-ONLY cookies — a `SID` scoped to exactly `google.com`
+    /// was injected despite being the very thing the list exists to hold back.
+    #[test]
+    fn identity_exclusion_covers_host_only_cookies() {
+        let _g = crate::env_test_guard();
+        // The bug: no leading dot on the host_key.
+        assert!(
+            is_session_auth_excluded("google.com", "SID"),
+            "a host-only Google SID cookie must be excluded"
+        );
+        assert!(is_session_auth_excluded("linkedin.com", "li_at"));
+        assert!(is_session_auth_excluded("microsoftonline.com", "ESTSAUTH"));
+        // The domain form and subdomains keep working.
+        assert!(is_session_auth_excluded(".google.com", "SID"));
+        assert!(is_session_auth_excluded("mail.google.com", "SID"));
+        assert!(is_session_auth_excluded(".mail.google.com", "SID"));
+    }
+
+    /// The fix must not over-match: a lookalike domain an attacker controls is not Google.
+    #[test]
+    fn identity_exclusion_respects_label_boundaries() {
+        let _g = crate::env_test_guard();
+        for lookalike in [
+            "evilgoogle.com",
+            "google.com.evil.test",
+            "notgoogle.com",
+            "googlex.com",
+        ] {
+            assert!(
+                !is_session_auth_excluded(lookalike, "SID"),
+                "{lookalike} is not Google and must not be treated as it"
+            );
+        }
+        // And a non-identity cookie on a listed domain is still fine to clone.
+        assert!(!is_session_auth_excluded("google.com", "NID"));
+    }
+
+    #[test]
+    fn host_under_domain_normalises_the_leading_dot_both_ways() {
+        for (host, dom) in [
+            ("google.com", ".google.com"),
+            (".google.com", ".google.com"),
+            ("google.com", "google.com"),
+            (".google.com", "google.com"),
+            ("mail.google.com", ".google.com"),
+        ] {
+            assert!(host_under_domain(host, dom), "{host} should be under {dom}");
+        }
+        for (host, dom) in [
+            ("evilgoogle.com", ".google.com"),
+            ("google.com.evil.test", ".google.com"),
+            ("google.co", ".google.com"),
+        ] {
+            assert!(!host_under_domain(host, dom), "{host} is NOT under {dom}");
+        }
+    }
+
     #[test]
     fn session_auth_exclusions_block_identity_cookies() {
+        // `is_session_auth_excluded` consults NEOBROWSER_INCLUDE_IDENTITY_COOKIES,
+        // which the escape-hatch test below flips. Without this lock the two race and
+        // this one fails intermittently under cargo's parallel threads.
+        let _g = crate::env_test_guard();
         assert!(is_session_auth_excluded(".google.com", "SID"));
         assert!(is_session_auth_excluded(
             "mail.google.com",

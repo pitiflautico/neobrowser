@@ -26,3 +26,12 @@ profiles/
 
 # Private optional plugins (e.g. gpt/grok chat) — never part of the public repo
 neobrowser/_private_*.py
+
+# Debris from benchmark runs against Playwright MCP: its trace/console logs land here and
+# are per-run artifacts, not source.
+.playwright-mcp/
+
+# Staged upload copies and trace bundles live under NEOBROWSER_HOME, but a test that sets
+# it to a relative path would drop them here.
+upload-staging/
+traces/

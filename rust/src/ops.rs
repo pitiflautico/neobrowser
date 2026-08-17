@@ -45,48 +45,24 @@ pub async fn eval_js(client: &CdpClient, code: &str) -> Result<String, CdpError>
     })
 }
 
-const PAGE_INFO_JS: &str = r#"
-    var els = document.querySelectorAll('a,button,input,select,textarea,[role=button],[role=link]');
-    var forms = document.querySelectorAll('form');
-    var overlays = Array.from(document.querySelectorAll('*')).filter(function(e) {
-        var s = window.getComputedStyle(e);
-        return (s.position === 'fixed' || s.position === 'sticky') &&
-               parseInt(s.zIndex) > 100 && e.offsetHeight > 50;
-    });
-    return JSON.stringify({
-        url: location.href, title: document.title,
-        interactive: els.length, forms: forms.length,
-        has_overlay: overlays.length > 0, overlay_count: overlays.length
-    });
-"#;
-
-pub async fn page_info(client: &CdpClient) -> Result<String, CdpError> {
-    Ok(str_or(page::js(client, PAGE_INFO_JS).await?, "{}"))
+/// Loaded from `js/page_info.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn page_info_js() -> &'static str {
+    include_str!("../js/page_info.js")
 }
 
-const ANALYZE_JS: &str = r#"
-    var forms = Array.from(document.querySelectorAll('form')).map(function(f, fi) {
-        var fields = Array.from(f.querySelectorAll('input,select,textarea')).map(function(el) {
-            var label = '';
-            if (el.id) { var l = document.querySelector('label[for="'+el.id+'"]'); if(l) label = l.textContent.trim(); }
-            if (!label) label = el.placeholder || el.name || el.type || '';
-            return {tag: el.tagName.toLowerCase(), type: el.type||'', name: el.name||'', id: el.id||'', label: label, value: el.value||''};
-        });
-        return {index: fi, action: f.action||'', method: f.method||'get', fields: fields};
-    });
-    var buttons = Array.from(document.querySelectorAll('button,[role=button],input[type=submit],input[type=button]')).slice(0,20).map(function(b) {
-        return {tag: b.tagName.toLowerCase(), text: (b.textContent||b.value||'').trim().slice(0,60), type: b.type||''};
-    });
-    var overlays = Array.from(document.querySelectorAll('*')).filter(function(e) {
-        var s = window.getComputedStyle(e);
-        return (s.position==='fixed'||s.position==='sticky') && parseInt(s.zIndex)>100 && e.offsetHeight>50;
-    }).slice(0,5).map(function(e){ return {tag: e.tagName.toLowerCase(), id: e.id||'', cls: e.className.toString().slice(0,60)}; });
-    var active = document.activeElement ? {tag: document.activeElement.tagName.toLowerCase(), id: document.activeElement.id||''} : null;
-    return JSON.stringify({forms: forms, buttons: buttons, overlays: overlays, active_element: active});
-"#;
+pub async fn page_info(client: &CdpClient) -> Result<String, CdpError> {
+    Ok(str_or(page::js(client, page_info_js()).await?, "{}"))
+}
+
+/// Loaded from `js/analyze.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn analyze_js() -> &'static str {
+    include_str!("../js/analyze.js")
+}
 
 pub async fn analyze(client: &CdpClient) -> Result<String, CdpError> {
-    Ok(str_or(page::js(client, ANALYZE_JS).await?, "{}"))
+    Ok(str_or(page::js(client, analyze_js()).await?, "{}"))
 }
 
 /// `fill` — set a field's value using the element's own prototype setter and fire
@@ -340,41 +316,14 @@ pub async fn find_and_click(
     Ok(report.to_string())
 }
 
-const DISMISS_OVERLAY_JS: &str = r#"return (function(force){
-    const ACCEPT = ['accept all','accept','agree','i agree','got it','ok','allow all','allow',
-        'aceptar','acepto','permitir','entendido','continuar','cerrar'];
-    const CLOSE = ['close','dismiss','no thanks','skip','×','✕','✗','x'];
-    const click = (el) => { try { el.scrollIntoView(); el.click(); return true; } catch(e){ return false; } };
-    const findBtn = (texts, root) => {
-        const btns = Array.from((root||document).querySelectorAll(
-            'button,a,[role=button],[class*=accept],[class*=agree],[class*=consent],[class*=cookie]'));
-        for (const t of texts) {
-            const b = btns.find(x => { const s=(x.innerText||'').trim().toLowerCase(); return s===t || s.startsWith(t); });
-            if (b) return b;
-        }
-        return null;
-    };
-    const overlays = Array.from(document.querySelectorAll('*')).filter(e => {
-        const s = getComputedStyle(e);
-        return (s.position==='fixed'||s.position==='sticky') && parseInt(s.zIndex||0) > 50
-            && e.offsetHeight > 40 && e.offsetWidth > 100;
-    });
-    if (!overlays.length) return JSON.stringify({dismissed:false, reason:'no overlay detected'});
-    for (const o of overlays) { const b = findBtn(ACCEPT, o); if (b && click(b))
-        return JSON.stringify({dismissed:true, method:'accept', text:(b.innerText||'').trim().slice(0,30)}); }
-    for (const o of overlays) { const b = findBtn(CLOSE, o); if (b && click(b))
-        return JSON.stringify({dismissed:true, method:'close', text:(b.innerText||'').trim().slice(0,30)}); }
-    if (force) {
-        document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
-        const bd = document.querySelector('[class*=backdrop],[class*=overlay],[class*=mask]');
-        if (bd) click(bd);
-        return JSON.stringify({dismissed:true, method:'escape_backdrop'});
-    }
-    return JSON.stringify({dismissed:false, reason:'no dismiss button found, try force=true'});
-})(FORCE);"#;
+/// Loaded from `js/dismiss_overlay.js`. See [`crate::js`] for why the snippets live
+/// in real JavaScript files rather than Rust string literals.
+fn dismiss_overlay_js() -> &'static str {
+    include_str!("../js/dismiss_overlay.js")
+}
 
 pub async fn dismiss_overlay(client: &CdpClient, force: bool) -> Result<String, CdpError> {
-    let code = DISMISS_OVERLAY_JS.replace("FORCE", if force { "true" } else { "false" });
+    let code = dismiss_overlay_js().replace("FORCE", if force { "true" } else { "false" });
     Ok(str_or(
         page::js(client, &code).await?,
         r#"{"dismissed": false}"#,
@@ -602,8 +551,8 @@ mod tests {
 
     #[test]
     fn dismiss_overlay_force_is_substituted() {
-        assert!(DISMISS_OVERLAY_JS.contains("(FORCE)"));
-        let t = DISMISS_OVERLAY_JS.replace("FORCE", "true");
+        assert!(dismiss_overlay_js().contains("(FORCE)"));
+        let t = dismiss_overlay_js().replace("FORCE", "true");
         assert!(t.contains("(true)"));
         assert!(!t.contains("FORCE"));
     }

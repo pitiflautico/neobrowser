@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "NeoBrowser Bridge",
+  "version": "1.0.0",
+  "description": "Let a local NeoBrowser agent drive tabs you explicitly share with it. Nothing is shared until you click Share, and you can revoke at any time.",
+  "permissions": ["tabs", "debugger", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "NeoBrowser Bridge" },
+  "icons": {}
+}

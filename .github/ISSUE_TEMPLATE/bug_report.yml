@@ -1,0 +1,57 @@
+name: Bug report
+description: Something behaves differently from what it says it does
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: run `neobrowser doctor --json` and paste it below. Most reports
+        turn out to be an environment difference that it reports directly.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: neobrowser doctor --json
+      description: Redact nothing — it contains no secrets by design.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: |
+        If a tool returned a verified-action envelope, paste it. The `status`,
+        `evidence.changes` and `warnings` fields usually contain the answer.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: trace
+    attributes:
+      label: Evidence bundle (optional)
+      description: |
+        `neobrowser trace list` then `neobrowser trace open <id>`. Bundles are redacted
+        when written — cookies, auth headers and tokens are removed — so they are safe to
+        attach. Check it over anyway before posting.
+      render: json
+  - type: input
+    id: site
+    attributes:
+      label: Site
+      description: The URL, if it is public. "An internal app" is a fine answer.
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Session mode
+      description: From `profile_mode`.
+      options:
+        - isolated
+        - agent
+        - attached
+        - imported_real_profile
+        - not sure

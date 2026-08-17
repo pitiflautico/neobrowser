@@ -24,8 +24,23 @@ case "$os" in
   *) echo "unsupported OS: $os (on Windows, download the .zip from the Releases page)" >&2; exit 1 ;;
 esac
 
+# A specific version, not a moving "latest": an install that silently changes what it
+# fetches cannot be reproduced, and a pinned version is what lets a lockfile or a
+# Dockerfile mean anything. Override with NEOBROWSER_VERSION.
+VERSION="${NEOBROWSER_VERSION:-}"
+if [ -z "$VERSION" ]; then
+  echo "Resolving the latest release tag..."
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+fi
+if [ -z "$VERSION" ]; then
+  echo "could not resolve a release version; set NEOBROWSER_VERSION=vX.Y.Z" >&2
+  exit 1
+fi
+echo "Installing ${VERSION}"
+
 art="neobrowser-${target}.tar.gz"
-base="https://github.com/${REPO}/releases/latest/download"
+base="https://github.com/${REPO}/releases/download/${VERSION}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -43,8 +58,21 @@ if [ -s "$tmp/$art.sha256" ]; then
     echo "warning: no sha256 tool found; skipping verification"
   fi
 fi
-# Stronger (optional): verify signed build provenance with the GitHub CLI:
-#   gh attestation verify "$tmp/$art" --repo ${REPO}
+# Build provenance, when the GitHub CLI is available. Releases are attested by
+# release.yml, so this proves the artifact was built by that workflow from this repo —
+# a checksum only proves the file matches a checksum published beside it, which the
+# same attacker would control.
+if command -v gh >/dev/null 2>&1; then
+  echo "Verifying build provenance..."
+  if gh attestation verify "$tmp/$art" --repo "${REPO}" >/dev/null 2>&1; then
+    echo "Provenance: verified (built by ${REPO} release workflow)"
+  else
+    echo "warning: provenance could not be verified. Continuing, since gh may not be" >&2
+    echo "         authenticated; run 'gh attestation verify' yourself to be certain." >&2
+  fi
+else
+  echo "note: install the GitHub CLI to verify build provenance (gh attestation verify)"
+fi
 
 tar -C "$tmp" -xzf "$tmp/$art"
 chmod +x "$tmp/neobrowser"

@@ -13,8 +13,8 @@
           "navigate",
           "read"
         ],
-        "total_latency_ms": 3156,
-        "latency_per_step_ms": 1578,
+        "total_latency_ms": 3705,
+        "latency_per_step_ms": 1852,
         "tool_calls": 3,
         "browser_crash": false,
         "final_state_valid": true,
@@ -39,8 +39,8 @@
           "submit",
           "verify"
         ],
-        "total_latency_ms": 5694,
-        "latency_per_step_ms": 1139,
+        "total_latency_ms": 6335,
+        "latency_per_step_ms": 1267,
         "tool_calls": 6,
         "browser_crash": false,
         "final_state_valid": true,
@@ -59,8 +59,8 @@
           "navigate",
           "extract"
         ],
-        "total_latency_ms": 2972,
-        "latency_per_step_ms": 1486,
+        "total_latency_ms": 2941,
+        "latency_per_step_ms": 1470,
         "tool_calls": 3,
         "browser_crash": false,
         "final_state_valid": true,
@@ -81,8 +81,8 @@
           "start",
           "await_render"
         ],
-        "total_latency_ms": 8210,
-        "latency_per_step_ms": 2737,
+        "total_latency_ms": 8194,
+        "latency_per_step_ms": 2731,
         "tool_calls": 12,
         "browser_crash": false,
         "final_state_valid": true,
@@ -101,8 +101,8 @@
           "navigate",
           "screenshot"
         ],
-        "total_latency_ms": 2640,
-        "latency_per_step_ms": 1320,
+        "total_latency_ms": 2600,
+        "latency_per_step_ms": 1300,
         "tool_calls": 3,
         "browser_crash": false,
         "final_state_valid": true,
@@ -121,8 +121,8 @@
           "navigate",
           "count=2"
         ],
-        "total_latency_ms": 5670,
-        "latency_per_step_ms": 2835,
+        "total_latency_ms": 58750,
+        "latency_per_step_ms": 29375,
         "tool_calls": 6,
         "browser_crash": false,
         "final_state_valid": true,
@@ -143,8 +143,8 @@
           "upload",
           "verify"
         ],
-        "total_latency_ms": 5417,
-        "latency_per_step_ms": 1806,
+        "total_latency_ms": 6133,
+        "latency_per_step_ms": 2044,
         "tool_calls": 5,
         "browser_crash": false,
         "final_state_valid": true,
@@ -157,15 +157,19 @@
         "destination_access_success": true,
         "step_success": [
           true,
+          true,
+          true,
           true
         ],
         "steps": [
           "navigate",
-          "persist"
+          "write_cookie",
+          "restart",
+          "survived_restart"
         ],
-        "total_latency_ms": 2578,
-        "latency_per_step_ms": 1289,
-        "tool_calls": 5,
+        "total_latency_ms": 7943,
+        "latency_per_step_ms": 1986,
+        "tool_calls": 6,
         "browser_crash": false,
         "final_state_valid": true,
         "recovery_success": null,
@@ -185,8 +189,8 @@
           "kill",
           "recover"
         ],
-        "total_latency_ms": 6499,
-        "latency_per_step_ms": 2166,
+        "total_latency_ms": 6837,
+        "latency_per_step_ms": 2279,
         "tool_calls": 4,
         "browser_crash": false,
         "final_state_valid": true,
@@ -207,8 +211,8 @@
           "navigate",
           "read"
         ],
-        "total_latency_ms": 2154,
-        "latency_per_step_ms": 1077,
+        "total_latency_ms": 1749,
+        "latency_per_step_ms": 874,
         "tool_calls": 3,
         "browser_crash": false,
         "final_state_valid": true,
@@ -233,8 +237,8 @@
           "submit",
           "verify"
         ],
-        "total_latency_ms": 5503,
-        "latency_per_step_ms": 1101,
+        "total_latency_ms": 6005,
+        "latency_per_step_ms": 1201,
         "tool_calls": 6,
         "browser_crash": false,
         "final_state_valid": true,
@@ -253,8 +257,8 @@
           "navigate",
           "extract"
         ],
-        "total_latency_ms": 1398,
-        "latency_per_step_ms": 699,
+        "total_latency_ms": 1528,
+        "latency_per_step_ms": 764,
         "tool_calls": 3,
         "browser_crash": false,
         "final_state_valid": true,
@@ -275,8 +279,8 @@
           "start",
           "await_render"
         ],
-        "total_latency_ms": 7210,
-        "latency_per_step_ms": 2403,
+        "total_latency_ms": 7293,
+        "latency_per_step_ms": 2431,
         "tool_calls": 8,
         "browser_crash": false,
         "final_state_valid": true,
@@ -295,8 +299,8 @@
           "navigate",
           "screenshot"
         ],
-        "total_latency_ms": 571,
-        "latency_per_step_ms": 286,
+        "total_latency_ms": 605,
+        "latency_per_step_ms": 302,
         "tool_calls": 3,
         "browser_crash": false,
         "final_state_valid": true,
@@ -315,8 +319,8 @@
           "navigate",
           "count=2"
         ],
-        "total_latency_ms": 1048,
-        "latency_per_step_ms": 524,
+        "total_latency_ms": 1145,
+        "latency_per_step_ms": 572,
         "tool_calls": 6,
         "browser_crash": false,
         "final_state_valid": true,
@@ -325,43 +329,47 @@
       },
       {
         "task": "upload",
-        "task_execution_success": false,
-        "destination_access_success": false,
+        "task_execution_success": true,
+        "destination_access_success": true,
         "step_success": [
           true,
-          false,
-          false
+          true,
+          true
         ],
         "steps": [
           "navigate",
           "upload",
           "verify"
         ],
-        "total_latency_ms": 3074,
-        "latency_per_step_ms": 1025,
+        "total_latency_ms": 4911,
+        "latency_per_step_ms": 1637,
         "tool_calls": 6,
         "browser_crash": false,
-        "final_state_valid": false,
+        "final_state_valid": true,
         "recovery_success": null,
         "tabs_created": null
       },
       {
         "task": "persistence",
-        "task_execution_success": false,
-        "destination_access_success": false,
+        "task_execution_success": true,
+        "destination_access_success": true,
         "step_success": [
           true,
-          false
+          true,
+          true,
+          true
         ],
         "steps": [
           "navigate",
-          "unsupported"
+          "write_cookie",
+          "restart",
+          "survived_restart"
         ],
-        "total_latency_ms": 23,
-        "latency_per_step_ms": 12,
-        "tool_calls": 3,
+        "total_latency_ms": 4194,
+        "latency_per_step_ms": 1048,
+        "tool_calls": 6,
         "browser_crash": false,
-        "final_state_valid": false,
+        "final_state_valid": true,
         "recovery_success": null,
         "tabs_created": null
       },
@@ -379,8 +387,8 @@
           "kill",
           "recover"
         ],
-        "total_latency_ms": 2389,
-        "latency_per_step_ms": 796,
+        "total_latency_ms": 2150,
+        "latency_per_step_ms": 717,
         "tool_calls": 4,
         "browser_crash": false,
         "final_state_valid": true,
@@ -396,7 +404,7 @@
         "wall_detected": true,
         "wall_type": "bot_wall",
         "destination_access_success": false,
-        "total_latency_ms": 3953,
+        "total_latency_ms": 4534,
         "tool_calls": 2
       },
       {
@@ -404,7 +412,7 @@
         "wall_detected": true,
         "wall_type": "captcha",
         "destination_access_success": false,
-        "total_latency_ms": 3077,
+        "total_latency_ms": 3966,
         "tool_calls": 2
       }
     ],
@@ -414,7 +422,7 @@
         "wall_detected": true,
         "wall_type": "bot_wall",
         "destination_access_success": false,
-        "total_latency_ms": 3476,
+        "total_latency_ms": 2524,
         "tool_calls": 2
       },
       {
@@ -422,7 +430,7 @@
         "wall_detected": true,
         "wall_type": "captcha",
         "destination_access_success": false,
-        "total_latency_ms": 6545,
+        "total_latency_ms": 7722,
         "tool_calls": 2
       }
     ]
