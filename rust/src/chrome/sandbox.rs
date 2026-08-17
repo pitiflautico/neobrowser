@@ -107,6 +107,10 @@ fn linux_userns_available() -> bool {
 #[cfg(target_os = "linux")]
 fn setuid_sandbox_helper_present() -> bool {
     use std::os::unix::fs::MetadataExt;
+    // Imported inside the cfg block: this whole function is Linux-only, and a
+    // top-level import would be an unused-import warning everywhere else. Its
+    // absence only broke the Linux build, so a macOS-only run never saw it.
+    use crate::chrome::chrome_bin;
     chrome_bin()
         .parent()
         .map(|dir| dir.join("chrome-sandbox"))
