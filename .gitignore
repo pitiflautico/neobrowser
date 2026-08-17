@@ -19,10 +19,16 @@ htmlcov/
 .DS_Store
 
 # NeoBrowser runtime state (never commit user sessions/cookies)
+#
+# These are anchored with a leading slash on purpose. Unanchored, `sessions/` matches a
+# directory of that name at ANY depth — including `rust/src/sessions/`, which is source. That
+# happened: splitting sessions.rs into modules produced four files git silently refused to
+# add, so the tree built and tested locally while the pushed branch did not compile at all.
+# `profiles/` was the same mine waiting for whoever split that module next.
 .neorender/
 *.cookies.json
-sessions/
-profiles/
+/sessions/
+/profiles/
 
 # Private optional plugins (e.g. gpt/grok chat) — never part of the public repo
 neobrowser/_private_*.py

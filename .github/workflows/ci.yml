@@ -67,6 +67,13 @@ jobs:
       # The README has already shipped "~4 MB static binary" for a 5.5 MB dynamically-linked
       # one and "43 tools" for 67. Documentation drift is found late and by hand unless
       # something checks it.
+      # A file present locally but absent from git compiles and tests fine for its author
+      # and is missing for everyone else. An unanchored `sessions/` in .gitignore did exactly
+      # that to four modules: 324 tests passed locally, the pushed branch did not compile.
+      - name: Every source file is committed
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 ../scripts/check-tracked.py
+
       - name: README claims match the binary
         if: matrix.os == 'ubuntu-latest'
         run: |
