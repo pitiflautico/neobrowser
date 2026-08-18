@@ -191,3 +191,8 @@
 - **18 puntos, 7 comentarios, y 0 → 35 ESTRELLAS en 90 minutos.** El lanzamiento funciona.
 - Respondidos los 7 comentarios (verificados en threads?id=pitiflautico): interés de Johnny_Bonk (real sessions), comparación honesta con browser-use y BrowserOS, attach mode para Icingdeath (que ya usa --remote-debugging-port a mano), "doesn't Claude do this?" aclarado, y la jab "vibecoded README" de nater5000 respondida sin defensividad (claims verificables: CI + bench/ + "abre issue si algo no se sostiene").
 - Temas que interesan: real sessions (el gancho ganador), comparaciones con browser-use/BrowserOS/Playwright MCP, y escepticismo sano anti-vibecoding (responder siempre con evidencia verificable).
+
+## 2026-08-18 — track de contacto proactivo montado
+- `promo/drafts/outreach-track.md`: escalera de contacto (warm HN engagers → pares MCP/browser → figuras), mensajes tipo, reglas (máx 1-2/día, feedback > difusión, personalizado siempre).
+- **Primer contacto proactivo**: Johnny_Bonk (el early adopter natural — usa sesiones firmadas a diario) invitado a probar y reportar qué rompe. Verificado visible.
+- Contexto: 18 puntos, 35★ — el contacto ahora llega con prueba social, no en frío.

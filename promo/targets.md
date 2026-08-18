@@ -20,6 +20,13 @@ Regla: reply con valor real sobre SU tema. NeoBrowser solo si encaja. Máx 2/dí
 ## Verificación
 Los handles marcados se verifican con la sesión de X antes de interactuar (buscar perfil, confirmar que es quien es).
 
+## Warm contacts del lanzamiento HN (item 49345320)
+| fecha | contacto | nivel | vía | estado |
+|---|---|---|---|---|
+| 2026-08-18 | Johnny_Bonk (HN) | 1 — early adopter | reply en hilo | contactado: invitado a probar + reportar qué rompe |
+| 2026-08-18 | Icingdeath (HN) | 1 — attach-mode user | reply en hilo | informado de NEOBROWSER_ATTACH_PORT |
+| 2026-08-18 | dmix (HN) | 1 — BrowserOS user | reply en hilo | comparativa honesta ofrecida |
+
 ## Log de interacciones
 | fecha | cuenta | tipo | tema | resultado |
 |---|---|---|---|---|
