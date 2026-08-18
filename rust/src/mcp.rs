@@ -220,7 +220,18 @@ async fn handle_tool_call(
         return tool_error_response(req_id, &e);
     }
 
+    let call_start = std::time::Instant::now();
+
     let outcome = tool.call(ctx, &args).await;
+
+    // Durable audit trail (append-only, secrets masked) — never breaks a call.
+    crate::audit::log_tool_call(
+        tool_name,
+        &args,
+        outcome.is_ok(),
+        outcome.as_ref().err().map(|e| e.to_string()).as_deref(),
+        call_start.elapsed(),
+    );
 
     // Record mutating actions into the active playbook (if any) on success.
     if outcome.is_ok()

@@ -1,6 +1,7 @@
 //! NeoBrowser — a fast, stealthy MCP browser-automation server that drives real
 //! Chrome. Library crate exposing the modules the binary and integration tests use.
 
+pub mod audit;
 pub mod browser;
 pub mod capture;
 pub mod cdp;
