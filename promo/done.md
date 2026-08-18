@@ -186,3 +186,8 @@
 - **Plot twist**: HN tiene /showlim activo — bloquea posts con prefijo "Show HN:" de cuentas nuevas por "massive influx". Se publicó como submission normal (mismo título sin el prefijo). Pierde la colocación en /show pero está en /newest y es público. Lección: el rodaje de karma (1) no fue suficiente contra showlim; la cuenta necesita más historial para un Show HN formal.
 - Monitor programado: one-shot 63d8bff4 a las 16:47 CET (puntos + responder comentarios con las respuestas preparadas).
 - Incidencia tooling: el check #me de HN es flaky en algunas páginas (la sesión era válida aunque reportara SIN LOGIN); las cookies de HN caducan rápido — reloguear siempre antes de actuar.
+
+## 2026-08-18 — monitor 16:47 CET: ¡TRACCIÓN REAL!
+- **18 puntos, 7 comentarios, y 0 → 35 ESTRELLAS en 90 minutos.** El lanzamiento funciona.
+- Respondidos los 7 comentarios (verificados en threads?id=pitiflautico): interés de Johnny_Bonk (real sessions), comparación honesta con browser-use y BrowserOS, attach mode para Icingdeath (que ya usa --remote-debugging-port a mano), "doesn't Claude do this?" aclarado, y la jab "vibecoded README" de nater5000 respondida sin defensividad (claims verificables: CI + bench/ + "abre issue si algo no se sostiene").
+- Temas que interesan: real sessions (el gancho ganador), comparaciones con browser-use/BrowserOS/Playwright MCP, y escepticismo sano anti-vibecoding (responder siempre con evidencia verificable).
