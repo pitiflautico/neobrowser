@@ -146,10 +146,16 @@ jobs:
 
       # Secret scanning over the full history. This repo handles cookies and
       # keychain material, so a committed credential is the worst plausible slip.
+      # Scans, but does not annotate the PR. The default GITHUB_TOKEN cannot write
+      # comments on a pull request here, and the action fails the job on that write
+      # rather than on a finding — a red build that says nothing about secrets. The
+      # scan itself, which is the point, is unaffected.
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "true"
 
   sbom:
     name: SBOM
