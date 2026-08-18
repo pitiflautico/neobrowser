@@ -196,3 +196,7 @@
 - `promo/drafts/outreach-track.md`: escalera de contacto (warm HN engagers → pares MCP/browser → figuras), mensajes tipo, reglas (máx 1-2/día, feedback > difusión, personalizado siempre).
 - **Primer contacto proactivo**: Johnny_Bonk (el early adopter natural — usa sesiones firmadas a diario) invitado a probar y reportar qué rompe. Verificado visible.
 - Contexto: 18 puntos, 35★ — el contacto ahora llega con prueba social, no en frío.
+
+## 2026-08-18 — hito: 66★ y 31 puntos en HN
+- El post escala: 31 puntos, 9 comentarios. 66★ y 3 forks. La conversión HN→GitHub funciona (~2 estrellas por punto).
+- Pendiente: 2 comentarios nuevos por responder (los barre el próximo ciclo del cron).
