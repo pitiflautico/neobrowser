@@ -212,3 +212,11 @@
 ## 2026-08-18 — guía de voz VOICE.md (refinado del pivote)
 - El usuario pide mensajes "muy humanizados, variados, realmente humanos y con espíritu de aportar". Creado `promo/VOICE.md`: tics de IA prohibidos (listas perfectas, guiones largos, estructura afirmación→3 puntos→moraleja, párrafos de metrónomo, fórmulas repetidas), obligaciones (longitudes variadas, 80% sin mencionar el producto, detalles concretos y caóticos, preguntas de vuelta, opiniones con riesgo) y el filtro de 3 preguntas antes de publicar.
 - Cron actualizado → e46c44a0: lee VOICE.md antes de escribir, prioriza ayudar en conversaciones de la comunidad por encima de contenido propio.
+
+## 2026-08-18 — outreach real en el hilo: 2 respuestas que construyen
+- Respondida la pregunta de **sanex** (browser-use vs agent-browser de Vercel vs driver de Claude): comparación honesta por caso de uso, sin vender — "si tu tarea no necesita tus cuentas, cualquiera de las otras vale".
+- Respondida la **pregunta de seguridad de dongkeren** (allowlist de dominios, aprobación humana): honestidad total — el allowlist NO existe, la aprobación va en la capa del cliente MCP, lista de lo que sí hay. Invitado a abrir issue... y issue creado por nosotros: **#9 "Domain allowlist for navigate"** — feedback de la comunidad convertido en roadmap público en horas.
+- No se respondió a: king_crimson (prompt injection joke), Atotalnoob/totetsu (acusaciones AI slop — alimentarlas confirma la narrativa), hotelsacher (drive-by).
+- Nota: aparecieron dbbk/wateralien diciendo "Claude ya abre mi Chrome con cookies" — matiz para futuras respuestas: hay que ser precisos, algunos clientes pueden apuntar a perfil real con Playwright MCP; nuestro diferencial es sesiones descifradas + stealth + detección de walls, no "somos los únicos que abren Chrome".
+- Tier-1 scan: simonw (reviews de Qwen — no es nuestro tema hoy), swyx — sin apertura genuina; no se fuerza.
+- Estado: 31 puntos, 66★.
