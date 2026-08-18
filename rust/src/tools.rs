@@ -13,6 +13,41 @@ use thiserror::Error;
 
 use crate::browser::Browser;
 
+/// Domain allowlist for `navigate`, from `NEOBROWSER_DOMAIN_ALLOWLIST`
+/// (comma-separated; exact host or `*.suffix` for any subdomain, e.g.
+/// `github.com,*.docs.rs`). Unset or empty means everything is allowed.
+/// Returns Err with an actionable message when the URL's host is not listed.
+pub fn check_domain_allowlist(url: &str) -> Result<(), String> {
+    let raw = match std::env::var("NEOBROWSER_DOMAIN_ALLOWLIST") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return Ok(()),
+    };
+    let host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .ok_or_else(|| format!("navigate: cannot parse host from '{url}'"))?;
+    let entries: Vec<String> = raw
+        .split(',')
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect();
+    let allowed = entries.iter().any(|e| {
+        if let Some(suffix) = e.strip_prefix("*.") {
+            host == suffix || host.ends_with(&format!(".{suffix}"))
+        } else {
+            &host == e
+        }
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!(
+            "navigate: '{host}' is not in NEOBROWSER_DOMAIN_ALLOWLIST (allowed: {})",
+            entries.join(", ")
+        ))
+    }
+}
+
 /// JSON-Schema-ish parameter type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamType {
@@ -302,6 +337,32 @@ mod tests {
         assert!(spec()
             .validate_args(&args(json!({ "ms": 5, "intent": "x" })))
             .is_ok());
+    }
+
+    #[test]
+    fn domain_allowlist_blocks_unlisted_hosts() {
+        // Single test fn so env manipulation can't race across test threads.
+        const VAR: &str = "NEOBROWSER_DOMAIN_ALLOWLIST";
+        std::env::remove_var(VAR);
+        // Unset: everything allowed.
+        assert!(crate::tools::check_domain_allowlist("https://anything.example/x").is_ok());
+        // Exact hosts.
+        std::env::set_var(VAR, "github.com,docs.rs");
+        assert!(crate::tools::check_domain_allowlist("https://github.com/a").is_ok());
+        assert!(crate::tools::check_domain_allowlist("https://docs.rs/").is_ok());
+        let err = crate::tools::check_domain_allowlist("https://evil.com/").unwrap_err();
+        assert!(err.contains("not in NEOBROWSER_DOMAIN_ALLOWLIST"));
+        // Exact entries must not leak to subdomains.
+        assert!(crate::tools::check_domain_allowlist("https://sub.github.com/").is_err());
+        // Wildcard entries cover the apex and subdomains.
+        std::env::set_var(VAR, "*.example.com");
+        assert!(crate::tools::check_domain_allowlist("https://example.com/").is_ok());
+        assert!(crate::tools::check_domain_allowlist("https://a.b.example.com/").is_ok());
+        assert!(crate::tools::check_domain_allowlist("https://notexample.com/").is_err());
+        // Case-insensitive, spaces tolerated.
+        std::env::set_var(VAR, " GitHub.COM ");
+        assert!(crate::tools::check_domain_allowlist("https://github.com/").is_ok());
+        std::env::remove_var(VAR);
     }
 
     #[test]

@@ -80,6 +80,7 @@ impl Tool for NavigateTool {
     ) -> Result<ToolOutput, ToolError> {
         let url = arg_str(args, "url")
             .ok_or_else(|| ToolError::Argument("navigate: url must be a string".into()))?;
+        crate::tools::check_domain_allowlist(url).map_err(ToolError::Argument)?;
         let wait_s = arg_f64(args, "wait_s", 3.0);
         let tab = ctx.browser.tab().await?;
         page::navigate(&tab, url, wait_s).await?;
