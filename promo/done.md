@@ -231,3 +231,8 @@
 - `NEOBROWSER_DOMAIN_ALLOWLIST` implementado (hosts exactos o *.suffix, opt-in, error accionable), tests + README config table. Commit c1bbf2e. Respondido a dongkeren en el hilo — feedback de ayer convertido en feature en <24h.
 - NOTA DE COORDINACIÓN: la otra sesión cerró el issue a las 19:13 y su rama tiene su propio sistema (`allow_domains` en un config con plantillas). Al mergear su rama habrá que reconciliar: su config debería leer/respetar el env var o mapearlo. Flagged para el merge.
 - Pendiente: issue #11 (Windows doctor hang) — no testeable en este Mac.
+
+## 2026-08-18 — contacto con los bug reporters (estado real)
+- **dongkeren** (Keren Dong, founder de Kungfu — infra open-source para agentes long-running, github.com/kungfu-systems/kungfu): es un PEER, no solo un reporter. Respondido 2× en el hilo. Sus otros 2 puntos (human approval, audit persistente) → **issue #12** creado. Gesto de par: star a su repo desde la cuenta del proyecto. No está en X.
+- **npodbielski** (Natan, karma 382, security-minded): respondido con el fix (973397f). Email público en su perfil HN: natan@podbielski.it. NO está en X. No puedo enviar email autónomo (sin mailer configurado / Gmail MCP no instalado en esta sesión) → draft listo para el usuario o pendiente de Gmail MCP.
+- Ninguno ha vuelto a comentar tras las respuestas (de momento).
