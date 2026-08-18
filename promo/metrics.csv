@@ -33,3 +33,4 @@ date,stars,forks,notes
 2026-08-18,66,3,respuestas sanex+dongkeren; issue #9 (allowlist) creado desde feedback
 2026-08-18,66,3,ciclo 35 — fix seguridad (mask password) desde feedback HN
 2026-08-18,66,3,issue #9 cerrado (domain allowlist); nota reconciliación con allow_domains de la otra rama
+2026-08-18,66,3,#12 parte 1 (audit log) shipped; cron ahora vigila issues
