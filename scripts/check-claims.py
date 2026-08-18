@@ -28,7 +28,12 @@ NOT_ENV_VARS = {"NEOBROWSER_UNTRUSTED_PAGE_CONTENT", "NEOBROWSER_LOG_LEVEL"}
 
 # A rebuild can move the binary by a few hundred KB (debug info, toolchain version) without
 # the README being wrong, so the size claim has a tolerance rather than an exact match.
-SIZE_TOLERANCE_MB = 0.4
+# Wide on purpose. The binary is a different size on every target — a Linux ELF and a
+# macOS Mach-O built from identical source differ by more than a tight tolerance allows,
+# and the README can only quote one number. The claim worth guarding is the order of
+# magnitude ("a few MB, not 80"), not a figure that turns CI red on whichever platform
+# the README was not measured on.
+SIZE_TOLERANCE_MB = 2.5
 
 
 def fail(label, stated, actual, hint=""):
