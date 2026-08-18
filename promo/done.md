@@ -220,3 +220,9 @@
 - Nota: aparecieron dbbk/wateralien diciendo "Claude ya abre mi Chrome con cookies" — matiz para futuras respuestas: hay que ser precisos, algunos clientes pueden apuntar a perfil real con Playwright MCP; nuestro diferencial es sesiones descifradas + stealth + detección de walls, no "somos los únicos que abren Chrome".
 - Tier-1 scan: simonw (reviews de Qwen — no es nuestro tema hoy), swyx — sin apertura genuina; no se fuerza.
 - Estado: 31 puntos, 66★.
+
+## 2026-08-18 — ciclo 35 (cron 20:23): bug real de seguridad cazado en HN → fix en 30 min
+- **npodbielski cazó un bug real**: el demo.gif mostraba la password porque `fill`/`form_fill` devolvían el valor del campo en su respuesta (→ contexto del modelo y logs). Fix mergeado en main (973397f): type=password ahora devuelve •••••••• (el valor se escribe igual en el campo). Verificado en vivo: texto visible, password enmascarada. 100 tests verdes.
+- Respuesta en el hilo con el commit — el ciclo feedback→código→respuesta en ~30 minutos es la mejor señal de proyecto vivo que existe.
+- **cute_boi**: "Claude and codex can attach to real chrome without any issue" — drive-by, no se responde (pero refuerza el matiz: no vendemos "los únicos que abren Chrome").
+- Métricas: 66★, 31 puntos HN, PR #12089 OPEN, glama 404.
