@@ -1,0 +1,165 @@
+name: Release smoke
+
+# Runs against a PUBLISHED release, on every platform, driving the artefact the way a
+# new user does.
+#
+# The release workflow compiles, checksums and signs — but never runs what it uploads.
+# So an artefact that does not start looks identical to one that does, and install.sh
+# hands it out until someone opens an issue. This is the gap: download what the world
+# downloads, and make it prove it works.
+#
+# Runs automatically once a release is published, and can be run by hand against any tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to smoke-test (defaults to the latest release)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  artefact:
+    name: ${{ matrix.os }} artefact
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: neobrowser-x86_64-unknown-linux-gnu.tar.gz
+          - os: macos-latest
+            asset: neobrowser-aarch64-apple-darwin.tar.gz
+          - os: windows-latest
+            asset: neobrowser-x86_64-pc-windows-msvc.zip
+    steps:
+      # Check out the tag being tested, so docs/TOOLS.md is the one shipped with this
+      # release rather than whatever main has drifted to since.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag || '' }}
+
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      # Same reason as CI: Ubuntu 23.10+ denies unprivileged user namespaces to an
+      # unconfined binary, and NeoBrowser refuses to launch without its sandbox. Fix
+      # the host, never pass --no-sandbox.
+      - name: Allow unprivileged user namespaces
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Download the published artefact
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          if [ -z "$TAG" ]; then
+            TAG="$(gh release view --json tagName -q .tagName)"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          gh release download "$TAG" --pattern '${{ matrix.asset }}*' --dir dl
+          ls -la dl
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A checksum that nobody verifies is decoration. install.sh checks it, so CI must
+      # prove the published pair actually matches.
+      - name: Checksum matches the published .sha256
+        shell: bash
+        run: |
+          cd dl
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            shasum -a 256 -c '${{ matrix.asset }}.sha256'
+          else
+            sha256sum -c '${{ matrix.asset }}.sha256'
+          fi
+
+      - name: Unpack
+        shell: bash
+        run: |
+          cd dl
+          case '${{ matrix.asset }}' in
+            *.zip)    unzip -o '${{ matrix.asset }}' ;;
+            *.tar.gz) tar xzf '${{ matrix.asset }}' ;;
+          esac
+          ls -la
+
+      # The three things a user does in their first minute. Each one has failed at least
+      # once in this project's history, and each failed silently.
+      - name: It reports its version
+        shell: bash
+        run: |
+          cd dl
+          BIN=./neobrowser; [ -f ./neobrowser.exe ] && BIN=./neobrowser.exe
+          chmod +x "$BIN" 2>/dev/null || true
+          OUT="$("$BIN" --version)"
+          echo "version: $OUT"
+          echo "$OUT" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
+
+      - name: The tool catalogue is intact
+        shell: bash
+        run: |
+          cd dl
+          BIN=./neobrowser; [ -f ./neobrowser.exe ] && BIN=./neobrowser.exe
+          N="$("$BIN" tools | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+          # The published docs state a count; the published binary must agree. An exact
+          # match beats a floor: a floor lets a release quietly ship three tools short.
+          WANT="$(sed -n '1s/.*(\([0-9]*\)).*/\1/p' ../docs/TOOLS.md)"
+          echo "tools: binary=$N docs=$WANT"
+          [ "$N" = "$WANT" ] || {
+            echo "::error::binary ships $N tools but docs/TOOLS.md documents $WANT"
+            exit 1
+          }
+
+      # The real test: does it drive a browser? `doctor` launches Chrome and attaches a
+      # CDP tab, which is the whole product in one command.
+      - name: It can actually drive Chrome
+        shell: bash
+        run: |
+          cd dl
+          BIN=./neobrowser; [ -f ./neobrowser.exe ] && BIN=./neobrowser.exe
+          OUT="$("$BIN" doctor 2>&1)" || true
+          echo "$OUT"
+          echo "$OUT" | grep -q "launch+CDP:  ok" || {
+            echo "::error::the published binary cannot drive Chrome on ${{ matrix.os }}"
+            exit 1
+          }
+
+  installer:
+    name: install.sh end to end
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # install.sh is the documented way in. It has never been executed by CI, so a
+      # change to it — or to the asset names it expects — is found by users first.
+      - name: Run the documented one-liner
+        # NEOBROWSER_INSTALL_DIR is the documented override, so pointing it at a temp
+        # dir both keeps CI out of sudo and exercises the override itself.
+        env:
+          NEOBROWSER_INSTALL_DIR: ${{ runner.temp }}/bin
+        run: |
+          mkdir -p "$NEOBROWSER_INSTALL_DIR"
+          sh ./install.sh
+          "$NEOBROWSER_INSTALL_DIR/neobrowser" --version
+
+      # The installer verifies a checksum, but only when the .sha256 downloads; it warns
+      # and continues otherwise. Make sure the release actually publishes one, or that
+      # protection is off in production without anyone noticing.
+      - name: The release publishes a checksum to verify against
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view --json assets -q '.assets[].name' | grep -q '\.sha256$' || {
+            echo "::error::no .sha256 published — install.sh silently skips verification"
+            exit 1
+          }
