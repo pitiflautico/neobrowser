@@ -176,7 +176,15 @@
 - **Post "Day 4" publicado y verificado** (con saltos de línea): resumen del día + "Tomorrow it submits its own Show HN. An agent launching itself on Hacker News." — la anticipación del lanzamiento de mañana queda sembrada.
 - MAÑANA martes 18: el ciclo de las 14:23 CET lanza el SHOW HN (9:23 ET). Ciclos siguientes: monitorizar y responder comentarios.
 
+<<<<<<< Updated upstream
 ## 2026-08-18 — ciclo 34 (cron 9:23): prep del Show HN
 - Métricas: 0★, PR OPEN, glama 404, mcp.so OPEN.
 - La sesión de HN había caducado (cookies de HN duran poco) → re-login OK con las credenciales guardadas. pitiflautico, karma 1. NOTA para el lanzamiento: reloguear siempre antes de publicar (el cron one-shot ya lo incluye).
 - One-shot de lanzamiento programado: id b0d34963, hoy 15:23 CET = 9:23am ET (inicio de la ventana óptima). Incluye: submit + primer comentario con el body + verificación en /show + protocolo de respuesta a comentarios.
+=======
+## 2026-08-18 — ¡LANZAMIENTO HN REALIZADO! (15:25 CET)
+- **Post público**: https://news.ycombinator.com/item?id=49345320 — "NeoBrowser: An MCP server that drives real Chrome with your logged-in sessions" by pitiflautico, con el primer comentario completo del draft (verificado visible).
+- **Plot twist**: HN tiene /showlim activo — bloquea posts con prefijo "Show HN:" de cuentas nuevas por "massive influx". Se publicó como submission normal (mismo título sin el prefijo). Pierde la colocación en /show pero está en /newest y es público. Lección: el rodaje de karma (1) no fue suficiente contra showlim; la cuenta necesita más historial para un Show HN formal.
+- Monitor programado: one-shot 63d8bff4 a las 16:47 CET (puntos + responder comentarios con las respuestas preparadas).
+- Incidencia tooling: el check #me de HN es flaky en algunas páginas (la sesión era válida aunque reportara SIN LOGIN); las cookies de HN caducan rápido — reloguear siempre antes de actuar.
+>>>>>>> Stashed changes
