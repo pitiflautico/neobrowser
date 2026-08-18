@@ -115,7 +115,7 @@ pub async fn fill(client: &CdpClient, selector: &str, value: &str) -> Result<Str
                 el.dispatchEvent(new Event('input', {{bubbles: true}}));
                 el.dispatchEvent(new Event('change', {{bubbles: true}}));
             }}
-            return JSON.stringify({{ok: true, tag: tag, type: type, value: el.value}});
+            return JSON.stringify({{ok: true, tag: tag, type: type, value: type === 'password' ? '••••••••' : el.value}});
         }})()"#,
         sel = js_lit(selector),
         val = js_lit(value),
@@ -166,7 +166,7 @@ pub async fn form_fill(
                     target.dispatchEvent(new Event('input', {{bubbles: true}}));
                     target.dispatchEvent(new Event('change', {{bubbles: true}}));
                 }}
-                return JSON.stringify({{ok: true, field: {label}, value: target.value}});
+                return JSON.stringify({{ok: true, field: {label}, value: type === 'password' ? '••••••••' : target.value}});
             }})()"#,
             idx = form_index,
             label = js_lit(label),
