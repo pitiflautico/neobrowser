@@ -226,3 +226,8 @@
 - Respuesta en el hilo con el commit — el ciclo feedback→código→respuesta en ~30 minutos es la mejor señal de proyecto vivo que existe.
 - **cute_boi**: "Claude and codex can attach to real chrome without any issue" — drive-by, no se responde (pero refuerza el matiz: no vendemos "los únicos que abren Chrome").
 - Métricas: 66★, 31 puntos HN, PR #12089 OPEN, glama 404.
+
+## 2026-08-18 — issue #9 RESUELTO y cerrado en el hilo
+- `NEOBROWSER_DOMAIN_ALLOWLIST` implementado (hosts exactos o *.suffix, opt-in, error accionable), tests + README config table. Commit c1bbf2e. Respondido a dongkeren en el hilo — feedback de ayer convertido en feature en <24h.
+- NOTA DE COORDINACIÓN: la otra sesión cerró el issue a las 19:13 y su rama tiene su propio sistema (`allow_domains` en un config con plantillas). Al mergear su rama habrá que reconciliar: su config debería leer/respetar el env var o mapearlo. Flagged para el merge.
+- Pendiente: issue #11 (Windows doctor hang) — no testeable en este Mac.
