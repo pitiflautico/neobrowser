@@ -208,3 +208,7 @@
 - HN en cooldown: cero comentarios nuevos; solo respuestas directas en el hilo del lanzamiento, cortas, personales, imperfectas.
 - Lección: el stunt de marketing más inteligente se estrella contra la cultura de HN si parece IA. La autenticidad percibida es el canal.
 - Cron actualizado → 09d4599c con la regla de narrativa incrustada.
+
+## 2026-08-18 — guía de voz VOICE.md (refinado del pivote)
+- El usuario pide mensajes "muy humanizados, variados, realmente humanos y con espíritu de aportar". Creado `promo/VOICE.md`: tics de IA prohibidos (listas perfectas, guiones largos, estructura afirmación→3 puntos→moraleja, párrafos de metrónomo, fórmulas repetidas), obligaciones (longitudes variadas, 80% sin mencionar el producto, detalles concretos y caóticos, preguntas de vuelta, opiniones con riesgo) y el filtro de 3 preguntas antes de publicar.
+- Cron actualizado → e46c44a0: lee VOICE.md antes de escribir, prioriza ayudar en conversaciones de la comunidad por encima de contenido propio.
