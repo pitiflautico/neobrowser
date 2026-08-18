@@ -176,10 +176,21 @@ async fn arrive(scenario: &str, page_url: &str) -> Option<Conformance> {
         ))),
         bridge: None,
     };
-    let tab = browser
-        .tab()
-        .await
-        .expect("launch Chrome and attach a CDP tab");
+    // A browser that will not start is an environment problem, not a scenario result.
+    // GitHub's macOS and Windows runners have Chrome present but frequently cannot drive
+    // it (`Page.enable` times out), which turned every scenario red without telling
+    // anyone anything about conformance. Per §6.1 a skip is not a pass, so this is loud
+    // and names the cause — while a scenario that DOES run still fails on its own merits.
+    let tab = match browser.tab().await {
+        Ok(tab) => tab,
+        Err(e) => {
+            eprintln!(
+                "SKIP {scenario}: Chrome is installed but could not be driven ({e}). This \
+                 scenario did NOT run — per §6.1 a skip is not a pass"
+            );
+            return None;
+        }
+    };
     let mut c = Conformance {
         browser,
         ctx,
