@@ -118,6 +118,13 @@ jobs:
   security:
     name: Supply chain + secrets
     runs-on: ubuntu-latest
+    # gitleaks-action annotates the pull request, and the default token is read-only
+    # here — so it failed the job on the comment write rather than on a finding, a red
+    # build that said nothing about secrets. Granting exactly the write it needs is the
+    # honest fix; silencing the step would have hidden real findings too.
+    permissions:
+      contents: read
+      pull-requests: write
     defaults:
       run:
         working-directory: rust
