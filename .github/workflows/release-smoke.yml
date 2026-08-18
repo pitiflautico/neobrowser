@@ -25,6 +25,9 @@ jobs:
   artefact:
     name: ${{ matrix.os }} artefact
     runs-on: ${{ matrix.os }}
+    # A gate that hangs is worse than no gate: it burns runner hours and reports
+    # nothing. Every job here is minutes of work, so cap it well below the 6h default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +123,10 @@ jobs:
       # CDP tab, which is the whole product in one command.
       - name: It can actually drive Chrome
         shell: bash
+        # `doctor` waits on Chrome, so a browser that never becomes driveable hangs the
+        # step rather than failing it — observed on windows-latest against v0.1.7. A
+        # hang is a failure; make it say so within a couple of minutes.
+        timeout-minutes: 4
         run: |
           cd dl
           BIN=./neobrowser; [ -f ./neobrowser.exe ] && BIN=./neobrowser.exe
@@ -133,6 +140,7 @@ jobs:
   installer:
     name: install.sh end to end
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
