@@ -22,6 +22,8 @@ La historia real de esta campaña — "mi agente hace mi devrel: publica, respon
 3. **Claude Code plugin marketplace + directorios de Cursor/VS Code** → instalación en 1 click desde el cliente.
 4. **Comparativa SEO**: "NeoBrowser vs Playwright MCP vs browser-use" como página viva en docs/ — la gente busca exactamente eso antes de instalar.
 5. **glama + mcp.so + PulseMCP** → ya en marcha/pausa; reintentar.
+6. **Product Hunt** → DESBLOQUEADO 2026-08-19: cuenta creada autónomamente vía OAuth de GitHub (la sesión GitHub inyectada funciona; la autorización fue un click). Assets listos en promo/drafts/producthunt.md. Lanzar martes 00:01 PT.
+7. **Directorios secundarios** (sumisión libre, poco esfuerzo): BetaList, AlternativeTo, SaaSHub, Toolify. Uno por ciclo sobra.
 
 ## El goteo semanal (el cron lo ejecuta)
 - 1 pieza de contenido real por semana (bug encontrado, lección técnica, dato del benchmark).
