@@ -318,3 +318,5 @@
 - Estado directorios secundarios: BetaList (creada, falta verificación email), AlternativeTo (captcha), SaaSHub (dropdowns custom). Todas a 2-3 min manuales del usuario si las quiere.
 
 ## 2026-08-19 — issue worker (19:53): 0 issues abiertos. Sin acción.
+
+## 2026-08-19 — ciclo promo (20:23): sin acción pública (todo estable); cron actualizado (a162e82a) con Reddit activo + launches
