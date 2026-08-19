@@ -287,3 +287,7 @@
 
 ## 2026-08-19 — página comparativa SEO
 - `docs/vs.html`: "NeoBrowser vs Playwright MCP vs browser-use" — tabla de capacidades honesta (incluye dónde perdemos: velocidad, y que browser-use es framework completo), benchmarks enlazados con metodología, y "cuándo elegir cuál". Enlazada desde la home. Captura búsqueda de comparación — la intención de instalación más caliente que existe.
+
+## 2026-08-19 — CLIP HERO: escape #2 construido y publicado
+- `docs/assets/hero-clip.mp4` (38,5s, 349KB, 1080p): secuencia REAL en vivo — login en the-internet (tecleo humano con cursor visible, click isTrusted, "You logged into a secure area!") + bot.sannysoft en verde (WebGL "Apple M4 Pro" genuino). Todo capturado de una sesión real conducida por MCP. En la landing con autoplay (d760232).
+- **Publicado en X con el clip**: https://x.com/perez_pina28188/status/2090023291289326048 (media=true verificado).
