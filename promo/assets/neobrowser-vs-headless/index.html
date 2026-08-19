@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1080" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "Space Grotesk";
+        src: local("Space Grotesk");
+        font-weight: 400 700;
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        src: local("JetBrains Mono");
+        font-weight: 400 700;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 1080px;
+        height: 1080px;
+        overflow: hidden;
+        background: #0b0f14;
+      }
+      body {
+        font-family: "Space Grotesk", sans-serif;
+      }
+      .mono {
+        font-family: "JetBrains Mono", monospace;
+      }
+      #root {
+        position: relative;
+        width: 1080px;
+        height: 1080px;
+        background:
+          radial-gradient(circle at 50% 45%, rgba(56, 189, 248, 0.06) 0%, transparent 55%),
+          linear-gradient(rgba(26, 35, 48, 0.35) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(26, 35, 48, 0.35) 1px, transparent 1px);
+        background-size: 100% 100%, 40px 40px, 40px 40px;
+      }
+      .title {
+        position: absolute;
+        top: 64px;
+        left: 0;
+        width: 100%;
+        text-align: center;
+        font-size: 64px;
+        font-weight: 700;
+        color: #eaf2ff;
+        letter-spacing: -0.02em;
+      }
+      .title .accent {
+        color: #00f0a8;
+      }
+      .panels {
+        position: absolute;
+        top: 180px;
+        left: 60px;
+        width: 960px;
+        height: 680px;
+        display: flex;
+        gap: 60px;
+      }
+      .panel {
+        position: relative;
+        width: 450px;
+        height: 680px;
+        background: rgba(17, 24, 39, 0.7);
+        border: 1px solid #1f2937;
+        border-radius: 24px;
+        overflow: hidden;
+      }
+      .panel-title {
+        position: absolute;
+        top: 32px;
+        left: 0;
+        width: 100%;
+        text-align: center;
+        font-size: 34px;
+        font-weight: 700;
+      }
+      .panel-left .panel-title { color: #ff4d6d; }
+      .panel-right .panel-title { color: #00f0a8; }
+      .box {
+        position: absolute;
+        padding: 14px 22px;
+        border-radius: 14px;
+        font-size: 20px;
+        font-weight: 700;
+        color: #eaf2ff;
+        text-align: center;
+      }
+      .box.prompt {
+        top: 110px;
+        left: 155px;
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.35);
+      }
+      .box.cpu {
+        top: 260px;
+        right: 50px;
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.35);
+      }
+      .box.browser-left {
+        top: 260px;
+        left: 50px;
+        background: rgba(255, 77, 109, 0.12);
+        border: 1px solid rgba(255, 77, 109, 0.45);
+      }
+      .browser-right {
+        top: 260px;
+        left: 50px;
+        background: rgba(0, 240, 168, 0.12);
+        border: 1px solid rgba(0, 240, 168, 0.45);
+      }
+      .box.output-left {
+        top: 440px;
+        left: 130px;
+        background: rgba(255, 77, 109, 0.18);
+        border: 1px solid #ff4d6d;
+        color: #ff4d6d;
+      }
+      .output-right {
+        top: 440px;
+        left: 130px;
+        background: rgba(0, 240, 168, 0.18);
+        border: 1px solid #00f0a8;
+        color: #00f0a8;
+      }
+      .panel svg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .path-line {
+        fill: none;
+        stroke-width: 3;
+        stroke-linecap: round;
+      }
+      .path-left { stroke: #ff4d6d; }
+      .path-right { stroke: #00f0a8; }
+      .dot {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        opacity: 0;
+      }
+      .dot-left { background: #ff4d6d; box-shadow: 0 0 12px #ff4d6d; }
+      .dot-right { background: #00f0a8; box-shadow: 0 0 12px #00f0a8; }
+      .icon {
+        position: absolute;
+        top: 32px;
+        right: 32px;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 26px;
+        font-weight: 900;
+        color: #0b0f14;
+      }
+      .icon-left { background: #ff4d6d; }
+      .icon-right { background: #00f0a8; }
+      .status {
+        position: absolute;
+        bottom: 34px;
+        left: 0;
+        width: 100%;
+        text-align: center;
+        font-size: 22px;
+        font-weight: 600;
+        opacity: 0;
+      }
+      .status-left { color: #ff4d6d; }
+      .status-right { color: #00f0a8; }
+      .cta {
+        position: absolute;
+        bottom: 70px;
+        left: 0;
+        width: 100%;
+        text-align: center;
+        font-size: 30px;
+        font-weight: 600;
+        color: #eaf2ff;
+      }
+      .cta .url {
+        color: #38bdf8;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="6"
+      data-width="1080"
+      data-height="1080"
+    >
+      <div class="title">Why your AI agent <span class="accent">fails</span> on real sites</div>
+
+      <div class="panels">
+        <!-- Left panel: generic headless -->
+        <div class="panel panel-left">
+          <div class="panel-title">Generic headless</div>
+          <div class="icon icon-left">×</div>
+
+          <div class="box prompt mono">PROMPT</div>
+          <div class="box cpu mono">CPU</div>
+          <div class="box browser-left mono">BROWSER</div>
+          <div class="box output-left mono">LOGIN WALL</div>
+
+          <svg viewBox="0 0 450 680">
+            <path class="path-line path-left" d="M225 158 L330 260" />
+            <path class="path-line path-left" d="M330 308 L120 308" />
+            <path class="path-line path-left" d="M120 308 L225 440" />
+          </svg>
+
+          <div class="dot dot-left" id="dot-l1" style="left: 225px; top: 158px;"></div>
+
+          <div class="status status-left mono">session: empty → blocked</div>
+        </div>
+
+        <!-- Right panel: NeoBrowser -->
+        <div class="panel panel-right">
+          <div class="panel-title">NeoBrowser</div>
+          <div class="icon icon-right">✓</div>
+
+          <div class="box prompt mono">PROMPT</div>
+          <div class="box cpu mono">CPU</div>
+          <div class="box browser-right mono">YOUR CHROME</div>
+          <div class="box output-right mono">OUTPUT</div>
+
+          <svg viewBox="0 0 450 680">
+            <path class="path-line path-right" d="M225 158 L330 260" />
+            <path class="path-line path-right" d="M330 308 L120 308" />
+            <path class="path-line path-right" d="M120 308 L225 440" />
+          </svg>
+
+          <div class="dot dot-right" id="dot-r1" style="left: 225px; top: 158px;"></div>
+
+          <div class="status status-right mono">session: logged in → done</div>
+        </div>
+      </div>
+
+      <div class="cta mono">One binary. Real browser. <span class="url">github.com/pitiflautico/neobrowser</span></div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      // Title entrance
+      tl.from(".title", { y: -40, opacity: 0, duration: 0.7, ease: "power3.out" }, 0.1);
+
+      // Panels entrance
+      tl.from(".panel", { scale: 0.92, opacity: 0, duration: 0.6, ease: "expo.out", stagger: 0.15 }, 0.3);
+      tl.from(".panel-title", { y: -20, opacity: 0, duration: 0.5, ease: "power2.out", stagger: 0.1 }, 0.5);
+
+      // Boxes entrance
+      tl.from(".box", { y: 30, opacity: 0, duration: 0.45, ease: "power3.out", stagger: 0.06 }, 0.7);
+
+      // Paths draw in
+      tl.fromTo(".path-line", { strokeDasharray: 300, strokeDashoffset: 300 }, { strokeDashoffset: 0, duration: 0.9, ease: "power2.inOut", stagger: 0.08 }, 1.0);
+
+      // Dots flow — left panel
+      tl.to("#dot-l1", { opacity: 1, duration: 0.05 }, 1.4);
+      tl.to("#dot-l1", { x: 105, y: 102, duration: 0.45, ease: "none" }, 1.45);
+      tl.to("#dot-l1", { x: -105, y: 150, duration: 0.45, ease: "none" }, ">");
+      tl.to("#dot-l1", { x: 0, y: 282, duration: 0.45, ease: "none" }, ">");
+      tl.to("#dot-l1", { scale: 1.6, opacity: 0.4, duration: 0.3, yoyo: true, repeat: 3 }, ">");
+
+      // Dots flow — right panel
+      tl.to("#dot-r1", { opacity: 1, duration: 0.05 }, 1.6);
+      tl.to("#dot-r1", { x: 105, y: 102, duration: 0.45, ease: "none" }, 1.65);
+      tl.to("#dot-r1", { x: -105, y: 150, duration: 0.45, ease: "none" }, ">");
+      tl.to("#dot-r1", { x: 0, y: 282, duration: 0.45, ease: "none" }, ">");
+      tl.to("#dot-r1", { scale: 1.6, opacity: 0.4, duration: 0.3, yoyo: true, repeat: 3 }, ">");
+
+      // Icons pop
+      tl.fromTo(".icon", { scale: 0 }, { scale: 1, duration: 0.45, ease: "back.out(1.7)", stagger: 0.1 }, 2.9);
+
+      // Status text
+      tl.to(".status", { opacity: 1, y: -10, duration: 0.5, ease: "power2.out", stagger: 0.1 }, 3.3);
+
+      // CTA entrance
+      tl.from(".cta", { y: 30, opacity: 0, duration: 0.6, ease: "power3.out" }, 4.4);
+
+      // Subtle ambient glow pulse on panels
+      tl.to(".panel", { boxShadow: "0 0 0 1px rgba(56,189,248,0.1)", duration: 1.2, yoyo: true, repeat: 1 }, 4.6);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

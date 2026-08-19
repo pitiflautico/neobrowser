@@ -1,0 +1,67 @@
+# Diagnostic workflow for issue #11: the published Windows binary reportedly
+# hangs on `doctor` — Chrome never becomes driveable. Runs the real release
+# asset on windows-latest with a hard timeout and captures everything.
+name: windows-doctor-diag
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to test (e.g. v0.1.7)"
+        required: true
+        default: "v0.1.7"
+
+jobs:
+  doctor-published:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download published binary
+        run: |
+          $tag = "${{ inputs.release_tag }}"
+          $url = "https://github.com/pitiflautico/neobrowser/releases/download/$tag/neobrowser-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest -Uri $url -OutFile neobrowser.zip
+          Expand-Archive neobrowser.zip -DestinationPath .
+          Get-ChildItem -Recurse -Filter neobrowser.exe | Select-Object FullName
+
+      - name: Install Chrome if missing
+        run: |
+          $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+          if (Test-Path $chrome) { echo "Chrome present" } else {
+            Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" -OutFile chrome_installer.exe
+            Start-Process chrome_installer.exe -Args "/silent /install" -Wait
+          }
+
+      - name: Run doctor with timeout (the hang repro)
+        shell: bash
+        run: |
+          set -x
+          EXE=$(find . -name neobrowser.exe | head -1)
+          echo "binary: $EXE"
+          # If doctor hangs, timeout kills it at 90s and we still get the log.
+          NEOBROWSER_HOME="$RUNNER_TEMP/nbhome" timeout 90 "$EXE" doctor; echo "EXIT=$?"
+          echo "--- neobrowser logs (if any) ---"
+          find "$RUNNER_TEMP/nbhome" -name "*.log" -exec cat {} \; 2>/dev/null || true
+
+  doctor-source:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build from source (current main)
+        run: cargo build --release
+        working-directory: rust
+      - name: Install Chrome if missing
+        run: |
+          $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+          if (Test-Path $chrome) { echo "Chrome present" } else {
+            Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" -OutFile chrome_installer.exe
+            Start-Process chrome_installer.exe -Args "/silent /install" -Wait
+          }
+      - name: Run doctor with the source-built binary
+        shell: bash
+        run: |
+          set -x
+          NEOBROWSER_HOME="$RUNNER_TEMP/nbhome-src" timeout 90 ./rust/target/release/neobrowser.exe doctor; echo "EXIT=$?"
+          find "$RUNNER_TEMP/nbhome-src" -name "*.log" -exec cat {} \; 2>/dev/null || true

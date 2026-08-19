@@ -79,8 +79,6 @@ pub enum ChromeError {
 
 /// Whether this host looks able to run Chrome's own sandbox.
 ///
-/// Deliberately conservative: it only reports a blocker it can prove, because a
-/// false negative here would refuse to start for a user whose sandbox is fine.
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;

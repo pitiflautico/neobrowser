@@ -29,5 +29,5 @@
         el.dispatchEvent(new Event('input', {bubbles: true}));
         el.dispatchEvent(new Event('change', {bubbles: true}));
     }
-    return JSON.stringify({ok: true, tag: tag, type: type, value: el.value});
+    return JSON.stringify({ok: true, tag: tag, type: type, value: type === 'password' ? '••••••••' : el.value});
 })()

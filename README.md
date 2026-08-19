@@ -234,6 +234,9 @@ What no tool can promise is defeating *interactive challenges* — reCAPTCHA, Tu
 | `NEOBROWSER_CHROME_BIN` | *(auto)* | Path to the Chrome/Chromium binary |
 | `NEOBROWSER_HOME` | `~/.neobrowser` | Where profiles, cookies, sessions, playbooks, downloads live |
 | `NEOBROWSER_PROXY` | *(unset)* | Upstream proxy (`http://…` or `socks5://…`) |
+| `NEOBROWSER_DOMAIN_ALLOWLIST` | *(unset)* | Comma-separated hosts (`github.com,*.docs.rs`); `navigate` rejects anything else |
+| `NEOBROWSER_AUDIT` | `on` | `off` disables the append-only audit log (`~/.neobrowser/audit.log`, 0600, secrets masked) |
+| `NEOBROWSER_REQUIRE_APPROVAL` | *(unset)* | Gate sensitive tools behind interactive approval (MCP elicitation): `1` = submit/form_fill/download/upload/login, or a comma-separated tool list |
 | `NEOBROWSER_DISABLE_GPU` | *(unset)* | Force software rendering (GPU-less CI hosts only) |
 | `NEOBROWSER_TOOLSET` | `core` | `core` advertises 26 tools; `full` advertises all 67. Tools outside the core set stay callable either way |
 | `NEOBROWSER_SESSION_TTL_DAYS` | `30` | Lifetime of stored session material; `0` disables expiry |

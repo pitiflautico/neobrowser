@@ -32,5 +32,5 @@
         target.dispatchEvent(new Event('input', {bubbles: true}));
         target.dispatchEvent(new Event('change', {bubbles: true}));
     }
-    return JSON.stringify({ok: true, field: __LABEL__, value: target.value});
+    return JSON.stringify({ok: true, field: __LABEL__, value: type === 'password' ? '••••••••' : target.value});
 })()

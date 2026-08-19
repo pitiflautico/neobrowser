@@ -15,7 +15,7 @@
 use serde_json::{json, Value};
 
 use super::protocol::negotiate_protocol_version;
-use super::{INSTRUCTIONS, MAX_TEXT, SERVER_NAME, VERSION};
+use super::{set_elicitation_supported, INSTRUCTIONS, MAX_TEXT, SERVER_NAME, VERSION};
 use crate::tools::{Registry, ToolCtx, ToolError, ToolOutput};
 
 /// Handle one JSON-RPC request. Returns `Some(response)` or `None` for notifications.
@@ -25,18 +25,26 @@ pub async fn handle_request(registry: &Registry, ctx: &ToolCtx, req: &Value) -> 
     let params = req.get("params").cloned().unwrap_or(Value::Null);
 
     match method {
-        "initialize" => Some(result_response(
-            &req_id,
-            json!({
-                // Negotiated, not asserted: if the client names a version we support,
-                // answer with theirs. Replying with a fixed version a client did not ask
-                // for is how a compatible pair fails to connect.
-                "protocolVersion": negotiate_protocol_version(&params),
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": SERVER_NAME, "version": VERSION },
-                "instructions": INSTRUCTIONS,
-            }),
-        )),
+        "initialize" => {
+            let supports = req
+                .get("params")
+                .and_then(|p| p.get("capabilities"))
+                .and_then(|c| c.get("elicitation"))
+                .is_some();
+            set_elicitation_supported(supports);
+            Some(result_response(
+                &req_id,
+                json!({
+                    // Negotiated, not asserted: if the client names a version we support,
+                    // answer with theirs. Replying with a fixed version a client did not ask
+                    // for is how a compatible pair fails to connect.
+                    "protocolVersion": negotiate_protocol_version(&params),
+                    "capabilities": { "tools": {}, "elicitation": {} },
+                    "serverInfo": { "name": SERVER_NAME, "version": VERSION },
+                    "instructions": INSTRUCTIONS,
+                }),
+            ))
+        }
         "tools/list" => Some(result_response(
             &req_id,
             json!({ "tools": registry.descriptors_for(crate::tools::Toolset::from_env()) }),
@@ -122,7 +130,17 @@ async fn handle_tool_call(
         );
     }
 
+    let call_start = std::time::Instant::now();
     let outcome = tool.call(ctx, &args).await;
+
+    // Durable audit trail (append-only, secrets masked) — never breaks a call.
+    crate::audit::log_tool_call(
+        tool_name,
+        &args,
+        outcome.is_ok(),
+        outcome.as_ref().err().map(|e| e.to_string()).as_deref(),
+        call_start.elapsed(),
+    );
 
     // Recorded for every call, not only failures: a timeline with the successes
     // missing cannot show where a run diverged from what was intended.
@@ -194,7 +212,7 @@ fn policy_refusal_response(req_id: &Value, payload: &str) -> Value {
     )
 }
 
-fn tool_error_response(req_id: &Value, err: &ToolError) -> Value {
+pub(super) fn tool_error_response(req_id: &Value, err: &ToolError) -> Value {
     result_response(
         req_id,
         json!({

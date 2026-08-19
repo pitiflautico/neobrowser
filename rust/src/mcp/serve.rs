@@ -18,10 +18,11 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
-use super::dispatch::{error_response, handle_request};
+use super::dispatch::{error_response, handle_request, tool_error_response};
+use super::{approval_gate, ask_user, ApprovalGate};
 use crate::browser::Browser;
 use crate::tool_impls;
-use crate::tools::ToolCtx;
+use crate::tools::{ToolCtx, ToolError};
 
 /// Run the MCP server over stdin/stdout until EOF or a termination signal.
 pub async fn serve() {
@@ -147,7 +148,28 @@ pub async fn serve() {
             continue;
         }
         let response = match serde_json::from_str::<Value>(line) {
-            Ok(req) => handle_request(&registry, &ctx, &req).await,
+            Ok(req) => {
+                // Human approval gate (#12): sensitive tools can require an
+                // interactive confirm via MCP elicitation before dispatch.
+                match approval_gate(&req) {
+                    ApprovalGate::NotNeeded => handle_request(&registry, &ctx, &req).await,
+                    ApprovalGate::Unsupported { id, tool } => Some(tool_error_response(
+                        &id,
+                        &ToolError::Failed(format!(
+                            "{tool}: approval required (NEOBROWSER_REQUIRE_APPROVAL) but this client did not advertise elicitation support"
+                        )),
+                    )),
+                    ApprovalGate::Ask { id, tool } => {
+                        match ask_user(&mut lines_rx, &mut stdout, &tool).await {
+                            true => handle_request(&registry, &ctx, &req).await,
+                            false => Some(tool_error_response(
+                                &id,
+                                &ToolError::Failed(format!("{tool}: declined by the user")),
+                            )),
+                        }
+                    }
+                }
+            }
             Err(e) => Some(error_response(
                 &Value::Null,
                 -32700,

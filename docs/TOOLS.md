@@ -205,7 +205,7 @@ _No parameters._
 
 ## `source_map`
 
-Locate a script's source map and list the original source files, so a minified stack frame can be traced to real code. Reports honestly that line-level mapping needs a source-map decoder rather than guessing a line.
+Trace a minified stack frame to its original file, line and column by decoding the script's source map. Pass the line/column from the stack trace (1-based, as stacks report them). Reports null with an explanation when no mapping covers that position, rather than guessing a nearby line.
 
 | param | type | required | description |
 |---|---|---|---|

@@ -2,6 +2,7 @@
 //! Chrome. Library crate exposing the modules the binary and integration tests use.
 
 pub mod action;
+pub mod audit;
 pub mod bridge;
 pub mod browser;
 pub mod capture;

@@ -1,0 +1,664 @@
+{
+  "meta": {
+    "date": "2026-08-19 12:08:16 +0200",
+    "runs_per_cell": 2,
+    "machine": "Darwin arm64",
+    "neo_binary": "/Volumes/DiscoExterno2/mac_offload/Projects/neobrowser/rust/target/release/neobrowser",
+    "neo_version": "0.1.7",
+    "pw_cmd": "npx -y @playwright/mcp@latest --headless",
+    "neo_server_info": {
+      "name": "neobrowser",
+      "version": "0.1.7"
+    },
+    "pw_server_info": {
+      "name": "Playwright",
+      "version": "1.63.0-alpha-2026-08-05"
+    }
+  },
+  "cells": [
+    {
+      "tool": "NeoBrowser",
+      "target": "sannysoft",
+      "url": "https://bot.sannysoft.com",
+      "run": 1,
+      "access": true,
+      "wall": null,
+      "latency_ms": 4755,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "webdriver": "undefined",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "checks": [
+          {
+            "name": "User Agent\n(Old)",
+            "status": "pass",
+            "result": "User Agent\n(Old) | Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0"
+          },
+          {
+            "name": "WebDriver\n(New)",
+            "status": "pass",
+            "result": "WebDriver\n(New) | missing (passed)"
+          },
+          {
+            "name": "WebDriver Advanced",
+            "status": "pass",
+            "result": "WebDriver Advanced | passed"
+          },
+          {
+            "name": "Chrome\n(New)",
+            "status": "pass",
+            "result": "Chrome\n(New) | present (passed)"
+          },
+          {
+            "name": "Permissions\n(New)",
+            "status": "pass",
+            "result": "Permissions\n(New) | default"
+          },
+          {
+            "name": "Plugins Length\n(Old)",
+            "status": "pass",
+            "result": "Plugins Length\n(Old) | 5"
+          },
+          {
+            "name": "Plugins is of type PluginArray",
+            "status": "pass",
+            "result": "Plugins is of type PluginArray | passed"
+          },
+          {
+            "name": "Languages\n(Old)",
+            "status": "pass",
+            "result": "Languages\n(Old) | es-ES,es"
+          },
+          {
+            "name": "WebGL Vendor",
+            "status": "pass",
+            "result": "WebGL Vendor | Google Inc. (Apple)"
+          },
+          {
+            "name": "WebGL Renderer",
+            "status": "pass",
+            "result": "WebGL Renderer | ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)"
+          },
+          {
+            "name": "Broken Image Dimensions",
+            "status": "pass",
+            "result": "Broken Image Dimensions | 16x16"
+          }
+        ],
+        "passed": 11,
+        "failed": 0
+      },
+      "server": {
+        "name": "neobrowser",
+        "version": "0.1.7"
+      }
+    },
+    {
+      "tool": "NeoBrowser",
+      "target": "sannysoft",
+      "url": "https://bot.sannysoft.com",
+      "run": 2,
+      "access": true,
+      "wall": null,
+      "latency_ms": 4241,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "webdriver": "undefined",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "checks": [
+          {
+            "name": "User Agent\n(Old)",
+            "status": "pass",
+            "result": "User Agent\n(Old) | Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0"
+          },
+          {
+            "name": "WebDriver\n(New)",
+            "status": "pass",
+            "result": "WebDriver\n(New) | missing (passed)"
+          },
+          {
+            "name": "WebDriver Advanced",
+            "status": "pass",
+            "result": "WebDriver Advanced | passed"
+          },
+          {
+            "name": "Chrome\n(New)",
+            "status": "pass",
+            "result": "Chrome\n(New) | present (passed)"
+          },
+          {
+            "name": "Permissions\n(New)",
+            "status": "pass",
+            "result": "Permissions\n(New) | default"
+          },
+          {
+            "name": "Plugins Length\n(Old)",
+            "status": "pass",
+            "result": "Plugins Length\n(Old) | 5"
+          },
+          {
+            "name": "Plugins is of type PluginArray",
+            "status": "pass",
+            "result": "Plugins is of type PluginArray | passed"
+          },
+          {
+            "name": "Languages\n(Old)",
+            "status": "pass",
+            "result": "Languages\n(Old) | es-ES,es"
+          },
+          {
+            "name": "WebGL Vendor",
+            "status": "pass",
+            "result": "WebGL Vendor | Google Inc. (Apple)"
+          },
+          {
+            "name": "WebGL Renderer",
+            "status": "pass",
+            "result": "WebGL Renderer | ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)"
+          },
+          {
+            "name": "Broken Image Dimensions",
+            "status": "pass",
+            "result": "Broken Image Dimensions | 16x16"
+          }
+        ],
+        "passed": 11,
+        "failed": 0
+      },
+      "server": {
+        "name": "neobrowser",
+        "version": "0.1.7"
+      }
+    },
+    {
+      "tool": "NeoBrowser",
+      "target": "creepjs",
+      "url": "https://abrahamjuliot.github.io/creepjs/",
+      "run": 1,
+      "access": true,
+      "wall": null,
+      "latency_ms": 3159,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "webdriver": "undefined",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "title": "CreepJS",
+        "len": 4733,
+        "trust": null,
+        "lies": []
+      },
+      "server": {
+        "name": "neobrowser",
+        "version": "0.1.7"
+      }
+    },
+    {
+      "tool": "NeoBrowser",
+      "target": "creepjs",
+      "url": "https://abrahamjuliot.github.io/creepjs/",
+      "run": 2,
+      "access": true,
+      "wall": null,
+      "latency_ms": 3041,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "webdriver": "undefined",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "title": "CreepJS",
+        "len": 4717,
+        "trust": null,
+        "lies": []
+      },
+      "server": {
+        "name": "neobrowser",
+        "version": "0.1.7"
+      }
+    },
+    {
+      "tool": "NeoBrowser",
+      "target": "nowsecure",
+      "url": "https://nowsecure.nl",
+      "run": 1,
+      "access": false,
+      "wall": "captcha",
+      "latency_ms": 3610,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "webdriver": "undefined",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "text_head": "NOWSECURE\nBY NODRIVER\nNOWSECURE\nBY NODRIVER",
+        "title": "nowsecure.nl"
+      },
+      "server": {
+        "name": "neobrowser",
+        "version": "0.1.7"
+      }
+    },
+    {
+      "tool": "NeoBrowser",
+      "target": "nowsecure",
+      "url": "https://nowsecure.nl",
+      "run": 2,
+      "access": false,
+      "wall": "captcha",
+      "latency_ms": 3344,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "webdriver": "undefined",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "text_head": "NOWSECURE\nBY NODRIVER\nNOWSECURE\nBY NODRIVER",
+        "title": "nowsecure.nl"
+      },
+      "server": {
+        "name": "neobrowser",
+        "version": "0.1.7"
+      }
+    },
+    {
+      "tool": "NeoBrowser",
+      "target": "deviceandbrowserinfo",
+      "url": "https://deviceandbrowserinfo.com/info",
+      "run": 1,
+      "access": true,
+      "wall": null,
+      "latency_ms": 3197,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "webdriver": "undefined",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "title": "Information about your device and browser (HTTP headers, IP address)",
+        "len": 541,
+        "snippet": null,
+        "webdriver_row_shown": false
+      },
+      "server": {
+        "name": "neobrowser",
+        "version": "0.1.7"
+      }
+    },
+    {
+      "tool": "NeoBrowser",
+      "target": "deviceandbrowserinfo",
+      "url": "https://deviceandbrowserinfo.com/info",
+      "run": 2,
+      "access": true,
+      "wall": null,
+      "latency_ms": 3147,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "webdriver": "undefined",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "title": "Information about your device and browser (HTTP headers, IP address)",
+        "len": 541,
+        "snippet": null,
+        "webdriver_row_shown": false
+      },
+      "server": {
+        "name": "neobrowser",
+        "version": "0.1.7"
+      }
+    },
+    {
+      "tool": "Playwright MCP (headless)",
+      "target": "sannysoft",
+      "url": "https://bot.sannysoft.com",
+      "run": 1,
+      "access": true,
+      "wall": null,
+      "latency_ms": 1220,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+        "webdriver": "false",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "checks": [
+          {
+            "name": "User Agent\n(Old)",
+            "status": "fail",
+            "result": "User Agent\n(Old) | Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome"
+          },
+          {
+            "name": "WebDriver\n(New)",
+            "status": "pass",
+            "result": "WebDriver\n(New) | missing (passed)"
+          },
+          {
+            "name": "WebDriver Advanced",
+            "status": "pass",
+            "result": "WebDriver Advanced | passed"
+          },
+          {
+            "name": "Chrome\n(New)",
+            "status": "pass",
+            "result": "Chrome\n(New) | present (passed)"
+          },
+          {
+            "name": "Permissions\n(New)",
+            "status": "pass",
+            "result": "Permissions\n(New) | prompt"
+          },
+          {
+            "name": "Plugins Length\n(Old)",
+            "status": "pass",
+            "result": "Plugins Length\n(Old) | 5"
+          },
+          {
+            "name": "Plugins is of type PluginArray",
+            "status": "pass",
+            "result": "Plugins is of type PluginArray | passed"
+          },
+          {
+            "name": "Languages\n(Old)",
+            "status": "pass",
+            "result": "Languages\n(Old) | es-ES,es"
+          },
+          {
+            "name": "WebGL Vendor",
+            "status": "pass",
+            "result": "WebGL Vendor | Google Inc. (Apple)"
+          },
+          {
+            "name": "WebGL Renderer",
+            "status": "pass",
+            "result": "WebGL Renderer | ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)"
+          },
+          {
+            "name": "Broken Image Dimensions",
+            "status": "pass",
+            "result": "Broken Image Dimensions | 16x16"
+          }
+        ],
+        "passed": 10,
+        "failed": 1
+      },
+      "server": {
+        "name": "Playwright",
+        "version": "1.63.0-alpha-2026-08-05"
+      }
+    },
+    {
+      "tool": "Playwright MCP (headless)",
+      "target": "sannysoft",
+      "url": "https://bot.sannysoft.com",
+      "run": 2,
+      "access": true,
+      "wall": null,
+      "latency_ms": 973,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+        "webdriver": "false",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "checks": [
+          {
+            "name": "User Agent\n(Old)",
+            "status": "fail",
+            "result": "User Agent\n(Old) | Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome"
+          },
+          {
+            "name": "WebDriver\n(New)",
+            "status": "pass",
+            "result": "WebDriver\n(New) | missing (passed)"
+          },
+          {
+            "name": "WebDriver Advanced",
+            "status": "pass",
+            "result": "WebDriver Advanced | passed"
+          },
+          {
+            "name": "Chrome\n(New)",
+            "status": "pass",
+            "result": "Chrome\n(New) | present (passed)"
+          },
+          {
+            "name": "Permissions\n(New)",
+            "status": "pass",
+            "result": "Permissions\n(New) | prompt"
+          },
+          {
+            "name": "Plugins Length\n(Old)",
+            "status": "pass",
+            "result": "Plugins Length\n(Old) | 5"
+          },
+          {
+            "name": "Plugins is of type PluginArray",
+            "status": "pass",
+            "result": "Plugins is of type PluginArray | passed"
+          },
+          {
+            "name": "Languages\n(Old)",
+            "status": "pass",
+            "result": "Languages\n(Old) | es-ES,es"
+          },
+          {
+            "name": "WebGL Vendor",
+            "status": "pass",
+            "result": "WebGL Vendor | Google Inc. (Apple)"
+          },
+          {
+            "name": "WebGL Renderer",
+            "status": "pass",
+            "result": "WebGL Renderer | ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)"
+          },
+          {
+            "name": "Broken Image Dimensions",
+            "status": "pass",
+            "result": "Broken Image Dimensions | 16x16"
+          }
+        ],
+        "passed": 10,
+        "failed": 1
+      },
+      "server": {
+        "name": "Playwright",
+        "version": "1.63.0-alpha-2026-08-05"
+      }
+    },
+    {
+      "tool": "Playwright MCP (headless)",
+      "target": "creepjs",
+      "url": "https://abrahamjuliot.github.io/creepjs/",
+      "run": 1,
+      "access": true,
+      "wall": null,
+      "latency_ms": 551,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+        "webdriver": "false",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "title": "CreepJS",
+        "len": 4794,
+        "trust": null,
+        "lies": []
+      },
+      "server": {
+        "name": "Playwright",
+        "version": "1.63.0-alpha-2026-08-05"
+      }
+    },
+    {
+      "tool": "Playwright MCP (headless)",
+      "target": "creepjs",
+      "url": "https://abrahamjuliot.github.io/creepjs/",
+      "run": 2,
+      "access": true,
+      "wall": null,
+      "latency_ms": 511,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+        "webdriver": "false",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "title": "CreepJS",
+        "len": 4792,
+        "trust": null,
+        "lies": []
+      },
+      "server": {
+        "name": "Playwright",
+        "version": "1.63.0-alpha-2026-08-05"
+      }
+    },
+    {
+      "tool": "Playwright MCP (headless)",
+      "target": "nowsecure",
+      "url": "https://nowsecure.nl",
+      "run": 1,
+      "access": false,
+      "wall": "captcha",
+      "latency_ms": 744,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+        "webdriver": "false",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "text_head": "NOWSECURE\nBY NODRIVER\nNOWSECURE\nBY NODRIVER",
+        "title": "nowsecure.nl"
+      },
+      "server": {
+        "name": "Playwright",
+        "version": "1.63.0-alpha-2026-08-05"
+      }
+    },
+    {
+      "tool": "Playwright MCP (headless)",
+      "target": "nowsecure",
+      "url": "https://nowsecure.nl",
+      "run": 2,
+      "access": false,
+      "wall": "captcha",
+      "latency_ms": 639,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+        "webdriver": "false",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "text_head": "NOWSECURE\nBY NODRIVER\nNOWSECURE\nBY NODRIVER",
+        "title": "nowsecure.nl"
+      },
+      "server": {
+        "name": "Playwright",
+        "version": "1.63.0-alpha-2026-08-05"
+      }
+    },
+    {
+      "tool": "Playwright MCP (headless)",
+      "target": "deviceandbrowserinfo",
+      "url": "https://deviceandbrowserinfo.com/info",
+      "run": 1,
+      "access": true,
+      "wall": null,
+      "latency_ms": 650,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+        "webdriver": "false",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "title": "Information about your device and browser (HTTP headers, IP address)",
+        "len": 541,
+        "snippet": null,
+        "webdriver_row_shown": false
+      },
+      "server": {
+        "name": "Playwright",
+        "version": "1.63.0-alpha-2026-08-05"
+      }
+    },
+    {
+      "tool": "Playwright MCP (headless)",
+      "target": "deviceandbrowserinfo",
+      "url": "https://deviceandbrowserinfo.com/info",
+      "run": 2,
+      "access": true,
+      "wall": null,
+      "latency_ms": 572,
+      "error": null,
+      "env": {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36",
+        "webdriver": "false",
+        "platform": "MacIntel",
+        "hw": 12,
+        "langs": "es-ES,es"
+      },
+      "detail": {
+        "title": "Information about your device and browser (HTTP headers, IP address)",
+        "len": 541,
+        "snippet": null,
+        "webdriver_row_shown": false
+      },
+      "server": {
+        "name": "Playwright",
+        "version": "1.63.0-alpha-2026-08-05"
+      }
+    }
+  ]
+}

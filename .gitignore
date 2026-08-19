@@ -27,6 +27,8 @@ htmlcov/
 # `profiles/` was the same mine waiting for whoever split that module next.
 .neorender/
 *.cookies.json
+# Anchored with a leading slash on purpose. Unanchored, `sessions/` matches a source
+# directory at any depth (e.g. `rust/src/sessions/`), so keep the anchors.
 /sessions/
 /profiles/
 

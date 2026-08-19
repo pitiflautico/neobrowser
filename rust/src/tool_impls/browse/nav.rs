@@ -64,6 +64,7 @@ impl Tool for NavigateTool {
 
         let url = arg_str(args, "url")
             .ok_or_else(|| ToolError::Argument("navigate: url must be a string".into()))?;
+        crate::tools::check_domain_allowlist(url).map_err(ToolError::Argument)?;
         // `wait_s` used to mean "render buffer" while a separate hardcoded 15s
         // governed the load, so a caller had no way to bound the total. Now one
         // budget covers both; the old name is honoured as a floor so an existing
