@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>I ran two MCP browser tools against live bot detection — NeoBrowser</title>
+<meta name="description" content="An honest, reproducible comparison: NeoBrowser vs Playwright MCP against bot.sannysoft, Cloudflare and more. Real numbers, no tuning.">
+<meta property="og:title" content="I ran two MCP browser tools against live bot detection">
+<meta property="og:description" content="NeoBrowser vs Playwright MCP: real runs, honest numbers, no tuning.">
+<meta property="og:image" content="https://pitiflautico.github.io/neobrowser/assets/og.png">
+<style>
+  :root{--bg:#0b0e14;--card:#141a2a;--line:#232c40;--fg:#e6ecff;--muted:#93a0bd;--accent:#5eead4;--accent2:#7c9cff}
+  *{box-sizing:border-box} body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.7;margin:0}
+  .wrap{max-width:760px;margin:0 auto;padding:40px 20px 80px}
+  a{color:var(--accent)} h1{font-size:clamp(26px,4vw,38px);line-height:1.15;letter-spacing:-.02em}
+  h2{font-size:22px;margin-top:40px} .muted{color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:15px;margin:20px 0}
+  th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--muted);font-weight:600} td.y{color:var(--accent)} td.n{color:#e88}
+  code{background:var(--card);padding:2px 6px;border-radius:6px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:18px 0}
+  .back{color:var(--muted);font-size:14px}
+  @media(prefers-color-scheme:light){:root{--bg:#f7f9fc;--card:#fff;--line:#dbe2ee;--fg:#0d1524;--muted:#5a6883;--accent:#0d9488}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="back"><a href="./">← NeoBrowser</a></p>
+  <h1>I ran two MCP browser tools against live bot detection. Here's the honest table.</h1>
+  <p class="muted">August 19, 2026 · Daniel Perez Pinazo · reproducible: <code>python3 bench/study.py</code></p>
+
+  <p>Every MCP browser tool claims to work. Fewer publish what happens when they meet an actual bot detector. So I took the two tools I can run side by side — <strong>NeoBrowser</strong> (drives the real Chrome binary via CDP) and <strong>Playwright MCP</strong> (Microsoft's, headless Chromium) — and pointed both at public detection sites. Same machine, same IP, two runs per cell, nothing tuned to make either win.</p>
+
+  <h2>The table</h2>
+  <table>
+    <tr><th>Target</th><th>NeoBrowser 0.1.7</th><th>Playwright MCP 1.63 (headless)</th></tr>
+    <tr><td>bot.sannysoft.com (fingerprint)</td><td class="y">✓ 11/11 checks pass, both runs</td><td class="n">10/11 — <code>User Agent (Old)</code> fails: UA contains <code>HeadlessChrome</code></td></tr>
+    <tr><td>nowsecure.nl (Cloudflare challenge)</td><td class="n">✗ blocked, 2/2 runs</td><td class="n">✗ blocked, 2/2 runs</td></tr>
+    <tr><td>deviceandbrowserinfo.com</td><td class="y">✓ <code>navigator.webdriver</code> = undefined</td><td>✓ <code>navigator.webdriver</code> = false</td></tr>
+    <tr><td>creepjs</td><td>✓ loads (no trust score readable at capture time)</td><td>✓ loads (same)</td></tr>
+    <tr><td>Navigate latency</td><td>3.0–4.8 s</td><td class="y">0.5–1.2 s (3–5× faster)</td></tr>
+  </table>
+
+  <h2>What this actually shows</h2>
+  <p><strong>Fingerprint consistency is real and measurable.</strong> Playwright MCP's headless Chromium leaks <code>HeadlessChrome</code> in its User-Agent — the first thing any fingerprint script checks. NeoBrowser runs the genuine Chrome binary with a real version-matched UA, so every sannysoft check passes with the host's true fingerprint. That was the design bet: no spoofed values, because every spoof is a potential mismatch.</p>
+  <p><strong>Real Cloudflare beats both.</strong> nowsecure.nl challenged and blocked both tools on both runs. Interactive challenges (reCAPTCHA, Turnstile) plus IP reputation are a different game, and anyone who tells you their headless tool just sails through from a datacenter IP is selling something. NeoBrowser's answer is detecting the wall and telling the model — not pretending it isn't there.</p>
+  <p><strong>Playwright MCP is genuinely faster.</strong> 3–5× on navigation. NeoBrowser pays for forcing compositor frames so deferred content actually renders before reading. If your pages are static and speed is king, that's a fair reason to pick Playwright MCP.</p>
+
+  <h2>What this does NOT prove</h2>
+  <div class="card">
+    <p class="muted" style="margin:0">N=2 per cell, one machine, one residential IP, no proxy rotation. Test sites are proxies for detection, not production defenses. Playwright MCP ran headless (same as our previous comparison); headed mode might score differently. CreepJS showed no readable trust score in either tool at capture time — reported as "not read", not as pass or fail. One nuance we disclose: NeoBrowser exposes <code>navigator.webdriver</code> as <code>undefined</code> (absent) rather than stock Chrome's <code>false</code>; nothing penalized it here, a stricter detector might.</p>
+  </div>
+
+  <h2>Reproduce it</h2>
+  <p>Everything is in the repo: <a href="https://github.com/pitiflautico/neobrowser/blob/main/bench/study.py">bench/study.py</a> (the harness), <a href="https://github.com/pitiflautico/neobrowser/blob/main/bench/study.json">study.json</a> (raw data), <a href="https://github.com/pitiflautico/neobrowser/blob/main/bench/study.md">study.md</a> (this table). If your run disagrees with mine, that's interesting — open an issue with your numbers.</p>
+
+  <p class="muted">NeoBrowser is MIT: <a href="https://github.com/pitiflautico/neobrowser">github.com/pitiflautico/neobrowser</a>. 43 tools, one 5 MB Rust binary, real Chrome, real sessions.</p>
+</div>
+</body>
+</html>
