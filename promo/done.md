@@ -347,3 +347,11 @@
 - **Problema resuelto**: el upload de NeoBrowser exige archivos bajo directorios permitidos (`NEOBROWSER_HOME/downloads`); el GIF se copió ahí. El composer de X es un `div[contenteditable]`; se enfoca vía JS, se sube el GIF primero para activar el botón, se escribe el texto, y se pulsa Post con selector `[data-testid="tweetButtonInline"]`.
 - **Aprendizaje**: publicar media en X requiere subir el archivo ANTES de escribir, dejar ~6-8s de procesamiento, y verificar que el botón pase a habilitado.
 - **Landing actualizada** (commit 584ef53): sección "Why a fresh headless browser fails" con el GIF en `docs/index.html`; métricas y growth tracker sincronizados.
+
+## 2026-08-19 — gestión técnica y autonomía del agente
+- **PRs #6/#7**: conflictos con `main` resueltos en `merge/prelaunch-hardening` (verified-action contract + features de main: audit, allowlist, attach-port auto, elicitation, password masking, Windows fixes). Subagente verificó fmt/clippy/test (323 passed) y release build. CI del PR re-ejecutándose; `.gitleaks.toml` ampliado para evitar falsos positivos en tests y artefactos de browser.
+- **CI de main**: el run antiguo 32253573093 ya fue arreglado por `fce226f` (cargo fmt); runs posteriores verdes. Los pushes recientes lanzan CI correctamente.
+- **Cron de promoción actualizado** (id 8265a368): 3×/día con prompt integral que cubre issues/CI, contenido X/LinkedIn/Reddit, outreach a influencers, Product Hunt y directorios. El issue worker (id f7b8a65b) sigue activo.
+- **Reddit**: sesión de Pitiflautico2 caducada durante el intento (pide login). Se identificó la estructura correcta del formulario de old.reddit (título es `textarea[name="title"]`, submit es `button[type="submit"].btn`). Script actualizado con selectores correctos; publicación pendiente de re-login del usuario.
+- **Product Hunt**: sesión caducada; login vía GitHub OAuth requiere sesión de GitHub viva en el perfil. Launch sigue planeado para martes 25 00:01 PT; assets listos en `promo/drafts/producthunt.md`.
+- **Outreach**: intento de reply en X a tweet sobre agentes y login walls; no verificado por rate-limiting/captcha. Estrategia registrada en cron para ciclos futuros con reglas de voz humanizada.
