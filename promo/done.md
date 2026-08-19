@@ -272,3 +272,9 @@
 - El usuario creó la cuenta (Pitiflautico2) y se logueó en Chrome. reddit_session (v10, inyectable) → NeoBrowser entra logueado (api/me.json = Pitiflautico2).
 - **Post publicado en r/mcp**: https://www.reddit.com/r/mcp/comments/1vshmkg/ — título + cuerpo del draft. Verificado: UN solo post (el primer intento no llegó; el segundo sí; no hay duplicado).
 - Debug útil: la primera verificación leyó mal el estado (título de marketing ≠ logged out; api/me.json es la prueba fiable). El banner de consentimiento de cookies hay que rechazarlo antes de operar.
+
+## 2026-08-19 — GROWTH.md + r/rust en vivo (canal This Week in Rust activado)
+- `promo/GROWTH.md`: el plan a 10k — 3 momentos de escape (estudio original de bot detection, clip de 40s imposible de ignorar, historia "AI employee" solo para X/LinkedIn) + canales que gotean solos (registry, TWiR, marketplaces, página comparativa SEO) + goteo semanal.
+- **TWiR ya no acepta PRs para Project/Tooling** — recogen de r/rust (política nueva, ago-2026). Por eso:
+- **Comentario publicado en el hilo semanal de r/rust** ("What's everyone working on this week 34/2026") presentando NeoBrowser con lo técnico (multiplexer tokio, cookie decryption, benchmark honesto). Si tracciona, TWiR lo recoge. Vía futura adicional: artículo long-form en nuestra propia página → PR a "Observations/Thoughts" (esa sección SÍ acepta PRs).
+- Lecciones tooling Reddit: `find` se confunde con los anuncios en páginas de Reddit (intents genéricos cazan ads) — para comentarios usar old.reddit.com (textarea clásica); para texto largo, type human=false (el humano tarda >60s y Runtime.evaluate se wedgea); verificar siempre en /user/.../comments o /submitted.
