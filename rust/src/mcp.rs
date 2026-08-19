@@ -6,6 +6,7 @@
 //! content instead of the Python string-JSON round-trip.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
@@ -18,6 +19,31 @@ const SERVER_NAME: &str = "neobrowser";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const MAX_TEXT: usize = 500_000;
+
+/// Whether the connected client advertised the `elicitation` capability at
+/// initialize (Claude Code CLI does; several other clients silently don't).
+static CLIENT_SUPPORTS_ELICITATION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Tools that can be gated behind interactive user approval.
+/// `NEOBROWSER_REQUIRE_APPROVAL`: unset = no gating; `1`/`true`/`all` = the
+/// default sensitive set; otherwise a comma-separated tool list.
+fn approval_required(tool: &str) -> bool {
+    const DEFAULT_SENSITIVE: &[&str] = &["submit", "form_fill", "download", "upload", "login"];
+    match std::env::var("NEOBROWSER_REQUIRE_APPROVAL") {
+        Err(_) => false,
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            if v.is_empty() || v == "0" || v == "off" {
+                false
+            } else if v == "1" || v == "true" || v == "all" {
+                DEFAULT_SENSITIVE.contains(&tool)
+            } else {
+                v.split(',').any(|t| t.trim() == tool)
+            }
+        }
+    }
+}
 
 /// Guidance injected into the model's context at `initialize` (MCP `instructions`),
 /// so an AI understands how to drive these tools well without trial and error.
@@ -112,7 +138,29 @@ pub async fn serve() {
             continue;
         }
         let response = match serde_json::from_str::<Value>(line) {
-            Ok(req) => handle_request(&registry, &ctx, &req).await,
+            Ok(req) => {
+                // Human approval gate (#12): sensitive tools can require an
+                // interactive confirm via MCP elicitation before dispatch.
+                let gate = approval_gate(&req);
+                match gate {
+                    ApprovalGate::NotNeeded => handle_request(&registry, &ctx, &req).await,
+                    ApprovalGate::Unsupported { id, tool } => Some(tool_error_response(
+                        &id,
+                        &ToolError::Failed(format!(
+                            "{tool}: approval required (NEOBROWSER_REQUIRE_APPROVAL) but this client did not advertise elicitation support"
+                        )),
+                    )),
+                    ApprovalGate::Ask { id, tool } => {
+                        match ask_user(&mut lines_rx, &mut stdout, &tool).await {
+                            true => handle_request(&registry, &ctx, &req).await,
+                            false => Some(tool_error_response(
+                                &id,
+                                &ToolError::Failed(format!("{tool}: declined by the user")),
+                            )),
+                        }
+                    }
+                }
+            }
             Err(e) => Some(error_response(
                 &Value::Null,
                 -32700,
@@ -165,15 +213,23 @@ pub async fn handle_request(registry: &Registry, ctx: &ToolCtx, req: &Value) -> 
     let params = req.get("params").cloned().unwrap_or(Value::Null);
 
     match method {
-        "initialize" => Some(result_response(
-            &req_id,
-            json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": SERVER_NAME, "version": VERSION },
-                "instructions": INSTRUCTIONS,
-            }),
-        )),
+        "initialize" => {
+            let supports = req
+                .get("params")
+                .and_then(|p| p.get("capabilities"))
+                .and_then(|c| c.get("elicitation"))
+                .is_some();
+            CLIENT_SUPPORTS_ELICITATION.store(supports, std::sync::atomic::Ordering::Relaxed);
+            Some(result_response(
+                &req_id,
+                json!({
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": { "tools": {}, "elicitation": {} },
+                    "serverInfo": { "name": SERVER_NAME, "version": VERSION },
+                    "instructions": INSTRUCTIONS,
+                }),
+            ))
+        }
         "tools/list" => Some(result_response(
             &req_id,
             json!({ "tools": registry.descriptors() }),
@@ -280,6 +336,87 @@ fn result_response(req_id: &Value, result: Value) -> Value {
 fn error_response(req_id: &Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": code, "message": message } })
 }
+
+/// Whether a `tools/call` must be confirmed interactively first.
+enum ApprovalGate {
+    NotNeeded,
+    /// Gated, but the client never advertised elicitation support.
+    Unsupported { id: Value, tool: String },
+    Ask { id: Value, tool: String },
+}
+
+fn approval_gate(req: &Value) -> ApprovalGate {
+    if req.get("method").and_then(|m| m.as_str()) != Some("tools/call") {
+        return ApprovalGate::NotNeeded;
+    }
+    let params = req.get("params").cloned().unwrap_or(Value::Null);
+    let tool = params
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !approval_required(&tool) {
+        return ApprovalGate::NotNeeded;
+    }
+    let id = req.get("id").cloned().unwrap_or(Value::Null);
+    if CLIENT_SUPPORTS_ELICITATION.load(std::sync::atomic::Ordering::Relaxed) {
+        ApprovalGate::Ask { id, tool }
+    } else {
+        ApprovalGate::Unsupported { id, tool }
+    }
+}
+
+/// Ask the user to confirm an action via `elicitation/create`; true on accept.
+/// Waits up to 120s for the matching response, ignoring unrelated traffic.
+async fn ask_user(
+    lines_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    stdout: &mut tokio::io::Stdout,
+    tool: &str,
+) -> bool {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = format!(
+        "nb-elicit-{}",
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "elicitation/create",
+        "params": {
+            "message": format!("NeoBrowser wants to run '{tool}'. Allow?"),
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "confirm": { "type": "boolean", "title": format!("Allow {tool}?") }
+                },
+                "required": ["confirm"]
+            }
+        }
+    });
+    let mut buf = serde_json::to_string(&req).unwrap_or_default();
+    buf.push('\n');
+    if stdout.write_all(buf.as_bytes()).await.is_err() || stdout.flush().await.is_err() {
+        return false;
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let next = tokio::time::timeout_at(deadline, lines_rx.recv()).await;
+        let Ok(Some(line)) = next else { return false }; // timeout or EOF
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        if msg.get("id").and_then(|v| v.as_str()) != Some(id.as_str()) {
+            continue; // not our answer; sequential clients make this rare
+        }
+        let result = msg.get("result").cloned().unwrap_or(Value::Null);
+        let action = result.get("action").and_then(|a| a.as_str()).unwrap_or("");
+        let confirmed = result
+            .get("content")
+            .and_then(|c| c.get("confirm"))
+            .and_then(|c| c.as_bool())
+            .unwrap_or(false);
+        return action == "accept" && confirmed;
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

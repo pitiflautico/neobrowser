@@ -109,11 +109,38 @@ pub fn chrome_bin() -> &'static Path {
 
 /// Return the installed Chrome major version (e.g. "150"), or `None` if unknown.
 ///
-/// On Windows `chrome.exe --version` can hang forever: the launcher prints the
-/// version yet stays attached (child processes, console handoff), and a plain
-/// `.output()` waits indefinitely. So the read is bounded: poll `try_wait` and
-/// kill the process after a few seconds (#11).
+/// Two paths:
+/// - Windows: `chrome.exe` is a GUI app, so `--version` writes to the console,
+///   never to our pipe — and the launcher can stay alive forever (#11). Chrome
+///   installs versioned binaries in `<Application>\<major.minor.build.patch>\`,
+///   so read the highest version dir next to the binary instead; fall back to
+///   the bounded spawn below.
+/// - macOS/Linux: spawn `--version` (works fine), but still bounded: poll
+///   `try_wait` and kill the process after a few seconds.
 pub fn detect_chrome_major(chrome_bin: &Path) -> Option<String> {
+    if cfg!(target_os = "windows") {
+        if let Some(dir) = chrome_bin.parent() {
+            let mut best: Option<u64> = None;
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for e in entries.flatten() {
+                    let name = e.file_name();
+                    let s = name.to_string_lossy();
+                    // A version dir looks like "151.0.7922.109".
+                    if s.bytes().next().is_some_and(|b| b.is_ascii_digit())
+                        && s.chars().all(|c| c.is_ascii_digit() || c == '.')
+                        && s.contains('.')
+                    {
+                        if let Some(major) = s.split('.').next().and_then(|m| m.parse().ok()) {
+                            best = Some(best.map_or(major, |b: u64| b.max(major)));
+                        }
+                    }
+                }
+            }
+            if let Some(major) = best {
+                return Some(major.to_string());
+            }
+        }
+    }
     let mut child = std::process::Command::new(chrome_bin)
         .arg("--version")
         .stdout(std::process::Stdio::piped())

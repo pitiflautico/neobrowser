@@ -118,6 +118,7 @@ mod tests {
     fn audit_off_writes_nothing() {
         let _g = crate::env_test_guard();
         let dir = std::env::temp_dir().join("nb-audit-test-off");
+        let _ = std::fs::remove_dir_all(&dir); // clean slate — previous runs may linger
         std::env::set_var("NEOBROWSER_HOME", &dir);
         std::env::set_var("NEOBROWSER_AUDIT", "off");
         log_tool_call("status", &Map::new(), true, None, Duration::ZERO);
