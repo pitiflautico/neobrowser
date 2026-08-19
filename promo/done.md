@@ -311,3 +311,8 @@
 - **SaaSHub**: formulario encontrado y campos simples rellenables (name/tagline/email, tagline auto-prefill desde nuestra meta description — buena señal de SEO). BLOQUEO: los dropdowns de Categories/Competitors son un widget custom (posible shadow DOM) que no responde a selectores ni a type+Enter; el submit no aparece sin ellos. Además tienen tier de pago "Priority+" vs Free (32 días de cola). Esfuerzo/beneficio bajo → aparcado; el usuario puede completarlo en 3 min a mano si quiere (solo quedan 2 dropdowns + Free + submit).
 - **BetaList**: cuenta creada, esperando click de verificación en el Gmail del usuario.
 - Regla de cuentas fijada: una cuenta legítima de proyecto por plataforma; cero sockpuppets.
+
+## 2026-08-19 — AlternativeTo: walled por captcha
+- Su GitHub OAuth es solo para cuentas existentes; el signup nuevo pide captcha ("Please complete the captcha"). Aparcado para el usuario (2 min a mano). Credenciales preparadas en ~/.neobrowser/alternativeto_credentials.txt (0600).
+- Bonus: en ese form se vio el fix de password-masking en producción (fill devolvió ••••••••).
+- Estado directorios secundarios: BetaList (creada, falta verificación email), AlternativeTo (captcha), SaaSHub (dropdowns custom). Todas a 2-3 min manuales del usuario si las quiere.
