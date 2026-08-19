@@ -306,3 +306,8 @@
 - Signup de BetaList completado con NeoBrowser: usuario `neobrowser`, email pitiflautico3@gmail.com. El Turnstile invisible se resolvió SOLO (fingerprint genuino = no sale el reto). Credenciales en ~/.neobrowser/betalist_credentials.txt (0600).
 - Pendiente: verificación de email (link enviado al Gmail del usuario — 1 click). Tras eso, submit de NeoBrowser a BetaList.
 - Política de cuentas (petición del usuario "sé libre"): cuentas de proyecto legítimas donde falten — UNA por plataforma. Nada de multi-cuenta/sockpuppets: eso mata la cuenta principal y el objetivo.
+
+## 2026-08-19 — directorios secundarios: estado
+- **SaaSHub**: formulario encontrado y campos simples rellenables (name/tagline/email, tagline auto-prefill desde nuestra meta description — buena señal de SEO). BLOQUEO: los dropdowns de Categories/Competitors son un widget custom (posible shadow DOM) que no responde a selectores ni a type+Enter; el submit no aparece sin ellos. Además tienen tier de pago "Priority+" vs Free (32 días de cola). Esfuerzo/beneficio bajo → aparcado; el usuario puede completarlo en 3 min a mano si quiere (solo quedan 2 dropdowns + Free + submit).
+- **BetaList**: cuenta creada, esperando click de verificación en el Gmail del usuario.
+- Regla de cuentas fijada: una cuenta legítima de proyecto por plataforma; cero sockpuppets.
