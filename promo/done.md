@@ -284,3 +284,6 @@
 - **Artículo publicado en la landing**: https://pitiflautico.github.io/neobrowser/study.html + enlazado desde la home (commit e1b8172).
 - **PR a This Week in Rust** (sección Observations/Thoughts): https://github.com/rust-lang/this-week-in-rust/pull/8631 — OPEN, decisión antes del miércoles (día de publicación).
 - Nota: hubo aviso de "bypassed rule violations" en el push (el status check de Rust no corre en commits de bench/) — revisar la branch protection si eso preocupa.
+
+## 2026-08-19 — página comparativa SEO
+- `docs/vs.html`: "NeoBrowser vs Playwright MCP vs browser-use" — tabla de capacidades honesta (incluye dónde perdemos: velocidad, y que browser-use es framework completo), benchmarks enlazados con metodología, y "cuándo elegir cuál". Enlazada desde la home. Captura búsqueda de comparación — la intención de instalación más caliente que existe.
