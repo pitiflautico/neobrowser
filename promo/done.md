@@ -267,3 +267,8 @@
 ## 2026-08-19 — estado influencer + intento Reddit
 - Reddit: old.reddit.com/register cae en el mismo flujo walled (emailPermission + captcha iframe). No se fuerza (filosofía propia: detectar el muro, handoff humano). Sigue necesitando 2 min del usuario.
 - Scan tier-1 (simonw, mitsuhiko, swyx): simonw sigue en reviews de Qwen, mitsuhiko en trenes/coches, swyx en thumbnails de YouTube — ninguna apertura genuina hoy. La vía real hacia ellos es la gravedad del hilo de HN + el registry, no replies forzados.
+
+## 2026-08-19 — REDDIT EN VIVO
+- El usuario creó la cuenta (Pitiflautico2) y se logueó en Chrome. reddit_session (v10, inyectable) → NeoBrowser entra logueado (api/me.json = Pitiflautico2).
+- **Post publicado en r/mcp**: https://www.reddit.com/r/mcp/comments/1vshmkg/ — título + cuerpo del draft. Verificado: UN solo post (el primer intento no llegó; el segundo sí; no hay duplicado).
+- Debug útil: la primera verificación leyó mal el estado (título de marketing ≠ logged out; api/me.json es la prueba fiable). El banner de consentimiento de cookies hay que rechazarlo antes de operar.
