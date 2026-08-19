@@ -355,3 +355,12 @@
 - **Reddit**: sesión de Pitiflautico2 caducada durante el intento (pide login). Se identificó la estructura correcta del formulario de old.reddit (título es `textarea[name="title"]`, submit es `button[type="submit"].btn`). Script actualizado con selectores correctos; publicación pendiente de re-login del usuario.
 - **Product Hunt**: sesión caducada; login vía GitHub OAuth requiere sesión de GitHub viva en el perfil. Launch sigue planeado para martes 25 00:01 PT; assets listos en `promo/drafts/producthunt.md`.
 - **Outreach**: intento de reply en X a tweet sobre agentes y login walls; no verificado por rate-limiting/captcha. Estrategia registrada en cron para ciclos futuros con reglas de voz humanizada.
+
+## 2026-08-19 — diagnóstico de caducidad de sesiones (LinkedIn/Reddit/GitHub/PH)
+- **Causa raíz**: `NEOBROWSER_REAL_PROFILE` solo inyecta cookies en un perfil Ghost limpio. LinkedIn/GitHub requieren además `localStorage`/`sessionStorage`/tokens; Reddit puede invalidar la sesión tras captcha/submit.
+- **Pruebas realizadas**:
+  - `NEOBROWSER_INCLUDE_IDENTITY_COOKIES=1` aumentó cookies inyectadas pero no logró LinkedIn.
+  - Copia de `Profile 24` a `~/.neobrowser/profiles/real` mientras Chrome corría no mantuvo sesión de LinkedIn (cookies presentes, pero tokens invalidados).
+  - `save_session` funciona para capturar cookies + localStorage del dominio actual.
+- **Documento técnico**: `promo/drafts/session-caducity-analysis.md` con soluciones: copia limpia con Chrome cerrado, attach mode, o mejora de `save_session`.
+- **Implicación para promo**: X funciona con cookies; LinkedIn/Reddit/Product Hunt requieren que el usuario cierre Chrome para copiar el perfil real consistente, o use attach mode con `--remote-debugging-port`.
