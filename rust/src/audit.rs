@@ -12,9 +12,17 @@ use serde_json::{json, Map, Value};
 /// Arg keys whose values are masked in the log (credentials, cookies, tokens…).
 fn is_sensitive_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    ["pass", "secret", "token", "cookie", "credential", "apikey", "api_key"]
-        .iter()
-        .any(|s| k.contains(s))
+    [
+        "pass",
+        "secret",
+        "token",
+        "cookie",
+        "credential",
+        "apikey",
+        "api_key",
+    ]
+    .iter()
+    .any(|s| k.contains(s))
 }
 
 /// The args as they should appear in the log: sensitive values replaced.
@@ -44,7 +52,13 @@ fn audit_path() -> Option<std::path::PathBuf> {
 }
 
 /// Append one record for a tool call. Best-effort: auditing never breaks a call.
-pub fn log_tool_call(name: &str, args: &Map<String, Value>, ok: bool, error: Option<&str>, elapsed: Duration) {
+pub fn log_tool_call(
+    name: &str,
+    args: &Map<String, Value>,
+    ok: bool,
+    error: Option<&str>,
+    elapsed: Duration,
+) {
     let Some(path) = audit_path() else { return };
     let line = json!({
         "ts": std::time::SystemTime::now()
@@ -108,7 +122,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.join("audit.log")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(dir.join("audit.log"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
         let _ = std::fs::remove_dir_all(&dir);

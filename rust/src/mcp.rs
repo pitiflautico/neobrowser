@@ -341,8 +341,14 @@ fn error_response(req_id: &Value, code: i64, message: &str) -> Value {
 enum ApprovalGate {
     NotNeeded,
     /// Gated, but the client never advertised elicitation support.
-    Unsupported { id: Value, tool: String },
-    Ask { id: Value, tool: String },
+    Unsupported {
+        id: Value,
+        tool: String,
+    },
+    Ask {
+        id: Value,
+        tool: String,
+    },
 }
 
 fn approval_gate(req: &Value) -> ApprovalGate {
@@ -402,7 +408,9 @@ async fn ask_user(
     loop {
         let next = tokio::time::timeout_at(deadline, lines_rx.recv()).await;
         let Ok(Some(line)) = next else { return false }; // timeout or EOF
-        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         if msg.get("id").and_then(|v| v.as_str()) != Some(id.as_str()) {
             continue; // not our answer; sequential clients make this rare
         }
@@ -416,7 +424,6 @@ async fn ask_user(
         return action == "accept" && confirmed;
     }
 }
-
 
 #[cfg(test)]
 mod tests {
