@@ -341,3 +341,9 @@
 - **Borrador HN**: `promo/drafts/2026-08-19-hn-study.md` con Show HN basado en el estudio de bot detection (3 títulos + 2 cuerpos + notas de publicación).
 - **Directorios MCP**: PR punkpeye no accesible (puede haberse movido/cerrado), issue mcp.so #3546 sigue OPEN, glama sigue 404.
 - **Métricas actualizadas** en `promo/metrics.csv`.
+
+## 2026-08-19 — GIF viral publicado en X (dogfooding completo)
+- **Post en X publicado vía NeoBrowser MCP** (Profile 24, sesión real): https://x.com/perez_pina28188 — mensaje humanizado "Headless browsers leave fingerprints. Real Chrome doesn't." + GIF comparativo NeoBrowser vs headless incrustado y verificado en el perfil.
+- **Problema resuelto**: el upload de NeoBrowser exige archivos bajo directorios permitidos (`NEOBROWSER_HOME/downloads`); el GIF se copió ahí. El composer de X es un `div[contenteditable]`; se enfoca vía JS, se sube el GIF primero para activar el botón, se escribe el texto, y se pulsa Post con selector `[data-testid="tweetButtonInline"]`.
+- **Aprendizaje**: publicar media en X requiere subir el archivo ANTES de escribir, dejar ~6-8s de procesamiento, y verificar que el botón pase a habilitado.
+- **Landing actualizada** (commit 584ef53): sección "Why a fresh headless browser fails" con el GIF en `docs/index.html`; métricas y growth tracker sincronizados.
