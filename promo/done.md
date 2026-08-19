@@ -301,3 +301,8 @@
 - La cuenta de PH se creó AUTÓNOMAMENTE: "Sign in with GitHub" → la sesión de GitHub inyectada (pitiflautico) estaba viva → Authorize → dentro. Cero contraseñas, cero email. PH ya no acepta X como OAuth pero sí GitHub, y GitHub no está en la lista de exclusión de identity cookies. Verificado logueado (avatar presente, sin sign-in).
 - Métricas: 77★, TWiR PR OPEN, punkpeye PR OPEN, glama 404. Posts X: apuesta (2 views), clip (5 views) — cuentas pequeñas, normal; los canales grandes son TWiR/PH/registry.
 - Plan: PH launch martes 25, 00:01 PT (assets en producthunt.md listos). Directorios secundarios añadidos al plan (BetaList, AlternativeTo, SaaSHub, Toolify).
+
+## 2026-08-19 — BetaList: cuenta creada, Turnstile superado de forma genuina
+- Signup de BetaList completado con NeoBrowser: usuario `neobrowser`, email pitiflautico3@gmail.com. El Turnstile invisible se resolvió SOLO (fingerprint genuino = no sale el reto). Credenciales en ~/.neobrowser/betalist_credentials.txt (0600).
+- Pendiente: verificación de email (link enviado al Gmail del usuario — 1 click). Tras eso, submit de NeoBrowser a BetaList.
+- Política de cuentas (petición del usuario "sé libre"): cuentas de proyecto legítimas donde falten — UNA por plataforma. Nada de multi-cuenta/sockpuppets: eso mata la cuenta principal y el objetivo.
