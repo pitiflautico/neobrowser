@@ -26,16 +26,19 @@ It's a single 5 MB Rust binary with 43 tools: multi-tab browsing, forms, upload/
 
 What I'm proudest of: the honest benchmark vs Playwright MCP in the repo. Playwright is faster; we do things it can't. Both get walled equally on adversarial pages. No hype.
 
+Current bet: 81/10,000 GitHub stars, documented publicly at pitiflautico.github.io/neobrowser.
+
 MIT licensed. Feedback welcome — especially from folks who've fought bot detection before.
 ```
 
 ## Galería (5 imágenes/vídeo, en orden)
 
-1. **demo.gif** (ya existe: `docs/assets/demo.gif` — 89 KB; PH admite gif animado como primera imagen)
-2. Screenshot de la landing hero (pitiflautico.github.io/neobrowser)
-3. Screenshot de la tabla del benchmark (`bench/compare.md` renderizado)
-4. Screenshot de la tabla "Why NeoBrowser" del README
-5. Diagrama de arquitectura: "AI client → NeoBrowser → real Chrome → web (authenticated)" → **ya generado: `docs/assets/architecture.png`** (también embebido en la landing)
+1. **neobrowser-vs-headless.gif** (720×720, ~1 MB; el pitch visual en 6 segundos)
+2. **demo.gif** (ya existe: `docs/assets/demo.gif` — 89 KB)
+3. Screenshot de la landing hero (pitiflautico.github.io/neobrowser)
+4. Screenshot de la tabla del benchmark (`bench/compare.md` renderizado)
+5. Screenshot de la tabla "Why NeoBrowser" del README
+6. Diagrama de arquitectura: "AI client → NeoBrowser → real Chrome → web (authenticated)" → **ya generado: `docs/assets/architecture.png`** (también embebido en la landing)
 
 ## First comment (el maker comment, publicarlo nada más lanzar)
 
@@ -45,7 +48,7 @@ Maker here — happy to answer anything. Two technical rabbit holes if you're cu
 
 ## Checklist día del launch
 
-- [ ] Publicar 00:01 PT martes/miércoles
+- [ ] Publicar martes 25 a las 00:01 PT
 - [ ] First comment inmediato
 - [ ] Responder cada comentario en <30 min durante el día
 - [ ] Cross-post el mismo día: Twitter ("we're on Product Hunt today"), no antes
