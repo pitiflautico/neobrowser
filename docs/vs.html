@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeoBrowser vs Playwright MCP vs browser-use — honest comparison</title>
+<meta name="description" content="NeoBrowser vs Playwright MCP vs browser-use: real Chrome vs bundled Chromium, real sessions, fingerprint results, benchmarks with methodology. Updated with each release.">
+<meta property="og:title" content="NeoBrowser vs Playwright MCP vs browser-use">
+<meta property="og:image" content="https://pitiflautico.github.io/neobrowser/assets/og.png">
+<style>
+  :root{--bg:#0b0e14;--card:#141a2a;--line:#232c40;--fg:#e6ecff;--muted:#93a0bd;--accent:#5eead4;--accent2:#7c9cff}
+  *{box-sizing:border-box} body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.7;margin:0}
+  .wrap{max-width:820px;margin:0 auto;padding:40px 20px 80px}
+  a{color:var(--accent)} h1{font-size:clamp(26px,4vw,36px);line-height:1.15;letter-spacing:-.02em}
+  h2{font-size:21px;margin-top:36px} .muted{color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:14.5px;margin:18px 0}
+  th,td{padding:9px 12px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--muted);font-weight:600} td.y{color:var(--accent)} td.n{color:#e88} td.p{color:#f5b971}
+  .back{color:var(--muted);font-size:14px}
+  @media(prefers-color-scheme:light){:root{--bg:#f7f9fc;--card:#fff;--line:#dbe2ee;--fg:#0d1524;--muted:#5a6883;--accent:#0d9488}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="back"><a href="./">← NeoBrowser</a></p>
+  <h1>NeoBrowser vs Playwright MCP vs browser-use</h1>
+  <p class="muted">Last updated August 2026 · every number below links to a reproducible harness. If something here is wrong, <a href="https://github.com/pitiflautico/neobrowser/issues">open an issue</a> — we fix the page, not the narrative.</p>
+
+  <h2>The one-paragraph version</h2>
+  <p><strong>Playwright MCP</strong> is the fast, mainstream choice: headless Chromium, great for CI and synthetic browsing. <strong>browser-use</strong> is a full agent framework: an LLM-driven loop that plans and acts, Python-native. <strong>NeoBrowser</strong> is the one that drives <em>your actual Chrome</em> — your real fingerprint, and optionally your real logged-in sessions — so the agent looks like a genuine user because it is one. Different tools for different jobs; the table below is honest about which is which.</p>
+
+  <h2>Capability table</h2>
+  <table>
+    <tr><th></th><th>NeoBrowser</th><th>Playwright MCP</th><th>browser-use</th></tr>
+    <tr><td>Browser it drives</td><td class="y">Real Chrome binary</td><td class="p">Bundled Chromium</td><td class="p">Chromium (via Playwright)</td></tr>
+    <tr><td>Reuses your logged-in sessions</td><td class="y">✓ (opt-in, OS keychain)</td><td class="n">✗</td><td class="n">✗</td></tr>
+    <tr><td>bot.sannysoft fingerprint</td><td class="y">11/11 pass</td><td class="n">10/11 (HeadlessChrome UA)</td><td class="p">partial</td></tr>
+    <tr><td>Bot-wall / CAPTCHA detection as signals</td><td class="y">✓ first-class</td><td class="n">✗</td><td class="n">✗</td></tr>
+    <tr><td>Navigate latency (measured)</td><td>3.0–4.8 s</td><td class="y">0.5–1.2 s</td><td>varies (LLM-paced)</td></tr>
+    <tr><td>Session save/restore tools</td><td class="y">✓</td><td class="n">✗</td><td class="p">via config</td></tr>
+    <tr><td>File upload (chooser-independent)</td><td class="y">✓ CDP setFileInputFiles</td><td class="p">chooser-dependent</td><td class="p">✓</td></tr>
+    <tr><td>Runtime</td><td class="y">single 5 MB static binary</td><td>Node + browser download</td><td>Python env + LLM API</td></tr>
+    <tr><td>Needs a paid API key</td><td class="y">no</td><td class="y">no</td><td class="n">yes (LLM calls)</td></tr>
+    <tr><td>Human-cadence input (mouse path, per-key typing)</td><td class="y">✓</td><td class="n">✗</td><td class="n">✗</td></tr>
+  </table>
+
+  <h2>Benchmarks (with methodology, not vibes)</h2>
+  <p>Two public harnesses, both in the repo:</p>
+  <table>
+    <tr><th>Harness</th><th>NeoBrowser</th><th>Playwright MCP</th></tr>
+    <tr><td>Functional task matrix (<a href="https://github.com/pitiflautico/neobrowser/blob/main/bench/compare.md">compare.md</a>)</td><td class="y">9/9 tasks</td><td class="n">7/9 (no upload, no persistence)</td></tr>
+    <tr><td>Bot-detection study (<a href="study.html">article</a> · <a href="https://github.com/pitiflautico/neobrowser/blob/main/bench/study.md">study.md</a>)</td><td class="y">sannysoft 11/11</td><td class="n">sannysoft 10/11</td></tr>
+    <tr><td>Speed</td><td class="n">~2× slower (forces render frames)</td><td class="y">faster</td></tr>
+    <tr><td>Cloudflare challenge (nowsecure.nl)</td><td class="n">blocked</td><td class="n">blocked</td></tr>
+  </table>
+
+  <h2>When to pick which</h2>
+  <p><strong>Pick Playwright MCP</strong> for CI testing, scraping public pages at speed, and anything where a fresh browser is fine. <strong>Pick browser-use</strong> when you want the framework to plan multi-step tasks for you and you're happy paying LLM API costs per step. <strong>Pick NeoBrowser</strong> when the job involves your accounts (the agent lands already authenticated), when fingerprint consistency matters, or when you want wall detection the model can react to instead of silent failures.</p>
+
+  <p class="muted">NeoBrowser is MIT: <a href="https://github.com/pitiflautico/neobrowser">github.com/pitiflautico/neobrowser</a>. Something wrong on this page? <a href="https://github.com/pitiflautico/neobrowser/issues">Tell us</a> — the methodology is public and we rerun the harnesses.</p>
+</div>
+</body>
+</html>
