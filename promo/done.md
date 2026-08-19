@@ -320,3 +320,9 @@
 ## 2026-08-19 — issue worker (19:53): 0 issues abiertos. Sin acción.
 
 ## 2026-08-19 — ciclo promo (20:23): sin acción pública (todo estable); cron actualizado (a162e82a) con Reddit activo + launches
+
+## 2026-08-19 — issues #13 #14 #15 cerrados (worker manual del usuario)
+- **#13 (attach port)**: implementado `NEOBROWSER_ATTACH_PORT=auto` — escaneo de ps + sondeo /json/version exigiendo respuesta Chrome, opt-in, con tests. Commit a730eab.
+- **#14 (js en otra pestaña)**: NO se reproduce en el binario Rust — js comparte la pestaña activa con navigate (verificado en vivo). Es comportamiento del oráculo Python (dispatch_tool); respondido con la recomendación de usar el binario.
+- **#15 (nombres de args)**: los nombres son contrato de paridad Python; añadidas sugerencias near-miss ("inten → intent?"). search_videos funciona en Rust (probado). search devuelve texto por contrato MCP.
+- CI: el fallo de ayer era cargo fmt — ya verde (fce226f).
