@@ -47,10 +47,10 @@ repo never intentionally commits real user sessions; these paths are already ign
 positives. Allowlisting the directories avoids blocking the build on browser artifacts.
 """
 paths = [
-  '''Profile 24/.*''',
-  '''profiles/.*''',
-  '''sessions/.*''',
-  '''.neobrowser/profiles/.*''',
-  '''.neobrowser/sessions/.*''',
-  '''js/happy-dom.bundle.js''',
+  '''.*Profile 24.*''',
+  '''.*profiles.*''',
+  '''.*sessions.*''',
+  '''.*\.neobrowser/profiles.*''',
+  '''.*\.neobrowser/sessions.*''',
+  '''.*happy-dom\.bundle\.js.*''',
 ]
