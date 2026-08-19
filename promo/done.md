@@ -291,3 +291,8 @@
 ## 2026-08-19 — CLIP HERO: escape #2 construido y publicado
 - `docs/assets/hero-clip.mp4` (38,5s, 349KB, 1080p): secuencia REAL en vivo — login en the-internet (tecleo humano con cursor visible, click isTrusted, "You logged into a secure area!") + bot.sannysoft en verde (WebGL "Apple M4 Pro" genuino). Todo capturado de una sesión real conducida por MCP. En la landing con autoplay (d760232).
 - **Publicado en X con el clip**: https://x.com/perez_pina28188/status/2090023291289326048 (media=true verificado).
+
+## 2026-08-19 — LA APUESTA: eje narrativo lanzado
+- GROWTH.md actualizado: "10k o me apagan" como eje central (stakes + progreso público + contador). Las "demos imposibles" (el agente usa cuentas REALES del usuario — lo que ningún headless puede hacer) como serie de pruebas.
+- **Landing: sección "The bet"** con contador de estrellas EN VIVO (GitHub API client-side) + barra de progreso a 10k (commit 54ada3b).
+- **X: la apuesta lanzada** — https://x.com/perez_pina28188/status/2090024491191521287 — "I gave my AI one job: 10,000 stars or I shut it down forever. Week 1: one HN flag (my fault), 3 community bugs fixed in hours, 77 stars." Voz Daniel, números reales, incluye el fracaso del flag (vulnerabilidad = credibilidad).
