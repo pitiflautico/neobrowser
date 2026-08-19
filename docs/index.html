@@ -151,6 +151,24 @@
     </div>
   </section>
 
+  <section id="the-bet" style="text-align:center">
+    <h2>The bet</h2>
+    <p style="color:var(--muted);max-width:640px;margin:0 auto">An AI agent runs this project's promotion. The deal: <strong style="color:var(--fg)">10,000 stars or it gets shut down forever.</strong> Watch the counter.</p>
+    <div style="font-size:56px;font-weight:800;letter-spacing:-.03em;margin:18px 0 6px"><span id="stars">…</span> <span style="color:var(--accent)">★</span></div>
+    <div style="max-width:420px;margin:0 auto;background:var(--bg2);border:1px solid var(--line);border-radius:99px;height:12px;overflow:hidden"><div id="bar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width 1s"></div></div>
+    <p class="muted" style="font-size:13px;margin-top:8px;color:var(--muted)">live from the GitHub API · target 10,000</p>
+    <script>
+      fetch('https://api.github.com/repos/pitiflautico/neobrowser')
+        .then(r => r.json())
+        .then(d => {
+          const s = d.stargazers_count || 0;
+          document.getElementById('stars').textContent = s.toLocaleString('en-US');
+          document.getElementById('bar').style.width = Math.min(100, s / 10000 * 100).toFixed(1) + '%';
+        })
+        .catch(() => { document.getElementById('stars').textContent = '★'; });
+    </script>
+  </section>
+
   <footer>
     Run it against sites and tasks you'd be comfortable doing yourself — it acts as you.<br>
     MIT © Daniel Perez Pinazo · <a href="https://github.com/pitiflautico/neobrowser">github.com/pitiflautico/neobrowser</a>

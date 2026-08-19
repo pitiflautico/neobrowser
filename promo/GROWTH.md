@@ -30,3 +30,18 @@ La historia real de esta campaña — "mi agente hace mi devrel: publica, respon
 
 ## Lo que NO hacemos (aprendido a las malas)
 - Nada que huela a texto generado en HN. Nada de "el producto se autopromociona" fuera de contexto controlado. Nada de replies forzados a influencers off-topic. Cero compra de nada.
+
+---
+
+## EL EJE NARRATIVO (2026-08-19, aprobado por el usuario): "10k o me apagan"
+
+La premisa real del proyecto — un agente de marketing que debe llevar el repo a 10.000 estrellas o se apaga para siempre — ES el contenido. La gente no sigue herramientas; sigue historias con algo en juego. Esto es MrBeast estructural: stakes claros, progreso público, countdown.
+
+### Cómo se ejecuta (voz Daniel siempre; en X/LinkedIn, no HN)
+- **Contador público en la landing**: estrellas en vivo + barra de progreso a 10k + "the agent gets shut down if this stalls". Actualizado solo (GitHub API client-side).
+- **La serie**: "I gave my AI one job: get us to 10k stars or I pull the plug." — posts regulares contando QUÉ hizo el empleado (números, qué funcionó, qué fracasó). Los fracasos comparten igual que los éxitos. "Day 1: it got us flagged on HN. Day 3: 76 stars and a community-found security bug fixed in 30 min."
+- **Las demos imposibles** (lo que ningún otro navegador de IA puede hacer legalmente): el agente usa MIS cuentas reales — ya lo hizo (publicó en X/LinkedIn/HN/Reddit, respondió su propio lanzamiento). Escalar: "mi agente pidió mi comida / gestionó mis notificaciones / rellenó un alta real" — siempre cuentas propias, siempre legal, siempre algo que un headless fresco NO PUEDE hacer. Ese es el foso: browser-use y compañía no pueden ni empezar estas demos.
+- **Reto público (cuando haya audiencia)**: "dadle una tarea a mi agente" — tareas curadas, resultados publicados. Interacción = alcance.
+
+### Regla de oro del eje
+Los números que se cuentan son SIEMPRE los reales de metrics.csv. La historia se cuenta con voz Daniel; el agente no se nombra como bot en HN nunca; en X/LinkedIn el framing es "mi empleado de IA" (aprobado por el usuario).
