@@ -172,11 +172,33 @@ impl ToolSpec {
                     .collect::<Vec<_>>()
                     .join(", ")
             };
+            // Near-miss suggestion (#15): `query` vs `intent` costs a round-trip
+            // when the valid names can't be guessed. Suggest on shared prefix or
+            // substring so the caller self-corrects in one try.
+            let suggestions: Vec<String> = unknown
+                .iter()
+                .filter_map(|u| {
+                    self.params
+                        .iter()
+                        .map(|p| p.name)
+                        .find(|v| {
+                            let (a, b) = (u.len().min(3), v.len().min(3));
+                            u[..a] == v[..b] || v.contains(*u) || u.contains(v)
+                        })
+                        .map(|v| format!("{u} → {v}?"))
+                })
+                .collect();
+            let hint = if suggestions.is_empty() {
+                String::new()
+            } else {
+                format!(" Did you mean: {}?", suggestions.join(", "))
+            };
             return Err(ToolError::Argument(format!(
-                "{}: unknown argument(s): {}. Valid: {}",
+                "{}: unknown argument(s): {}. Valid: {}{}",
                 self.name,
                 unknown.join(", "),
-                valid
+                valid,
+                hint
             )));
         }
         // Missing required, in schema order.
@@ -310,6 +332,14 @@ mod tests {
             err.to_string(),
             "wait: unknown argument(s): seconds. Valid: ms, intent"
         );
+    }
+
+    #[test]
+    fn unknown_arg_gets_near_miss_hint() {
+        let err = spec()
+            .validate_args(&args(json!({ "inten": "x", "ms": 1 })))
+            .unwrap_err();
+        assert!(err.to_string().contains("Did you mean: inten → intent?"));
     }
 
     #[test]
