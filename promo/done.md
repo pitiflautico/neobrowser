@@ -263,3 +263,7 @@
 ## 2026-08-19 — ciclo promo (9:23): LinkedIn #5, la historia del feedback
 - Métricas: 76★, 33 pts HN, 0 issues abiertos, PR OPEN, glama 404.
 - **LinkedIn #5 publicado**: la historia real del ciclo feedback→código en 24h (password masking, allowlist, audit log, elicitation, fix Windows) en voz Daniel, con la lección "el feedback más duro es el que más mejora el producto". Verificado en actividad.
+
+## 2026-08-19 — estado influencer + intento Reddit
+- Reddit: old.reddit.com/register cae en el mismo flujo walled (emailPermission + captcha iframe). No se fuerza (filosofía propia: detectar el muro, handoff humano). Sigue necesitando 2 min del usuario.
+- Scan tier-1 (simonw, mitsuhiko, swyx): simonw sigue en reviews de Qwen, mitsuhiko en trenes/coches, swyx en thumbnails de YouTube — ninguna apertura genuina hoy. La vía real hacia ellos es la gravedad del hilo de HN + el registry, no replies forzados.
