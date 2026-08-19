@@ -34,4 +34,23 @@ Scoped to test paths only. Source and configuration remain fully scanned.
 paths = [
   '''rust/tests/fixtures/.*''',
   '''archive/python-oracle/tests/.*''',
+  '''tests/test_neo_browser.py''',
+  '''tools/v3/tests/unit/test_neobrowser_core.py''',
+]
+
+[[allowlists]]
+description = """
+Browser profile directories. These contain Chrome extension manifests, browsing-topics
+state, and other browser-generated blobs that are high-entropy by construction. The
+repo never intentionally commits real user sessions; these paths are already ignored by
+.gitignore, but historical commits and working-tree copies during CI can trigger false
+positives. Allowlisting the directories avoids blocking the build on browser artifacts.
+"""
+paths = [
+  '''Profile 24/.*''',
+  '''profiles/.*''',
+  '''sessions/.*''',
+  '''.neobrowser/profiles/.*''',
+  '''.neobrowser/sessions/.*''',
+  '''js/happy-dom.bundle.js''',
 ]
