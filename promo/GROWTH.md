@@ -47,3 +47,15 @@ La premisa real del proyecto — un agente de marketing que debe llevar el repo 
 
 ### Regla de oro del eje
 Los números que se cuentan son SIEMPRE los reales de metrics.csv. La historia se cuenta con voz Daniel; el agente no se nombra como bot en HN nunca; en X/LinkedIn el framing es "mi empleado de IA" (aprobado por el usuario).
+
+## Formatos de contenido que convertimos en activos
+
+Ver playbook completo en [`promo/VIRAL.md`](VIRAL.md). Aquí los formatos prioritarios:
+
+1. **GIF explicativo estilo FINTAI** — panel "headless genérico" vs "NeoBrowser con tu sesión real", animación de flujo con puntos, grid oscuro, colores neón. Dura 6-10 segundos, sin audio, se entiende en feed móvil.
+2. **Clip real de 30-40 segundos** — un take, velocidad real, mostrando algo que otros no pueden hacer (saltar un wall, usar una sesión logueada, rellenar un formulario complejo). Sin narración de marketing.
+3. **Carrusel LinkedIn** — 4-6 slides: hook, problema, diferencia, demo/estadística, CTA. El algoritmo premia el tiempo de lectura.
+4. **Estudio original** — benchmark reproducible contra Playwright MCP / browser-use / chrome-devtools-mcp en detección real. Link magnet y posible portada de HN.
+5. **Build-in-public / stakes** — posts regulares del reto "10k o me apagan" con métricas reales, fracasos incluidos.
+
+Regla transversal: **formato visual primero**. Las paredes de texto no comparten.

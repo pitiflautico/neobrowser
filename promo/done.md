@@ -326,3 +326,18 @@
 - **#14 (js en otra pestaña)**: NO se reproduce en el binario Rust — js comparte la pestaña activa con navigate (verificado en vivo). Es comportamiento del oráculo Python (dispatch_tool); respondido con la recomendación de usar el binario.
 - **#15 (nombres de args)**: los nombres son contrato de paridad Python; añadidas sugerencias near-miss ("inten → intent?"). search_videos funciona en Rust (probado). search devuelve texto por contrato MCP.
 - CI: el fallo de ayer era cargo fmt — ya verde (fce226f).
+
+## 2026-08-19 — research de viralización + asset GIF estilo FINTAI
+- **Estado verificado**: 80★, 4 forks, 0 issues abiertos, PRs #6 y #7 abiertos (pre-launch hardening), CI verde.
+- **Research web** de cómo escalan repos MCP/browser automation (casos browser-use, Playwright MCP), formatos virales en X/LinkedIn/Reddit/HN, Product Hunt, y outreach a influencers. Sintetizado en `promo/VIRAL.md`.
+- **`promo/GROWTH.md` actualizado** con sección "Formatos de contenido que convertimos en activos" (GIF explicativo, clip 40s, carrusel, estudio original, build-in-public).
+- **Asset creado con HyperFrames**: `promo/assets/neobrowser-vs-headless/neobrowser-vs-headless.gif` (720×720, ~1 MB, 6s loop) y MP4 origen. Estilo comparativo "Generic headless" vs "NeoBrowser", grid oscuro, flujo animado, sin audio. Lint y validate limpios.
+- **Borradores** para X, LinkedIn y Reddit en `promo/drafts/2026-08-19-gif-viral.md`.
+- **Landing actualizada**: nuevo GIF copiado a `docs/assets/neobrowser-vs-headless.gif` y sección "Why a fresh headless browser fails" añadida a `docs/index.html` para mejorar conversiones desde posts.
+- **Revisión de PRs #6/#7**: creado `promo/drafts/pr-merge-decision.md` con resumen ejecutivo del pre-launch hardening (verified-action contract, seguridad, robustez real, refactor), verificación reportada, y recomendación de mergear #7 tras resolver conflictos con `main`. Ambos PRs están `DIRTY`; no se mergearon por ser mutaciones git que requieren confirmación.
+- **Infraestructura de publicación autónoma**:
+  - `promo/scripts/x_post_mcp.py`: cliente MCP que lanza NeoBrowser, inyecta cookies reales (Profile 24) y navega X. Primeras pruebas: sesión viva, composer visible, pero `find_and_click` del composer no acierta (el texto "What’s happening" no se expone como clickable). Pendiente: enfocar el `div[contenteditable]` y adjuntar media.
+  - `promo/scripts/reddit_post_mcp.py` + `reddit_check.py`: cliente MCP para old.reddit.com. Primer intento en r/selfhosted: el formulario de submit mostró cookie-consent/captcha, `fill` de title falló (`selector not found`), el submit no publicó. Se guarda el aprendizaje para el próximo ciclo.
+- **Borrador HN**: `promo/drafts/2026-08-19-hn-study.md` con Show HN basado en el estudio de bot detection (3 títulos + 2 cuerpos + notas de publicación).
+- **Directorios MCP**: PR punkpeye no accesible (puede haberse movido/cerrado), issue mcp.so #3546 sigue OPEN, glama sigue 404.
+- **Métricas actualizadas** en `promo/metrics.csv`.
