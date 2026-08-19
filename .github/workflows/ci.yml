@@ -175,6 +175,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: "false"
           GITLEAKS_ENABLE_SUMMARY: "true"
+          GITLEAKS_CONFIG: ".gitleaks.toml"
 
   sbom:
     name: SBOM
