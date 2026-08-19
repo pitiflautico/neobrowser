@@ -316,3 +316,5 @@
 - Su GitHub OAuth es solo para cuentas existentes; el signup nuevo pide captcha ("Please complete the captcha"). Aparcado para el usuario (2 min a mano). Credenciales preparadas en ~/.neobrowser/alternativeto_credentials.txt (0600).
 - Bonus: en ese form se vio el fix de password-masking en producción (fill devolvió ••••••••).
 - Estado directorios secundarios: BetaList (creada, falta verificación email), AlternativeTo (captcha), SaaSHub (dropdowns custom). Todas a 2-3 min manuales del usuario si las quiere.
+
+## 2026-08-19 — issue worker (19:53): 0 issues abiertos. Sin acción.
