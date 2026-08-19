@@ -249,3 +249,8 @@
 
 ## 2026-08-18 — barrido nocturno
 - **76★ (+10), 33 puntos.** Nuevo comentario de andreidbr (usa una skill de Chrome CDP para test automation — usuario avanzado, contacto tibio registrado en targets). No es pregunta directa → no se responde en público (cooldown), queda como contacto nivel 1.
+
+## 2026-08-18/19 — #11 y #12 CERRADOS. Tablero de issues a cero.
+- **#11 (Windows hang)**: reproducido en CI, causa raíz (chrome.exe --version GUI app + launcher inmortal), fix en main + verificado en windows-latest (launch+CDP ok, EXIT=0). Además: detección de versión en Windows leyendo el directorio versionado de instalación. Diag re-disparado para confirmar el 'chrome major' real.
+- **#12 (human approval + audit)**: COMPLETO. Elicitation implementada en mcp.rs (NEOBROWSER_REQUIRE_APPROVAL; accept→ejecuta, decline→error limpio, sin capability→error accionable — los 3 caminos verificados en vivo con cliente fake). Investigación previa: elicitation funciona en Claude Code CLI, rota en Cowork/Desktop — de ahí el fallback. Cerrado con evidencia.
+- Incidencia: el primer script de verificación tenía un bug mío (esperaba 2 eventos cuando el caso sin-elicitation solo produce 1). Corregido y repetido.
