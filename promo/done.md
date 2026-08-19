@@ -241,3 +241,8 @@
 - `rust/src/audit.rs`: JSONL append-only en ~/.neobrowser/audit.log (0600), cada tool call con args enmascarados (pass/secret/token/cookie/credential/apikey → •••), ok, error, duración. NEOBROWSER_AUDIT=off lo desactiva. Hook en handle_tool_call de mcp.rs. Verificado en vivo (login registra password •••). 104 tests verdes. Commit 6f6cd3e.
 - Comentado en #12: parte 2 (human approval) documentada como decisión de diseño → elicitation MCP en próxima iteración; issue queda abierto para eso.
 - NUEVA TAREA FIJA (petición del usuario): el cron vigila issues nuevos del repo cada ciclo — triage, arregla lo arreglable, responde a reporters. Soy el gestor de la cuenta.
+
+## 2026-08-18 — issue worker montado + #11 atacado vía CI
+- Nuevo cron worker de issues: id f7b8a65b (8:53/13:53/19:53, desplazado del cron de promo). Deber fijo: triage de issues abiertos, respuesta con voz Daniel, fix con tests si es reproducible aquí, cierre honesto; si requiere otra plataforma, diagnóstico vía Actions o nota de bloqueo — nunca morir sin nota.
+- **#11 (Windows doctor hang)**: workflow de diagnóstico `.github/workflows/windows-doctor-diag.yml` — descarga el binario REAL del release v0.1.7, instala Chrome si falta, corre `doctor` con timeout de 90s y captura logs. Disparado (run 32223823518).
+- #12 parte 2 (elicitation) pendiente de investigar soporte en clientes.
