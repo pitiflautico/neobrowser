@@ -259,3 +259,7 @@
 - Run 32225649790 (binario desde main): `chrome major: 151` (detección por directorio de instalación), `launch+CDP: ok`, EXIT=0. Comentario final en el issue con la evidencia. El job del binario publicado (v0.1.7) sigue fallando como debe — hasta el próximo release.
 
 ## 2026-08-19 — issue worker (8:53): tablero limpio, 0 issues abiertos. Sin acción.
+
+## 2026-08-19 — ciclo promo (9:23): LinkedIn #5, la historia del feedback
+- Métricas: 76★, 33 pts HN, 0 issues abiertos, PR OPEN, glama 404.
+- **LinkedIn #5 publicado**: la historia real del ciclo feedback→código en 24h (password masking, allowlist, audit log, elicitation, fix Windows) en voz Daniel, con la lección "el feedback más duro es el que más mejora el producto". Verificado en actividad.
