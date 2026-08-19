@@ -254,3 +254,6 @@
 - **#11 (Windows hang)**: reproducido en CI, causa raíz (chrome.exe --version GUI app + launcher inmortal), fix en main + verificado en windows-latest (launch+CDP ok, EXIT=0). Además: detección de versión en Windows leyendo el directorio versionado de instalación. Diag re-disparado para confirmar el 'chrome major' real.
 - **#12 (human approval + audit)**: COMPLETO. Elicitation implementada en mcp.rs (NEOBROWSER_REQUIRE_APPROVAL; accept→ejecuta, decline→error limpio, sin capability→error accionable — los 3 caminos verificados en vivo con cliente fake). Investigación previa: elicitation funciona en Claude Code CLI, rota en Cowork/Desktop — de ahí el fallback. Cerrado con evidencia.
 - Incidencia: el primer script de verificación tenía un bug mío (esperaba 2 eventos cuando el caso sin-elicitation solo produce 1). Corregido y repetido.
+
+## 2026-08-19 — #11 verificación final: TODO verde en Windows
+- Run 32225649790 (binario desde main): `chrome major: 151` (detección por directorio de instalación), `launch+CDP: ok`, EXIT=0. Comentario final en el issue con la evidencia. El job del binario publicado (v0.1.7) sigue fallando como debe — hasta el próximo release.
