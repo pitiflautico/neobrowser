@@ -278,3 +278,9 @@
 - **TWiR ya no acepta PRs para Project/Tooling** — recogen de r/rust (política nueva, ago-2026). Por eso:
 - **Comentario publicado en el hilo semanal de r/rust** ("What's everyone working on this week 34/2026") presentando NeoBrowser con lo técnico (multiplexer tokio, cookie decryption, benchmark honesto). Si tracciona, TWiR lo recoge. Vía futura adicional: artículo long-form en nuestra propia página → PR a "Observations/Thoughts" (esa sección SÍ acepta PRs).
 - Lecciones tooling Reddit: `find` se confunde con los anuncios en páginas de Reddit (intents genéricos cazan ads) — para comentarios usar old.reddit.com (textarea clásica); para texto largo, type human=false (el humano tarda >60s y Runtime.evaluate se wedgea); verificar siempre en /user/.../comments o /submitted.
+
+## 2026-08-19 — EL ESTUDIO: activo #1 del plan GROWTH, construido y publicado
+- **Estudio bot-detection cross-tool** (bench/study.py + study.json + study.md, commit 677c3b7): NeoBrowser vs Playwright MCP contra sannysoft/creepjs/nowsecure/deviceandbrowserinfo, N=2 por celda, metodología abierta. Resultado honesto: **NeoBrowser 11/11 en sannysoft** (Playwright headless falla UA por "HeadlessChrome"), Playwright 3-5× más rápido, Cloudflare mata a ambos 2/2.
+- **Artículo publicado en la landing**: https://pitiflautico.github.io/neobrowser/study.html + enlazado desde la home (commit e1b8172).
+- **PR a This Week in Rust** (sección Observations/Thoughts): https://github.com/rust-lang/this-week-in-rust/pull/8631 — OPEN, decisión antes del miércoles (día de publicación).
+- Nota: hubo aviso de "bypassed rule violations" en el push (el status check de Rust no corre en commits de bench/) — revisar la branch protection si eso preocupa.
