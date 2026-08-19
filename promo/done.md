@@ -246,3 +246,6 @@
 - Nuevo cron worker de issues: id f7b8a65b (8:53/13:53/19:53, desplazado del cron de promo). Deber fijo: triage de issues abiertos, respuesta con voz Daniel, fix con tests si es reproducible aquí, cierre honesto; si requiere otra plataforma, diagnóstico vía Actions o nota de bloqueo — nunca morir sin nota.
 - **#11 (Windows doctor hang)**: workflow de diagnóstico `.github/workflows/windows-doctor-diag.yml` — descarga el binario REAL del release v0.1.7, instala Chrome si falta, corre `doctor` con timeout de 90s y captura logs. Disparado (run 32223823518).
 - #12 parte 2 (elicitation) pendiente de investigar soporte en clientes.
+
+## 2026-08-18 — barrido nocturno
+- **76★ (+10), 33 puntos.** Nuevo comentario de andreidbr (usa una skill de Chrome CDP para test automation — usuario avanzado, contacto tibio registrado en targets). No es pregunta directa → no se responde en público (cooldown), queda como contacto nivel 1.
