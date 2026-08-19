@@ -12,7 +12,7 @@ on:
         default: "v0.1.7"
 
 jobs:
-  doctor:
+  doctor-published:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -42,3 +42,26 @@ jobs:
           NEOBROWSER_HOME="$RUNNER_TEMP/nbhome" timeout 90 "$EXE" doctor; echo "EXIT=$?"
           echo "--- neobrowser logs (if any) ---"
           find "$RUNNER_TEMP/nbhome" -name "*.log" -exec cat {} \; 2>/dev/null || true
+
+  doctor-source:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build from source (current main)
+        run: cargo build --release
+        working-directory: rust
+      - name: Install Chrome if missing
+        run: |
+          $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+          if (Test-Path $chrome) { echo "Chrome present" } else {
+            Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" -OutFile chrome_installer.exe
+            Start-Process chrome_installer.exe -Args "/silent /install" -Wait
+          }
+      - name: Run doctor with the source-built binary
+        shell: bash
+        run: |
+          set -x
+          NEOBROWSER_HOME="$RUNNER_TEMP/nbhome-src" timeout 90 ./rust/target/release/neobrowser.exe doctor; echo "EXIT=$?"
+          find "$RUNNER_TEMP/nbhome-src" -name "*.log" -exec cat {} \; 2>/dev/null || true

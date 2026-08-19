@@ -108,11 +108,33 @@ pub fn chrome_bin() -> &'static Path {
 }
 
 /// Return the installed Chrome major version (e.g. "150"), or `None` if unknown.
+///
+/// On Windows `chrome.exe --version` can hang forever: the launcher prints the
+/// version yet stays attached (child processes, console handoff), and a plain
+/// `.output()` waits indefinitely. So the read is bounded: poll `try_wait` and
+/// kill the process after a few seconds (#11).
 pub fn detect_chrome_major(chrome_bin: &Path) -> Option<String> {
-    let out = std::process::Command::new(chrome_bin)
+    let mut child = std::process::Command::new(chrome_bin)
         .arg("--version")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let out = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break child.wait_with_output().ok()?,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Ok(None) => {
+                // Hung launcher: kill it and keep whatever it printed.
+                let _ = child.kill();
+                break child.wait_with_output().ok()?;
+            }
+            Err(_) => return None,
+        }
+    };
     let text = String::from_utf8_lossy(&out.stdout);
     // Match the first "<major>.<minor>" run of digits.
     let bytes = text.as_bytes();
