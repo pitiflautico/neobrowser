@@ -603,3 +603,8 @@
 - **Uso**: listo para publicar en LinkedIn ahora o en X cuando se desbloquee.
 - **Push a main**: commit pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — validación de producto: test suite verde
+- **PRODUCTO**: ejecutado `cargo test --release` en `rust/`: 334 tests pasan (267 unit + 13 conformance + 11 embedded_js + 7 fault_injection + 12 multistep_forms + 10 properties + 1 stealth + 2 unsafe_audit + 11 verified_actions).
+- **PRODUCTO**: `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` limpios.
+- **Estado del código**: v0.1.7 estable y listo para el launch de Product Hunt (una vez resuelta la URL).
