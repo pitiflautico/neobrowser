@@ -534,3 +534,19 @@
 - **PRODUCTO**: script `promo/scripts/linkedin_post_counter.py` listo para ejecutar mañana (viernes 21) en la ventana 8:30–10:00 CET. Máximo 1 LinkedIn/día; este será el post del día siguiente.
 - **Push a main**: commit pendiente (LinkedIn draft + script).
 - **Estado**: 88★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — asset viral en MP4 + LinkedIn test preparado
+- **CONTENIDO/PRODUCTO**: convertidos los GIFs virales (square 1080×1080 y wide 1200×675) a MP4 H.264 con `faststart` + `yuv420p` para compatibilidad nativa en X/LinkedIn/Product Hunt.
+  - `docs/assets/neobrowser-viral-square.mp4` — 156 KB, 4.5s, 20fps.
+  - `docs/assets/neobrowser-viral-wide.mp4` — 83 KB, 4.5s, 20fps.
+  - Verificados con `ffprobe`: dimensiones correctas, pix_fmt yuv420p, moov atom al inicio del archivo.
+- **CONTENIDO**: actualizado el borrador `promo/drafts/linkedin-viral-counter.md` y el script `promo/scripts/linkedin_post_counter.py` para usar el MP4 e intentar upload nativo de vídeo en LinkedIn (fallback a link si el DOM no expone input file).
+- **Estado**: 88★ / 4 forks / 0 issues abiertos. Siguiente paso: ejecutar el test de LinkedIn con el MP4.
+
+## 2026-08-20 — LinkedIn test con MP4 nativo
+- **CONTENIDO/DISTRIBUCIÓN**: ejecutado `promo/scripts/linkedin_post_counter.py` como test con el MP4 viral.
+- **Resultado**: post publicado y verificado en `linkedin.com/in/me/recent-activity/all/` con el texto completo del borrador.
+- **Limitación**: LinkedIn no expuso ningún `input[type="file"]` (video, image ni genérico) en el DOM del feed, así que el MP4 no se adjuntó de forma nativa. El post quedó como texto + link implícito al repo.
+- **Lección**: para vídeo nativo en LinkedIn hace falta abrir el modal de creación de post (a veces requiere click exacto en la caja de "Start a post") o usar attach mode con el Chrome del usuario. El material MP4 sigue listo para cuando se resuelva el upload.
+- **Push a main**: commit pendiente (MP4s + log + script actualizado).
+- **Estado**: 88★ / 4 forks / 0 issues abiertos.

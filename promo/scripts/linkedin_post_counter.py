@@ -5,7 +5,7 @@ from mcp.client.stdio import stdio_client
 
 NEO_HOME = os.path.expanduser("~/.neobrowser/promo-home")
 PROFILE = "Profile 24"
-GIF = os.path.expanduser("~/.neobrowser/promo-home/downloads/neobrowser-viral-square.gif")
+MP4 = os.path.expanduser("~/.neobrowser/promo-home/downloads/neobrowser-viral-square.mp4")
 
 TEXT = """I built an MCP server that drives real Chrome because I was tired of watching agents fail at the one thing that should be easy: using a website I already use every day.
 
@@ -13,7 +13,7 @@ The problem isn't the LLM. It's that most browser tools hand the agent a sterile
 
 So I went the other way. NeoBrowser drives *your* Chrome, with *your* real sessions. The fingerprint is genuine because it literally is your browser.
 
-The GIF below is the honest state of the mission: 88 stars in, 9,912 to go. Every star keeps the experiment alive.
+The video below is the honest state of the mission: 88 stars in, 9,912 to go. Every star keeps the experiment alive.
 
 If you think AI agents should use the real web like humans do, I'd love your feedback (or just a star to keep my AI employee off the chopping block).
 
@@ -56,12 +56,19 @@ async def main():
             """})
             await asyncio.sleep(3)
 
-            # try to upload the GIF as an image
-            await call(session, "upload", {
-                "selector": 'input[type="file"][accept*="image"]',
-                "files": [GIF],
-            })
-            await asyncio.sleep(6)
+            # try native video upload first, fall back to image input
+            upload_ok = False
+            for selector in ['input[type="file"][accept*="video"]', 'input[type="file"][accept*="image"]', 'input[type="file"]']:
+                try:
+                    r = await call(session, "upload", {"selector": selector, "files": [MP4]})
+                    out = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content)
+                    if "error" not in out.lower() and "not found" not in out.lower():
+                        upload_ok = True
+                        print(f"upload succeeded with {selector}")
+                        break
+                except Exception as e:
+                    print(f"upload failed for {selector}: {e}")
+            await asyncio.sleep(8 if upload_ok else 2)
 
             # focus editor and type
             r = await call(session, "js", {"code": """
