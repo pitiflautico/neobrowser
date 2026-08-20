@@ -739,3 +739,11 @@
 - **DISTRIBUCIÓN/OUTREACH**: creado `promo/drafts/newsletter-submission-2026-08-20.md` con one-liner, pitch y enlaces de envío a newsletters (Ben's Bites, TLDR AI, AI Breakfast, The Neuron).
 - **INTELIGENCIA**: creado `promo/drafts/intelligence-mcp-browser-trend-2026-08-20.md` analizando la tendencia de comparaciones headless vs real Chrome en r/mcp y la táctica de usar una regla de decisión como gancho de contenido.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 (nuevo ciclo 3) — X post con GIF, outreach Greg Kamradt, OG image y intel social
+- **CONTENIDO/DISTRIBUCIÓN**: intentado post en X con el GIF de demo vía neobrowser. Sesión válida detectada (Daniel Perez Pinazo / @perez_pin). Texto escrito (223 chars) y GIF subido con éxito; botón Post clicado. Verificación inconclusa porque el perfil/timeline de X no cargan tweets recientes, pero el compose quedó vacío, lo que sugiere publicación. Script reusable guardado en `promo/scripts/x_post_gif.py`.
+- **CONTENIDO**: intentado post con GIF en Reddit r/mcp vía neobrowser. Título, body y upload funcionaron, pero el submit no creó un post verificable en `/user/Pitiflautico2/submitted/`. Posible rate-limit o validación de old.reddit.com. Documentado en `promo/drafts/intelligence-social-posting-2026-08-20.md`.
+- **OUTREACH**: creado borrador personalizado para Greg Kamradt (Presidente, ARC Prize Foundation; @gregkamradt) en `promo/drafts/outreach-gregkamradt-2026-08-20.md`, ángulo benchmarks honestos y evaluación de agents.
+- **PRODUCTO**: actualizada `docs/assets/og.png` con un frame del nuevo GIF (login exitoso) para mejorar preview en redes.
+- **INTELIGENCIA**: creado `promo/drafts/intelligence-social-posting-2026-08-20.md` con análisis de canales sociales: Reddit text posts funcionan, media posts frágiles; X es funcional para GIFs; LinkedIn requiere sesión estable.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
