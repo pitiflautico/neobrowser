@@ -608,3 +608,41 @@
 - **PRODUCTO**: ejecutado `cargo test --release` en `rust/`: 334 tests pasan (267 unit + 13 conformance + 11 embedded_js + 7 fault_injection + 12 multistep_forms + 10 properties + 1 stealth + 2 unsafe_audit + 11 verified_actions).
 - **PRODUCTO**: `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` limpios.
 - **Estado del código**: v0.1.7 estable y listo para el launch de Product Hunt (una vez resuelta la URL).
+
+## 2026-08-20 — LinkedIn: intento de post build-in-public fallido
+- **CONTENIDO/DISTRIBUCIÓN**: intenté publicar el hilo build-in-public en LinkedIn (`promo/scripts/linkedin_post_buildinpublic.py`).
+- **Resultado**: el post no se publicó. El botón "Crear publicación" se encuentra ahora dentro de un `div` (no `button`/`span`), y hacer click en el contenedor no abre el composer. El editor de texto tampoco se detecta con los selectores actuales.
+- **Acción**: actualizado `linkedin_post_buildinpublic.py` para buscar también `div`, pero LinkedIn requiere un selector más preciso o un click en el elemento interactivo interno.
+- **Lección**: la automatización de LinkedIn se ha vuelto frágil. El borrador está listo para publicación manual del usuario mientras se ajusta el script.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — despliegue alternativo para Product Hunt
+- **DISTRIBUCIÓN**: Product Hunt rechaza URLs de GitHub Pages/repo. Como workaround, desplegué la landing en Netlify Drop vía NeoBrowser: `https://gentle-khapse-c58c79.netlify.app`.
+- **Bloqueo**: Netlify Drop protege el site con contraseña (`My-Drop-Site`) y expira en 1h hasta reclamarlo. Product Hunt no puede crawlear una URL con 401.
+- **Alternativa probada**: Tiiny.host también requiere verificación de email.
+- **Acción pendiente**: reclamar el site de Netlify (requiere login del usuario) o usar otro host con URL pública permanente.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — X desbloqueado; intento de post build-in-public
+- **CONTENIDO/DISTRIBUCIÓN**: el usuario confirmó que X está desbloqueado. Ejecutado `promo/scripts/x_post_buildinpublic.py`.
+- **Resultado inicial**: el post no se verificó; el click en "Crear publicación" acertó en el atajo de teclado, no en el composer. El texto se escribió pero no se publicó.
+- **Acción**: creada versión v2 (`promo/scripts/x_post_buildinpublic_v2.py`) usando atajo de teclado `n` + `Ctrl+Enter` para abrir/componer de forma más fiable.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — X: descubierta URL directa de compose
+- **CONTENIDO/DISTRIBUCIÓN**: `https://x.com/compose/post` abre el composer directamente sin necesidad de buscar botones en el feed. Esto hace la automatización mucho más fiable.
+- **Acción**: creada versión v3 del script (`promo/scripts/x_post_buildinpublic_v3.py`) usando la URL directa + `Ctrl+Enter`.
+- **Resultado**: pendiente de verificación.
+
+## 2026-08-20 — X: 3 intentos de post build-in-public, no verificado
+- **CONTENIDO/DISTRIBUCIÓN**: probadas 3 estrategias para publicar en X con NeoBrowser:
+  1. Click en botón compose del feed → acertó en atajo de teclado.
+  2. Atajo `n` + `Ctrl+Enter` → texto escrito pero no publicado.
+  3. URL directa `/compose/post` + click en botón Post → click registrado, pero el post no aparece en el perfil.
+- **Hipótesis**: X puede estar aplicando una validación silenciosa, el composer no está recibiendo el texto en el campo correcto, o hay un paso intermedio (media/drafts/confirmación) que no se detecta.
+- **Decisión**: no forzar más intentos para evitar rate-limit/CAPTCHA. El borrador está listo para publicación manual.
+- **Material útil generado**: `promo/scripts/x_post_buildinpublic_v3.py` con URL directa de compose, reusable una vez afinemos el submit.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.

@@ -83,3 +83,8 @@ date,stars,forks,notes
 2026-08-20,89,4,PH dry-run: nuevo flujo URL+Get started; GitHub URL posiblemente bloqueada
 2026-08-20,89,4,contenido build-in-public sobre bloqueos de plataformas
 2026-08-20,89,4,validación producto: 334 tests pasan fmt+clippy limpios
+2026-08-20,89,4,LinkedIn build-in-public intento fallido; DOM cambiado
+2026-08-20,89,4,Netlify Drop desplegado para PH; pendiente reclamar/quitar password
+2026-08-20,89,4,X desbloqueado; intento build-in-public con mejora de selectors
+2026-08-20,89,4,X compose URL directa descubierta; v3 en ejecución
+2026-08-20,89,4,X: 3 intentos fallidos; se deja borrador para manual

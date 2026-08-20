@@ -10,7 +10,7 @@ PROFILE = "Profile 24"
 NAME = "NeoBrowser"
 TAGLINE = "Your AI drives real Chrome — with your real logged-in sessions"
 TOPICS = ["Developer Tools", "Open Source", "Artificial Intelligence"]
-WEBSITE = "https://pitiflautico.github.io/neobrowser/"
+WEBSITE = "https://gentle-khapse-c58c79.netlify.app/"  # Netlify Drop; must be claimed to remove password
 GITHUB = "https://github.com/pitiflautico/neobrowser"
 
 DESCRIPTION = """Hey Product Hunt 👋
