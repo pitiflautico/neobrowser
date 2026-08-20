@@ -550,3 +550,16 @@
 - **Lección**: para vídeo nativo en LinkedIn hace falta abrir el modal de creación de post (a veces requiere click exacto en la caja de "Start a post") o usar attach mode con el Chrome del usuario. El material MP4 sigue listo para cuando se resuelva el upload.
 - **Push a main**: commit pendiente (MP4s + log + script actualizado).
 - **Estado**: 88★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — HN outreach #4: intento en MCP app for Android + rate-limit
+- **OUTREACH**: intenté publicar un comentario value-first en `Show HN: MCP app for Android, drive apps via AI` (item 49362047). El comentario estaba listo, se rellenó el textarea y se hizo click en submit.
+- **Bloqueo**: HN redirigió a `https://news.ycombinator.com/x?fnid=...&fnop=comment-toofast`. La cuenta `pitiflautico` está en rate-limit por comentarios/posts recientes. El comentario no se publicó.
+- **Lección**: con cuentas nuevas, HN aplica throttling agresivo tanto a posts propios como a comentarios. Hay que espaciar más las interacciones o usar una cuenta con más karma/historial.
+- **Pivot**: se preparó un batch de outreach personalizado a influencers (Tier 1) en `promo/drafts/outreach-batch-2026-08-20.md` para cuando X/LinkedIn/email estén disponibles.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos. HN outreach pausado temporalmente por rate-limit.
+
+## 2026-08-20 — batch de outreach a influencers listo
+- **OUTREACH/INTELIGENCIA**: creados 5 borradores de mensajes personalizados para Simon Willison, swyx, Theo, Armin Ronacher y levelsio. Cada uno referencia trabajo concreto del destinatario, aporta valor primero, y menciona NeoBrowser solo si encaja naturalmente.
+- **Uso**: listos para enviar por X (cuando se desbloquee), GitHub issue/email (simonw, mitsuhiko) o reply público.
+- **Push a main**: commit pendiente (HN comment script + outreach batch + log).
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
