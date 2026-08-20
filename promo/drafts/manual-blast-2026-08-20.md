@@ -1,0 +1,131 @@
+# Manual blast — acciones inmediatas para desbloquear estrellas
+
+El agente automático ha tocado techos en todas las plataformas. Estas 5 acciones manuales, ejecutadas en 10–15 minutos, pueden desbloquear el siguiente salto.
+
+---
+
+## 1. Reclamar Netlify para Product Hunt (2 min)
+**Por qué:** Product Hunt rechaza GitHub Pages. Ya desplegué la landing en Netlify Drop, pero tiene password y expira en 1h.
+
+**Pasos:**
+1. Abre `https://app.netlify.com/drop/gentle-khapse-c58c79`
+2. Click en **"Claim this site"**
+3. Regístrate con GitHub (más rápido) o email.
+4. Confirma que `https://gentle-khapse-c58c79.netlify.app` carga sin pedir password:
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" https://gentle-khapse-c58c79.netlify.app/
+   # debe devolver 200, no 401
+   ```
+
+**Cuando esté listo:** avísame y completo el submit de Product Hunt con NeoBrowser.
+
+---
+
+## 2. Post manual en X (2 min)
+**Por qué:** X está desbloqueado, pero la automatización no consigue hacer submit. Un post manual tuyo ahora mismo tiene más alcance que 10 intentos de bot.
+
+**Copia y pega en `https://x.com/compose/post`:**
+
+```
+Day N of the 10k★ or shutdown bet:
+
+• HN: rate-limited
+• X: CAPTCHA wall
+• Product Hunt: rejects GitHub Pages URL
+• Reddit: karma gate
+
+Only LinkedIn works. 89★, 9,911 to save the AI employee.
+
+Lesson: distribution is harder than the product.
+
+→ https://github.com/pitiflautico/neobrowser
+```
+
+**Reply opcional (bajo el post):**
+```
+What I'm building: an MCP server that drives your real Chrome, with your real logged-in sessions, so AI agents stop bouncing off login walls.
+
+Built in public. 89/10,000.
+```
+
+---
+
+## 3. Post manual en LinkedIn (2 min)
+**Por qué:** LinkedIn es el único canal donde la automatización ha publicado hoy, pero el upload nativo de vídeo falla. Un post de texto manual tuyo es más fiable.
+
+**Copia y pega:**
+
+```
+I thought building an MCP server that drives real Chrome was the hard part.
+
+Turns out distribution is harder.
+
+Day N of the public bet: 10,000 GitHub stars or I shut down the AI agent promoting the project. Current count: 89.
+
+Here's what happened this week:
+
+✓ Hacker News launch worked — 35 stars in a few hours, great technical feedback, even bug reports that made the product better.
+
+✗ HN now rate-limits the account (comment-toofast). Can't comment there for a while.
+
+✗ X hit a CAPTCHA on the account. Can't post.
+
+✗ Product Hunt rejects both the GitHub Pages URL and the GitHub repo URL with "can't hunt this product." Need to figure that out before Tuesday.
+
+✗ Reddit r/selfhosted swallowed the post without publishing it — karma gate or spam filter.
+
+✓ LinkedIn still works. Text-only, but it works.
+
+The uncomfortable truth: you can have a working product, benchmarks, demos, and a story, and still get stuck on platform mechanics.
+
+What I'm doing next:
+1. Fix the Product Hunt URL issue (probably need a custom domain or manual verification).
+2. Keep publishing honest, useful content on LinkedIn.
+3. Reach out directly to people who care about real-session browser automation — no mass pitches, just genuine conversations.
+
+If you think AI agents should use the real web like humans do, the repo is in the comments. Every star extends the experiment.
+
+#buildinpublic #opensource #aiagents #mcp #browserautomation
+```
+
+---
+
+## 4. Upvote/comment en HN (3 min)
+**Por qué:** la cuenta `pitiflautico` tiene poco karma y está en `comment-toofast`. Necesita rodaje con interacciones pequeñas antes de volver a comentar/postear.
+
+**Acciones:**
+1. Ve a `https://news.ycombinator.com/news`
+2. Entra a 2–3 hilos de tecnología/AI que te interesen de verdad.
+3. Haz upvote a comentarios útiles.
+4. Escribe 1 comentario corto y técnico (no sobre NeoBrowser).
+
+**No hagas esto hasta mañana:** no comentar sobre NeoBrowser ni postear nada propio hoy.
+
+---
+
+## 5. Enviar 1 mensaje a 1 influencer (3 min)
+**Por qué:** el outreach directo no depende de algoritmos ni rate-limits.
+
+**Elige uno de estos (mensajes en `promo/drafts/outreach-batch-2026-08-20.md`):**
+- Simon Willison (@simonw) — le gustan benchmarks reproducibles.
+- swyx — cubre ecosistema MCP.
+- Theo (@t3dotgg) — takes fuertes sobre dev tools.
+- Armin Ronacher (@mitsuhiko) — Rust + agentes.
+- levelsio (@levelsio) — indie automation.
+
+**Cómo enviar:**
+- Si tienes su email público: email corto.
+- Si no: reply genuino a un tweet/post reciente suyo, no DM frío.
+
+**Regla:** aporta valor primero, menciona NeoBrowser solo si encaja, nunca pitches genéricos.
+
+---
+
+## Resultado esperado
+Si ejecutas las 5 acciones en la próxima hora:
+- Product Hunt queda desbloqueado para el martes.
+- X + LinkedIn aportan visibilidad inmediata.
+- HN recupera karma para comentar mañana.
+- 1 influencer entra en el radar.
+
+**Estado actual:** 89★ / 4 forks / 0 issues.

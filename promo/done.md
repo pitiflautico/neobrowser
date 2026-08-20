@@ -646,3 +646,14 @@
 - **Material útil generado**: `promo/scripts/x_post_buildinpublic_v3.py` con URL directa de compose, reusable una vez afinemos el submit.
 - **Push a main**: commit pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — manual blast preparado para desbloqueo inmediato
+- **INTELIGENCIA/OUTREACH**: creado `promo/drafts/manual-blast-2026-08-20.md` con 5 acciones manuales de 10–15 minutos que el usuario puede ejecutar ahora para desbloquear estrellas:
+  1. Reclamar Netlify para Product Hunt.
+  2. Post manual en X (texto listo para copiar-pegar).
+  3. Post manual en LinkedIn (texto listo).
+  4. Rodaje de karma en HN (upvotes + comentario técnico ajeno).
+  5. Outreach a 1 influencer con mensajes personalizados ya preparados.
+- **Objetivo**: convertir el trabajo del agente en acciones ejecutables por el usuario cuando los bloqueos automáticos lo impiden.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
