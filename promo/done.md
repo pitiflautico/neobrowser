@@ -583,3 +583,16 @@
 - **Objetivo**: convertir visitantes de GitHub en seguidores de la historia y potenciales upvoters de PH.
 - **Push a main**: commit pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — Product Hunt: dry-run detecta cambio de flujo y posible bloqueo de URL
+- **DISTRIBUCIÓN/PRODUCTO**: ejecutado dry-run del launch de Product Hunt (`promo/scripts/producthunt_dryrun.py`).
+- **Hallazgos**:
+  - Product Hunt cambió `/posts/new`: ahora pide una URL de producto primero y un botón "Get started" antes de mostrar el formulario.
+  - Al introducir `https://pitiflautico.github.io/neobrowser/` o `https://github.com/pitiflautico/neobrowser`, la página responde: *"😳 Oops, can't hunt this product. The link provided seems to be invalid."*
+- **Posibles causas**: Product Hunt puede estar rechazando URLs de GitHub Pages/repos genéricos, o la cuenta @pitiflautico puede tener una restricción de launch para URLs de ciertos dominios.
+- **Acciones tomadas**:
+  - Actualizado `promo/scripts/producthunt_launch.py` con el nuevo flujo (URL + Get started) y detección del error `URL_REJECTED`.
+  - Creado/actualizado `promo/scripts/producthunt_dryrun.py` para verificar el DOM sin enviar.
+- **Mitigación propuesta**: intentar un launch manual desde el Chrome del usuario el martes; si PH sigue rechazando la URL, considerar apuntar a un dominio propio o usar una landing intermedia (Vercel/Netlify) con CNAME.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos. Product Hunt requiere atención antes del martes 26.

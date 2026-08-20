@@ -72,6 +72,33 @@ async def main():
             """})
             await asyncio.sleep(2)
 
+            # New PH flow (Aug 2026): enter product URL first, then "Get started"
+            await call(session, "js", {"code": f"""
+                const el = document.querySelector('input[name="url"]');
+                if (el) {{ el.focus(); el.value = {WEBSITE!r}; el.dispatchEvent(new Event('input', {{bubbles:true}})); return 'SET_URL'; }}
+                return 'NO_URL_INPUT';
+            """})
+            await asyncio.sleep(1)
+            r = await call(session, "js", {"code": """
+                const btns = Array.from(document.querySelectorAll('button'));
+                const b = btns.find(x => /get started/i.test(x.textContent));
+                if (b) { b.scrollIntoView({block:'center'}); b.click(); return 'CLICKED_GET_STARTED'; }
+                return 'NO_GET_STARTED_BUTTON';
+            """})
+            await asyncio.sleep(8)
+
+            # detect URL rejection
+            r_check = await call(session, "js", {"code": """
+                const text = document.body.innerText;
+                if (text.includes("can't hunt this product") || text.includes("seems to be invalid")) return 'URL_REJECTED';
+                return 'OK';
+            """})
+            check = " ".join(c.text if hasattr(c, "text") else str(c) for c in r_check.content)
+            if "URL_REJECTED" in check:
+                print("\n=== PRODUCT HUNT REJECTED THE URL ===")
+                print("Possible causes: GitHub Pages/repo URL blocked, account restriction, or PH fetch failure.")
+                return
+
             # fill name
             await call(session, "js", {"code": f"""
                 const el = document.querySelector('input[name="name"]') || document.querySelector('input[placeholder*="product name" i]');
