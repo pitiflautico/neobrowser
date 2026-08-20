@@ -693,6 +693,7 @@
 - **OUTREACH**: segundo borrador listo, esta vez para **swyx** (`promo/drafts/outreach-swyx-2026-08-20.md`).
 - **OUTREACH**: tercer borrador listo para **Theo / t3dotgg** (`promo/drafts/outreach-t3dotgg-2026-08-20.md`), registrado en `outreach-track.md`.
 - **CONTENIDO**: regenerados los assets virales con el contador actualizado a 89★ (`neobrowser-viral-square.gif` y `neobrowser-viral-wide.gif`) para uso en X/LinkedIn/Product Hunt.
+- **CONTENIDO**: borrador técnico para dev.to creado: `promo/drafts/devto-real-chrome.md` — "Why I chose real Chrome over headless for AI agents", con ángulo técnico honesto y link al benchmark.
 - **Scripts nuevos**: `promo/scripts/netlify_claim_recon.py`, `netlify_claim_github.py`, `netlify_make_public_v3.py`, `producthunt_launch_v2.py`, `producthunt_rejection_check.py`, `producthunt_url_test.py`, `linkedin_post_v3.py`, `reddit_post_mcp_v2.py`, `indiehacker_recon.py`, `hn_value_comment.py`.
 - **Push a main**: pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
