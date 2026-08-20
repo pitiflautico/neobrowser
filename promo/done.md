@@ -480,3 +480,10 @@
 - **PRODUCTO — Landing actualizada**: `docs/index.html` ahora dice 67 tools / ~6.4 MB y añade card "Pre-launch hardening merged" con CI verde en 3 OS. Push a main: commit `4bf0b3e`.
 - **INTELIGENCIA**: X está en modo defensivo tras el lanzamiento HN y posts recientes; LinkedIn sigue siendo el canal más estable con perfil real; Reddit requiere verificación manual; HN sigue siendo el mejor canal para outreach técnico value-first.
 - **Estado**: 88★ / 4 forks / 0 issues abiertos. El cuello de botella principal sigue siendo la indetectabilidad en X y la verificación manual de algunas submissions.
+
+## 2026-08-20 — seguimiento: segundo outreach + Product Hunt preparado
+- **OUTREACH — HN #2**: comentario value-first en `BrowserMesh — isolated Playwright sessions for MCP clients` (item 49281842). Ángulo: comparación honesta entre isolated Playwright (higiene/multi-tenancy) y real Chrome sessions (autenticación/local-first). Incluye pregunta sobre modo híbrido y disclosure. Verificado visible.
+- **DISTRIBUCIÓN — Product Hunt**: sesión de @pitiflautico confirmada activa; `/posts/new` carga el formulario. Creado `promo/scripts/producthunt_launch.py` con el flujo completo (name, tagline, description, website, GitHub, topics, gallery uploads, submit, maker comment). Assets copiados a `~/.neobrowser/promo-home/downloads/`. Listo para ejecutar el martes 26 a las 00:01 PT (09:01 CET).
+- **Mantenimiento**: limpiados procesos Chrome headless huérfanos de NeoBrowser para evitar que los scripts MCP se conecten a una sesión stale.
+- **Push a main**: commit `2bce295` con el script de Product Hunt.
+- **Estado**: 88★ / 4 forks / 0 issues abiertos. Product Hunt es el siguiente gran canal potencial; HN sigue dando ROI estable con comentarios técnicos.
