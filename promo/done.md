@@ -718,3 +718,14 @@
   - Script reutilizable una vez resuelta la sesión.
 - **INTELIGENCIA**: confirmado que `browser-use/browser-use` es el competidor dominante en el espacio (109,871★). Su estrategia: README técnico claro, demo visual, integración con LangChain/Anthropic, y comunidad activa. Táctica aplicable a NeoBrowser: duplicar la cantidad de demos visuales cortos y unificar el mensaje en un único GIF/clip de 30s que muestre "agente → login real → tarea hecha".
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 (nuevo ciclo) — DISTRIBUCIÓN, CONTENT, OUTREACH, PRODUCTO e INTELIGENCIA
+- **DISTRIBUCIÓN**: intentado PR a `appcypher/awesome-mcp-servers` usando el fork `pitiflautico/awesome-mcp-servers-1`. Descubierto que el upstream fue **archivado el 1 ago 2026** y es read-only; el PR no se puede crear. Rama `add-neobrowser-2026-08-20` empujada al fork pero sin PR posible.
+- **DISTRIBUCIÓN**: PR #12089 en `punkpeye/awesome-mcp-servers` ya actualizado en el ciclo anterior (título sin emojis bot-like, body con 67 tools).
+- **CONTENIDO**: intentado comentario value-first en Reddit r/mcp (hilo "Is Puppeteer MCP useful for scraping, or mainly browser automation?") vía neobrowser. El texto se escribió en el textarea y se envió con `submit`, pero no se ha verificado en el perfil ni en el hilo tras múltiples comprobaciones. Posibles causas: rate-limit, karma bajo, moderación automática o detección de automatización. Script reusable creado en `promo/scripts/reddit_value_comment.py`.
+- **CONTENIDO**: creado borrador de comentario value-first para Hacker News en `promo/drafts/hn-value-comment-2026-08-20.md`, listo para cuando la cuenta tenga karma suficiente.
+- **CONTENIDO**: creado guion de 30s para GIF/video corto en `promo/drafts/30s-pitch-script.md`.
+- **OUTREACH**: actualizado `promo/drafts/outreach-simonw-2026-08-20.md` con los contactos reales de Simon Willison (Mastodon https://fedi.simonwillison.net/@simon, Bluesky/X @simonw); no hay email público, por lo que el contacto debe ser un reply genuino a un hilo reciente.
+- **PRODUCTO**: añadida sección "What can NeoBrowser do?" al README con 3 casos de uso concretos (dashboard con login, form + upload, search/extract), siguiendo la táctica observada en browser-use. Incluye placeholders para GIFs.
+- **INTELIGENCIA**: creado análisis estructurado de browser-use en `promo/drafts/intelligence-browser-use-2026-08-20.md`: 109.871★, README con identidad visual, badges como navegación, casos de uso con GIFs, quickstart para agentes, monetización cloud y comunidad. Táctica prioritaria copiable: crear sección "What can NeoBrowser do?" con 3–5 GIFs cortos (ya iniciada en README).
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.

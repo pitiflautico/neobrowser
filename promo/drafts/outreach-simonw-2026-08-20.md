@@ -1,6 +1,6 @@
 # Outreach draft — Simon Willison (@simonw)
 
-**Vía:** email (cuando el usuario localice la dirección actual en simonwillison.net) o reply en Bluesky/Mastodon si encaja en un hilo sobre MCP/browser tooling.
+**Vía:** reply en Mastodon (https://fedi.simonwillison.net/@simon) o Bluesky/X (@simonw) si encaja en un hilo sobre benchmarks/browser tooling; no hay email público. El mensaje debe ser un reply genuino a un hilo reciente, no un DM frío.
 **Regla:** aportar valor primero; pedir opinión sobre metodología de benchmark, no difusión.
 
 ---
