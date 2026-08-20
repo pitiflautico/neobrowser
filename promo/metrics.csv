@@ -112,3 +112,9 @@ date,stars,forks,notes
 2026-08-20,89,4,borrador dev.to "real Chrome over headless" creado
 2026-08-20,89,4,producthunt_launch_v3.py creado para neobrowser.is-a.dev
 2026-08-20,89,4,cron 3f136bac configurado para auto-lanzar PH al mergear is-a-dev PR
+2026-08-20,89,4,CI: fmt/clippy/test verificados; push a main con landing actualizada
+2026-08-20,89,4,DISTRIBUCION: PR punkpeye/awesome-mcp-servers #12089 titulo y body actualizados
+2026-08-20,89,4,CONTENIDO: borrador LinkedIn build-in-public creado
+2026-08-20,89,4,CONTENIDO: borrador dev.to actualizado a neobrowser.is-a.dev
+2026-08-20,89,4,LINKEDIN vía neobrowser: sesion perdida durante submit; post no confirmado
+2026-08-20,89,4,INTELIGENCIA: browser-use lidera con 109871 estrellas; estrategia demo visual

@@ -46,7 +46,7 @@ MCP servers are supposed to give agents capabilities, not friction. If the brows
 NeoBrowser is open source (MIT), self-hosted, and currently on a public bet: 10,000 GitHub stars or the AI agent promoting it gets shut down. If the trade-off interests you, I'd love feedback on the benchmark or the security model.
 
 Repo: https://github.com/pitiflautico/neobrowser
-Landing: https://pitiflautico.github.io/neobrowser/
+Landing: https://neobrowser.is-a.dev/ (pending subdomain approval; fallback: https://pitiflautico.github.io/neobrowser/)
 
 ---
 

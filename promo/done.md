@@ -699,3 +699,22 @@
 - **Scripts nuevos**: `promo/scripts/netlify_claim_recon.py`, `netlify_claim_github.py`, `netlify_make_public_v3.py`, `producthunt_launch_v2.py`, `producthunt_rejection_check.py`, `producthunt_url_test.py`, `linkedin_post_v3.py`, `reddit_post_mcp_v2.py`, `indiehacker_recon.py`, `hn_value_comment.py`.
 - **Push a main**: pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 (continuación) — CI arreglado, landing honesta, LinkedIn vía neobrowser y PR de awesome-mcp actualizado
+- **PRODUCTO**: verificado que el código actual pasa `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` y `cargo test` (sin Chrome, los tests de integración se auto-saltan). El fallo de CI del run 32253573093 era del commit anterior (`ae7cd0f`); el HEAD actual (`b01b323`/`8378952`) ya estaba limpio. Empujados dos commits a `main` con la landing actualizada.
+- **PRODUCTO**: actualizada la landing (`docs/index.html`):
+  - Mantenido el tamaño binario honesto (~6.4 MB, medido en el release local).
+  - Añadida tarjeta de dominio/Product Hunt en cola y actualizada la tarjeta de Reddit para incluir r/SideProject.
+  - Actualizado el banner de Product Hunt con el estado actual.
+- **DISTRIBUCIÓN**: actualizado el PR #12089 en `punkpeye/awesome-mcp-servers`:
+  - Título cambiado de "Add NeoBrowser (Rust MCP server driving real Chrome) 🤖🤖🤖" a "Add NeoBrowser — Rust MCP server that drives real Chrome" (eliminado el signo bot-like tras el flag de HN).
+  - Cuerpo actualizado de 43 a 67 tools.
+- **CONTENIDO**: creado borrador específico para LinkedIn en `promo/drafts/linkedin-buildinpublic-2026-08-20.md` con tono founder honesto y hashtags moderados.
+- **CONTENIDO/DISTRIBUCIÓN**: actualizado borrador dev.to `promo/drafts/devto-real-chrome.md` apuntando al dominio `neobrowser.is-a.dev`.
+- **DISTRIBUCIÓN (LinkedIn vía neobrowser)**: creado `promo/scripts/linkedin_post.py` que se conecta al Chrome real del usuario (`NEOBROWSER_ATTACH_PORT=63599`) y publica el post build-in-public.
+  - Dry-run: sesión detectada como válida en `linkedin.com/feed/`.
+  - Ejecución con `--confirm`: el script llegó al composer, escribió el texto, hizo click en Post y la respuesta final mostró la página de login (`Iniciar sesión`), lo que indica que LinkedIn perdió/cerró la sesión durante el submit. El post probablemente **no** se publicó.
+  - **Bloqueo activo**: la sesión de LinkedIn en el perfil de neobrowser no es estable; se necesita que el usuario inicie sesión en ese perfil o que neobrowser use el Chrome principal del usuario.
+  - Script reutilizable una vez resuelta la sesión.
+- **INTELIGENCIA**: confirmado que `browser-use/browser-use` es el competidor dominante en el espacio (109,871★). Su estrategia: README técnico claro, demo visual, integración con LangChain/Anthropic, y comunidad activa. Táctica aplicable a NeoBrowser: duplicar la cantidad de demos visuales cortos y unificar el mensaje en un único GIF/clip de 30s que muestre "agente → login real → tarea hecha".
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
