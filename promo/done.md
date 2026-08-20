@@ -379,3 +379,4 @@
 - **Borrador Reddit**: `promo/drafts/reddit-next.md` preparado con versiones para r/selfhosted y r/mcp, actualizado con el fix de real-profile y 88 estrellas.
 - **Outreach HN**: borrador de comentario genuino en `promo/drafts/hn-outreach-webctl.md` para el post "Show HN: Webctl" (134 pts, 38c), enfocado en el problema de persistencia de sesión y mencionando NeoBrowser solo como side note.
 - **Attach Mode Helper**: script `promo/scripts/attach_mode_helper.py` creado. Reinicia Chrome del usuario con `--remote-debugging-port=9222` y `--restore-last-session`, para que NeoBrowser se conecte al navegador real directamente sin inyección de cookies.
+- **Outreach HN #2**: borrador de comentario genuino en `promo/drafts/hn-outreach-browseros.md` para el post "Show HN: We packaged an MCP server inside Chromium" (46 pts, 17c), comparando enfoques de Chromium fork vs usar Chrome real del usuario.
