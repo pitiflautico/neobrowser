@@ -22,11 +22,11 @@ I built NeoBrowser after watching every browser automation tool for AI fail the 
 
 NeoBrowser drives your real Google Chrome via CDP — with your real logged-in sessions (opt-in), a genuine fingerprint (passes bot.sannysoft live in CI), human-cadence clicks, and first-class bot-wall detection so the agent reacts to CAPTCHAs instead of hallucinating success.
 
-It's a single 5 MB Rust binary with 43 tools: multi-tab browsing, forms, upload/download, multi-source search, record/replay playbooks.
+It's a single 5.6 MB Rust binary with 43 tools: multi-tab browsing, forms, upload/download, multi-source search, record/replay playbooks.
 
 What I'm proudest of: the honest benchmark vs Playwright MCP in the repo. Playwright is faster; we do things it can't. Both get walled equally on adversarial pages. No hype.
 
-Current bet: 81/10,000 GitHub stars, documented publicly at pitiflautico.github.io/neobrowser.
+Current bet: 88/10,000 GitHub stars, documented publicly at pitiflautico.github.io/neobrowser.
 
 MIT licensed. Feedback welcome — especially from folks who've fought bot detection before.
 ```
