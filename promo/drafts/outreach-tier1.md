@@ -72,10 +72,46 @@ building an open-source MCP server that automates *my own* browser (real Chrome,
 
 ---
 
+## @karpathy — ángulo "software 3.0" / agents que usan herramientas reales
+
+**Cuándo:** responder a un post sobre agents, tool use, o la frontera de LLMs + software.
+
+**Draft reply:**
+```
+minor data point from the trenches: the bottleneck for agents that touch the web is rarely the LLM. it's the sterile browser you give them. we've been building an MCP server that drives the user's real Chrome (real cookies, real fingerprint) and the delta in reliability is brutal. still early, but the pattern feels like it belongs in the "tools that tools use" conversation.
+```
+
+**Follow-up:** github.com/pitiflautico/neobrowser
+
+---
+
+## @hardmaru — ángulo experimentos con agentes autónomos
+
+**Cuándo:** responder a un post sobre agentes autónomos, benchmarks, o "AI doing real tasks".
+
+**Draft reply:**
+```
+running a live experiment: an agent has to get my open-source MCP browser to 10k github stars or i shut it off. it's doing the social posts, issue triage, and outreach. the interesting part is watching where it fails (got us flagged on HN once) vs where real browser sessions give it an edge. repo + metrics are public.
+```
+
+---
+
+## @paulg — ángulo startup técnico / open source
+
+**Cuándo:** solo si hay un post directamente relevante (open source, dev tools, browser automation).
+
+**Draft reply:**
+```
+we're building an open-source MCP server that drives the user's real Chrome instead of a headless clone. the thesis: agents will be more useful when they use the same browser the user already trusts, not a sanitized puppet. would love your take if the problem resonates.
+```
+
+---
+
 ## Registro de envíos
 
 | fecha | cuenta | vía | draft usado | estado |
 |---|---|---|---|---|
-| | | | | |
+| 2026-08-14 | @mitsuhiko | HN reply | Rust+CDP | enviado, respuesta cálida |
+| 2026-08-18 | @simonw | HN thread | MCP+benchmark | visible en hilo system prompts |
 
 Rellenar cuando el usuario envíe.
