@@ -372,3 +372,5 @@
 - **Intento de post en X**: el script `x_post_mcp.py` logró navegar, subir el GIF, escribir el texto y pulsar el botón Post, pero X redirigió a `/account/access` con CAPTCHA de Cloudflare durante la verificación. El post puede haberse publicado o quedarse en cola; **necesita verificación manual del usuario** en https://x.com/perez_pina28188.
 - **PRs #6/#7**: siguen abiertos con checks fallidos (fault_injection en macOS, cargo audit warnings, gitleaks leaks). Son trabajo de otra sesión; no se tocan sin indicación del usuario.
 - **Métricas**: 88★ / 4 forks. `promo/metrics.csv` actualizado.
+- **Directorios MCP**: PR punkpeye #12089 sigue OPEN; issue mcp.so #3546 sigue OPEN; PR TWiR #8631 cerrado.
+- **Borrador LinkedIn**: `promo/drafts/linkedin-next.md` preparado para publicación manual, con ángulo "aprender en público" sobre el bug de deslogeo y la estrategia Extension Bridge.
