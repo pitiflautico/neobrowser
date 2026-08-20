@@ -364,3 +364,11 @@
   - `save_session` funciona para capturar cookies + localStorage del dominio actual.
 - **Documento técnico**: `promo/drafts/session-caducity-analysis.md` con soluciones: copia limpia con Chrome cerrado, attach mode, o mejora de `save_session`.
 - **Implicación para promo**: X funciona con cookies; LinkedIn/Reddit/Product Hunt requieren que el usuario cierre Chrome para copiar el perfil real consistente, o use attach mode con `--remote-debugging-port`.
+
+## 2026-08-20 — parche de seguridad para real-profile + intento de post en X
+- **Fix en `main`**: `NEOBROWSER_REAL_PROFILE` ya no inyecta cookies por defecto. Ahora requiere `NEOBROWSER_REAL_PROFILE_DOMAINS=<comma-list>` para evitar que plataformas detecten la sesión clonada y desloguen el navegador real del usuario. Commit `d8b0192`, CI verde.
+- **Scripts promo actualizados**: `x_post_mcp.py`, `linkedin_post_mcp.py`, `reddit_post_mcp.py` ahora exportan `NEOBROWSER_REAL_PROFILE_DOMAINS` con los dominios correspondientes. Contadores de estrellas actualizados a 88.
+- **Estrategia creativa documentada**: `promo/drafts/real-profile-undetectable-strategy.md` propone el "Extension Bridge" — una extensión ligera de Chrome que ejecuta comandos de NeoBrowser dentro del navegador real del usuario, eliminando el segundo Chrome y haciendo la automatización indetectable.
+- **Intento de post en X**: el script `x_post_mcp.py` logró navegar, subir el GIF, escribir el texto y pulsar el botón Post, pero X redirigió a `/account/access` con CAPTCHA de Cloudflare durante la verificación. El post puede haberse publicado o quedarse en cola; **necesita verificación manual del usuario** en https://x.com/perez_pina28188.
+- **PRs #6/#7**: siguen abiertos con checks fallidos (fault_injection en macOS, cargo audit warnings, gitleaks leaks). Son trabajo de otra sesión; no se tocan sin indicación del usuario.
+- **Métricas**: 88★ / 4 forks. `promo/metrics.csv` actualizado.
