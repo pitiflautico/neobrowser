@@ -23,7 +23,7 @@ fn isolate_home() {
 }
 
 async fn eval_bool(client: &neobrowser::cdp::CdpClient, expr: &str) -> bool {
-    match page::js(client, expr).await {
+    match page::eval_caller_supplied(client, expr).await {
         Ok(v) => v.as_bool().unwrap_or(false),
         Err(_) => false,
     }

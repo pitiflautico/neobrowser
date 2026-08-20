@@ -25,6 +25,7 @@ PROJ = os.path.abspath(os.path.join(HERE, ".."))
 NEO = sys.argv[1] if len(sys.argv) > 1 else os.path.join(PROJ, "rust", "target", "release", "neobrowser")
 NEO_HOME = "/tmp/nb-cmp-home"
 UPLOAD_DIR = "/tmp/nb-cmp-upload"
+PW_PROFILE = "/tmp/nb-cmp-pw-profile"
 
 
 class Unsupported(Exception):
@@ -65,6 +66,26 @@ def click_js(sel):
     return "(function(){var e=document.querySelector(%s);if(!e)return 'NOEL';e.click();return 'OK';})()" % s
 
 
+def terminate_browser_gracefully(pattern):
+    """SIGTERM only the *browser* process matching `pattern`, not its children.
+
+    Chrome's cookie store lives in the network-service child process and is
+    flushed to SQLite when the browser process orchestrates a clean shutdown.
+    A blanket `pkill -f <pattern>` also signals that child, so nothing gets
+    flushed and a perfectly persistent profile looks non-persistent. Children
+    carry `--type=`; the browser process does not.
+
+    Applied identically to both tools — an asymmetric shutdown would measure how
+    each one was killed rather than whether it persists.
+    """
+    ps = subprocess.run(["ps", "-Ao", "pid,args"], capture_output=True, text=True).stdout
+    pids = [ln.split()[0] for ln in ps.splitlines()
+            if pattern in ln and "--type=" not in ln and "ps -Ao" not in ln]
+    for pid in pids:
+        subprocess.run(["kill", "-TERM", pid], capture_output=True)
+    return len(pids)
+
+
 def text_js(sel):
     s = json.dumps(sel)
     return "(function(){var e=document.querySelector(%s);return e?(e.innerText||'').slice(0,4000):'NOEL';})()" % s
@@ -72,9 +93,10 @@ def text_js(sel):
 
 # ---- base + adapters --------------------------------------------------------
 class MCP:
-    def __init__(self, cmd, env):
+    def __init__(self, cmd, env, cwd=None):
         self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env)
+                                  stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env,
+                                  cwd=cwd)
         self.calls = 0
         self._id = 0
         self._rpc("initialize", {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "bench", "version": "1"}})
@@ -97,6 +119,15 @@ class MCP:
         return {"text": " ".join((x.get("text", "") or "") for x in c),
                 "image": any(x.get("type") == "image" for x in c),
                 "isError": res.get("isError", False)}
+
+    def reset(self):
+        """Clear any stuck UI state so the next task starts clean.
+
+        Base implementation is a no-op; adapters whose tools can be blocked by a
+        pending modal override it. Never counted as a tool call for the task being
+        measured — it runs after that task's metrics are taken.
+        """
+        return False
 
     def close(self):
         try:
@@ -128,11 +159,10 @@ class NeoAdapter(MCP):
     def upload(self, sel, files):
         r = self.call("upload", {"selector": sel, "files": files})
         return '"ok":true' in r["text"] or '"ok": true' in r["text"]
-    def persist_roundtrip(self):
-        self.call("save_cookies", {})
-        return "restored" in self.call("restore_cookies", {})["text"].lower()
     def kill_browser(self):
         subprocess.run(["pkill", "-9", "-f", f"{NEO_HOME}/profiles"], capture_output=True)
+    def stop_browser(self):
+        terminate_browser_gracefully(f"{NEO_HOME}/profiles")
     def responsive(self):
         return self.eval_expr("1+1") == 2
 
@@ -140,7 +170,18 @@ class NeoAdapter(MCP):
 class PwAdapter(MCP):
     name = "Playwright MCP"
     def __init__(self):
-        super().__init__(["npx", "-y", "@playwright/mcp@latest", "--headless"], dict(os.environ))
+        # --user-data-dir is Playwright MCP's native persistence mechanism, the
+        # counterpart to NeoBrowser's Ghost profile. Withholding it and then
+        # reporting "no persistence" would be measuring the flag we chose not to
+        # pass, not the product.
+        # cwd=UPLOAD_DIR is how Playwright MCP is *meant* to be pointed at files:
+        # it restricts file access to the workspace roots, or cwd when no roots are
+        # configured. Note what we do NOT pass: --allow-unrestricted-file-access.
+        # Switching off a competitor's security control to make a task pass would
+        # be as biased as withholding a capability.
+        super().__init__(["npx", "-y", "@playwright/mcp@latest", "--headless",
+                          "--user-data-dir", PW_PROFILE], dict(os.environ),
+                         cwd=UPLOAD_DIR)
     def navigate(self, url):
         return self.call("browser_navigate", {"url": url})
     def eval_expr(self, expr):
@@ -157,15 +198,26 @@ class PwAdapter(MCP):
         return len(re.findall(r"- \d+:", r["text"])) or r["text"].count("Tab")
     def tab_close(self, i): self.call("browser_tabs", {"action": "close", "index": i})
     def upload(self, sel, files):
-        # Playwright's model: click the input to open a file chooser, then upload.
-        self.eval_expr(click_js(sel))
+        # Playwright's native path is chooser-based: only a click driven by
+        # Playwright itself arms the file-chooser interception that
+        # browser_file_upload then answers. The old harness clicked via JS, which
+        # Playwright never sees, so the upload failed for a reason that was ours.
+        # `target` takes the same CSS selector NeoBrowser gets, keeping the step
+        # abstract and identical for both tools.
+        self.call("browser_click", {"element": "file input", "target": sel})
         r = self.call("browser_file_upload", {"paths": files})
         return not r["isError"]
-    def persist_roundtrip(self):
-        raise Unsupported("no cookie save/restore tool")
     def kill_browser(self):
         subprocess.run(["pkill", "-9", "-f", "chromium_headless_shell"], capture_output=True)
         subprocess.run(["pkill", "-9", "-f", "ms-playwright"], capture_output=True)
+    def stop_browser(self):
+        terminate_browser_gracefully("chromium_headless_shell")
+    def reset(self):
+        # Escape dismisses a pending file chooser, which is the modal state that
+        # otherwise blocks every subsequent tool call.
+        self.call("browser_press_key", {"key": "Escape"})
+        self.call("browser_navigate", {"url": "about:blank"})
+        return self.responsive()
     def responsive(self):
         try: return self.eval_expr("1+1") == 2
         except Exception: return False
@@ -201,6 +253,13 @@ def run_functional(ad, img):
         valid = False
         try: valid = ad.responsive()
         except Exception: valid = False
+        # A failed task can leave a tool wedged — e.g. an unanswered file chooser
+        # puts Playwright in a modal state that makes every later browser_evaluate
+        # fail. Left alone, one real failure cascades into a column of them and the
+        # scoreboard stops describing the product. Reset before the next task.
+        if not valid:
+            try: ad.reset()
+            except Exception: pass
         lat = round((time.time() - t0) * 1000)
         exec_ok = all(s[1] for s in steps) and not crash
         out.append({"task": tid, "task_execution_success": exec_ok,
@@ -261,9 +320,27 @@ def run_functional(ad, img):
     task("upload", t_upload)
 
     def t_persist(steps):
+        # Outcome-based, per the fairness rule: measure whether session state
+        # survives a browser restart, not whether a tool with a particular name
+        # exists. Each tool may reach the outcome its own way (NeoBrowser via its
+        # Ghost profile or save/restore_cookies; Playwright via --user-data-dir).
+        # A persistent cookie needs an expiry — a session cookie is *supposed* to
+        # die with the browser, so using one would test nothing.
         ad.navigate("https://example.com"); steps.append(("navigate", True))
-        ad.eval_expr("document.cookie='benchp=1; path=/'");
-        ok = ad.persist_roundtrip(); steps.append(("persist", ok)); return ok
+        ad.eval_expr("document.cookie='benchp=alive; path=/; max-age=86400'")
+        wrote = contains(ad.eval_expr("document.cookie"), "benchp=alive")
+        steps.append(("write_cookie", wrote))
+        # SIGTERM, not SIGKILL: a browser flushes its cookie store on graceful
+        # shutdown, so SIGKILL here would measure flush timing rather than
+        # persistence — and would penalize both tools for the same wrong reason.
+        # The hard kill belongs to the recovery task below, where it is the point.
+        ad.stop_browser(); time.sleep(2); steps.append(("restart", True))
+        try:
+            ad.navigate("https://example.com")
+            ok = contains(ad.eval_expr("document.cookie"), "benchp=alive")
+        except Exception:
+            ok = False
+        steps.append(("survived_restart", ok)); return ok
     task("persistence", t_persist)
 
     def t_recovery(steps):
@@ -304,7 +381,11 @@ def run_adversarial(ad):
 
 def main():
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    img = os.path.join(UPLOAD_DIR, "bench.png")
+    # realpath, not the literal path: on macOS /tmp is a symlink to /private/tmp, and
+    # a tool that resolves its allowed roots (Playwright does) will reject the
+    # unresolved form as "outside allowed roots". Passing the canonical path to both
+    # tools keeps the step identical instead of tripping one of them on a symlink.
+    img = os.path.realpath(os.path.join(UPLOAD_DIR, "bench.png"))
     open(img, "wb").write(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
     subprocess.run(["rm", "-rf", NEO_HOME], capture_output=True)
 
@@ -367,10 +448,12 @@ def write_md(report):
         md.append("| " + " | ".join(row) + " |")
     md.append("\n_Adversarial rows are single-IP, single-run observations. No 'evades better' claim is made — that needs residential-proxy IP rotation + N repetitions + a large site sample._")
     md.append("\n## Honest reading of these numbers\n")
-    md.append("- **Latency:** NeoBrowser is ~2× slower on several tasks. That is a *deliberate trade-off*, not a defect: it forces compositor frames (`nudge_frame`) so deferred/virtualized content actually renders in headless Chrome — Playwright MCP skips that. It can be tuned down where content is static.")
-    md.append("- **upload:** Playwright's failure here is partly this harness's neutral JS-click mapping, which does not arm Playwright's native file-chooser (it expects a Playwright-driven click on the input). NeoBrowser uploads via CDP `setFileInputFiles`, which is chooser-independent. Read as: NeoBrowser's upload path is simpler, *not* that Playwright can't upload.")
-    md.append("- **persistence:** a genuine capability gap — Playwright MCP exposes no cookie save/restore tool.")
+    md.append("- **Latency:** NeoBrowser is consistently slower on these tasks. Part of that is a *deliberate trade-off*: it forces compositor frames (`nudge_frame`) so deferred/virtualized content actually renders in headless Chrome, which Playwright MCP skips, and it can be tuned down where content is static. Do not read the average as a clean multiple, though — see the caveat below, and note that a single outlier moves it substantially.")
+    md.append("- **upload:** both tools are now driven through their native path — NeoBrowser via CDP `setFileInputFiles`, Playwright via a Playwright-driven click that arms its file-chooser interception, answered by `browser_file_upload`. Playwright MCP also restricts file access to its workspace roots, so the server is started with its cwd at the fixture directory rather than by passing `--allow-unrestricted-file-access`: pointing a competitor at the right root is fair, switching off its security control is not. The earlier revision of this harness clicked via JS, which Playwright never observes, and so scored a harness bug as a product failure.")
+    md.append("- **persistence:** measured by outcome — does a persistent cookie survive a browser restart — not by whether a tool with a particular name exists. Playwright MCP is given `--user-data-dir`, its native persistence mechanism; NeoBrowser uses its Ghost profile. **The previous claim here (\"a genuine capability gap\") was wrong**: Playwright persists sessions perfectly well this way, and the old harness only concluded otherwise because it demanded a `save_cookies`/`restore_cookies` tool.")
+    md.append("- **shutdown method matters:** the restart uses SIGTERM against the *browser* process only, for both tools. Chrome flushes its cookie store to SQLite during an orderly shutdown orchestrated by that process; a blanket `pkill -f` also kills the network-service child that owns the store, so nothing is flushed and a fully persistent profile reads as non-persistent. An intermediate revision of this harness made exactly that mistake and scored NeoBrowser as failing persistence.")
     md.append("- **recovery:** both tools recover (each relaunches its browser on the next navigate); this is *not* a NeoBrowser-only strength.")
+    md.append("- **latency is not a clean product signal here:** `multitab` and `spa_dynamic` depend on third-party endpoints (`httpbin.org`, `the-internet.herokuapp.com`) that rate-limit by IP. A `multitab` figure in the tens of seconds is that throttle meeting NeoBrowser's longer navigation wait, not a tab-handling cost — the same sequence run in isolation completes in ~6s. Treat single-run latencies as indicative only; a trustworthy latency comparison needs a hermetic fixture server, which this harness does not yet have.")
     md.append("- **walls:** both detect the same walls and both were blocked on a single IP. NeoBrowser's edge is *surfacing* the wall type to the agent as a first-class signal, not bypassing it.")
     open(os.path.join(HERE, "compare.md"), "w").write("\n".join(md) + "\n")
 

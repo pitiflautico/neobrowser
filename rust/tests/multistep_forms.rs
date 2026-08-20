@@ -90,7 +90,7 @@ async fn find_and_click_skips_collapsed_matches() {
     assert_eq!(report["matched_visible"], 1, "one visible match: {raw}");
 
     // The effect is what matters: step 2 got the click, not the collapsed step 1.
-    let clicked = page::js(&tab, "return window.clicked || ''")
+    let clicked = page::eval_body(&tab, "return window.clicked || ''")
         .await
         .expect("read window.clicked");
     assert_eq!(
@@ -110,7 +110,7 @@ async fn find_and_click_reports_when_all_matches_are_hidden() {
     };
 
     // Collapse step 2 as well: now both "Continue" buttons are invisible.
-    page::js(
+    page::eval_body(
         &tab,
         "return (document.getElementById('step2').style.cssText = 'height:0;overflow:hidden')",
     )
@@ -145,7 +145,7 @@ async fn click_scrolls_target_into_view() {
         .expect("click runs");
     assert_eq!(outcome, ClickOutcome::Clicked, "expected a landed click");
 
-    let checked = page::js(&tab, "return document.getElementById('below').checked")
+    let checked = page::eval_body(&tab, "return document.getElementById('below').checked")
         .await
         .expect("read checked");
     assert_eq!(
@@ -179,7 +179,7 @@ async fn click_detects_an_overlay_instead_of_claiming_success() {
     }
 
     // And the click must not have gone through to the covered control.
-    let checked = page::js(&tab, "return document.getElementById('covered').checked")
+    let checked = page::eval_body(&tab, "return document.getElementById('covered').checked")
         .await
         .expect("read checked");
     assert_eq!(
@@ -189,14 +189,14 @@ async fn click_detects_an_overlay_instead_of_claiming_success() {
     );
 
     // Remove the overlay and the very same call should now succeed.
-    page::js(&tab, "return document.getElementById('veil').remove()")
+    page::eval_body(&tab, "return document.getElementById('veil').remove()")
         .await
         .expect("remove overlay");
     let outcome = page::click_selector(&tab, "#covered")
         .await
         .expect("click runs");
     assert_eq!(outcome, ClickOutcome::Clicked, "clickable once uncovered");
-    let checked = page::js(&tab, "return document.getElementById('covered').checked")
+    let checked = page::eval_body(&tab, "return document.getElementById('covered').checked")
         .await
         .expect("read checked");
     assert_eq!(checked.as_bool(), Some(true), "should be checked now");
@@ -392,7 +392,7 @@ async fn zero_height_html_does_not_hide_the_whole_page() {
 </body></html>";
     page::navigate(&tab, fixture, 1.0).await.expect("navigate");
 
-    let html_h = page::js(
+    let html_h = page::eval_body(
         &tab,
         "return document.documentElement.getBoundingClientRect().height",
     )
@@ -414,7 +414,7 @@ async fn zero_height_html_does_not_hide_the_whole_page() {
     );
     assert_eq!(report["matched_visible"], 1, "{raw}");
 
-    let hit = page::js(&tab, "return window.hit || 0")
+    let hit = page::eval_body(&tab, "return window.hit || 0")
         .await
         .expect("read hit");
     assert_eq!(hit.as_i64(), Some(1), "the click never reached the button");
@@ -468,4 +468,70 @@ style='width:304px;height:78px;border:0'></iframe>\
         hint.is_some(),
         "a visible captcha widget must still be reported"
     );
+}
+
+/// A submit control whose label lives in `value` must be findable by that label.
+///
+/// `<input type="submit" value="Login">` has no `textContent` at all — the word the user
+/// reads is in the `value` attribute. `find_and_click` matched only `textContent` and
+/// `aria-label`, so it could not find the submit button on a large fraction of the real web.
+///
+/// This was found by the real-site battery (`scripts/real-sites.py`), not by any test here:
+/// the login form of saucedemo.com filled correctly, the click reported `uncertain`, and the
+/// page never advanced. The accessibility tree had it right the whole time — `observe`
+/// reported `button "Login"` — so the two halves of the tool disagreed about the same
+/// element, which is exactly the kind of thing only a real page surfaces.
+///
+/// The regression guard covers every place a visible label can hide, because fixing one and
+/// leaving the others is how this recurs.
+#[tokio::test]
+async fn a_submit_control_is_found_by_the_label_a_user_reads() {
+    let _guard = ENV_LOCK.lock().await;
+    if !chrome_available() {
+        eprintln!("SKIP: no Chrome binary");
+        return;
+    }
+    isolate_home("labels");
+    let browser = Browser::new();
+    let tab = browser.tab().await.expect("launch");
+
+    // Each control carries its label in a different attribute, and none in textContent.
+    const PAGE: &str = "data:text/html,<html><body>\
+<input type='submit' id='a' value='Send order'>\
+<input type='button' id='b' value='Cancel'>\
+<button id='c' title='Print receipt'></button>\
+<input type='image' id='d' alt='Search now' src='data:image/gif;base64,R0lGODlhAQABAAAAACw='>\
+</body></html>";
+    page::navigate_budgeted(&tab, PAGE, &neobrowser::action::Budget::from_secs(10.0))
+        .await
+        .expect("navigate");
+
+    for (label, want_id) in [
+        ("send order", "a"),
+        ("cancel", "b"),
+        ("print receipt", "c"),
+        ("search now", "d"),
+    ] {
+        let report = ops::find_and_click(&tab, label, "", 0)
+            .await
+            .unwrap_or_else(|e| panic!("find_and_click({label}) errored: {e}"));
+        // Assert on the reported outcome, not on the text appearing somewhere in the report.
+        // The first version of this test checked `report.contains(label)`, which is also true
+        // of the failure message ("no match for: send order") — so it passed with the bug
+        // present. A test that cannot fail is worse than no test, because it certifies the
+        // thing it never checked.
+        let parsed: serde_json::Value = serde_json::from_str(&report)
+            .unwrap_or_else(|e| panic!("find_and_click({label}) must return JSON ({e}): {report}"));
+        assert_eq!(
+            parsed["ok"],
+            serde_json::json!(true),
+            "`{label}` must be findable — it is the only text a user sees on #{want_id}, and a \
+             matcher that reads textContent alone finds none of these four: {report}"
+        );
+        assert!(
+            parsed["matched_visible"].as_i64().unwrap_or(0) >= 1,
+            "`{label}` must match a visible control: {report}"
+        );
+    }
+    browser.shutdown().await;
 }

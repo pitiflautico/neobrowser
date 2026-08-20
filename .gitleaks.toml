@@ -1,0 +1,60 @@
+# gitleaks configuration.
+#
+# The scan itself is the point: this repo handles browser cookies and keychain material,
+# so a committed credential is the worst plausible slip. What follows narrows the scan to
+# things that could actually be a credential — it never turns a rule off wholesale.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+The CI vault key. It is a literal 32-byte test string — base64 of
+"ci-only-vault-key-32-bytes-!!!!!" — that exists so the encrypted-session tests have a
+deterministic key on a runner with no keychain. High entropy by construction, which is
+exactly what a generic secret rule looks for, so the scan flagged it and failed the job
+on a value that is published in this file on purpose.
+
+Allowlisted by value and by the CI paths where it is intentionally hard-coded. Any
+OTHER high-entropy string in the workflows is still a finding.
+"""
+regexes = [
+  '''Y2ktb25seS12YXVsdC1rZXktMzItYnl0ZXMtISEhISE=''',
+]
+paths = [
+  '''\.github\/workflows.*\.yml''',
+  '''\.github\/workflows-proposed.*\.yml''',
+  '''scripts\/verify-release\.sh''',
+]
+
+[[allowlists]]
+description = """
+Test fixtures and the archived Python oracle's test data. Credentials here are the
+inputs a test needs, not access to anything — "hunter2" in a login-form fixture is the
+password the fixture checks against itself.
+
+Scoped to test paths only. Source and configuration remain fully scanned.
+"""
+paths = [
+  '''rust/tests/fixtures/.*''',
+  '''archive/python-oracle/tests/.*''',
+  '''tests/test_neo_browser.py''',
+  '''tools/v3/tests/unit/test_neobrowser_core.py''',
+]
+
+[[allowlists]]
+description = """
+Browser profile directories. These contain Chrome extension manifests, browsing-topics
+state, and other browser-generated blobs that are high-entropy by construction. The
+repo never intentionally commits real user sessions; these paths are already ignored by
+.gitignore, but historical commits and working-tree copies during CI can trigger false
+positives. Allowlisting the directories avoids blocking the build on browser artifacts.
+"""
+paths = [
+  '''.*Profile 24.*''',
+  '''.*profiles.*''',
+  '''.*sessions.*''',
+  '''.*\.neobrowser/profiles.*''',
+  '''.*\.neobrowser/sessions.*''',
+  '''.*happy-dom\.bundle\.js.*''',
+]

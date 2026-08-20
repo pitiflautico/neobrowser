@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Never settles</title>
+<!--
+  Conformance fixture C8 — a page that never reaches a quiet state.
+
+  Every 30ms the timer rewrites text AND appends an element, so the element count rises
+  monotonically and the text hash never repeats. No "wait until the DOM stops changing"
+  loop can ever be satisfied here, which is the point: an implementation whose readiness
+  criterion is quiescence rather than a deadline hangs on this page forever, and a live
+  ticker or a carousel is enough to reproduce it on a real site.
+
+  A data: URL could express the timer, but the fixture also has to state *why* it exists,
+  and the reason is longer than the code.
+-->
+<h1 id="clock">tick 0</h1>
+<button id="inert">Inert</button>
+<div id="churn"></div>
+<script>
+  let n = 0;
+  setInterval(function () {
+    n++;
+    document.getElementById('clock').textContent = 'tick ' + n;
+    const span = document.createElement('span');
+    span.textContent = ' ' + n;
+    document.getElementById('churn').appendChild(span);
+  }, 30);
+</script>

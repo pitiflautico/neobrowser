@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>NeoBrowser Bridge</title>
+<style>
+  body { font: 13px/1.5 system-ui, sans-serif; margin: 0; padding: 12px; width: 300px; }
+  h1 { font-size: 13px; margin: 0 0 8px; }
+  .tab { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid #e5e5e5; }
+  .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { font: inherit; padding: 3px 8px; cursor: pointer; }
+  .shared { color: #d93025; font-weight: 600; }
+  .note { color: #5f6368; font-size: 11px; margin-top: 10px; }
+  .port { margin-top: 8px; display: flex; gap: 6px; align-items: center; }
+  input { font: inherit; width: 70px; }
+</style>
+<h1>Tabs shared with the agent</h1>
+<div id="tabs"></div>
+<div class="port">
+  <label for="port">Agent port</label>
+  <input id="port" type="number" min="1024" max="65535">
+</div>
+<p class="note">
+  Only shared tabs can be driven. Chrome shows a "being debugged" banner while a tab is
+  shared, so this can never happen invisibly.
+</p>
+<script src="popup.js"></script>

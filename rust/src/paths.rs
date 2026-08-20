@@ -46,6 +46,30 @@ pub fn ghost_profile_name() -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
+/// Reduce an arbitrary name to a safe profile directory component.
+///
+/// Used for HTTP session ids, which arrive over the network. An unvalidated id would
+/// point Chrome's `--user-data-dir` at a caller-chosen path; `is_safe_profile_name`
+/// already encodes what is acceptable, so this maps anything else onto a safe form
+/// rather than inventing a second rule.
+pub fn sanitize_profile_name(name: &str) -> String {
+    if is_safe_profile_name(name) {
+        return name.to_string();
+    }
+    let mapped: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .take(64)
+        .collect();
+    // Must start alphanumeric and be non-empty, per `is_safe_profile_name`.
+    let mapped = mapped.trim_start_matches(['_', '-']).to_string();
+    if mapped.is_empty() {
+        "session".to_string()
+    } else {
+        format!("s{mapped}")
+    }
+}
+
 /// Alphanumeric start, then alphanumerics/space/underscore/hyphen, max 64.
 /// Rejects anything with a path separator, `..`, or a leading dot.
 fn is_safe_profile_name(name: &str) -> bool {

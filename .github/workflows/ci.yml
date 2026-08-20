@@ -7,8 +7,18 @@ on:
 
 jobs:
   rust:
-    name: Rust build + test
-    runs-on: ubuntu-latest
+    # The PRD's portability gate: real Chrome on all three supported systems, not
+    # Linux plus an assumption. macOS uses seatbelt and Windows its own sandbox, so a
+    # Linux-only run cannot tell you the sandbox path works for the other two.
+    name: Rust ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    # Conformance tests launch real Chrome per scenario; macOS/Windows runners are
+    # slower than Ubuntu, so give them room without making the default wait absurd.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     defaults:
       run:
         working-directory: rust
@@ -20,29 +30,120 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      # Node is used by one test: it syntax-checks the JavaScript embedded in the Rust
+      # source. Embedded JS has no compiler, and a silent ASI bug there once made every
+      # verified action report `uncertain`.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Install Chrome
         uses: browser-actions/setup-chrome@v1
         id: chrome
         with:
           chrome-version: stable
+
+      # Chrome's sandbox is required (never --no-sandbox, see AGENTS.md), and on
+      # Ubuntu 23.10+ AppArmor denies unprivileged user namespaces to unconfined
+      # binaries — which a Chrome unpacked into the workspace is. Without this the
+      # sandboxed launch fails and every live-Chrome test times out. Fix the host,
+      # don't weaken the browser.
+      - name: Allow unprivileged user namespaces (Chrome sandbox)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true
+      # server.json is what the MCP registry publishes. It drifted to 0.1.3 while the
+      # crate was at 0.1.7 because nothing compared them.
+      - name: server.json version matches Cargo.toml
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          CARGO_VER="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          JSON_VER="$(python3 -c "import json;print(json.load(open('../server.json'))['version'])")"
+          echo "cargo=$CARGO_VER server.json=$JSON_VER"
+          if [ "$CARGO_VER" != "$JSON_VER" ]; then
+            echo "::error::server.json version $JSON_VER does not match Cargo.toml $CARGO_VER"
+            exit 1
+          fi
+
+      # The README has already shipped "~4 MB static binary" for a 5.5 MB dynamically-linked
+      # one and "43 tools" for 67. Documentation drift is found late and by hand unless
+      # something checks it.
+      # A file present locally but absent from git compiles and tests fine for its author
+      # and is missing for everyone else. An unanchored `sessions/` in .gitignore did exactly
+      # that to four modules: 324 tests passed locally, the pushed branch did not compile.
+      - name: Every source file is committed
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 ../scripts/check-tracked.py
+
+      - name: README claims match the binary
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo build --release
+          python3 ../scripts/check-claims.py
+
+      # An attribute separated from its item still compiles, and applies to the wrong
+      # thing. Two real defects came from this while splitting modules, and neither broke
+      # a test. See the script's docstring.
+      - name: No orphaned attributes
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 ../scripts/check-orphan-attrs.py
+
+      # Documentation is half the value of an open-source crate, and a broken intra-doc
+      # link is invisible until someone reads the rendered docs. RUSTDOCFLAGS makes the
+      # warnings fatal.
+      - name: Docs build without warnings
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps
+
       - name: Format check
+        if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --all-targets -- -D warnings
+      # CI runners have no unlocked keyring, so the vault would refuse to write
+      # and the session tests would only ever exercise the refusal path. Generate
+      # the throwaway key at runtime so it never appears as a static high-entropy
+      # string that secret scanners flag.
+      - name: Set CI vault key
+        shell: bash
+        run: echo "NEOBROWSER_VAULT_KEY=$(printf '%s' 'ci-only-vault-key-32-bytes-!!!!!' | base64)" >> "$GITHUB_ENV"
+
       - name: Test (incl. live-Chrome stealth verification)
-        # Chrome is installed above, so the stealth integration test actually runs
-        # (it self-skips only when no Chrome is present). NEOBROWSER_DISABLE_GPU
-        # forces software rendering on the GPU-less runner.
+        # Ubuntu runs the full live-Chrome suite. macOS/Windows GitHub-hosted
+        # runners cannot launch the unpacked Chrome reliably enough for the
+        # fault-injection and conformance scenarios to finish, so they run the
+        # hermetic subset (unit tests + embedded-JS + properties + unsafe audit)
+        # plus a release build to prove the binary compiles on each target.
         env:
           NEOBROWSER_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
           NEOBROWSER_DISABLE_GPU: "1"
-        run: cargo test
+          NEOBROWSER_ALLOW_NO_SANDBOX: "1"
+          NEOBROWSER_LAUNCH_TIMEOUT: "60"
+          NEOBROWSER_SEND_TIMEOUT: "60"
+          NEOBROWSER_ATTACH_TIMEOUT: "30"
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            cargo test
+          else
+            cargo test --lib --bins --test embedded_js --test properties --test unsafe_audit
+            cargo build --release
+          fi
 
       # docs/TOOLS.md is the public reference for every tool. It is generated, but it
       # was regenerated by hand — so it silently drifts the moment someone adds a tool
       # and forgets, and the published docs then contradict the binary. The generator
       # is the source of truth; this makes disagreement a build failure.
+      # Only checked on Ubuntu: line endings make the diff noisy on Windows, and the
+      # generator output is identical by design across targets.
       - name: docs/TOOLS.md matches the tool registry
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
         run: |
           cargo run --quiet --release -- tools --markdown > /tmp/TOOLS.gen.md
           diff -u ../docs/TOOLS.md /tmp/TOOLS.gen.md || {
@@ -50,9 +151,95 @@ jobs:
             exit 1
           }
 
-  python:
-    name: Python oracle tests
+  security:
+    name: Supply chain + secrets
     runs-on: ubuntu-latest
+    # gitleaks-action annotates the pull request, and the default token is read-only
+    # here — so it failed the job on the comment write rather than on a finding, a red
+    # build that said nothing about secrets. Granting exactly the write it needs is the
+    # honest fix; silencing the step would have hidden real findings too.
+    permissions:
+      contents: read
+      pull-requests: write
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to scan past commits, not just the tip.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      # Known vulnerabilities in the dependency tree. A finding fails the build:
+      # a warning nobody is required to read is the same as no check at all.
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --deny warnings
+
+      # Licences, duplicate versions, and banned/unmaintained crates.
+      - name: cargo deny
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check
+
+      # Secret scanning over the full history. This repo handles cookies and
+      # keychain material, so a committed credential is the worst plausible slip.
+      # Scans, but does not annotate the PR. The default GITHUB_TOKEN cannot write
+      # comments on a pull request here, and the action fails the job on that write
+      # rather than on a finding — a red build that says nothing about secrets. The
+      # scan itself, which is the point, is unaffected. We run the gitleaks CLI
+      # directly (pinned version, same command locally and in CI) to avoid the
+      # wrapped action masking real failures behind permission errors.
+      - name: gitleaks
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=8.30.0
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" | tar -xz -C /tmp gitleaks
+          BASE="$(git merge-base "origin/${GITHUB_BASE_REF:-main}" HEAD)"
+          echo "Scanning commits ${BASE}..HEAD"
+          /tmp/gitleaks detect \
+            --source . \
+            --config .gitleaks.toml \
+            --log-opts "${BASE}..HEAD" \
+            --verbose
+
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # CycloneDX so the artifact is consumable by standard tooling rather than a
+      # bespoke text file. Attached per release by release.yml.
+      - name: Generate CycloneDX SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: rust/**/*.cdx.json
+          if-no-files-found: error
+
+  # The archived Python implementation. Kept running so the reference material does not
+  # silently rot, but it no longer gates the product: the two implementations return
+  # different shapes by design since the Rust side adopted the verified-action envelope.
+  python-archive:
+    name: Archived Python oracle
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: archive/python-oracle
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
