@@ -34,10 +34,12 @@ NEOBROWSER_ATTACH_PORT=9222 python3 promo/scripts/reddit_post_mcp.py
 
 ### C) Cookies por dominio (X solamente, sin cerrar Chrome)
 
-Para X funciona con cookies inyectadas del perfil real:
+Para X funciona con cookies inyectadas del perfil real, **pero X puede mostrar CAPTCHA de `/account/access`** si detecta comportamiento automatizado. Si esto pasa, resuelve el CAPTCHA manualmente en tu navegador real antes de reintentar.
 
 ```bash
 python3 promo/scripts/x_post_mcp.py
+# o la versión más conservadora:
+python3 promo/scripts/x_post_mcp_safe.py
 ```
 
 ## Borradores listos
