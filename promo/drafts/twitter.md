@@ -11,7 +11,7 @@ Your AI agent keeps hitting login walls and bot checks because every browser MCP
 
 NeoBrowser drives your REAL Chrome — with your real logged-in sessions.
 
-Open source, single 5 MB Rust binary 🧵
+Open source, single 6.4 MB Rust binary 🧵
 ```
 
 **Tweet 2**:
@@ -32,7 +32,7 @@ Identity cookies excluded so your browser never gets logged out. Files written 0
 ```
 And it knows its limits: when a site throws reCAPTCHA/Turnstile, it doesn't pretend to be invisible — it detects the wall and tells the model how to react.
 
-43 tools: multi-tab, forms, upload/download, search, record/replay playbooks.
+67 tools: multi-tab, forms, upload/download, search, record/replay playbooks.
 ```
 
 **Tweet 5**:
@@ -44,5 +44,5 @@ Honest benchmark vs Playwright MCP included (nothing tuned to make either win): 
 
 ## Variante post único (si no quieres hilo)
 ```
-NeoBrowser: an MCP server that drives your real Chrome with your real logged-in sessions. Genuine fingerprint (not spoofed), human-cadence clicks, bot-wall detection, 43 tools, one 5 MB Rust binary. Honest benchmark vs Playwright MCP in the repo. https://github.com/pitiflautico/neobrowser
+NeoBrowser: an MCP server that drives your real Chrome with your real logged-in sessions. Genuine fingerprint (not spoofed), human-cadence clicks, bot-wall detection, 67 tools, one 6.4 MB Rust binary. Honest benchmark vs Playwright MCP in the repo. https://github.com/pitiflautico/neobrowser
 ```

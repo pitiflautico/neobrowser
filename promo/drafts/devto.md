@@ -47,7 +47,7 @@ And on adversarial pages (Cloudflare, Google Images)? **Both got walled equally*
 - Real Chrome, real fingerprint: UA rewritten to the installed Chrome version so Client Hints stay consistent, real GPU WebGL, `navigator.webdriver` gone. Passes bot.sannysoft in CI on every push.
 - Real sessions (opt-in): decrypts your Chrome profile cookies via macOS Keychain / Linux secret-service / Windows DPAPI. Identity cookies excluded so your browser isn't logged out.
 - Bot-wall aware: `navigate` detects captchas, consent gates, rate limits, login walls and tells the model how to react instead of hammering.
-- One ~5 MB static Rust binary, 43 tools, zero runtime deps.
+- One ~6.4 MB static Rust binary, 67 tools, zero runtime deps.
 
 ## Lessons
 
