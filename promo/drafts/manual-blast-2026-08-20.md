@@ -4,18 +4,17 @@ El agente automático ha tocado techos en todas las plataformas. Estas 5 accione
 
 ---
 
-## 1. Reclamar Netlify para Product Hunt (2 min)
-**Por qué:** Product Hunt rechaza GitHub Pages. Ya desplegué la landing en Netlify Drop, pero tiene password y expira en 1h.
+## 1. Comprar/apuntar un dominio para Product Hunt (5 min)
+**Por qué:** Product Hunt rechaza GitHub Pages, el repo de GitHub, y ahora también Netlify Drop (`netlify.app`). El error es "can't hunt this product / link seems invalid". Necesita un dominio propio o al menos uno que no esté en su lista negra de hosting gratuito.
 
 **Pasos:**
-1. Abre `https://app.netlify.com/drop/gentle-khapse-c58c79`
-2. Click en **"Claim this site"**
-3. Regístrate con GitHub (más rápido) o email.
-4. Confirma que `https://gentle-khapse-c58c79.netlify.app` carga sin pedir password:
-   ```bash
-   curl -s -o /dev/null -w "%{http_code}" https://gentle-khapse-c58c79.netlify.app/
-   # debe devolver 200, no 401
-   ```
+1. Compra un dominio barato (p. ej. `neobrowser.dev`, `getneobrowser.com`, `neobrowser.xyz`) en Cloudflare Registrar, Namecheap, Porkbun o Google Domains. ~$10-15/año.
+2. Apunta el CNAME/A record al site de Netlify ya reclamado:
+   - En Netlify: `https://app.netlify.com/projects/gentle-khapse-c58c79/domain-management`
+   - Añade el dominio personalizado y sigue las instrucciones de DNS.
+3. Confirma que `https://<tudominio>/` devuelve 200 y muestra la landing.
+
+**Alternativa gratis:** si ya tienes un dominio personalido aparcado, apunta un subdominio (`neobrowser.tudominio.com`) a Netlify.
 
 **Cuando esté listo:** avísame y completo el submit de Product Hunt con NeoBrowser.
 

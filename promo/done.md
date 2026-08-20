@@ -657,3 +657,18 @@
 - **Objetivo**: convertir el trabajo del agente en acciones ejecutables por el usuario cuando los bloqueos automáticos lo impiden.
 - **Push a main**: commit pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — ciclo autónomo con neobrowser: Netlify reclamado, Product Hunt bloqueado por URL
+- **DISTRIBUCIÓN**: reclamado con éxito el site `gentle-khapse-c58c79.netlify.app` en la cuenta de Netlify del usuario (`pitiflautico3@gmail.com`) vía GitHub OAuth usando neobrowser.
+- **DISTRIBUCIÓN**: el site se ha hecho público; `curl` a `https://gentle-khapse-c58c79.netlify.app/` devuelve `200` y la landing carga sin password.
+- **DISTRIBUCIÓN**: Product Hunt rechaza **todas** las URLs probadas:
+  - `https://gentle-khapse-c58c79.netlify.app/` → "can't hunt this product / link seems invalid"
+  - `https://pitiflautico.github.io/neobrowser/` (con y sin query params)
+  - `https://github.com/pitiflautico/neobrowser#readme`
+  - `https://github.com/pitiflautico/neobrowser/blob/main/README.md`
+- **Hipótesis**: Product Hunt tiene una lista negra de dominios de hosting gratuito (github.io, netlify.app) o requiere un dominio propio/"real" para evitar spam.
+- **Bloqueo activo**: no se puede completar el submit de Product Hunt sin un dominio propio. El usuario necesita comprar/apuntar un dominio (p. ej. `neobrowser.dev`, `getneobrowser.com`) a la landing.
+- **CONTENIDO/DISTRIBUCIÓN**: intento de publicación en LinkedIn vía neobrowser (texto build-in-public actualizado). Resultado pendiente de verificación; la automatización de LinkedIn sigue siendo frágil por cambios frecuentes en el DOM del composer.
+- **Scripts nuevos**: `promo/scripts/netlify_claim_recon.py`, `netlify_claim_github.py`, `netlify_make_public_v3.py`, `producthunt_launch_v2.py`, `producthunt_rejection_check.py`, `producthunt_url_test.py`, `linkedin_post_v3.py`.
+- **Push a main**: pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.

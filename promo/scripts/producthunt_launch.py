@@ -23,7 +23,7 @@ It's a single 6.4 MB Rust binary with 67 tools: multi-tab browsing, forms, uploa
 
 What I'm proudest of: the honest benchmark vs Playwright MCP in the repo. Playwright is faster; we do things it can't. Both get walled equally on adversarial pages. No hype.
 
-Current bet: 88/10,000 GitHub stars, documented publicly at pitiflautico.github.io/neobrowser.
+Current bet: 89/10,000 GitHub stars, documented publicly at gentle-khapse-c58c79.netlify.app.
 
 MIT licensed. Feedback welcome — especially from folks who've fought bot detection before."""
 
