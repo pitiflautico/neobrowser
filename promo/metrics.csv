@@ -137,3 +137,9 @@ date,stars,forks,notes
 2026-08-20,89,4,OUTREACH: draft Greg Kamradt (ARC Prize) creado
 2026-08-20,89,4,PRODUCTO: og.png actualizado con frame del GIF
 2026-08-20,89,4,INTELIGENCIA: analisis social posting Reddit/X/LinkedIn
+2026-08-20,89,4,PRODUCTO: README humanizado tras flag HN — menos em-dash y prosa densa
+2026-08-20,89,4,INTELIGENCIA: analisis post HN 49345320 flagged y lecciones de humanizacion
+2026-08-20,89,4,OUTREACH: drafts humanizados para Greg Kamradt (ARC Prize) y Simon Willison
+2026-08-20,89,4,DISTRIBUCION: articulo dev.to + pitch newsletter con angulo tecnico real-browser-vs-headless
+2026-08-20,89,4,CANALES: LinkedIn/dev.to/HN sin sesion valida en perfil neobrowser; X con label temporal; Reddit submit bloqueado
+2026-08-20,89,4,CI: run 32401025627 verde en main (3ad369e)

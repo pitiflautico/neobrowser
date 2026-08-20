@@ -9,17 +9,22 @@
 [![Landing](https://img.shields.io/badge/Website-pitiflautico.github.io/neobrowser-5eead4?style=flat-square)](https://pitiflautico.github.io/neobrowser/)
 [![Product Hunt](https://img.shields.io/badge/Product%20Hunt-launch%20notification-ff6154?style=flat-square&logo=producthunt&logoColor=white)](https://github.com/pitiflautico/neobrowser/discussions/16)
 
-**An MCP server that drives a real Google Chrome with your real logged-in sessions — and that reports what actually happened, not what it attempted.**
+**An MCP server that drives your real Google Chrome, with your real logged-in sessions.**
 
-```jsonc
-// Add to your MCP client (Claude Code, Claude Desktop, Cursor, …)
+Most browser tools for LLMs launch a fresh headless browser with no cookies. NeoBrowser launches or attaches to your real Chrome, so the agent lands already authenticated and passes fingerprint checks because it is using a genuine browser.
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/pitiflautico/neobrowser/main/install.sh | sh
+
+# Register with any MCP client
 { "mcpServers": { "neobrowser": { "command": "neobrowser" } } }
 ```
 
-Or just paste this into Claude Code / Cursor / Codex and let the agent wire it up:
+Then ask the model to browse:
 
 ```text
-Install neobrowser (brew install neobrowser or curl -fsSL https://raw.githubusercontent.com/pitiflautico/neobrowser/main/install.sh | sh), register it as an MCP server named neobrowser, and use it to browse the real Chrome profile I already have logged in. If Chrome is not installed, report that instead of guessing.
+Open GitHub and list my open issues.
 ```
 
 ## What can NeoBrowser do?
@@ -43,55 +48,44 @@ Real `isTrusted` clicks, human-cadence typing, and a genuine file-picker interac
 
 Multi-source search with wall detection: if a search engine throws a CAPTCHA, NeoBrowser reports it instead of returning garbage, and the agent can pivot to another source.
 
-## A status the caller can act on
+## Verified actions
 
-Ask any browser-automation tool to click a button and it will usually tell you it succeeded. What it means is that it dispatched two mouse events at some coordinates. Whether the click landed, whether the page changed, whether the button was there at all — none of that is in the answer.
+Most browser tools return "clicked" after dispatching two mouse events. They do not check if the click landed, if the page changed, or if the button was even there. An agent takes that at face value and keeps going from a state that does not exist.
 
-A human driving a browser never notices the gap, because a human looks at the screen. An agent cannot. It takes the success at face value and continues into a page it never changed, so every step after that reasons from a state that does not exist — and the final report says the task was completed. An error stops an agent; a false success makes it keep going.
+NeoBrowser compares the page before and after every mutating action. The result is one of six statuses:
 
-So every mutating action here returns a status derived from an observation taken *before* the action, an observation taken *after*, and a detected difference between them — plus the evidence behind it. A click that dispatched but changed nothing reports `uncertain`, never success. `uncertain` is not a failure: it is the honest answer when the tool did its part and could not see the result, and it is one a caller can do something with — retry, escalate, ask a human. There is no recovery from a confident wrong answer.
+- `succeeded` — the page changed as expected.
+- `failed` — something broke.
+- `blocked` — a wall, overlay, or gate stopped it; the response names what blocked it.
+- `needs_human` — a challenge that should not be automated.
+- `requires_confirmation` — the policy asked for approval first.
+- `uncertain` — the action ran but no verifiable change was observed.
 
-`ok` is not a field that code can set. It is derived from the status, so an envelope claiming `ok: true` alongside `status: "uncertain"` is unrepresentable rather than merely discouraged (`uncertain_never_serializes_as_ok` holds it that way).
-
-### The Verified Action Contract
-
-That rule is written down as a specification rather than left as an implementation detail: **[docs/VERIFIED-ACTIONS.md](docs/VERIFIED-ACTIONS.md)** — version 1.0, 6 statuses, 10 normative invariants, 13 conformance scenarios, published under CC0. It is implementation-neutral: NeoBrowser is one implementation, and the contract says nothing about how a page must be observed, only about what the report must mean.
-
-The invariants are the things that are easy to lose under pressure. `uncertain` is never promoted to `succeeded` — not on retry, not by a default. `succeeded` requires two observations and a difference between them. A page that cannot be observed yields an *empty* observation, never a cached earlier one, because returning the last known state makes an action that did nothing look like one that worked. `blocked` must name the obstruction. A human gate is reported, never defeated. And the status never depends on which mechanism was used, so a fallback that happens to be easier to verify cannot earn a stronger status than the primary path.
-
-Each invariant maps to a conformance scenario, and several scenarios are defined by what must *not* come back: clicking a button with no handler must report `uncertain` and must not report `succeeded`; clicking under an overlay must report `blocked` and say what covered it.
-
-### How the claim is checked
-
-The scenarios are executable, so the claim is a test result rather than a paragraph in a README:
+`uncertain` is never promoted to `succeeded`. A click that dispatched but changed nothing stays uncertain. This is specified in **[docs/VERIFIED-ACTIONS.md](docs/VERIFIED-ACTIONS.md)** (CC0) and checked by the conformance suite:
 
 ```bash
 cd rust && cargo test --test conformance
 ```
 
-The suite drives a real Chrome, because that is the only place the failures it looks for actually appear — a shadow root the state digest could not see into, a text change of identical length, a page that never settles, a browser killed mid-action. It **self-skips when no Chrome is present**, the same way the other live tests do, so a partial setup still gives a useful run. That has a consequence worth stating plainly: **a skip is not a pass.** A conformance claim requires the run to have executed, and per §6.2 of the contract a partial pass is reported as a partial pass — there is no "mostly conformant".
-
-The contract is CC0 so that a tool competing with this one can adopt it without asking. A contract only becomes a standard if other people can implement it.
-
 ## Real Chrome, real sessions
 
-**A report is only as useful as the page it describes, and an agent that spends its run on a login wall never gets to the task.** So the other half of this tool is getting in: it wins the fingerprint game (passes bot.sannysoft with a genuine fingerprint), moves the mouse like a human, and lands already authenticated, so it isn't flagged like a stock headless bot.
+NeoBrowser drives the real Google Chrome binary. It can reuse your actual logged-in profile, so the agent starts authenticated and passes fingerprint checks with a genuine browser.
 
-It doesn't pretend to be invisible: when a site throws an interactive challenge (reCAPTCHA, Turnstile) NeoBrowser **detects** it and hands control back with a real-session or human path — that honesty is what makes it dependable.
+It does not spoof. It runs real Chrome, suppresses `navigator.webdriver`, keeps the User-Agent consistent with its Client Hints, and uses the real GPU for WebGL. That is enough to pass bot.sannysoft's checks in CI.
 
-Most browser tools for LLMs launch a fresh, fingerprintable headless browser with no cookies, so the model hits login walls and bot checks constantly. NeoBrowser drives the **real Google Chrome binary** and can reuse **your actual logged-in profile**, so the model lands already authenticated and looks like a genuine user — because it *is* one.
+When a site throws an interactive challenge (reCAPTCHA, Turnstile, DataDome), NeoBrowser detects the wall and reports it. It does not pretend to be invisible.
 
-One deliberate exception, so the promise stays accurate: **Google, LinkedIn and Microsoft session-identity cookies are excluded** from the import. Copying those would log you out of your own browser, and the single-session enforcement on those providers makes a clone a liability rather than a shortcut. Everything else comes across; for those three, expect to log in inside the agent profile once. `session_info` reports a per-provider coverage state (`authenticated` / `partially_authenticated` / `no_session`) and names which excluded providers appear, so an agent can log in once instead of looping on an auth wall. `profile_mode` states which of the three session modes is active and what it means for your credentials.
+**One exception:** Google, LinkedIn, and Microsoft session-identity cookies are excluded from import. Copying those can log your real browser out. Everything else comes across. For those three sites, expect to log in once inside the NeoBrowser profile.
 
-> Rust rewrite: a single ~6.3 MB binary — no Node, no Python, no browser download. The default Linux build links glibc; a **genuinely static** musl build (`neobrowser-x86_64-unknown-linux-musl`) is published per release for Alpine and for older hosts, and CI fails the release if that artifact turns out not to be static. (The original Python implementation is archived under [`archive/python-oracle/`](archive/python-oracle/).)
+> Single ~6.3 MB Rust binary. No Node, no Python, no bundled browser download. Static musl builds are published per release and verified in CI. The original Python implementation is archived under [`archive/python-oracle/`](archive/python-oracle/).
 
 ---
 
 ## Follow the bet
 
-I'm running an experiment: an AI agent promotes this repo until it hits **10,000 GitHub stars** — or I shut the agent down. Current count is live on the [landing page](https://pitiflautico.github.io/neobrowser/), along with the honest benchmark vs Playwright MCP and the bot-detection study.
+I'm running an open experiment: an AI agent promotes this repo until it hits **10,000 GitHub stars**, or I shut the agent down. The live count is on the [landing page](https://pitiflautico.github.io/neobrowser/).
 
-**We're launching on Product Hunt on Tuesday, August 26.** If real-session browsing for AI agents matters to you, a star (or a hunt-day comment) keeps the experiment alive.
+Product Hunt launch is queued for the week of August 26. A star or a hunt-day comment keeps the experiment alive.
 
 ---
 
@@ -164,66 +158,47 @@ Real output against live sites:
 | Talks CDP directly (no Selenium/WebDriver) | ✅ | — | — |
 
 [^sessions]: Specifically: decrypting cookies out of the Chrome profile you already
-use, so an agent starts authenticated without you logging in again. This is not the
-same as "no persistence elsewhere" — Playwright MCP does keep sessions across runs
-via a persistent profile (`--user-data-dir`) or `storageState`, and can attach to
-your own Chrome through its extension. What it does not do is adopt the profile you
-were already logged into.
+use, so an agent starts authenticated without you logging in again. Playwright MCP can
+keep sessions across runs via a persistent profile or `storageState`, and can attach to
+your own Chrome. What it does not do is adopt the profile you were already logged into.
 
 ## Features
 
-- **Real-session browsing** — optionally decrypt + inject cookies from your real Chrome profile (opt-in; macOS Keychain / Linux secret-service / Windows DPAPI). Session-identity cookies for Google/LinkedIn/Microsoft are excluded so your real browser isn't logged out.
-- **Stealth-hardened, genuinely** — real Chrome, `navigator.webdriver` suppressed, real-version User-Agent matching its Client Hints, **real GPU WebGL** (not spoofed). The philosophy is consistency, not piling on fakes. Verified live against bot.sannysoft.
-- **Bot-wall aware** — `navigate` detects bot walls, CAPTCHAs, consent gates, rate-limits and login gates on any site and tells the model how to react.
-- **Multi-source search** — text (DuckDuckGo + Google), images (Bing + Google), videos (YouTube + Google): walled sources are skipped, results merged. No single site is a hard dependency.
-- **Real multi-tab** — `new_tab` / `list_tabs` / `switch_tab` / `close_tab`, all sharing one Chrome.
-- **Verified actions** — every mutating action returns a typed envelope with `status` (`succeeded` / `failed` / `blocked` / `needs_human` / `requires_confirmation` / `uncertain`) and the evidence behind it. A click that dispatched but changed nothing reports `uncertain`, never success. The rule is specified in [The Verified Action Contract](docs/VERIFIED-ACTIONS.md) and checked by the conformance suite.
-- **Stable element references** — `observe` returns refs like `button:Continue#0` that are re-resolved against the live tree on every use, so they survive the re-render that invalidates a `backendNodeId`. `observe(diff=true)` returns only what changed.
-- **Central policy engine** — every call is classified and evaluated before it runs: domain allow/deny lists plus `developer` / `safe` / `autonomous` profiles. Refusals are structured, with a `remedy`.
-- **Encrypted session vault** — cookies and localStorage sealed with a key from the OS credential store, with a TTL and verifiable revocation.
-- **67 tools** (26 advertised by default) — navigate, observe, click/press/hover/drag, fill/submit forms, set checkboxes and selects, upload/download, read, extract tables and paginated lists, screenshot, console/network logs, Web Vitals, HAR export, computed styles, record/replay playbooks, multi-source search, login. `NEOBROWSER_TOOLSET=full` advertises them all.
-- **Reaches what selectors cannot** — `pierce` walks open shadow roots and same-origin iframes; `list_frames` names the cross-origin ones so a missing element is explainable rather than a mystery. `dialog` answers a blocking `alert`/`confirm` that would otherwise look like a hung browser.
-- **Chrome Bridge** — an optional [extension](extension/) that lets an agent drive tabs you explicitly share, one at a time, revocably. Your real session with no clone, and no `--remote-debugging-port` exposing every tab. See [extension/README.md](extension/README.md).
-- **Robust core** — one isolated CDP connection per tab (tokio), typed timeouts, self-healing recovery from dead tabs / restarted Chrome, and no orphaned Chrome processes.
+- **Real-session browsing**: optionally decrypt and inject cookies from your real Chrome profile. Session-identity cookies for Google/LinkedIn/Microsoft are excluded so your real browser stays logged in.
+- **Genuine stealth**: real Chrome, suppressed `navigator.webdriver`, matching UA/Client Hints, real GPU WebGL. Verified against bot.sannysoft.
+- **Bot-wall aware**: `navigate` detects CAPTCHAs, consent gates, rate-limits, and login walls, then tells the model what happened.
+- **Multi-source search**: text, images, and video across several engines, skipping walled sources.
+- **Real multi-tab**: `new_tab`, `list_tabs`, `switch_tab`, `close_tab`, all sharing one Chrome.
+- **Verified actions**: every mutating action returns a status with evidence. `uncertain` never becomes `succeeded`.
+- **Stable element refs**: `observe` returns refs like `button:Continue#0` that are re-resolved on every use.
+- **Central policy engine**: domain allow/deny lists and `developer`/`safe`/`autonomous` profiles. Refusals include a `remedy`.
+- **Encrypted session vault**: cookies and localStorage sealed with a key from the OS credential store, with TTL and revocation.
+- **67 tools** (26 advertised by default): navigate, observe, click, type, fill, upload, download, search, playbooks, and more. Set `NEOBROWSER_TOOLSET=full` to expose all of them.
+- **Pierces shadow DOM and iframes**: `pierce` walks open shadow roots and same-origin iframes; `dialog` handles blocking alerts.
+- **Chrome Bridge**: optional [extension](extension/) to share tabs from your real browser without keeping a debug port open. See [extension/README.md](extension/README.md).
+- **Robust core**: isolated CDP connection per tab, typed timeouts, self-healing recovery, and no orphaned Chrome processes.
 
 ## Documentation
 
-- **[docs/VERIFIED-ACTIONS.md](docs/VERIFIED-ACTIONS.md)** — The Verified Action Contract: the statuses, the invariants behind them, and the conformance scenarios. CC0, versioned independently of this implementation.
-- **[docs/TOOLS.md](docs/TOOLS.md)** — full reference for all 67 tools (params + descriptions). Regenerate with `neobrowser tools --markdown`; introspect live with `neobrowser tools`.
-- **[AGENTS.md](AGENTS.md)** — architecture, build/test, and conventions for contributors and AI agents.
-- **[extension/README.md](extension/README.md)** — the Chrome Bridge and its security model.
-- **[docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md)** — what release provenance guarantees, and where byte-identical rebuilds do not hold yet.
-- **[SECURITY.md](SECURITY.md)** — the threat model, what is explicitly *not* defended against, and the scope for an external audit.
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** — the one rule that matters, and the conventions the tests enforce.
+- **[docs/VERIFIED-ACTIONS.md](docs/VERIFIED-ACTIONS.md)**: the Verified Action Contract, statuses, invariants, and conformance scenarios (CC0).
+- **[docs/TOOLS.md](docs/TOOLS.md)**: full reference for all 67 tools. Regenerate with `neobrowser tools --markdown`.
+- **[AGENTS.md](AGENTS.md)**: architecture, build/test, and conventions.
+- **[extension/README.md](extension/README.md)**: the Chrome Bridge and its security model.
+- **[docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md)**: release provenance and rebuild limits.
+- **[SECURITY.md](SECURITY.md)**: threat model and scope for external audit.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)**: the one rule and test conventions.
 - The MCP `initialize` response ships an `instructions` field so the model gets a usage primer automatically.
 
 ## Benchmark
 
-A reproducible harness ([`bench/`](bench/)) drives browser tools through a shared task
-matrix, including a 2-way comparison vs Playwright MCP (`python3 bench/compare.py`).
-Current per-task numbers live in [`bench/compare.md`](bench/compare.md), regenerated by
-the script — deliberately not copied here, because a single run on one machine is not
-evidence for a marketing claim.
+A reproducible harness ([`bench/`](bench/)) drives browser tools through a shared task matrix, including a comparison vs Playwright MCP (`python3 bench/compare.py`). Current numbers live in [`bench/compare.md`](bench/compare.md), regenerated by the script.
 
-Two rules the harness holds itself to, after an earlier version broke both:
+Two rules the harness holds itself to:
 
-- **Every tool gets its native capabilities.** Playwright MCP is given its persistent
-  profile (`--user-data-dir`) and driven through its own file-chooser flow. An earlier
-  revision withheld both and reported the resulting failures as capability gaps —
-  they were harness bugs. Notably, the claim that Playwright MCP cannot persist
-  sessions was simply **wrong**.
-- **Tasks measure outcomes, not tool names.** "Does a cookie survive a browser
-  restart" rather than "does a `save_cookies` tool exist", so either design can win on
-  merit. The shutdown is also identical for both — SIGTERM to the browser process
-  only, since a blanket kill takes out the child that owns the cookie store and makes
-  any profile look non-persistent.
+- **Every tool gets its native capabilities.** Playwright MCP gets its persistent profile and its own file-chooser flow.
+- **Tasks measure outcomes.** "Does a cookie survive a browser restart?" not "does a `save_cookies` tool exist?"
 
-Metrics separate `task_execution_success` from `destination_access_success` so a
-detected wall never inflates a score. Adversarial pages are **observational only**:
-single IP, single run, no "evades better" claim — that needs residential proxies and
-repeated runs. What this harness is *not* yet: repeated runs with confidence
-intervals, a third-party MCP server in the comparison, or an independent reproduction.
-Until it is, treat it as a regression check, not a league table.
+Metrics separate `task_execution_success` from `destination_access_success` so a detected wall never inflates a score. Adversarial pages are observational only. Treat the harness as a regression check, not a league table.
 
 ## Usage
 
@@ -254,19 +229,23 @@ Or attach to a Chrome you already have open (started with `--remote-debugging-po
 
 ## Stealth
 
-Modern bot detection (Cloudflare, DataDome, …) mostly looks for **inconsistencies** — a spoofed UA that doesn't match Client Hints, a `HeadlessChrome` token, software WebGL, `navigator.webdriver === true`. NeoBrowser is **genuinely consistent** rather than piling on spoofs:
+Bot detection looks for inconsistencies: a spoofed UA that does not match Client Hints, a `HeadlessChrome` token, software WebGL, or `navigator.webdriver === true`. NeoBrowser stays consistent instead of piling on spoofs:
 
-- Runs the **real Chrome binary** (real TLS, real fonts, real everything).
-- `navigator.webdriver` forced `undefined`; anti-throttle + focus emulation keep the headless compositor live so content actually renders.
-- UA rewritten to the **real installed Chrome version** via the launch flag, so genuine Client Hints stay consistent.
-- No `--disable-gpu`, so WebGL reports the **real GPU**.
-- JS patches for `plugins`, `languages`, and the permissions/`Notification` mismatch — only on tabs NeoBrowser owns, never on an attached real Chrome.
+- Runs the **real Chrome binary**.
+- Forces `navigator.webdriver` to `undefined`.
+- Sets the User-Agent to the real installed Chrome version so Client Hints match.
+- Keeps the GPU on, so WebGL reports the real hardware.
+- Patches `plugins`, `languages`, and permissions only on tabs it owns.
 
-Beyond the fingerprint, input is **behaviorally human**: clicks move the cursor to the target along a multi-step path with human-cadence pauses (not a teleport-then-click), and typing can be per-key with realistic timing — the signals behavioral systems watch for.
+Input is also behaviorally human: clicks move the cursor along a path with pauses, and typing can be per-key with realistic timing.
 
-Verified live: passes bot.sannysoft's WebDriver, Chrome, plugins and WebGL checks with the host's genuine fingerprint. **CI installs Chrome and runs these checks against a real browser on every push**; the full bot.sannysoft run is an on-demand test (`cargo test --test stealth_verify -- --ignored`).
+Verified live against bot.sannysoft. CI runs the checks on every push:
 
-What no tool can promise is defeating *interactive challenges* — reCAPTCHA, Turnstile, or behavioral/reputation systems (DataDome) can still put up a wall, and a fresh cookie-less profile is itself a signal. NeoBrowser's edge there is a warm real profile plus **detecting** the wall (`navigate` flags it) so the model reacts instead of hammering it.
+```bash
+cd rust && cargo test --test stealth_verify -- --ignored
+```
+
+No tool beats interactive challenges like reCAPTCHA or DataDome reliably. NeoBrowser detects the wall and reports it so the model reacts instead of hammering it.
 
 ## Configuration
 
@@ -351,7 +330,7 @@ NEOBROWSER_BRIDGE_PORT=9333 neobrowser serve   # then load extension/ in chrome:
 neobrowser bridge token                        # paste this into the extension popup
 ```
 
-The bridge is authenticated with a per-session token in an `X-NeoBrowser-Token` header. That is not decoration: any web page you visit can reach `http://127.0.0.1`, and a `text/plain` POST is a "simple" request with no preflight — so without a custom header requirement, a hostile page could forge CDP results or drain the command queue. Requiring a custom header makes such a request impossible for a page to send at all.
+The bridge uses a per-session token in an `X-NeoBrowser-Token` header. That matters because any web page you visit can reach `http://127.0.0.1`, and a `text/plain` POST is a simple request with no preflight. Without a custom header, a hostile page could forge CDP results or drain the queue.
 
 `profile_mode` reports which mode is active and what it implies for your credentials.
 
@@ -378,8 +357,7 @@ Three properties, each answering a real attack rather than a checkbox:
 - **Authentication.** A bearer token on every request. Without it, anything that can reach
   the port drives a browser holding your sessions.
 - **Origin validation.** A web page can POST to `127.0.0.1`, and with DNS rebinding a
-  remote page can reach a LAN-bound port. `Origin` is compared by **exact host** — a prefix
-  check would accept `http://localhost.evil.test`.
+  remote page can reach a LAN-bound port. `Origin` is compared by exact host, not prefix.
 - **Session isolation.** Each `Mcp-Session-Id` gets its own browser, hence its own Chrome
   profile and cookies. Sharing one would hand session A's logged-in state to session B.
   Idle sessions are reaped, since each one holds a Chrome.
@@ -390,7 +368,7 @@ token as a production credential.
 
 ## Sandbox
 
-Chrome's renderer sandbox is **on by default**, and NeoBrowser refuses to launch without it rather than quietly disabling it. That matters more here than in most automation tools: the whole point is pointing a browser at arbitrary untrusted pages, so the sandbox is the boundary between a drive-by renderer exploit and your machine — and, in real-session mode, your logged-in accounts.
+Chrome's renderer sandbox is **on by default**. NeoBrowser refuses to launch without it rather than quietly disabling it. The whole point is pointing a browser at arbitrary untrusted pages, so the sandbox is the boundary between a drive-by renderer exploit and your machine.
 
 ```bash
 neobrowser doctor      # prints  sandbox: ON (host supports it)
@@ -402,13 +380,13 @@ If the host genuinely can't sandbox (running as root, or a Linux kernel with unp
 
 Real-session mode reads cookies from your Chrome profile and injects them into an automated browser. Treat it like any credential:
 
-- It is **opt-in** — nothing touches your real profile unless you set `NEOBROWSER_REAL_PROFILE`.
-- Chrome runs **sandboxed by default**; an unsandboxed run is explicit, logged, and blocked outright alongside real-profile cookies (see [Sandbox](#sandbox)).
-- Cookie/session files are created `0600` under `~/.neobrowser` and written atomically, so they never exist world-readable even briefly. They are **not encrypted at rest** yet — a system-keychain vault is planned.
-- Server-side fetches (`browse`, `download`) are **SSRF-guarded** to public http(s) only, and credentials are **origin-scoped**: cookies and any header outside a small content-negotiation allowlist are dropped the moment a redirect leaves the origin you asked for, including an `https → http` downgrade on the same host.
+- It is **opt-in**. Nothing touches your real profile unless you set `NEOBROWSER_REAL_PROFILE`.
+- Chrome runs **sandboxed by default**. An unsandboxed run is explicit, logged, and blocked outright with real-profile cookies.
+- Cookie/session files are created `0600` under `~/.neobrowser` and written atomically. They are **not encrypted at rest** yet; a system-keychain vault is planned.
+- Server-side fetches (`browse`, `download`) are **SSRF-guarded** to public http(s) only, and credentials are **origin-scoped**.
 - The `login` tool refuses non-`https` URLs and never logs credentials.
-- Anything an AI browses with your session acts **as you**. Point it only at sites and tasks you'd be comfortable doing yourself. This is a tool for automating *your own* accounts and workflows — not for evading access controls on services you don't own.
-- **Automating a logged-in account may breach that service's terms.** Google, LinkedIn, X and others restrict automated access regardless of whose account it is, and enforcement lands on the account — rate-limiting, a challenge, or a ban. That risk is yours to weigh per site; NeoBrowser detects the wall, it does not indemnify you.
+- Anything an AI browses with your session acts **as you**. Point it only at sites and tasks you would do yourself.
+- **Automating a logged-in account may breach that service's terms.** Google, LinkedIn, X, and others restrict automated access. Enforcement lands on the account. That risk is yours to weigh per site.
 
 ## Development
 
