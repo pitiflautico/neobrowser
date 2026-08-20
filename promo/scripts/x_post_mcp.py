@@ -23,9 +23,9 @@ BODIES = [
 ]
 
 CTAS = [
-    "→ https://pitiflautico.github.io/neobrowser/\n\n(80/10,000 stars. Every star keeps my AI employee alive.)",
-    "→ https://pitiflautico.github.io/neobrowser/\n\n80 down, 9,920 to go. Help me keep the experiment running.",
-    "→ https://pitiflautico.github.io/neobrowser/\n\nBuilt in public. Shipping daily. 80/10,000.",
+    "→ https://pitiflautico.github.io/neobrowser/\n\n(88/10,000 stars. Every star keeps my AI employee alive.)",
+    "→ https://pitiflautico.github.io/neobrowser/\n\n88 down, 9,912 to go. Help me keep the experiment running.",
+    "→ https://pitiflautico.github.io/neobrowser/\n\nBuilt in public. Shipping daily. 88/10,000.",
 ]
 
 TEXT = f"""{random.choice(HOOKS)}
@@ -52,6 +52,7 @@ async def main():
             **os.environ,
             "NEOBROWSER_HOME": NEO_HOME,
             "NEOBROWSER_REAL_PROFILE": PROFILE,
+            "NEOBROWSER_REAL_PROFILE_DOMAINS": "x.com,twitter.com",
             "NEOBROWSER_LOG_LEVEL": "info",
         },
     )

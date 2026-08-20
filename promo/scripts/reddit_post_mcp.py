@@ -44,7 +44,7 @@ Key bits:
 GIF: {GIF_URL}
 Repo: github.com/pitiflautico/neobrowser
 
-We're at 80 GitHub stars. Happy to answer questions or take punches on the benchmark methodology.""",
+We're at 88 GitHub stars. Happy to answer questions or take punches on the benchmark methodology.""",
 ]
 
 SUBREDDIT = random.choice(SUBREDDITS)
@@ -73,6 +73,7 @@ async def main():
             **os.environ,
             "NEOBROWSER_HOME": NEO_HOME,
             "NEOBROWSER_REAL_PROFILE": PROFILE,
+            "NEOBROWSER_REAL_PROFILE_DOMAINS": "reddit.com",
             "NEOBROWSER_LOG_LEVEL": "info",
         },
     )
