@@ -17,7 +17,7 @@ Tres decisiones de diseño que me llevaron más trabajo del esperado:
 
 3. Benchmarks honestos. Comparé contra Playwright MCP con un harness neutro: Playwright es más rápido; NeoBrowser hace cosas que no puede (persistencia de sesión, uploads). Los números y la metodología están en el repo para quien quiera auditarlos.
 
-43 herramientas, un único binario estático de 5 MB en Rust, sin runtime. Multi-tab, formularios, subida/descarga de archivos, búsqueda multi-fuente, grabación y replay de tareas.
+67 herramientas, un único binario estático de 6.4 MB en Rust, sin runtime. Multi-tab, formularios, subida/descarga de archivos, búsqueda multi-fuente, grabación y replay de tareas.
 
 Repo (MIT): https://github.com/pitiflautico/neobrowser
 

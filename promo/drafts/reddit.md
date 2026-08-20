@@ -23,7 +23,7 @@ What it does differently:
 • Genuine stealth, not spoofed — real UA matching Client Hints, real GPU WebGL. Passes bot.sannysoft in CI. It doesn't claim to beat reCAPTCHA/Turnstile; instead it *detects* the wall (captcha/consent/rate-limit/login) and hands the model a strategy.
 • Human-cadence input — clicks move along eased paths, typing is per-key with realistic timing.
 • Real sessions — cookie import is opt-in, identity cookies excluded so your browser isn't logged out.
-• Single ~5 MB static Rust binary, 43 tools, no Node, no runtime.
+• Single ~6.4 MB static Rust binary, 67 tools, no Node, no runtime.
 
 I also benchmarked it against Playwright MCP with a neutral harness (same task matrix, common layer). Honest numbers: Playwright is ~2x faster on several tasks; NeoBrowser passes upload + session persistence tasks Playwright MCP can't do, and on adversarial pages both got walled equally. No "evades better" claims — methodology is in bench/ if you want to check my work.
 
