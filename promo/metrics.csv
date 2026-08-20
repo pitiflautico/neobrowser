@@ -110,3 +110,5 @@ date,stars,forks,notes
 2026-08-20,89,4,outreach: borrador t3dotgg listo
 2026-08-20,89,4,assets virales regenerados con contador 89 estrellas
 2026-08-20,89,4,borrador dev.to "real Chrome over headless" creado
+2026-08-20,89,4,producthunt_launch_v3.py creado para neobrowser.is-a.dev
+2026-08-20,89,4,cron 3f136bac configurado para auto-lanzar PH al mergear is-a-dev PR

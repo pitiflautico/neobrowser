@@ -688,6 +688,8 @@
   - PR creado: https://github.com/is-a-dev/register/pull/48212
   - Añadido `docs/CNAME` con `neobrowser.is-a.dev` para que GitHub Pages sirva la landing en el subdominio una vez se apruebe el PR.
   - Actualizado `og:image` en `docs/index.html` a `https://neobrowser.is-a.dev/assets/og.png`.
+  - Creado `promo/scripts/producthunt_launch_v3.py` apuntando a `https://neobrowser.is-a.dev/`.
+  - Creado `promo/scripts/check_isadev_and_launch_ph.py` y configurado cron `3f136bac` para revisar el PR cada ~15 min y lanzar Product Hunt automáticamente cuando se mergee y el site devuelva 200.
 - **DISTRIBUCIÓN**: Indie Hackers explorado — redirige a homepage porque no hay sesión/cuenta; canal aplazado hasta crear cuenta.
 - **DISTRIBUCIÓN**: HN — intento de comentario value-first en item 47734871; no se encontró el textarea de reply (posible rate-limit bajo o UI colapsada). No se forzó más.
 - **OUTREACH**: segundo borrador listo, esta vez para **swyx** (`promo/drafts/outreach-swyx-2026-08-20.md`).
