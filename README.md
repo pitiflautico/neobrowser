@@ -26,20 +26,22 @@ Install neobrowser (brew install neobrowser or curl -fsSL https://raw.githubuser
 
 Three concrete tasks where driving **your** real Chrome beats a sterile headless browser:
 
+![NeoBrowser demo: real login, file upload, and bot-detector pass](promo/assets/neobrowser-demo-2026-08-20.gif)
+
 ### 1. Log into a dashboard you already use
 > "Open GitHub and list my open issues."
 
-NeoBrowser reuses your existing Chrome session, so the agent lands on the issues page instead of burning context on a login flow. [GIF coming soon]
+NeoBrowser reuses your existing Chrome session, so the agent lands on the issues page instead of burning context on a login flow.
 
 ### 2. Fill a real form with a file upload
 > "Apply to this job posting with my CV."
 
-Real `isTrusted` clicks, human-cadence typing, and a genuine file-picker interaction. Headless tools often fail on uploads and multi-step forms; NeoBrowser reports `succeeded`, `blocked`, or `uncertain` based on what actually changed. [GIF coming soon]
+Real `isTrusted` clicks, human-cadence typing, and a genuine file-picker interaction. Headless tools often fail on uploads and multi-step forms; NeoBrowser reports `succeeded`, `blocked`, or `uncertain` based on what actually changed.
 
 ### 3. Search and extract across the open web
 > "Find the three latest papers on arXiv about MCP and summarize them."
 
-Multi-source search with wall detection: if a search engine throws a CAPTCHA, NeoBrowser reports it instead of returning garbage, and the agent can pivot to another source. [GIF coming soon]
+Multi-source search with wall detection: if a search engine throws a CAPTCHA, NeoBrowser reports it instead of returning garbage, and the agent can pivot to another source.
 
 ## A status the caller can act on
 

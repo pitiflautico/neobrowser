@@ -37,6 +37,10 @@ The right tool depends on the task:
 - Fast, stateless scraping → headless is probably better.
 - Tasks behind real sessions or uploads → real Chrome wins.
 
+![NeoBrowser demo: real login, file upload, and bot-detector pass](https://github.com/pitiflautico/neobrowser/raw/main/promo/assets/neobrowser-demo-2026-08-20.gif)
+
+The GIF above is one continuous take: a real login form, a real file upload through the native picker, and a pass on bot.sannysoft — no spoofed WebGL, no fake UA, just the browser the user already trusts.
+
 We published the full methodology at `bench/study.md`.
 
 ## Why this matters for MCP

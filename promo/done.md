@@ -729,3 +729,13 @@
 - **PRODUCTO**: añadida sección "What can NeoBrowser do?" al README con 3 casos de uso concretos (dashboard con login, form + upload, search/extract), siguiendo la táctica observada en browser-use. Incluye placeholders para GIFs.
 - **INTELIGENCIA**: creado análisis estructurado de browser-use en `promo/drafts/intelligence-browser-use-2026-08-20.md`: 109.871★, README con identidad visual, badges como navegación, casos de uso con GIFs, quickstart para agentes, monetización cloud y comunidad. Táctica prioritaria copiable: crear sección "What can NeoBrowser do?" con 3–5 GIFs cortos (ya iniciada en README).
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 (nuevo ciclo 2) — GIF real, README/landing actualizados, drafts de distribución y outreach
+- **PRODUCTO/CONTENIDO**: creado GIF real de ~20s mostrando login real, file upload y pass de bot.sannysoft en un solo take, usando `promo/scripts/demo_to_gif.py` con neobrowser. El GIF se guarda en `promo/assets/neobrowser-demo-2026-08-20.gif` (~109 KB, 960x496).
+- **PRODUCTO**: actualizado `docs/assets/demo.gif` con el nuevo GIF, mejorando la landing.
+- **PRODUCTO**: actualizado README con sección "What can NeoBrowser do?" que incluye el GIF real y tres casos de uso concretos.
+- **CONTENIDO**: creado borrador de post social (X/LinkedIn) centrado en el GIF en `promo/drafts/social-gif-demo-2026-08-20.md`.
+- **DISTRIBUCIÓN**: actualizado borrador dev.to `promo/drafts/devto-real-chrome.md` con el GIF embebido desde GitHub raw, listo para publicar manualmente o vía API cuando el usuario lo autorice.
+- **DISTRIBUCIÓN/OUTREACH**: creado `promo/drafts/newsletter-submission-2026-08-20.md` con one-liner, pitch y enlaces de envío a newsletters (Ben's Bites, TLDR AI, AI Breakfast, The Neuron).
+- **INTELIGENCIA**: creado `promo/drafts/intelligence-mcp-browser-trend-2026-08-20.md` analizando la tendencia de comparaciones headless vs real Chrome en r/mcp y la táctica de usar una regla de decisión como gancho de contenido.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
