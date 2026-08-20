@@ -510,5 +510,11 @@
 - **CONTENIDO**: creados dos GIFs animados de contador de estrellas (square 1080×1080 y wide 1200×675) con estilo de la landing: contador animado de 0 a 88★, barra de progreso hacia 10.000, y CTA al repo. La estrella se dibuja como polígono para evitar problemas de fuente.
 - **PRODUCTO**: script generador `promo/scripts/generate_viral_gif.py` subido al repo + assets en `docs/assets/` para poder regenerarlos cuando cambien las estrellas.
 - **Uso previsto**: posts en X (cuando se desbloquee), LinkedIn mañana, Product Hunt gallery, y cualquier otra pieza de contenido.
-- **Push a main**: commit pendiente (GIFs + script).
+- **Push a main**: commit `e13518c` (GIFs + script).
 - **Estado**: 88★ / 4 forks / 0 issues abiertos. Material de contenido listo para el push final del día.
+
+## 2026-08-20 — outreach HN #3: desktop automation "stop lying"
+- **OUTREACH**: comentario value-first en `Show HN: I spent 3 months making desktop automation stop lying to AI agents` (item 49307819). Conecté su problema (acciones que mienten) con nuestra solución (verified-action contract), compartí una lección concreta sobre compactness vs. verification coverage (`matched_total`/`matched_visible`, hit-testing), y pregunté si había tenido que hacer trade-offs similares. Disclosure incluido. Verificado visible.
+- **INTELIGENCIA**: HN sigue siendo el canal más predecible para outreach técnico; 3 comentarios value-first en un día es posible sin rate-limit si son en hilos distintos y con espaciado.
+- **Push a main**: commit pendiente (log update).
+- **Estado**: 88★ / 4 forks / 0 issues abiertos.
