@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NeoBrowser — your AI drives real Chrome, undetected</title>
-<meta name="description" content="An MCP server that drives real Chrome with your real logged-in sessions. Genuine fingerprint, human-like input, bot-wall aware. 43 tools, single binary.">
+<meta name="description" content="An MCP server that drives real Chrome with your real logged-in sessions. Genuine fingerprint, human-like input, bot-wall aware. 67 tools, single ~6.4 MB binary.">
 <meta property="og:title" content="NeoBrowser">
 <meta property="og:description" content="Your AI drives a real Chrome with your real logged-in sessions — genuine fingerprint, human-like input, not flagged like a headless bot.">
 <meta property="og:image" content="https://pitiflautico.github.io/neobrowser/assets/og.png">
@@ -119,7 +119,7 @@
       <div class="card"><h3>Human-like input</h3><p>Clicks travel to the target along an eased, jittered path with human-cadence pauses; typing can be per-key with realistic timing.</p></div>
       <div class="card"><h3>Bot-wall aware</h3><p>Detects CAPTCHAs, consent gates, rate-limits and login walls on any site and tells the model how to react.</p></div>
       <div class="card"><h3>Multi-source search</h3><p>Text, images and video across several engines — walled sources are detected and skipped, results merged.</p></div>
-      <div class="card"><h3>43 tools · one binary</h3><p>Navigate, forms, upload/download, extract, multi-tab, playbooks, search — a single ~5&nbsp;MB static binary, no runtime.</p></div>
+      <div class="card"><h3>67 tools · one binary</h3><p>Navigate, forms, upload/download, extract, multi-tab, playbooks, search — a single ~6.4&nbsp;MB static binary, no runtime.</p></div>
       <div class="card"><h3>Robust core</h3><p>One isolated CDP connection per tab, typed timeouts, self-healing recovery — and a graceful shutdown that never leaves an orphaned Chrome behind.</p></div>
     </div>
   </section>
@@ -127,6 +127,7 @@
   <section>
     <h2>What's new</h2>
     <div class="grid">
+      <div class="card"><h3>🚀 Pre-launch hardening merged</h3><p>PR #7 ships the verified-action contract, security fixes and CI resilience. The suite now passes on Ubuntu (real Chrome), macOS and Windows — <a href="https://github.com/pitiflautico/neobrowser/actions/workflows/ci.yml">see the green runs</a>.</p></div>
       <div class="card"><h3>🔒 Domain-scoped real sessions</h3><p><code>NEOBROWSER_REAL_PROFILE_DOMAINS</code> lets you inject cookies only for specific sites. Identity cookies stay protected so your real browser never gets logged out.</p></div>
       <div class="card"><h3>🛡️ Security-first defaults</h3><p>Cookie/session data is sealed at rest. Credentials never follow redirects off-origin. The sandbox is on by default; <code>--no-sandbox</code> requires an explicit opt-in.</p></div>
       <div class="card"><h3>✅ Verified actions</h3><p>Every click, fill or submit reports what actually happened — succeeded, blocked, uncertain or needs human — instead of always returning "Clicked".</p></div>
