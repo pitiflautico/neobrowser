@@ -503,5 +503,12 @@
   - Añadido one-line prompt para Claude Code/Cursor/Codex (táctica de browser-use).
   - Añadido GIF comparativo `neobrowser-vs-headless.gif` en "See it work".
 - **INTELIGENCIA**: diferenciador defensible de NeoBrowser es el nicho local/self-hosted/real-session; ningún competidor ofrece cookie decryption vía OS keychain para reutilizar el perfil real del usuario.
-- **Push a main**: commit pendiente (README + inteligencia).
+- **Push a main**: commit `1804451` (README + inteligencia).
 - **Estado**: 88★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — asset viral generado
+- **CONTENIDO**: creados dos GIFs animados de contador de estrellas (square 1080×1080 y wide 1200×675) con estilo de la landing: contador animado de 0 a 88★, barra de progreso hacia 10.000, y CTA al repo. La estrella se dibuja como polígono para evitar problemas de fuente.
+- **PRODUCTO**: script generador `promo/scripts/generate_viral_gif.py` subido al repo + assets en `docs/assets/` para poder regenerarlos cuando cambien las estrellas.
+- **Uso previsto**: posts en X (cuando se desbloquee), LinkedIn mañana, Product Hunt gallery, y cualquier otra pieza de contenido.
+- **Push a main**: commit pendiente (GIFs + script).
+- **Estado**: 88★ / 4 forks / 0 issues abiertos. Material de contenido listo para el push final del día.
