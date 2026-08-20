@@ -49,3 +49,9 @@ date,stars,forks,notes
 2026-08-19,77,3,issues #13 #14 #15 cerrados
 2026-08-19,80,4,Product Hunt desbloqueado; issues todos cerrados; PRs #6 #7 abiertos
 2026-08-19,80,4,GIF viral publicado en X via NeoBrowser MCP; landing actualizada
+2026-08-19,81,4,Diagnóstico sesiones: X funciona con cookies; LinkedIn/Reddit/PH necesitan perfil real consistente o attach mode
+2026-08-20,88,4,Parche seguridad: NEOBROWSER_REAL_PROFILE_DOMAINS; intento post X con GIF bloqueado por CAPTCHA en verificación
+2026-08-20,88,4,ciclo auto — CAPTCHA X / preparación contenido
+
+2026-08-20,88,4,Topics GitHub ampliados a 20 (ai developer-tools open-source mcp-server cdp real-browser ai-tools mcp-servers)
+2026-08-20,88,4,CI PR #7: gitleaks + timeouts arreglados y push a merge/prelaunch-hardening

@@ -231,6 +231,9 @@ What no tool can promise is defeating *interactive challenges* — reCAPTCHA, Tu
 | `NEOBROWSER_REAL_PROFILE` | *(unset)* | Real Chrome profile folder to pull sessions from |
 | `NEOBROWSER_PROFILE` | `default` | Which Ghost profile this session uses. Chrome locks a profile exclusively, so give concurrent sessions different names to keep them from colliding |
 | `NEOBROWSER_ATTACH_PORT` | *(unset)* | Attach to an already-running Chrome on this debug port |
+| `NEOBROWSER_ATTACH_TIMEOUT` | `5` | Seconds to wait when attaching to an existing Chrome (max `120`) |
+| `NEOBROWSER_LAUNCH_TIMEOUT` | `15` | Seconds to wait for a fresh Chrome launch (max `120`) |
+| `NEOBROWSER_SEND_TIMEOUT` | `30` | Seconds to wait for a CDP command response (max `120`) |
 | `NEOBROWSER_CHROME_BIN` | *(auto)* | Path to the Chrome/Chromium binary |
 | `NEOBROWSER_HOME` | `~/.neobrowser` | Where profiles, cookies, sessions, playbooks, downloads live |
 | `NEOBROWSER_PROXY` | *(unset)* | Upstream proxy (`http://…` or `socks5://…`) |

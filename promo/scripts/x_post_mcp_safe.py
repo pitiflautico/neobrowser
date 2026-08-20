@@ -60,69 +60,83 @@ async def main():
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            await call(session, "navigate", {"url": "https://x.com/home", "wait_s": 5})
+            # Use the direct compose URL to avoid home-feed noise.
+            await call(session, "navigate", {"url": "https://x.com/compose/post", "wait_s": 8})
 
-            # 1) focus composer
-            r = await call(session, "js", {"code": """
-                const el = document.querySelector('div[contenteditable="true"][data-text="true"]')
-                  || document.querySelector('[data-testid="tweetTextarea_0"]')
-                  || document.querySelector('div[contenteditable="true"]');
-                if (!el) return 'NOT_FOUND';
-                el.focus();
-                el.click();
-                return el.getAttribute('data-testid') || 'contenteditable';
-            """})
-            composer_id = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content).strip()
+            # Wait for the composer to exist.
+            for attempt in range(10):
+                r = await call(session, "js", {"code": """
+                    const el = document.querySelector('div[contenteditable="true"][data-text="true"]')
+                      || document.querySelector('[data-testid="tweetTextarea_0"]')
+                      || document.querySelector('div[contenteditable="true"]');
+                    return el ? (el.getAttribute('data-testid') || 'contenteditable') : 'NOT_FOUND';
+                """})
+                composer_id = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content).strip()
+                if composer_id != "NOT_FOUND":
+                    break
+                await asyncio.sleep(2)
+
             if composer_id == "NOT_FOUND":
                 print("composer not found")
                 sys.exit(1)
 
             selector = f'[data-testid="{composer_id}"]' if composer_id != "contenteditable" else 'div[contenteditable="true"][data-text="true"]'
             await call(session, "click", {"selector": selector})
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
 
-            # 2) upload GIF first so the composer has real content
+            # Upload GIF first.
             await call(session, "upload", {
                 "selector": 'input[type="file"][data-testid="fileInput"]',
                 "files": [GIF],
             })
-            # wait for preview + button enable
-            await asyncio.sleep(8)
+            await asyncio.sleep(12)
 
-            # 3) type text
+            # Type text slowly.
             await call(session, "click", {"selector": selector})
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
             await call(session, "type", {"text": TEXT, "human": True})
-            await asyncio.sleep(2)
+            await asyncio.sleep(4)
 
-            # 4) click Post using the inline tweet button
+            # Wait for the Post button to be enabled, then click.
             posted = False
-            for _ in range(3):
+            for _ in range(10):
                 r = await call(session, "js", {"code": """
                     const b = document.querySelector('[data-testid="tweetButtonInline"]')
                            || document.querySelector('[data-testid="tweetButton"]');
-                    if (b && !b.disabled && b.getAttribute('aria-disabled') !== 'true') {
-                        b.scrollIntoView({block:'center'});
-                        b.click();
-                        return 'CLICKED';
+                    if (b) {
+                        const disabled = b.disabled || b.getAttribute('aria-disabled') === 'true';
+                        return JSON.stringify({found:true, disabled, text: b.innerText.trim()});
                     }
-                    return b ? 'DISABLED' : 'MISSING';
+                    return JSON.stringify({found:false});
                 """})
-                status = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content).strip()
-                print(f"post button status: {status}")
-                if status == "CLICKED":
-                    posted = True
-                    break
+                status_json = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content).strip()
+                try:
+                    import json
+                    status = json.loads(status_json)
+                except Exception:
+                    status = {}
+                print("post button status:", status)
+                if status.get("found") and not status.get("disabled"):
+                    r2 = await call(session, "js", {"code": """
+                        const b = document.querySelector('[data-testid="tweetButtonInline"]')
+                               || document.querySelector('[data-testid="tweetButton"]');
+                        if (b) { b.scrollIntoView({block:'center'}); b.click(); return 'CLICKED'; }
+                        return 'MISSING';
+                    """})
+                    click_status = " ".join(c.text if hasattr(c, "text") else str(c) for c in r2.content).strip()
+                    if click_status == "CLICKED":
+                        posted = True
+                        break
                 await asyncio.sleep(2)
 
             if not posted:
-                print("could not enable Post button")
+                print("could not enable/click Post button")
                 sys.exit(1)
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(8)
 
-            # 5) verify on profile (fresh tab can recover from any modal state)
-            await call(session, "navigate", {"url": "https://x.com/perez_pina28188", "wait_s": 6})
+            # Verify on profile.
+            await call(session, "navigate", {"url": "https://x.com/perez_pina28188", "wait_s": 8})
             r = await call(session, "read", {})
             page_text = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content)
             hook_found = any(h.split()[0] in page_text for h in HOOKS)

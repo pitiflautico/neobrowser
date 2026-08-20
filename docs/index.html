@@ -78,6 +78,7 @@
       <a class="btn primary" href="#install">Install</a>
       <a class="btn ghost" href="https://github.com/pitiflautico/neobrowser">Star on GitHub</a>
     </div>
+    <p style="color:var(--muted);font-size:14px;margin-top:8px">Trusted by <strong id="hero-stars" style="color:var(--fg)">…</strong> developers · open source · single static binary</p>
     <div class="install" id="install">
       <span class="p"># macOS / Linux — verifies a SHA-256 checksum</span><br>
       curl -fsSL https://raw.githubusercontent.com/pitiflautico/neobrowser/main/install.sh | sh
@@ -120,6 +121,16 @@
       <div class="card"><h3>Multi-source search</h3><p>Text, images and video across several engines — walled sources are detected and skipped, results merged.</p></div>
       <div class="card"><h3>43 tools · one binary</h3><p>Navigate, forms, upload/download, extract, multi-tab, playbooks, search — a single ~5&nbsp;MB static binary, no runtime.</p></div>
       <div class="card"><h3>Robust core</h3><p>One isolated CDP connection per tab, typed timeouts, self-healing recovery — and a graceful shutdown that never leaves an orphaned Chrome behind.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What's new</h2>
+    <div class="grid">
+      <div class="card"><h3>🔒 Domain-scoped real sessions</h3><p><code>NEOBROWSER_REAL_PROFILE_DOMAINS</code> lets you inject cookies only for specific sites. Identity cookies stay protected so your real browser never gets logged out.</p></div>
+      <div class="card"><h3>🛡️ Security-first defaults</h3><p>Cookie/session data is sealed at rest. Credentials never follow redirects off-origin. The sandbox is on by default; <code>--no-sandbox</code> requires an explicit opt-in.</p></div>
+      <div class="card"><h3>✅ Verified actions</h3><p>Every click, fill or submit reports what actually happened — succeeded, blocked, uncertain or needs human — instead of always returning "Clicked".</p></div>
+      <div class="card"><h3>🤖 Built for agents</h3><p>Multi-tab, playbooks, wall detection, and a clean MCP interface. Run it from Claude Code, Cursor, VS Code, Windsurf or any MCP client.</p></div>
     </div>
   </section>
 
@@ -168,8 +179,11 @@
         .then(r => r.json())
         .then(d => {
           const s = d.stargazers_count || 0;
-          document.getElementById('stars').textContent = s.toLocaleString('en-US');
+          const fmt = s.toLocaleString('en-US');
+          document.getElementById('stars').textContent = fmt;
           document.getElementById('bar').style.width = Math.min(100, s / 10000 * 100).toFixed(1) + '%';
+          const hero = document.getElementById('hero-stars');
+          if (hero) hero.textContent = fmt;
         })
         .catch(() => { document.getElementById('stars').textContent = '★'; });
     </script>
