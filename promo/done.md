@@ -674,6 +674,9 @@
 - **OUTREACH**: borrador de email para Simon Willison listo en `promo/drafts/outreach-simonw-2026-08-20.md`, registrado en `promo/drafts/outreach-track.md`.
 - **CONTENIDO**: borradores para publicación manual en X/LinkedIn actualizados con el aprendizaje del día, en `promo/drafts/social-buildinpublic-2026-08-20.md`.
 - **INTELIGENCIA**: Product Hunt confirma bloqueo por dominio; la única vía es un dominio propio apuntado a Netlify/GitHub Pages.
-- **Scripts nuevos**: `promo/scripts/netlify_claim_recon.py`, `netlify_claim_github.py`, `netlify_make_public_v3.py`, `producthunt_launch_v2.py`, `producthunt_rejection_check.py`, `producthunt_url_test.py`, `linkedin_post_v3.py`, `reddit_post_mcp_v2.py`.
+- **DISTRIBUCIÓN**: Indie Hackers explorado — redirige a homepage porque no hay sesión/cuenta; canal aplazado hasta crear cuenta.
+- **DISTRIBUCIÓN**: HN — intento de comentario value-first en item 47734871; no se encontró el textarea de reply (posible rate-limit bajo o UI colapsada). No se forzó más.
+- **OUTREACH**: segundo borrador listo, esta vez para **swyx** (`promo/drafts/outreach-swyx-2026-08-20.md`).
+- **Scripts nuevos**: `promo/scripts/netlify_claim_recon.py`, `netlify_claim_github.py`, `netlify_make_public_v3.py`, `producthunt_launch_v2.py`, `producthunt_rejection_check.py`, `producthunt_url_test.py`, `linkedin_post_v3.py`, `reddit_post_mcp_v2.py`, `indiehacker_recon.py`, `hn_value_comment.py`.
 - **Push a main**: pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
