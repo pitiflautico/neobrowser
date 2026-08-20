@@ -563,3 +563,11 @@
 - **Uso**: listos para enviar por X (cuando se desbloquee), GitHub issue/email (simonw, mitsuhiko) o reply público.
 - **Push a main**: commit pendiente (HN comment script + outreach batch + log).
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — landing mejorada para Product Hunt y viral asset
+- **PRODUCTO**: actualizada `docs/index.html`:
+  - Banner de bienvenida para visitantes de Product Hunt (`?ref=producthunt` o `?ref=product-hunt`) con CTA claro al install y al contador de estrellas.
+  - Añadido el vídeo viral del contador (`assets/neobrowser-viral-square.mp4`) en la sección "The bet" para aumentar engagement visual.
+- **Objetivo**: reducir rebote cuando Product Hunt mande tráfico el martes 26 y hacer que la apuesta a 10.000★ sea más compartible.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
