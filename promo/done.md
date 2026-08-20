@@ -684,6 +684,10 @@
   - Upvotes de cuentas con historia y followers pesan 3-5x más que cuentas nuevas; el algoritmo detecta picos y bots.
   - Aplicado: `producthunt-launch-day.md` y `producthunt-response-playbook.md` actualizados con estas tácticas.
 - **INTELIGENCIA**: Product Hunt sigue bloqueado por dominio; la única vía es un dominio propio apuntado a Netlify/GitHub Pages.
+- **PRODUCTO/DISTRIBUCIÓN**: iniciado registro del dominio gratuito **neobrowser.is-a.dev** vía is-a-dev/register para desbloquear Product Hunt sin coste:
+  - PR creado: https://github.com/is-a-dev/register/pull/48212
+  - Añadido `docs/CNAME` con `neobrowser.is-a.dev` para que GitHub Pages sirva la landing en el subdominio una vez se apruebe el PR.
+  - Actualizado `og:image` en `docs/index.html` a `https://neobrowser.is-a.dev/assets/og.png`.
 - **DISTRIBUCIÓN**: Indie Hackers explorado — redirige a homepage porque no hay sesión/cuenta; canal aplazado hasta crear cuenta.
 - **DISTRIBUCIÓN**: HN — intento de comentario value-first en item 47734871; no se encontró el textarea de reply (posible rate-limit bajo o UI colapsada). No se forzó más.
 - **OUTREACH**: segundo borrador listo, esta vez para **swyx** (`promo/drafts/outreach-swyx-2026-08-20.md`).
