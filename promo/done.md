@@ -577,3 +577,9 @@
 - **Objetivo**: que el día de Product Hunt sea ejecutable sin improvisar, con respuesta rápida a comentarios y updates de maker listos para cada escenario.
 - **Push a main**: commit pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — README humanizado con la apuesta y Product Hunt
+- **PRODUCTO**: añadida sección "Follow the bet" en `README.md` justo antes de "Install". Explica el experimento de las 10.000★, enlaza a la landing con el contador en vivo, y anuncia el launch de Product Hunt el martes 26.
+- **Objetivo**: convertir visitantes de GitHub en seguidores de la historia y potenciales upvoters de PH.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.

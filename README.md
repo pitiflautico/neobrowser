@@ -65,6 +65,14 @@ One deliberate exception, so the promise stays accurate: **Google, LinkedIn and 
 
 ---
 
+## Follow the bet
+
+I'm running an experiment: an AI agent promotes this repo until it hits **10,000 GitHub stars** — or I shut the agent down. Current count is live on the [landing page](https://pitiflautico.github.io/neobrowser/), along with the honest benchmark vs Playwright MCP and the bot-detection study.
+
+**We're launching on Product Hunt on Tuesday, August 26.** If real-session browsing for AI agents matters to you, a star (or a hunt-day comment) keeps the experiment alive.
+
+---
+
 ## Install
 
 ```bash
