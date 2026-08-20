@@ -7,6 +7,7 @@
 [![Install in Cursor](https://img.shields.io/badge/Cursor-Install-000000?style=flat-square&logo=cursor&logoColor=white)](https://cursor.com/en/install-mcp?name=neobrowser&config=eyJjb21tYW5kIjoibmVvYnJvd3NlciJ9)
 [![GitHub stars](https://img.shields.io/github/stars/pitiflautico/neobrowser?style=flat-square)](https://github.com/pitiflautico/neobrowser/stargazers)
 [![Landing](https://img.shields.io/badge/Website-pitiflautico.github.io/neobrowser-5eead4?style=flat-square)](https://pitiflautico.github.io/neobrowser/)
+[![Product Hunt](https://img.shields.io/badge/Product%20Hunt-launch%20notification-ff6154?style=flat-square&logo=producthunt&logoColor=white)](https://github.com/pitiflautico/neobrowser/discussions/16)
 
 **An MCP server that drives a real Google Chrome with your real logged-in sessions — and that reports what actually happened, not what it attempted.**
 

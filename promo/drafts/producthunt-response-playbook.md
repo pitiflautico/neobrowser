@@ -7,13 +7,19 @@ Pre-written, human replies for the most common comments on launch day. Paste and
 ## Maker comment (post immediately after launch)
 
 ```
-Maker here. Two rabbit holes if you're curious:
+Maker here.
 
-1. Cross-platform cookie decryption (macOS Keychain / Linux secret-service / Windows DPAPI) done safely and opt-in — so the agent can start authenticated without the user logging in again.
+I built NeoBrowser after watching every browser automation tool for AI fail the same way: fresh headless profile, zero cookies, instant login wall or bot check. The agent could click, but it couldn't *be* the user.
 
-2. Why "genuine consistency" beats spoof stacking for fingerprint checks: we suppress `navigator.webdriver`, keep the real UA/WebGL/Client Hints, and let the host's real Chrome do the talking. No fake GPU strings.
+So I went the other direction: drive the user's real Chrome over CDP, decrypt cookies from the OS keychain (opt-in, domain-scoped), and let the agent inherit the real fingerprint, localStorage, and sessions. No spoofed WebGL, no fake UA, no cloud farm.
 
-Also: the benchmark vs Playwright MCP is in the repo, and it explicitly shows where we lose (speed). Happy to answer anything.
+Two rabbit holes if you're curious:
+
+1. Cross-platform cookie decryption done safely: macOS Keychain / Linux secret-service / Windows DPAPI. Identity cookies for Google/LinkedIn/Microsoft stay excluded so your real browser never gets logged out.
+
+2. Why "genuine consistency" beats spoof stacking: we suppress navigator.webdriver and keep the host's real Chrome doing the talking. The CI runs bot.sannysoft live on every push.
+
+The benchmark vs Playwright MCP is in the repo and explicitly shows where we lose (speed). Happy to answer anything — especially hard questions.
 ```
 
 ---

@@ -670,10 +670,19 @@
 - **Bloqueo activo**: no se puede completar el submit de Product Hunt sin un dominio propio. El usuario necesita comprar/apuntar un dominio (p. ej. `neobrowser.dev`, `getneobrowser.com`) a la landing.
 - **CONTENIDO/DISTRIBUCIÓN**: intento de publicación en LinkedIn vía neobrowser (texto build-in-public actualizado). Resultado: el script se quedó atascado durante la verificación de la página de actividad; la publicación no pudo confirmarse. LinkedIn sigue siendo frágil por cambios frecuentes en el DOM del composer.
 - **DISTRIBUCIÓN**: **post publicado en Reddit r/mcp** vía neobrowser con sesión real: https://old.reddit.com/r/mcp/comments/1vtpi7j/showcase_neobrowser_mcp_server_that_drives_your/ — verificado en `/user/Pitiflautico2/submitted`.
-- **PRODUCTO**: landing actualizada con banner "Launching on Product Hunt soon" y tarjeta del showcase de Reddit en `docs/index.html`.
+- **PRODUCTO**: landing actualizada con banner "Launching on Product Hunt soon" y tarjeta del showcase de Reddit en `docs/index.html`; README añade badge de notificación de Product Hunt.
+- **PRODUCTO**: GitHub Discussions habilitado y creada la discusión de notificación de launch: https://github.com/pitiflautico/neobrowser/discussions/16
 - **OUTREACH**: borrador de email para Simon Willison listo en `promo/drafts/outreach-simonw-2026-08-20.md`, registrado en `promo/drafts/outreach-track.md`.
 - **CONTENIDO**: borradores para publicación manual en X/LinkedIn actualizados con el aprendizaje del día, en `promo/drafts/social-buildinpublic-2026-08-20.md`.
-- **INTELIGENCIA**: Product Hunt confirma bloqueo por dominio; la única vía es un dominio propio apuntado a Netlify/GitHub Pages.
+- **INTELIGENCIA**: análisis de tácticas de Product Hunt 2026 extraídas de guías de launch recientes (Uprows Hub, Signals, LaunchPact). Puntos clave aplicables a NeoBrowser:
+  - Lanzar martes/miércoles a las 00:01 PT; evitar fines de semana.
+  - Objetivo de velocidad: 20-30 upvotes en las primeras 2h, 40-60 en las primeras 4h, ritmo sostenido 10-15/h.
+  - El first comment del maker aumenta ~40% los upvotes; responder cada comentario en <30 min es el segundo signal más fuerte.
+  - Construir 200+ followers en PH "Coming Soon" antes del launch genera 30-50 upvotes en la primera hora.
+  - Email list > X/LinkedIn para conversión de upvotes; outreach personalizado 5-10x mejor que mass DMs.
+  - Upvotes de cuentas con historia y followers pesan 3-5x más que cuentas nuevas; el algoritmo detecta picos y bots.
+  - Aplicado: `producthunt-launch-day.md` y `producthunt-response-playbook.md` actualizados con estas tácticas.
+- **INTELIGENCIA**: Product Hunt sigue bloqueado por dominio; la única vía es un dominio propio apuntado a Netlify/GitHub Pages.
 - **DISTRIBUCIÓN**: Indie Hackers explorado — redirige a homepage porque no hay sesión/cuenta; canal aplazado hasta crear cuenta.
 - **DISTRIBUCIÓN**: HN — intento de comentario value-first en item 47734871; no se encontró el textarea de reply (posible rate-limit bajo o UI colapsada). No se forzó más.
 - **OUTREACH**: segundo borrador listo, esta vez para **swyx** (`promo/drafts/outreach-swyx-2026-08-20.md`).
