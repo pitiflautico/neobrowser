@@ -487,3 +487,10 @@
 - **Mantenimiento**: limpiados procesos Chrome headless huérfanos de NeoBrowser para evitar que los scripts MCP se conecten a una sesión stale.
 - **Push a main**: commit `2bce295` con el script de Product Hunt.
 - **Estado**: 88★ / 4 forks / 0 issues abiertos. Product Hunt es el siguiente gran canal potencial; HN sigue dando ROI estable con comentarios técnicos.
+
+## 2026-08-20 — intento de post HN del estudio + pivot a dev.to
+- **CONTENIDO/DISTRIBUCIÓN — HN**: intenté publicar el estudio de bot detection como post propio en HN (`Honest bot-detection benchmark: real Chrome MCP vs Playwright MCP`). El formulario aceptó el submit, pero HN redirigió a una página `story-toofast` y el post no apareció en `/submitted?id=pitiflautico`. Conclusión: rate-limit por publicar/comentar demasiado rápido con la cuenta nueva. Se documenta y se pivota; no se fuerza.
+- **CONTENIDO — dev.to**: preparado borrador listo para publicar en `promo/drafts/devto-bot-detection-study-ready.md` con front matter completo. dev.to no tiene sesión activa en el perfil (pide login), así que queda como borrador para publicación manual del usuario o para cuando se configure el MCP de Gmail/dev.to.
+- **INTELIGENCIA**: HN aplica rate-limiting activo a cuentas nuevas que publican posts; el outreach por comentarios es más sostenible que posts propios hasta que la cuenta tenga más karma/historial. dev.to es un canal de larga cola útil para SEO y backlinks.
+- **Push a main**: commit pendiente (draft dev.to + script HN study).
+- **Estado**: 88★ / 4 forks / 0 issues abiertos. Se acumula material de contenido de calidad; el próximo gran impulso será Product Hunt el martes 26.
