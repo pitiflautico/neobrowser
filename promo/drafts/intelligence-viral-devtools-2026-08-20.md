@@ -54,3 +54,10 @@
 - 100★ antes de fin de agosto.
 - 500★ antes de mediados de septiembre.
 - 1.000★ antes de octubre.
+
+## Aprendizajes del ciclo 2026-08-20
+- **X está en modo defensivo**: tras el lanzamiento HN y varios posts automáticos, `x.com/account/access` pide CAPTCHA al navegar a `/compose/post` desde NeoBrowser, incluso con 4980 cookies inyectadas y perfil real. Conclusión: X detecta la automatización por comportamiento/headers/CDP, no solo por sesión. Pivotar a contenido preparado para publicación manual del usuario o usar attach mode con Chrome ya abierto por el usuario.
+- **LinkedIn es el canal más estable** con `NEOBROWSER_REAL_PROFILE_DOMAINS=linkedin.com`: el feed carga, el editor se encuentra, el post se publica. Limitación: no se puede adjuntar vídeo/GIF nativo vía upload porque el input file no es persistente; el workaround es link externo al asset.
+- **Reddit old.reddit.com** acepta el submit pero la verificación es lenta/inconsistente; posible rate-limit por cuenta nueva o moderación de r/selfhosted. Requiere re-check manual en 30-60 min.
+- **HN sigue siendo el mejor canal para outreach técnico**: un comentario value-first en un Show HN relacionado (Stagehand/Browserbase) es bien recibido si incluye disclosure honesto y una pregunta genuina.
+- **Producto como marketing**: actualizar la landing con "Pre-launch hardening merged" y CI verde refuerza la narrativa de build-in-public y da material nuevo para posts.

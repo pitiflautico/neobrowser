@@ -468,3 +468,15 @@
 - Verificación local: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` (324 tests), `gitleaks git/dir .` sin findings.
 - Push realizado a `origin/merge/prelaunch-hardening` (commit `a079634`).
 - Queda esperar a que GitHub Actions corra el nuevo run.
+
+## 2026-08-20 — ciclo promo 36: PR #7 mergeado, acciones reales, landing actualizada
+- **PR #6 cerrado** como obsoleto (superseded by #7).
+- **Binario 0.1.7 recompilado e instalado** en `~/.local/bin/neobrowser`.
+- **Tests**: `cargo test --release` verde (incluyendo conformance, verified_actions, stealth, unsafe audit).
+- **CONTENIDO — LinkedIn publicado** (con `NEOBROWSER_REAL_PROFILE_DOMAINS=linkedin.com`, perfil real Profile 24): post sobre el GIF comparativo con link a `assets/neobrowser-vs-headless.gif`. El upload nativo no fue posible porque LinkedIn no expone un input file persistente; el workaround fue el link al GIF. Verificado en recent-activity.
+- **CONTENIDO — X bloqueado**: `x.com/account/access` con CAPTCHA "Un momento…" al intentar publicar el post build-in-public sobre PR #7. Se documenta y se pivota; no se fuerza.
+- **DISTRIBUCIÓN — Reddit r/selfhosted**: submit enviado vía old.reddit.com con el draft selfhosted v2. El formulario aceptó los datos y el botón submit respondió, pero la verificación en `/user/Pitiflautico2/submitted` no muestra el post aún — posible rate-limit, moderación o delay. Pendiente de re-check.
+- **OUTREACH — HN**: comentario value-first en `Show HN: Stagehand v4` (item 49248980), dirigido al maintainer de Browserbase/Stagehand. Tema: real sessions vs fresh headless/extension approach, con disclosure y pregunta genuina. Verificado visible en el hilo.
+- **PRODUCTO — Landing actualizada**: `docs/index.html` ahora dice 67 tools / ~6.4 MB y añade card "Pre-launch hardening merged" con CI verde en 3 OS. Push a main: commit `4bf0b3e`.
+- **INTELIGENCIA**: X está en modo defensivo tras el lanzamiento HN y posts recientes; LinkedIn sigue siendo el canal más estable con perfil real; Reddit requiere verificación manual; HN sigue siendo el mejor canal para outreach técnico value-first.
+- **Estado**: 88★ / 4 forks / 0 issues abiertos. El cuello de botella principal sigue siendo la indetectabilidad en X y la verificación manual de algunas submissions.
