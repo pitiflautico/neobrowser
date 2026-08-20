@@ -234,19 +234,32 @@ impl Browser {
                 .await;
 
             if inject_cookies && crate::cookies::real_profile_folder().is_some() {
-                match crate::cookies::read_real_profile_cookies(None) {
-                    Ok(cookies) if !cookies.is_empty() => {
-                        let n = cookies.len();
-                        if client
-                            .send("Network.setCookies", json!({ "cookies": cookies }))
-                            .await
-                            .is_ok()
-                        {
-                            tracing::info!("real-session: injected {n} cookies from profile");
+                match crate::cookies::real_profile_domains() {
+                    Some(domains) => {
+                        match crate::cookies::read_real_profile_cookies(Some(&domains)) {
+                            Ok(cookies) if !cookies.is_empty() => {
+                                let n = cookies.len();
+                                if client
+                                    .send("Network.setCookies", json!({ "cookies": cookies }))
+                                    .await
+                                    .is_ok()
+                                {
+                                    tracing::info!(
+                                        "real-session: injected {n} cookies for domains {:?}",
+                                        domains
+                                    );
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("real-session: cookie sync skipped: {e}"),
                         }
                     }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("real-session: cookie sync skipped: {e}"),
+                    None => {
+                        tracing::info!(
+                            "real-session: NEOBROWSER_REAL_PROFILE set but no domain allow-list; \
+                             set NEOBROWSER_REAL_PROFILE_DOMAINS to opt in (e.g. x.com,reddit.com)"
+                        );
+                    }
                 }
             }
         }

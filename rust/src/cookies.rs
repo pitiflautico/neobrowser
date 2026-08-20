@@ -216,6 +216,32 @@ pub fn real_profile_folder() -> Option<String> {
     ok.then_some(name)
 }
 
+/// Explicit allow-list of domains to import cookies for when `NEOBROWSER_REAL_PROFILE`
+/// is set. Defaults to `None`, which means **no real-profile cookies are injected**.
+/// This prevents platforms from detecting the cloned session and logging the real
+/// browser out. To opt in, set e.g.
+/// `NEOBROWSER_REAL_PROFILE_DOMAINS=x.com,twitter.com,reddit.com`.
+///
+/// Domains are matched as host_key suffixes, so `x.com` also covers `api.x.com`.
+/// Empty or all-whitespace entries are ignored.
+pub fn real_profile_domains() -> Option<Vec<String>> {
+    let raw = std::env::var("NEOBROWSER_REAL_PROFILE_DOMAINS").ok()?;
+    let domains: Vec<String> = raw
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        })
+        .collect();
+    if domains.is_empty() {
+        None
+    } else {
+        Some(domains)
+    }
+}
+
 /// Read + decrypt the real Chrome profile's cookies into CDP-ready cookie objects,
 /// skipping session-identity cookies (see `SESSION_AUTH_EXCLUSIONS`). Optionally
 /// filter to `domains` (host_key suffix match). Returns [] if no profile/key/DB.
@@ -644,6 +670,38 @@ mod tests {
         assert_eq!(real_profile_folder(), None);
         if let Some(v) = prev {
             std::env::set_var("NEOBROWSER_REAL_PROFILE", v);
+        }
+    }
+
+    #[test]
+    fn real_profile_domains_requires_explicit_allowlist() {
+        let _g = crate::env_test_guard();
+        let prev = std::env::var("NEOBROWSER_REAL_PROFILE_DOMAINS").ok();
+
+        std::env::remove_var("NEOBROWSER_REAL_PROFILE_DOMAINS");
+        assert_eq!(real_profile_domains(), None, "unset must opt out");
+
+        for empty in ["", "  ", ",,", " , "] {
+            std::env::set_var("NEOBROWSER_REAL_PROFILE_DOMAINS", empty);
+            assert_eq!(real_profile_domains(), None, "{empty:?} must be ignored");
+        }
+
+        std::env::set_var("NEOBROWSER_REAL_PROFILE_DOMAINS", "x.com, twitter.com");
+        assert_eq!(
+            real_profile_domains(),
+            Some(vec!["x.com".into(), "twitter.com".into()])
+        );
+
+        std::env::set_var("NEOBROWSER_REAL_PROFILE_DOMAINS", "API.Example.COM");
+        assert_eq!(real_profile_domains(), Some(vec!["api.example.com".into()]));
+
+        // Path traversal / injection attempts are rejected.
+        std::env::set_var("NEOBROWSER_REAL_PROFILE_DOMAINS", "../../etc/passwd");
+        assert_eq!(real_profile_domains(), None);
+
+        match prev {
+            Some(v) => std::env::set_var("NEOBROWSER_REAL_PROFILE_DOMAINS", v),
+            None => std::env::remove_var("NEOBROWSER_REAL_PROFILE_DOMAINS"),
         }
     }
 }

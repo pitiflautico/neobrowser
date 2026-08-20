@@ -80,7 +80,8 @@ Search is multi-source and routes around walls: `search` (web), `search_images`,
 
 Tabs: `new_tab`/`list_tabs`/`switch_tab`/`close_tab` — tools act on the active tab.
 
-Real sessions: set NEOBROWSER_REAL_PROFILE to start authenticated; or \
+Real sessions: set NEOBROWSER_REAL_PROFILE plus \
+NEOBROWSER_REAL_PROFILE_DOMAINS=x.com,reddit.com to import only those cookies; or use \
 NEOBROWSER_ATTACH_PORT to drive a Chrome you already have open. Act only as the user \
 would themselves.
 
