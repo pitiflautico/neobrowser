@@ -571,3 +571,9 @@
 - **Objetivo**: reducir rebote cuando Product Hunt mande tráfico el martes 26 y hacer que la apuesta a 10.000★ sea más compartible.
 - **Push a main**: commit pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — Product Hunt launch day runbook completo
+- **DISTRIBUCIÓN/INTELIGENCIA**: creado `promo/drafts/producthunt-runbook.md` con timeline hora a hora para el martes 26, checklist pre/durante/post-launch, maker updates pre-escritos, riesgos y mitigaciones, y métricas a registrar.
+- **Objetivo**: que el día de Product Hunt sea ejecutable sin improvisar, con respuesta rápida a comentarios y updates de maker listos para cada escenario.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
