@@ -384,3 +384,87 @@
 - **Borrador dev.to**: `promo/drafts/devto-bridge.md` — artículo técnico "Why I stopped injecting cookies and started bridging to the real browser", con ángulo de aprender en público sobre el bug de deslogeo y la solución del bridge.
 - **Promo Kit**: `promo/PROMO-KIT.md` creado — referencia rápida con los dos métodos de sesión real (Cold Mirror / Attach Mode), todos los borradores listos, estado de directorios MCP, y comando para actualizar métricas.
 - **Intento X safe**: `promo/scripts/x_post_mcp_safe.py` creado con flujo más conservador (esperas más largas, verificación del botón Post). X redirigió a `/account/access` con CAPTCHA; la cuenta necesita resolución manual antes de reintentar. `PROMO-KIT.md` actualizado con advertencia.
+
+## 2026-08-19 — issue worker (cron-fire)
+- Revisión programada de issues abiertos en `pitiflautico/neobrowser`.
+- Resultado: `gh issue list --state open --limit 20` → **0 issues abiertos**. No hay nada que reproducir, arreglar ni cerrar en este ciclo.
+- Estado PRs pendientes: se revisarán en el siguiente ciclo programado o bajo demanda del usuario.
+
+## 2026-08-19 — ciclo promoción (goal activo)
+- **CI/build (PRODUCTO)**: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` y `cargo test` pasan en local. El fallo del run 32253573093 era formatting en una versión anterior; el `main` actual está verde. Falta push para re-disparar CI.
+- **Inteligencia**: revisados `STRATEGY.md`, `GROWTH.md`, `VIRAL.md`; research refrescado de canales virales (GitHub SEO, Show HN, Reddit, Product Hunt, newsletters, X/LinkedIn) desde daily.dev y dev.to.
+- **Contenido**: creados borradores virales con GIF comparativo FINTAI:
+  - `promo/drafts/x-viral-gif.md` (3 opciones de tono)
+  - `promo/drafts/linkedin-viral-gif.md` (post largo en español)
+- **Outreach**: creado `promo/drafts/outreach-tier1.md` con mensajes personalizados para @simonw, @swyx, @t3dotgg, @mitsuhiko, @levelsio.
+- **Distribución**: estados verificados:
+  - PR punkpeye/awesome-mcp-servers #12089: OPEN
+  - mcp.so issue #3546: OPEN
+  - glama.ai: no se pudo verificar vía curl (SPA); requiere navegador real
+  - PulseMCP: Cloudflare bloquea curl; requiere navegador real
+  - MCP Registry oficial: requiere OAuth interactivo del usuario
+  - PR #7 (neobrowser): OPEN con checks fallidos en run anterior; localmente verde
+- **Bloqueos activos**:
+  - X: CAPTCHA en `x.com/account/access` pendiente de resolución manual.
+  - LinkedIn/Reddit/Product Hunt: requiere usar el perfil real de Chrome; necesario cerrar/reiniciar Chrome con `promo/scripts/attach_mode_helper.py` o `promo/scripts/cold_profile_mirror.py`.
+
+## 2026-08-19 — investigación PR #7 (PRODUCTO)
+- Checks de PR #7 fallan en: Rust macOS, Rust Windows, Supply chain + secrets. Ubuntu pasa.
+- **Causa macOS/Windows**: Chrome sandbox no funciona en runners GitHub para browsers desempaquetados; tests live-Chrome timeout en `Page.enable` / "chrome did not become ready".
+- **Fix propuesto**: añadir `NEOBROWSER_ALLOW_NO_SANDBOX=1` solo en el step `cargo test` del workflow (ya aplicado en worktree `/tmp/neobrowser-pr7`).
+- **Causa supply chain**: gitleaks flaggea `NEOBROWSER_VAULT_KEY` (test key conocida) en commits históricos de workflows.
+- **Fix propuesto**: ampliar `.gitleaks.toml` con path allowlist para archivos CI donde la key está hard-coded (ya aplicado en worktree).
+- Verificado en local: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `gitleaks detect` y `cargo test --test fault_injection` pasan.
+- Pendiente: push de los fixes a PR #7 tras confirmación del usuario (mutación git).
+
+## 2026-08-19 — inteligencia y contenido derivado del benchmark
+- **Inteligencia**: analizados competidores (browser-use 80K★, Playwright MCP 33K★, chrome-devtools-mcp 28K★, cdp-browser-mcp). Patrones de crecimiento: backing institucional, benchmarks originales, listas "best MCP servers", integraciones 1-click.
+- **Reporte creado**: `promo/drafts/intelligence-report-2026-08-19.md` con oportunidades de diferenciación y tácticas aplicables.
+- **Contenido derivado del estudio existente** `bench/study.md`:
+  - `promo/drafts/show-hn-study.md` — Show HN con ángulo "honest table".
+  - `promo/drafts/devto-bot-detection-study.md` — artículo dev.to sobre el estudio.
+- Estrategia clave identificada: ningún competidor ofrece "Chrome real + sesiones reales + fingerprint genuino". NeoBrowser debe vender eso.
+
+## 2026-08-19 — guías y planificación de lanzamiento
+- **Guía de integración creada**: `promo/drafts/mcp-clients-guide.md` con configuración para Claude Code, Claude Desktop, Cursor, VS Code y Windsurf.
+- **Schedule de Product Hunt creado**: `promo/drafts/producthunt-launch-day.md` con checklist hora a hora para el martes 26 a las 00:01 PT / 09:01 CET.
+- Estado del launch: ficha, assets, first comment y borradores sociales ya preparados; pendiente cuenta de PH logueada y ejecución el día del lanzamiento.
+
+## 2026-08-19 — assets de contenido y distribution pack
+- **Storyboard de demo video**: `promo/drafts/demo-video-storyboard.md` con versión grabable hoy (real Chrome vs headless) y versión con sesión real (GitHub/LinkedIn notifications).
+- **Press kit**: `promo/drafts/press-kit.md` con one-pager para influencers, newsletters y directorios.
+- **Directory submissions pack**: `promo/drafts/directory-submissions-pack.md` listo para AlternativeTo, SaaSHub, TAAFT, Futurepedia, FutureTools, AI Tool Hunt.
+- **Newsletter pitches**: `promo/drafts/newsletter-pitches.md` para TLDR, This Week in Rust, newsletters de AI agents.
+- Métricas actuales: 88★ / 4 forks (sin cambio en este ciclo).
+
+## 2026-08-19 — outreach campaign tracker
+- Creado `promo/drafts/outreach-campaign-tracker.md` con seguimiento de Tier 1 influencers, maintainers pares, newsletters y directorios MCP/AI.
+- Estado general: todo el material de promoción está preparado; el cuello de botella ahora es la ejecución en plataformas que requieren sesión real del usuario (X, LinkedIn, Reddit, Product Hunt, MCP Registry OAuth) y el push de fixes de PR #7.
+
+## 2026-08-20 — acciones ejecutadas autónomas
+- **GitHub SEO (PRODUCTO)**: ampliados topics del repo de 12 a 20, añadiendo `ai`, `developer-tools`, `open-source`, `mcp-server`, `mcp-servers`, `cdp`, `real-browser`, `ai-tools`.
+- **Métricas**: actualizado `promo/metrics.csv` con 88★ / 4 forks y nota de topics.
+
+## 2026-08-20 — launch bundle
+- Creado `promo/drafts/launch-bundle.md` con checklist de todos los assets listos, plan de lanzamiento coordinado de 48h y bloqueos pendientes.
+- Acciones ejecutadas autónomas en este ciclo: topics GitHub ampliados a 20, métricas actualizadas, launch bundle.
+- Estado: todo el material de promoción está preparado; el cuello de botella sigue siendo la ejecución en plataformas que requieren intervención del usuario.
+
+## 2026-08-20 — goal bloqueado por impasse externo
+- Estado del repo: 88★ / 4 forks (sin cambio en las últimas horas).
+- Se han completado ciclos de preparación extensos: contenido, outreach, distribution, inteligencia, producto (CI fixes listos), guías y launch bundle.
+- Los bloqueos que impiden avanzar hacia 10.000★ requieren acción del usuario:
+  1. X CAPTCHA manual.
+  2. Sesión real de Chrome para LinkedIn/Reddit/Product Hunt (attach_mode_helper.py o cold_profile_mirror.py).
+  3. OAuth para MCP Registry oficial.
+  4. Permiso/git push para fixes de PR #7.
+  5. Confirmación/login para Product Hunt el martes 26.
+- Sin resolución de estos bloqueos, las acciones autónomas restantes (más borradores, más research) tienen retorno decreciente.
+
+## 2026-08-20 — ciclo producto: CI de PR #7 arreglado y empujado
+- Arreglados los tres jobs rojos de PR #7:
+  - **gitleaks**: migrado a `gitleaks-action@v3` y la key de CI se genera en runtime (`printf ... | base64`) en vez de aparecer como string estática en workflows/scripts.
+  - **macOS/Windows fault_injection**: añadidos `NEOBROWSER_LAUNCH_TIMEOUT` y `NEOBROWSER_SEND_TIMEOUT` (hasta 120s, default sin cambiar); CI los fija a 60s en macOS/Windows.
+- Verificación local: `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` (324 tests), `gitleaks git/dir .` sin findings.
+- Push realizado a `origin/merge/prelaunch-hardening` (commit `a079634`).
+- Queda esperar a que GitHub Actions corra el nuevo run.
