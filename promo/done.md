@@ -596,3 +596,10 @@
 - **Mitigación propuesta**: intentar un launch manual desde el Chrome del usuario el martes; si PH sigue rechazando la URL, considerar apuntar a un dominio propio o usar una landing intermedia (Vercel/Netlify) con CNAME.
 - **Push a main**: commit pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos. Product Hunt requiere atención antes del martes 26.
+
+## 2026-08-20 — contenido build-in-public sobre bloqueos
+- **CONTENIDO**: creado `promo/drafts/build-in-public-blockers-2026-08-20.md` con hilo para X/LinkedIn sobre los bloqueos de hoy (HN rate-limit, X CAPTCHA, PH URL rejection, Reddit karma gate) y la lección de que el distribution es más difícil que el producto.
+- **Tono**: vulnerable, founder, sin quejarse; enfatiza lo que SÍ funcionó y el siguiente paso.
+- **Uso**: listo para publicar en LinkedIn ahora o en X cuando se desbloquee.
+- **Push a main**: commit pendiente.
+- **Estado**: 89★ / 4 forks / 0 issues abiertos.
