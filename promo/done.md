@@ -375,3 +375,4 @@
 - **Directorios MCP**: PR punkpeye #12089 sigue OPEN; issue mcp.so #3546 sigue OPEN; PR TWiR #8631 cerrado.
 - **Borrador LinkedIn**: `promo/drafts/linkedin-next.md` preparado para publicación manual, con ángulo "aprender en público" sobre el bug de deslogeo y la estrategia Extension Bridge.
 - **Product Hunt**: `promo/drafts/producthunt.md` actualizado a 88 estrellas y 5.6 MB; assets de galería verificados en `docs/assets/`.
+- **Cold Profile Mirror**: script `promo/scripts/cold_profile_mirror.py` creado. Copia `~/Library/Application Support/Google/Chrome/Profile 24` a `~/.neobrowser/profiles/real/Default` cuando Chrome está cerrado, para usar sesiones reales completas en LinkedIn/Reddit/Product Hunt sin inyección de cookies. Detecta si Chrome sigue corriendo y aborta con instrucciones.
