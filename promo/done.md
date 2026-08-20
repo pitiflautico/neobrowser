@@ -516,5 +516,15 @@
 ## 2026-08-20 — outreach HN #3: desktop automation "stop lying"
 - **OUTREACH**: comentario value-first en `Show HN: I spent 3 months making desktop automation stop lying to AI agents` (item 49307819). Conecté su problema (acciones que mienten) con nuestra solución (verified-action contract), compartí una lección concreta sobre compactness vs. verification coverage (`matched_total`/`matched_visible`, hit-testing), y pregunté si había tenido que hacer trade-offs similares. Disclosure incluido. Verificado visible.
 - **INTELIGENCIA**: HN sigue siendo el canal más predecible para outreach técnico; 3 comentarios value-first en un día es posible sin rate-limit si son en hilos distintos y con espaciado.
-- **Push a main**: commit pendiente (log update).
+- **Push a main**: commit `f78680d` (log update).
 - **Estado**: 88★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 — Product Hunt response playbook
+- **DISTRIBUCIÓN/PREPARACIÓN**: creado `promo/drafts/producthunt-response-playbook.md` con:
+  - Maker comment listo para publicar nada más lanzar.
+  - Respuestas pre-escritas a las 10+ preguntas más comunes (diferencias con Playwright MCP/browser-use, seguridad, cookies, CAPTCHA, por qué Rust, clientes MCP, demos, etc.).
+  - Plantillas de update para top 10 y cierre de día.
+  - Reglas de launch day (responder <15 min, no pedir upvotes, usar evidencia, reconocer competidores primero).
+- **OBJETIVO**: reducir tiempo de respuesta el martes 26 y mantener un tono humano/consistente ante comentarios.
+- **Push a main**: commit pendiente (playbook).
+- **Estado**: 88★ / 4 forks / 0 issues abiertos. Product Hunt launch cada vez más preparado.
