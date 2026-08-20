@@ -5,12 +5,20 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=neobrowser&config=%7B%22command%22%3A%22neobrowser%22%7D)
 [![Install in Cursor](https://img.shields.io/badge/Cursor-Install-000000?style=flat-square&logo=cursor&logoColor=white)](https://cursor.com/en/install-mcp?name=neobrowser&config=eyJjb21tYW5kIjoibmVvYnJvd3NlciJ9)
+[![GitHub stars](https://img.shields.io/github/stars/pitiflautico/neobrowser?style=flat-square)](https://github.com/pitiflautico/neobrowser/stargazers)
+[![Landing](https://img.shields.io/badge/Website-pitiflautico.github.io/neobrowser-5eead4?style=flat-square)](https://pitiflautico.github.io/neobrowser/)
 
 **An MCP server that drives a real Google Chrome with your real logged-in sessions — and that reports what actually happened, not what it attempted.**
 
 ```jsonc
 // Add to your MCP client (Claude Code, Claude Desktop, Cursor, …)
 { "mcpServers": { "neobrowser": { "command": "neobrowser" } } }
+```
+
+Or just paste this into Claude Code / Cursor / Codex and let the agent wire it up:
+
+```text
+Install neobrowser (brew install neobrowser or curl -fsSL https://raw.githubusercontent.com/pitiflautico/neobrowser/main/install.sh | sh), register it as an MCP server named neobrowser, and use it to browse the real Chrome profile I already have logged in. If Chrome is not installed, report that instead of guessing.
 ```
 
 ## A status the caller can act on
@@ -89,6 +97,12 @@ Windows binaries are on the [Releases](https://github.com/pitiflautico/neobrowse
 ![NeoBrowser demo](docs/assets/demo.gif)
 
 *Real run: login, file upload and a bot-detector check against live sites (~14 s).*
+
+### Real sessions vs. a fresh headless browser
+
+![Headless browser blocked at login wall vs NeoBrowser using real Chrome and reaching the dashboard](docs/assets/neobrowser-vs-headless.gif)
+
+*Same target, same prompt: a sterile headless browser hits the login wall; NeoBrowser lands already authenticated because it drives your real Chrome profile.*
 
 ```bash
 python3 rust/scripts/demo.py     # drives a real login, file upload, and a bot-detector check

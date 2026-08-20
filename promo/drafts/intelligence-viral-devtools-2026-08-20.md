@@ -58,6 +58,20 @@
 ## Aprendizajes del ciclo 2026-08-20
 - **X está en modo defensivo**: tras el lanzamiento HN y varios posts automáticos, `x.com/account/access` pide CAPTCHA al navegar a `/compose/post` desde NeoBrowser, incluso con 4980 cookies inyectadas y perfil real. Conclusión: X detecta la automatización por comportamiento/headers/CDP, no solo por sesión. Pivotar a contenido preparado para publicación manual del usuario o usar attach mode con Chrome ya abierto por el usuario.
 - **LinkedIn es el canal más estable** con `NEOBROWSER_REAL_PROFILE_DOMAINS=linkedin.com`: el feed carga, el editor se encuentra, el post se publica. Limitación: no se puede adjuntar vídeo/GIF nativo vía upload porque el input file no es persistente; el workaround es link externo al asset.
-- **Reddit old.reddit.com** acepta el submit pero la verificación es lenta/inconsistente; posible rate-limit por cuenta nueva o moderación de r/selfhosted. Requiere re-check manual en 30-60 min.
-- **HN sigue siendo el mejor canal para outreach técnico**: un comentario value-first en un Show HN relacionado (Stagehand/Browserbase) es bien recibido si incluye disclosure honesto y una pregunta genuina.
-- **Producto como marketing**: actualizar la landing con "Pre-launch hardening merged" y CI verde refuerza la narrativa de build-in-public y da material nuevo para posts.
+- **Reddit old.reddit.com** acepta el submit pero el post no aparece en `/submitted` tras más de 30 min; posible spam filter, karma gate o moderación de r/selfhosted. Canal descartado hasta tener una cuenta con más karma/historial.
+- **HN sigue siendo el mejor canal para outreach técnico**: comentarios value-first en Show HN relacionados funcionan. Posts propios en cuenta nueva son rate-limitados (`story-toofast`); hay que espaciarlos y alternar con comentarios.
+- **Producto como marketing**: actualizar la landing/README con logros recientes (CI verde, GIF comparativo) refuerza la narrativa de build-in-public y da material nuevo para posts.
+
+## Análisis de competidores (2026-08-20)
+Repos analizados: `browser-use/browser-use` (109k★), `microsoft/playwright-mcp` (36k★), `browserbase/stagehand` (24k★).
+
+### Tácticas que usan y que podemos aplicar
+1. **Demos visuales en el README**: browser-use embebe GIFs/videos directamente en cada sección (`Fill Forms`, `Extract data`). Stagehand también usa media. *Aplicación*: añadimos el GIF comparativo `neobrowser-vs-headless.gif` al README.
+2. **One-line prompt para agentes**: browser-use da un prompt exacto que el usuario pega en Claude/Cursor para que el agente instale todo solo. *Aplicación*: añadido al README.
+3. **Badges de comunidad y descubrimiento**: Stagehand tiene badge de Trendshift y Discord; browser-use badges de blog, merch, cloud, discord. *Aplicación*: añadidos badge de estrellas y enlace a landing; evaluar Discord/Trendshift cuando haya tracción.
+4. **Benchmarks públicos visibles**: browser-use destaca #1 en Odysseys leaderboard y BU Bench; Stagehand no enfatiza benchmarks. *Aplicación*: nuestro `bench/study.md` y `bench/compare.md` son ventajas; hay que mencionarlos en cada pieza de contenido.
+5. **Cloud vs Open Source comparado**: browser-use tiene una tabla clara. *Aplicación*: podemos enfatizar más el modelo local/self-hosted vs cloud.
+6. **Narrativa de "built for agents"**: Stagehand se posiciona como "Playwright was built for testing, Stagehand is built for agents". *Aplicación*: reforzar que NeoBrowser es "MCP server for agents that need real sessions".
+
+### Diferenciador defensible de NeoBrowser
+Ninguno de los tres ofrece reutilización genuina del perfil de Chrome del usuario con cookie decryption vía OS keychain. Ese es el nicho: **local, real-session, self-hosted**. El mensaje debe ser "tu navegador, tus sesiones, tu máquina" frente a "navegador limpio en la nube".

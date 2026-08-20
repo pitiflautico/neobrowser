@@ -492,5 +492,16 @@
 - **CONTENIDO/DISTRIBUCIÓN — HN**: intenté publicar el estudio de bot detection como post propio en HN (`Honest bot-detection benchmark: real Chrome MCP vs Playwright MCP`). El formulario aceptó el submit, pero HN redirigió a una página `story-toofast` y el post no apareció en `/submitted?id=pitiflautico`. Conclusión: rate-limit por publicar/comentar demasiado rápido con la cuenta nueva. Se documenta y se pivota; no se fuerza.
 - **CONTENIDO — dev.to**: preparado borrador listo para publicar en `promo/drafts/devto-bot-detection-study-ready.md` con front matter completo. dev.to no tiene sesión activa en el perfil (pide login), así que queda como borrador para publicación manual del usuario o para cuando se configure el MCP de Gmail/dev.to.
 - **INTELIGENCIA**: HN aplica rate-limiting activo a cuentas nuevas que publican posts; el outreach por comentarios es más sostenible que posts propios hasta que la cuenta tenga más karma/historial. dev.to es un canal de larga cola útil para SEO y backlinks.
-- **Push a main**: commit pendiente (draft dev.to + script HN study).
+- **Push a main**: commit `a15811e` (draft dev.to + script HN study).
 - **Estado**: 88★ / 4 forks / 0 issues abiertos. Se acumula material de contenido de calidad; el próximo gran impulso será Product Hunt el martes 26.
+
+## 2026-08-20 — análisis de competidores + mejoras de README
+- **DISTRIBUCIÓN — Reddit**: re-check en `/user/Pitiflautico2/submitted` confirma que el post de r/selfhosted no apareció. Posible spam filter/karma gate. Canal descartado hasta que la cuenta tenga más historia.
+- **INTELIGENCIA**: análisis de `browser-use` (109k★), `playwright-mcp` (36k★) y `stagehand` (24k★). Lecciones aplicables: demos visuales embebidos en README, one-line prompt para agentes, badges de comunidad/descubrimiento, benchmarks públicos visibles, posicionamiento "built for agents".
+- **PRODUCTO — README mejorado**:
+  - Añadido badge de GitHub stars y enlace a la landing.
+  - Añadido one-line prompt para Claude Code/Cursor/Codex (táctica de browser-use).
+  - Añadido GIF comparativo `neobrowser-vs-headless.gif` en "See it work".
+- **INTELIGENCIA**: diferenciador defensible de NeoBrowser es el nicho local/self-hosted/real-session; ningún competidor ofrece cookie decryption vía OS keychain para reutilizar el perfil real del usuario.
+- **Push a main**: commit pendiente (README + inteligencia).
+- **Estado**: 88★ / 4 forks / 0 issues abiertos.
