@@ -526,5 +526,11 @@
   - Plantillas de update para top 10 y cierre de día.
   - Reglas de launch day (responder <15 min, no pedir upvotes, usar evidencia, reconocer competidores primero).
 - **OBJETIVO**: reducir tiempo de respuesta el martes 26 y mantener un tono humano/consistente ante comentarios.
-- **Push a main**: commit pendiente (playbook).
+- **Push a main**: commit `36cf717` (playbook).
 - **Estado**: 88★ / 4 forks / 0 issues abiertos. Product Hunt launch cada vez más preparado.
+
+## 2026-08-20 — LinkedIn de mañana preparado
+- **CONTENIDO**: borrador `promo/drafts/linkedin-viral-counter.md` con el GIF viral del contador de estrellas. Tono founder, vulnerable + técnico, explica el problema real (headless sin sesión) y la apuesta (88/10.000).
+- **PRODUCTO**: script `promo/scripts/linkedin_post_counter.py` listo para ejecutar mañana (viernes 21) en la ventana 8:30–10:00 CET. Máximo 1 LinkedIn/día; este será el post del día siguiente.
+- **Push a main**: commit pendiente (LinkedIn draft + script).
+- **Estado**: 88★ / 4 forks / 0 issues abiertos.
