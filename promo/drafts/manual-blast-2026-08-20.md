@@ -20,31 +20,20 @@ El agente automático ha tocado techos en todas las plataformas. Estas 5 accione
 
 ---
 
-## 2. Post manual en X (2 min)
-**Por qué:** X está desbloqueado, pero la automatización no consigue hacer submit. Un post manual tuyo ahora mismo tiene más alcance que 10 intentos de bot.
+## 2. Post manual en X / LinkedIn (2 min)
+**Por qué:** X y LinkedIn están desbloqueados, pero la automatización no consigue hacer submit. Un post manual tuyo ahora mismo tiene más alcance que 10 intentos de bot.
 
-**Copia y pega en `https://x.com/compose/post`:**
+**Borrador actualizado con lo de hoy** en `promo/drafts/social-buildinpublic-2026-08-20.md` (incluye versión corta para X y long-form para LinkedIn).
 
+Resumen del mensaje:
 ```
-Day N of the 10k★ or shutdown bet:
+Day N of the 10k★ or shutdown bet: 89★, 9,911 to go.
 
-• HN: rate-limited
-• X: CAPTCHA wall
-• Product Hunt: rejects GitHub Pages URL
-• Reddit: karma gate
+✓ Netlify Drop reclamado y público vía NeoBrowser.
+✗ Product Hunt rechaza netlify.app, GitHub Pages y el repo.
+✓ Reddit r/mcp post en vivo.
 
-Only LinkedIn works. 89★, 9,911 to save the AI employee.
-
-Lesson: distribution is harder than the product.
-
-→ https://github.com/pitiflautico/neobrowser
-```
-
-**Reply opcional (bajo el post):**
-```
-What I'm building: an MCP server that drives your real Chrome, with your real logged-in sessions, so AI agents stop bouncing off login walls.
-
-Built in public. 89/10,000.
+Lección: distribution is harder than the product.
 ```
 
 ---
@@ -102,19 +91,16 @@ If you think AI agents should use the real web like humans do, the repo is in th
 
 ---
 
-## 5. Enviar 1 mensaje a 1 influencer (3 min)
-**Por qué:** el outreach directo no depende de algoritmos ni rate-limits.
+## 5. Enviar 1 mensaje a Simon Willison (@simonw) (3 min)
+**Por qué:** el outreach directo no depende de algoritmos ni rate-limits, y Simon es el que más encaja con el ángulo de benchmark honesto.
 
-**Elige uno de estos (mensajes en `promo/drafts/outreach-batch-2026-08-20.md`):**
-- Simon Willison (@simonw) — le gustan benchmarks reproducibles.
-- swyx — cubre ecosistema MCP.
-- Theo (@t3dotgg) — takes fuertes sobre dev tools.
-- Armin Ronacher (@mitsuhiko) — Rust + agentes.
-- levelsio (@levelsio) — indie automation.
+**Borrador listo en `promo/drafts/outreach-simonw-2026-08-20.md`**. Es un email corto pidiendo su opinión sobre qué debería medir un benchmark justo de browser MCPs, con link a `bench/study.md`.
 
 **Cómo enviar:**
-- Si tienes su email público: email corto.
-- Si no: reply genuino a un tweet/post reciente suyo, no DM frío.
+1. Ve a `https://simonwillison.net/about/` y busca su email actual (suele tener un botón "Reveal my Address").
+2. Envía el email desde tu cliente habitual. Respeta el tono: pregunta, no pitch.
+
+**Alternativa:** si no encuentras el email, un reply genuino a su próximo post sobre MCP/browser tooling en Bluesky/Mastodon/X también sirve.
 
 **Regla:** aporta valor primero, menciona NeoBrowser solo si encaja, nunca pitches genéricos.
 

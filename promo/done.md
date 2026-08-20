@@ -670,6 +670,10 @@
 - **Bloqueo activo**: no se puede completar el submit de Product Hunt sin un dominio propio. El usuario necesita comprar/apuntar un dominio (p. ej. `neobrowser.dev`, `getneobrowser.com`) a la landing.
 - **CONTENIDO/DISTRIBUCIÓN**: intento de publicación en LinkedIn vía neobrowser (texto build-in-public actualizado). Resultado: el script se quedó atascado durante la verificación de la página de actividad; la publicación no pudo confirmarse. LinkedIn sigue siendo frágil por cambios frecuentes en el DOM del composer.
 - **DISTRIBUCIÓN**: **post publicado en Reddit r/mcp** vía neobrowser con sesión real: https://old.reddit.com/r/mcp/comments/1vtpi7j/showcase_neobrowser_mcp_server_that_drives_your/ — verificado en `/user/Pitiflautico2/submitted`.
+- **PRODUCTO**: landing actualizada con banner "Launching on Product Hunt soon" y tarjeta del showcase de Reddit en `docs/index.html`.
+- **OUTREACH**: borrador de email para Simon Willison listo en `promo/drafts/outreach-simonw-2026-08-20.md`, registrado en `promo/drafts/outreach-track.md`.
+- **CONTENIDO**: borradores para publicación manual en X/LinkedIn actualizados con el aprendizaje del día, en `promo/drafts/social-buildinpublic-2026-08-20.md`.
+- **INTELIGENCIA**: Product Hunt confirma bloqueo por dominio; la única vía es un dominio propio apuntado a Netlify/GitHub Pages.
 - **Scripts nuevos**: `promo/scripts/netlify_claim_recon.py`, `netlify_claim_github.py`, `netlify_make_public_v3.py`, `producthunt_launch_v2.py`, `producthunt_rejection_check.py`, `producthunt_url_test.py`, `linkedin_post_v3.py`, `reddit_post_mcp_v2.py`.
 - **Push a main**: pendiente.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.

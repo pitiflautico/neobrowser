@@ -28,6 +28,11 @@ Vía: responder en el propio hilo de HN (natural, no invasivo). Si su perfil tie
 **Para newsletters**:
 "Lanzamos NeoBrowser en HN esta semana (18+ puntos primeras horas): MCP server que drivea Chrome real con sesiones reales, stealth genuino verificado en CI, y un benchmark honesto donde reconocemos dónde perdemos. Si encaja en la newsletter: github.com/pitiflautico/neobrowser"
 
+## Registro de contactos
+| fecha | cuenta | vía | tema | estado | notas |
+|---|---|---|---|---|---|
+| 2026-08-20 | @simonw | email/Bluesky/Mastodon | benchmark honesto browser MCPs | borrador listo | pendiente envío del usuario; draft en `outreach-simonw-2026-08-20.md` |
+
 ## Reglas
 - Máx 1-2 contactos/día, siempre personalizados. Nada de plantillas en masa.
 - Pedir feedback > pedir difusión. La difusión viene sola si el producto impresiona.

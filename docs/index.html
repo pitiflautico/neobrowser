@@ -65,9 +65,13 @@
   <div id="ph-welcome" style="display:none;background:linear-gradient(90deg,#ff6154,#ff8a7a);color:#fff;text-align:center;padding:10px 16px;font-size:14px;font-weight:600;border-radius:0 0 12px 12px;margin-bottom:8px">
     👋 Product Hunt visitor — thanks for hunting us. The one-liner install is below, and the GitHub star counter is live.
   </div>
+  <div id="ph-coming" style="background:linear-gradient(90deg,#ff6154,#ff8a7a);color:#fff;text-align:center;padding:10px 16px;font-size:14px;font-weight:600;border-radius:0 0 12px 12px;margin-bottom:8px">
+    🚀 Launching on Product Hunt soon — <a href="https://github.com/pitiflautico/neobrowser" style="color:#fff;text-decoration:underline;font-weight:700">star the repo</a> to unlock the launch.
+  </div>
   <script>
     if (location.search.includes('ref=producthunt') || location.search.includes('ref=product-hunt')) {
       document.getElementById('ph-welcome').style.display = 'block';
+      document.getElementById('ph-coming').style.display = 'none';
     }
   </script>
 
@@ -137,6 +141,7 @@
     <h2>What's new</h2>
     <div class="grid">
       <div class="card"><h3>🚀 Pre-launch hardening merged</h3><p>PR #7 ships the verified-action contract, security fixes and CI resilience. The suite now passes on Ubuntu (real Chrome), macOS and Windows — <a href="https://github.com/pitiflautico/neobrowser/actions/workflows/ci.yml">see the green runs</a>.</p></div>
+      <div class="card"><h3>📣 Reddit r/mcp showcase live</h3><p>We posted an honest walkthrough of real-session browsing on <a href="https://old.reddit.com/r/mcp/comments/1vtpi7j/showcase_neobrowser_mcp_server_that_drives_your/">r/mcp</a>. Join the discussion or ask hard questions about the benchmark.</p></div>
       <div class="card"><h3>🔒 Domain-scoped real sessions</h3><p><code>NEOBROWSER_REAL_PROFILE_DOMAINS</code> lets you inject cookies only for specific sites. Identity cookies stay protected so your real browser never gets logged out.</p></div>
       <div class="card"><h3>🛡️ Security-first defaults</h3><p>Cookie/session data is sealed at rest. Credentials never follow redirects off-origin. The sandbox is on by default; <code>--no-sandbox</code> requires an explicit opt-in.</p></div>
       <div class="card"><h3>✅ Verified actions</h3><p>Every click, fill or submit reports what actually happened — succeeded, blocked, uncertain or needs human — instead of always returning "Clicked".</p></div>
