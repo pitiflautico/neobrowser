@@ -757,3 +757,8 @@
 - **CANALES**: verificado con neobrowser que LinkedIn, dev.to y Hacker News no tienen sesión válida en el perfil de neobrowser. X tiene una label temporal que limita alcance. Reddit submit está bloqueado. Todo documentado para pivotar a contenido y outreach por email/manual.
 - **CI**: run 32401025627 en main (3ad369e) completado con éxito. README.md editado; `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` verificados en local.
 - **Estado**: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-20 (cron 3f136bac) — check is-a-dev PR #48212
+- PR #48212 en is-a-dev/register: no accesible o no encontrado vía `gh pr view`.
+- `https://neobrowser.is-a.dev/` devuelve HTTP 302 (aún no resuelve a landing 200).
+- Product Hunt launch sigue aplazado; el cron continuará monitoreando.
