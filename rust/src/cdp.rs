@@ -33,7 +33,19 @@ pub mod client;
 pub mod transport;
 
 /// Default seconds to wait for a CDP response, matching the Python `_SEND_TIMEOUT`.
-pub const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// `NEOBROWSER_SEND_TIMEOUT` overrides this in seconds (e.g. `60` for slow CI
+/// runners). It is capped so a typo cannot hang a caller forever.
+pub fn default_send_timeout() -> Duration {
+    const DEFAULT: Duration = Duration::from_secs(30);
+    const MAX: Duration = Duration::from_secs(120);
+    std::env::var("NEOBROWSER_SEND_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .filter(|d| *d <= MAX)
+        .unwrap_or(DEFAULT)
+}
 
 #[derive(Debug, Error, Clone)]
 pub enum CdpError {

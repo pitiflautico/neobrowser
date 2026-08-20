@@ -10,9 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::transport::connection_loop;
-use super::{
-    CdpClient, CdpError, CdpEvent, Outbound, Pending, PendingRequest, DEFAULT_SEND_TIMEOUT,
-};
+use super::{CdpClient, CdpError, CdpEvent, Outbound, Pending, PendingRequest};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
@@ -47,7 +45,7 @@ impl CdpClient {
 
     /// Send a CDP command with the default timeout and await its result object.
     pub async fn send(&self, method: &str, params: Value) -> Result<Value, CdpError> {
-        self.send_timeout(method, params, DEFAULT_SEND_TIMEOUT)
+        self.send_timeout(method, params, super::default_send_timeout())
             .await
     }
 

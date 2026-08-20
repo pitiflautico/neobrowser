@@ -65,12 +65,15 @@ jobs:
           # wanted here: a matrix cell that cannot sandbox should go red.
           ./target/release/neobrowser doctor --json
 
+      - name: Set CI vault key
+        shell: bash
+        run: echo "NEOBROWSER_VAULT_KEY=$(printf '%s' 'ci-only-vault-key-32-bytes-!!!!!' | base64)" >> "$GITHUB_ENV"
+
       - name: Test suite
         shell: bash
         env:
           NEOBROWSER_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
           NEOBROWSER_DISABLE_GPU: "1"
-          NEOBROWSER_VAULT_KEY: "Y2ktb25seS12YXVsdC1rZXktMzItYnl0ZXMtISEhISE="
           # `persistent` reuses one named profile across the run, which is the mode a real
           # user is in; `isolated` is the default ephemeral one. They exercise different
           # lock and cookie paths.

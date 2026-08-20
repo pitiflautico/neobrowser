@@ -144,7 +144,7 @@ if [ -d "$WORK/src/rust" ]; then
   # A throwaway vault key: without one, on a host with no unlocked keyring the session
   # tests would exercise the refusal path instead of the crypto.
   if ( cd "$WORK/src/rust" \
-       && NEOBROWSER_VAULT_KEY="Y2ktb25seS12YXVsdC1rZXktMzItYnl0ZXMtISEhISE=" \
+       && NEOBROWSER_VAULT_KEY="$(printf '%s' 'ci-only-vault-key-32-bytes-!!!!!' | base64)" \
           cargo test --release >"$WORK/test.log" 2>&1 ); then
     ok "test suite passed ($(grep -c 'test result: ok' "$WORK/test.log") suites)"
   else

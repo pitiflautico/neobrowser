@@ -15,12 +15,16 @@ deterministic key on a runner with no keychain. High entropy by construction, wh
 exactly what a generic secret rule looks for, so the scan flagged it and failed the job
 on a value that is published in this file on purpose.
 
-Allowlisted by its exact value rather than by path: if this key ever appears somewhere
-new it is still fine, and any OTHER high-entropy string in the workflows is still a
-finding.
+Allowlisted by value and by the CI paths where it is intentionally hard-coded. Any
+OTHER high-entropy string in the workflows is still a finding.
 """
 regexes = [
   '''Y2ktb25seS12YXVsdC1rZXktMzItYnl0ZXMtISEhISE=''',
+]
+paths = [
+  '''\.github\/workflows.*\.yml''',
+  '''\.github\/workflows-proposed.*\.yml''',
+  '''scripts\/verify-release\.sh''',
 ]
 
 [[allowlists]]

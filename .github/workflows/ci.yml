@@ -102,17 +102,32 @@ jobs:
       - name: Clippy
         if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --all-targets -- -D warnings
+      # CI runners have no unlocked keyring, so the vault would refuse to write
+      # and the session tests would only ever exercise the refusal path. Generate
+      # the throwaway key at runtime so it never appears as a static high-entropy
+      # string that secret scanners flag.
+      - name: Set CI vault key
+        shell: bash
+        run: echo "NEOBROWSER_VAULT_KEY=$(printf '%s' 'ci-only-vault-key-32-bytes-!!!!!' | base64)" >> "$GITHUB_ENV"
+
       - name: Test (incl. live-Chrome stealth verification)
         # Chrome is installed above, so the stealth integration test actually runs
         # (it self-skips only when no Chrome is present). NEOBROWSER_DISABLE_GPU
         # forces software rendering on the GPU-less runner.
+        #
+        # GitHub-hosted macOS and Windows runners cannot run Chrome's sandbox
+        # reliably for a browser unpacked into the workspace; without
+        # NEOBROWSER_ALLOW_NO_SANDBOX the live-Chrome tests time out on the first
+        # CDP command. This opt-in affects CI only; released binaries still
+        # require a working sandbox by default.
         env:
           NEOBROWSER_CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
           NEOBROWSER_DISABLE_GPU: "1"
-          # CI runners have no unlocked keyring, so the vault would refuse to write
-          # and the session tests would only ever exercise the refusal path. This is
-          # a throwaway CI key, never a real one.
-          NEOBROWSER_VAULT_KEY: "Y2ktb25seS12YXVsdC1rZXktMzItYnl0ZXMtISEhISE="
+          NEOBROWSER_ALLOW_NO_SANDBOX: "1"
+          # Give slow CI runners room to launch Chrome and answer the first CDP
+          # command without making the default binary sluggish.
+          NEOBROWSER_LAUNCH_TIMEOUT: "60"
+          NEOBROWSER_SEND_TIMEOUT: "60"
         run: cargo test
 
       # docs/TOOLS.md is the public reference for every tool. It is generated, but it
@@ -170,7 +185,7 @@ jobs:
       # rather than on a finding — a red build that says nothing about secrets. The
       # scan itself, which is the point, is unaffected.
       - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: "false"

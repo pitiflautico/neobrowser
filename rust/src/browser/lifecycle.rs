@@ -54,15 +54,28 @@ impl Browser {
         st.tabs.clear();
         st.active = 0;
 
+        let owned_launch_timeout = std::env::var("NEOBROWSER_LAUNCH_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .filter(|d| *d <= Duration::from_secs(120))
+            .unwrap_or(Duration::from_secs(15));
+        let attached_launch_timeout = std::env::var("NEOBROWSER_ATTACH_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .filter(|d| *d <= Duration::from_secs(120))
+            .unwrap_or(Duration::from_secs(5));
+
         let (proc, port, attached) = match attach_port() {
             Some(port) => {
-                chrome::wait_for_chrome(port, Duration::from_secs(5)).await?;
+                chrome::wait_for_chrome(port, attached_launch_timeout).await?;
                 (None, port, true)
             }
             None => {
                 let proc = ChromeProcess::launch(self.profile_dir()).await?;
                 let port = proc.port;
-                chrome::wait_for_chrome(port, Duration::from_secs(15)).await?;
+                chrome::wait_for_chrome(port, owned_launch_timeout).await?;
                 (Some(proc), port, false)
             }
         };
