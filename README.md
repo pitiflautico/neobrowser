@@ -77,7 +77,7 @@ When a site throws an interactive challenge (reCAPTCHA, Turnstile, DataDome), Ne
 
 **Two safety gates:** session-identity cookies for major providers (Google, LinkedIn, Microsoft, GitHub, X/Twitter, Reddit, Facebook, Instagram, Slack, Discord) are excluded from import, and non-persistent/session cookies are skipped by default. Copying those can log your real browser out. `NEOBROWSER_IMPORT_SESSION_COOKIES=1` restores the previous behaviour if you need it. For the listed providers, expect to log in once inside the NeoBrowser profile.
 
-> Single ~6.3 MB Rust binary. No Node, no Python, no bundled browser download. Static musl builds are published per release and verified in CI. The original Python implementation is archived under [`archive/python-oracle/`](archive/python-oracle/).
+> Single ~6.3 MB binary. No Node, no Python, no bundled browser download. Static musl builds are published per release and verified in CI. The original Python implementation is archived under [`archive/python-oracle/`](archive/python-oracle/).
 
 ---
 
