@@ -814,6 +814,9 @@
 ## 2026-08-21 (cron 3f136bac, 5ª comprobación) — check is-a-dev PR #48212
 - Mismo estado: PR inaccesible; dominio 302. Product Hunt sigue aplazado.
 
+## 2026-08-21 (cron 3f136bac, 6ª comprobación) — check is-a-dev PR #48212
+- Mismo estado: PR inaccesible; dominio 302. Product Hunt sigue aplazado.
+
 ## 2026-08-21 (issue worker f7b8a65b) — revisión de issues abiertos
 - `gh issue list --state open` devuelve 0 issues.
 - Tablero limpio; no hay acciones pendientes.
