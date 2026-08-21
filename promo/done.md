@@ -769,3 +769,14 @@
 - Fix aplicado en `.github/workflows/nightly.yml`: añadidas variables de entorno `NEOBROWSER_LAUNCH_TIMEOUT=60`, `NEOBROWSER_SEND_TIMEOUT=60`, `NEOBROWSER_ATTACH_TIMEOUT=30` al step "Test suite", alineando con la configuración ya usada en `ci.yml`.
 - Push a main: `3fdb94e`.
 - Estado: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-21 — Issue #17: Website fails to load
+- **PRODUCTO**: issue reportado por sanjarcode: `https://pitiflautico.github.io/neobrowser/` redirigía a `https://is-a.dev/available?d=neobrowser`.
+- Causa raíz: `docs/CNAME` apuntaba a `neobrowser.is-a.dev`, que aún no está aprobado/activo.
+- Fix aplicado:
+  - Eliminado `docs/CNAME` para que GitHub Pages sirva la landing en `https://pitiflautico.github.io/neobrowser/`.
+  - Actualizado `og:image` en `docs/index.html` a la URL de GitHub Pages.
+  - Actualizada la tarjeta "What's new" para reflejar el fallback a GitHub Pages mientras llega el dominio.
+- Commits: `3197053`.
+- Issue #17 cerrado con comentario explicativo.
+- Estado: 89★ / 4 forks / 0 issues abiertos.
