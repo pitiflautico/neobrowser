@@ -762,3 +762,10 @@
 - PR #48212 en is-a-dev/register: no accesible o no encontrado vía `gh pr view`.
 - `https://neobrowser.is-a.dev/` devuelve HTTP 302 (aún no resuelve a landing 200).
 - Product Hunt launch sigue aplazado; el cron continuará monitoreando.
+
+## 2026-08-21 — Fix CI nightly matrix (run 32444541020)
+- **PRODUCTO**: diagnosticado el fallo en `windows-latest · chrome-stable · persistent` del nightly matrix (run 32444541020).
+- Causa raíz: los tests `fault_injection` fallaban porque Chrome no se ponía ready dentro del timeout por defecto (15s) en runners Windows. El error era `chrome did not become ready on port X within timeout`.
+- Fix aplicado en `.github/workflows/nightly.yml`: añadidas variables de entorno `NEOBROWSER_LAUNCH_TIMEOUT=60`, `NEOBROWSER_SEND_TIMEOUT=60`, `NEOBROWSER_ATTACH_TIMEOUT=30` al step "Test suite", alineando con la configuración ya usada en `ci.yml`.
+- Push a main: `3fdb94e`.
+- Estado: 89★ / 4 forks / 0 issues abiertos.

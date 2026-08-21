@@ -144,3 +144,4 @@ date,stars,forks,notes
 2026-08-20,89,4,CANALES: LinkedIn/dev.to/HN sin sesion valida en perfil neobrowser; X con label temporal; Reddit submit bloqueado
 2026-08-20,89,4,CI: run 32401025627 verde en main (3ad369e)
 2026-08-20,89,4,CRON 3f136bac: PR is-a-dev/register #48212 no encontrado/inaccesible; neobrowser.is-a.dev devuelve 302; PH launch aplazado
+2026-08-21,89,4,CI fix: nightly.yml ahora usa NEOBROWSER_LAUNCH/SEND/ATTACH_TIMEOUT 60/60/30 para Windows/macOS
