@@ -780,3 +780,17 @@
 - Commits: `3197053`.
 - Issue #17 cerrado con comentario explicativo.
 - Estado: 89★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-21 — Issue #18: NeoBrowser desloguea sesiones reales de Chrome
+- **PRODUCTO**: issue reportado por el usuario: tras usar NeoBrowser, el Chrome normal pierde sesiones en todos los sitios.
+- **Diagnóstico**: en modo `NEOBROWSER_REAL_PROFILE`, NeoBrowser inyectaba *todas* las cookies del perfil real en el navegador Ghost, incluyendo los tokens de sesión no persistentes. Los proveedores detectan ese uso duplicado y revocan la sesión real.
+- **Fix aplicado**:
+  - `rust/src/cookies/read.rs`: por defecto se omiten las cookies de sesión (`expires <= 0`). Solo se importan cookies persistentes ("remember me").
+  - `rust/src/cookies/exclude.rs`: ampliada la lista de exclusión de cookies de identidad a GitHub, X/Twitter, Reddit, Facebook, Instagram, Slack y Discord.
+  - Añadida variable de entorno `NEOBROWSER_IMPORT_SESSION_COOKIES=1` como escape hatch para recuperar el comportamiento anterior.
+  - Actualizados README, `profile_mode_report` y tests.
+- **Fix adicional**: `rust/tests/fault_injection.rs` era dependiente de Unix (`pkill`, paths `/tmp`), lo que rompía el CI en Windows. Se reemplazó `pkill` por `Browser::kill_for_test()` y `/tmp` por `std::env::temp_dir()`.
+- Verificaciones locales: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` y `cargo test` (270 unit + 56 integración) pasan.
+- Commits: `409e4d5`.
+- Issue #18 cerrado.
+- Estado: 90★ / 4 forks / 0 issues abiertos.
