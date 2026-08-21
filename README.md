@@ -75,7 +75,7 @@ It does not spoof. It runs real Chrome, suppresses `navigator.webdriver`, keeps 
 
 When a site throws an interactive challenge (reCAPTCHA, Turnstile, DataDome), NeoBrowser detects the wall and reports it. It does not pretend to be invisible.
 
-**One exception:** Google, LinkedIn, and Microsoft session-identity cookies are excluded from import. Copying those can log your real browser out. Everything else comes across. For those three sites, expect to log in once inside the NeoBrowser profile.
+**Two safety gates:** session-identity cookies for major providers (Google, LinkedIn, Microsoft, GitHub, X/Twitter, Reddit, Facebook, Instagram, Slack, Discord) are excluded from import, and non-persistent/session cookies are skipped by default. Copying those can log your real browser out. `NEOBROWSER_IMPORT_SESSION_COOKIES=1` restores the previous behaviour if you need it. For the listed providers, expect to log in once inside the NeoBrowser profile.
 
 > Single ~6.3 MB Rust binary. No Node, no Python, no bundled browser download. Static musl builds are published per release and verified in CI. The original Python implementation is archived under [`archive/python-oracle/`](archive/python-oracle/).
 
@@ -225,6 +225,8 @@ Set `NEOBROWSER_REAL_PROFILE` to the Chrome profile folder whose sessions you wa
 } } }
 ```
 
+By default only **persistent** cookies are imported; non-persistent/session cookies are skipped so the real browser is not logged out. Session-identity cookies for major providers are always excluded unless `NEOBROWSER_INCLUDE_IDENTITY_COOKIES=1` is set.
+
 Or attach to a Chrome you already have open (started with `--remote-debugging-port=9222`): set `NEOBROWSER_ATTACH_PORT=9222`. In attach mode NeoBrowser never patches or kills your real browser.
 
 ## Stealth
@@ -274,7 +276,8 @@ No tool beats interactive challenges like reCAPTCHA or DataDome reliably. NeoBro
 | `NEOBROWSER_MAX_UPLOAD_MB` | `100` | Maximum size of a file `upload` will stage |
 | `NEOBROWSER_HTTP_PORT` | *(unset)* | Enable the [MCP HTTP transport](#mcp-over-http-optional) on this port |
 | `NEOBROWSER_HTTP_BIND` | `127.0.0.1` | Address the HTTP transport binds to. A non-loopback value is an explicit decision and warns on every start |
-| `NEOBROWSER_INCLUDE_IDENTITY_COOKIES` | *(unset)* | **Risky escape hatch.** Setting it to `1` also imports Google/LinkedIn/Microsoft session-identity cookies, which those providers may flag as a duplicate session and log your real browser out. Off by default for that reason |
+| `NEOBROWSER_INCLUDE_IDENTITY_COOKIES` | *(unset)* | **Risky escape hatch.** Setting it to `1` also imports session-identity cookies for the major providers, which may flag the duplicate session and log your real browser out. Off by default for that reason |
+| `NEOBROWSER_IMPORT_SESSION_COOKIES` | *(unset)* | **Risky escape hatch.** Setting it to `1` imports non-persistent/session cookies from the real profile. Off by default: importing live session tokens into a second browser is what triggers provider logout. Persistent/"remember me" cookies are still imported |
 | `NEOBROWSER_VAULT_KEY` | *(unset)* | Base64 32-byte key, for hosts with no OS credential store (CI). Without it and without a keyring, session saves refuse rather than writing plaintext |
 | `NEOBROWSER_LOG_FORMAT` | `text` | `json` emits structured logs carrying `trace_id` |
 | `NEOBROWSER_CONFIG` | *(unset)* | Explicit config file path; see `neobrowser config init` |

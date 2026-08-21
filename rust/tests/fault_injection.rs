@@ -32,6 +32,10 @@ const PAGE: &str = "data:text/html,<html><body><h1 id='t'>Start</h1>\
 <button id='b' onclick='document.getElementById(\"t\").textContent=\"Clicked\"'>Go</button>\
 </body></html>";
 
+fn test_home(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("nb-fault-{name}"))
+}
+
 async fn live_tab(
     name: &str,
 ) -> Option<(
@@ -42,21 +46,13 @@ async fn live_tab(
         eprintln!("SKIP: no Chrome binary; fault injection needs a real browser");
         return None;
     }
-    std::env::set_var("NEOBROWSER_HOME", format!("/tmp/nb-fault-{name}"));
+    std::env::set_var("NEOBROWSER_HOME", test_home(name));
     let browser = neobrowser::browser::Browser::new();
     let tab = browser.tab().await.expect("launch + attach");
     page::navigate_budgeted(&tab, PAGE, &Budget::from_secs(10.0))
         .await
         .expect("navigate");
     Some((browser, tab))
-}
-
-/// Kill every Chrome process belonging to this test's profile.
-fn kill_chrome_for(name: &str) {
-    let marker = format!("/tmp/nb-fault-{name}/profiles");
-    let _ = std::process::Command::new("pkill")
-        .args(["-9", "-f", &marker])
-        .output();
 }
 
 // --- socket faults ------------------------------------------------------------
@@ -66,14 +62,14 @@ fn kill_chrome_for(name: &str) {
 #[tokio::test]
 async fn a_dropped_cdp_socket_produces_errors_not_empty_successes() {
     let _guard = ENV_LOCK.lock().await;
-    let Some((_browser, tab)) = live_tab("socket").await else {
+    let Some((browser, tab)) = live_tab("socket").await else {
         return;
     };
 
     // Sanity: the tab works before the fault, or the test proves nothing.
     assert!(page::eval_body(&tab, "return 1").await.is_ok());
 
-    kill_chrome_for("socket");
+    browser.kill_for_test().await;
     // Give the transport a moment to notice the peer is gone.
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
@@ -105,11 +101,11 @@ async fn a_dropped_cdp_socket_produces_errors_not_empty_successes() {
 #[tokio::test]
 async fn a_click_into_a_dead_socket_is_never_reported_as_success() {
     let _guard = ENV_LOCK.lock().await;
-    let Some((_browser, tab)) = live_tab("clickdead").await else {
+    let Some((browser, tab)) = live_tab("clickdead").await else {
         return;
     };
 
-    kill_chrome_for("clickdead");
+    browser.kill_for_test().await;
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
     let result = page::click_selector(&tab, "#b").await;
@@ -135,7 +131,7 @@ async fn the_browser_recovers_from_a_killed_chrome() {
         eprintln!("SKIP: no Chrome binary");
         return;
     }
-    std::env::set_var("NEOBROWSER_HOME", "/tmp/nb-fault-recover");
+    std::env::set_var("NEOBROWSER_HOME", test_home("recover"));
     let browser = neobrowser::browser::Browser::new();
     {
         let tab = browser.tab().await.expect("first launch");
@@ -144,7 +140,7 @@ async fn the_browser_recovers_from_a_killed_chrome() {
             .expect("navigate");
     }
 
-    kill_chrome_for("recover");
+    browser.kill_for_test().await;
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
     // A fresh tab request must relaunch. This is the self-healing path, and the assertion

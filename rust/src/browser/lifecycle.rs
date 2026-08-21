@@ -181,6 +181,19 @@ impl Browser {
             proc.kill(true).await;
         }
     }
+
+    /// Test hook: kill the owned Chrome process without going through shutdown.
+    /// Fault-injection tests need to break the socket/process underneath a live
+    /// session and assert the recovery path. This keeps the kill mechanism inside
+    /// the crate so the tests stay portable (no `pkill` on Windows).
+    #[doc(hidden)]
+    pub async fn kill_for_test(&self) {
+        let mut st = self.state.lock().await;
+        if let Some(mut proc) = st.proc.take() {
+            proc.kill(true).await;
+        }
+        st.tabs.clear();
+    }
 }
 
 impl Browser {

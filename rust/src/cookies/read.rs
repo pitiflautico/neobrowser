@@ -5,7 +5,7 @@
 //! live file. The rows come back partially encrypted, with timestamps in Chrome's epoch and
 //! `sameSite` as an integer, so the conversions live here too.
 
-use super::exclude::{host_under_domain, is_session_auth_excluded};
+use super::exclude::{host_under_domain, is_session_auth_excluded, is_session_cookie_excluded};
 use super::keys::get_decrypt_key;
 use super::CookieError;
 
@@ -101,6 +101,9 @@ pub fn read_real_profile_cookies(
         let expires = chrome_epoch_to_unix(r.expires_utc);
         if expires > 0 {
             cookie["expires"] = serde_json::json!(expires);
+        }
+        if is_session_cookie_excluded(expires) {
+            continue;
         }
         out.push(cookie);
     }

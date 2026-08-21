@@ -27,7 +27,7 @@
 //! before encrypting; GCM values are `nonce(12) || ciphertext || tag(16)`.
 
 /// Session-identity cookies that must NOT be injected into the ghost browser:
-/// Google/LinkedIn/Microsoft log the real browser out when they detect a duplicate
+/// major providers log the real browser out when they detect a duplicate
 /// session. Preference/consent cookies for the same domains are safe and kept.
 /// `(domain suffixes, auth cookie names)`.
 const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
@@ -69,6 +69,17 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
         ],
         &["ESTSAUTH", "ESTSAUTHPERSISTENT", "ESTSAUTHLIGHT", "buid"],
     ),
+    // Additional providers that aggressively invalidate duplicate sessions.
+    (
+        &[".github.com"],
+        &["user_session", "__Host-user_session_same_site"],
+    ),
+    (&[".twitter.com", ".x.com"], &["auth_token", "ct0", "twid"]),
+    (&[".reddit.com"], &["reddit_session"]),
+    (&[".facebook.com"], &["c_user", "xs"]),
+    (&[".instagram.com"], &["sessionid", "ds_user_id"]),
+    (&[".slack.com"], &["d"]),
+    (&[".discord.com"], &["token"]),
 ];
 
 /// Does a cookie's `host_key` fall under a domain from the exclusion list?
@@ -110,11 +121,34 @@ pub fn is_session_auth_excluded(host_key: &str, name: &str) -> bool {
 /// switch it ON — silently injecting the identity cookies the exclusion list
 /// exists to hold back, and risking a logout of the user's real browser.
 fn identity_cookies_opt_in() -> bool {
-    match std::env::var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES") {
-        Ok(v) => matches!(
+    explicit_affirmative(std::env::var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES").ok())
+}
+
+/// Session (non-persistent) cookies are excluded by default from real-profile
+/// import. They are the live session tokens most likely to trigger "new device"
+/// revocation on the user's real browser when cloned into a headless profile.
+///
+/// Persistent cookies (with a future `expires`) are still imported: they carry
+/// "remember me" state and are less likely to be treated as a suspicious
+/// duplicate session.
+///
+/// Escape hatch: `NEOBROWSER_IMPORT_SESSION_COOKIES=1` restores the previous
+/// behaviour. Use sparingly, and expect providers to log the real browser out.
+pub fn is_session_cookie_excluded(expires_unix: i64) -> bool {
+    if explicit_affirmative(std::env::var("NEOBROWSER_IMPORT_SESSION_COOKIES").ok()) {
+        return false;
+    }
+    // Chrome stores session cookies as expires_utc == 0. Anything without a
+    // concrete future expiry is treated as a session token here.
+    expires_unix <= 0
+}
+
+fn explicit_affirmative(value: Option<String>) -> bool {
+    match value {
+        Some(v) => matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
         ),
-        Err(_) => false,
+        None => false,
     }
 }

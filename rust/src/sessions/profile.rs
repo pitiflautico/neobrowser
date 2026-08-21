@@ -102,8 +102,8 @@ pub async fn profile_mode_report(browser: &crate::browser::Browser) -> String {
             "Close the debug port when you are done; anything that can reach it can drive your browser.",
         ),
         ProfileMode::ImportedRealProfile => (
-            "cookies decrypted from your real Chrome profile",
-            "highest: a clone of your session now exists in a second browser, which providers may flag, and identity cookies for Google/LinkedIn/Microsoft are excluded so those will still need a login",
+            "persistent cookies decrypted from your real Chrome profile",
+            "highest: a clone of your session now exists in a second browser, which providers may flag; identity cookies for major providers are excluded, and session (non-persistent) cookies are skipped by default so the real browser is not logged out",
             "Prefer `attached` mode, or an agent profile, unless you specifically need a headless browser carrying imported cookies.",
         ),
     };

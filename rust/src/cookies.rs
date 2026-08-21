@@ -27,7 +27,7 @@ pub mod keys;
 pub mod read;
 
 pub use crypto::{decrypt_value_cbc, decrypt_value_gcm, derive_key_cbc};
-pub use exclude::is_session_auth_excluded;
+pub use exclude::{is_session_auth_excluded, is_session_cookie_excluded};
 pub use keys::{get_decrypt_key, DecryptKey};
 pub use read::{chrome_epoch_to_unix, read_real_profile_cookies, real_profile_folder, same_site};
 
@@ -263,5 +263,65 @@ mod tests {
         if let Some(v) = prev {
             std::env::set_var("NEOBROWSER_REAL_PROFILE", v);
         }
+    }
+
+    /// Session cookies are excluded from real-profile import by default: cloning a
+    /// live session token into a second browser is exactly what triggers "new device"
+    /// revocation on the real browser.
+    #[test]
+    fn session_cookies_excluded_by_default() {
+        let _g = crate::env_test_guard();
+        std::env::remove_var("NEOBROWSER_IMPORT_SESSION_COOKIES");
+        assert!(is_session_cookie_excluded(0));
+        assert!(is_session_cookie_excluded(-1));
+        assert!(!is_session_cookie_excluded(1_700_000_000));
+    }
+
+    #[test]
+    fn session_cookie_opt_in_requires_affirmative_value() {
+        let _g = crate::env_test_guard();
+        let prev = std::env::var("NEOBROWSER_IMPORT_SESSION_COOKIES").ok();
+
+        std::env::remove_var("NEOBROWSER_IMPORT_SESSION_COOKIES");
+        assert!(is_session_cookie_excluded(0), "unset");
+
+        for off in ["0", "false", "no", "", "  "] {
+            std::env::set_var("NEOBROWSER_IMPORT_SESSION_COOKIES", off);
+            assert!(
+                is_session_cookie_excluded(0),
+                "{off:?} must NOT enable session-cookie import"
+            );
+        }
+        for on in ["1", "true", "YES", " on "] {
+            std::env::set_var("NEOBROWSER_IMPORT_SESSION_COOKIES", on);
+            assert!(
+                !is_session_cookie_excluded(0),
+                "{on:?} must enable session-cookie import"
+            );
+        }
+
+        match prev {
+            Some(v) => std::env::set_var("NEOBROWSER_IMPORT_SESSION_COOKIES", v),
+            None => std::env::remove_var("NEOBROWSER_IMPORT_SESSION_COOKIES"),
+        }
+    }
+
+    /// Additional providers beyond Google/LinkedIn/Microsoft must also have their
+    /// identity cookies held back by default.
+    #[test]
+    fn additional_identity_exclusions_are_active() {
+        let _g = crate::env_test_guard();
+        assert!(is_session_auth_excluded(".github.com", "user_session"));
+        assert!(is_session_auth_excluded(
+            "github.com",
+            "__Host-user_session_same_site"
+        ));
+        assert!(is_session_auth_excluded(".x.com", "auth_token"));
+        assert!(is_session_auth_excluded("twitter.com", "ct0"));
+        assert!(is_session_auth_excluded(".reddit.com", "reddit_session"));
+        assert!(is_session_auth_excluded(".facebook.com", "c_user"));
+        assert!(is_session_auth_excluded(".instagram.com", "sessionid"));
+        assert!(is_session_auth_excluded(".slack.com", "d"));
+        assert!(is_session_auth_excluded(".discord.com", "token"));
     }
 }
