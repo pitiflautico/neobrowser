@@ -800,3 +800,7 @@
 - `https://neobrowser.is-a.dev/` devuelve HTTP 302 (aún no resuelve a landing 200).
 - Product Hunt launch sigue aplazado; el cron continuará monitoreando.
 - Estado: 90★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-21 (cron 3f136bac, 2ª comprobación) — check is-a-dev PR #48212
+- PR #48212 sigue sin ser accesible; `neobrowser.is-a.dev` sigue devolviendo 302.
+- No se lanza Product Hunt. Siguiente check programado.
