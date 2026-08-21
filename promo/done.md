@@ -794,3 +794,9 @@
 - Commits: `409e4d5`.
 - Issue #18 cerrado.
 - Estado: 90★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-21 (cron 3f136bac) — check is-a-dev PR #48212
+- PR #48212 en `is-a-dev/register`: no accesible (`gh pr view` devuelve "PR not accessible").
+- `https://neobrowser.is-a.dev/` devuelve HTTP 302 (aún no resuelve a landing 200).
+- Product Hunt launch sigue aplazado; el cron continuará monitoreando.
+- Estado: 90★ / 4 forks / 0 issues abiertos.

@@ -147,3 +147,4 @@ date,stars,forks,notes
 2026-08-21,89,4,CI fix: nightly.yml ahora usa NEOBROWSER_LAUNCH/SEND/ATTACH_TIMEOUT 60/60/30 para Windows/macOS
 2026-08-21,89,4,Issue #17 cerrado: website fails to load — CNAME a neobrowser.is-a.dev eliminado, GitHub Pages restaurado
 2026-08-21,90,4,Issue #18 cerrado: fix deslogueo sesiones reales — session cookies omitidas por defecto + mas proveedores excluidos; fault_injection tests ahora portables Windows
+2026-08-21,90,4,CRON 3f136bac: PR is-a-dev/register #48212 no accesible; neobrowser.is-a.dev devuelve 302; PH launch aplazado
