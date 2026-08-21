@@ -78,6 +78,11 @@ jobs:
           # user is in; `isolated` is the default ephemeral one. They exercise different
           # lock and cookie paths.
           NEOBROWSER_PROFILE: ${{ matrix.mode == 'persistent' && 'nightly' || '' }}
+          # Windows and macOS runners need more time to launch and attach to Chrome,
+          # especially in the fault-injection and conformance suites.
+          NEOBROWSER_LAUNCH_TIMEOUT: "60"
+          NEOBROWSER_SEND_TIMEOUT: "60"
+          NEOBROWSER_ATTACH_TIMEOUT: "30"
         run: cargo test --release
 
       # The real bot-detector check, which CI skips because it depends on a third-party
