@@ -994,3 +994,68 @@
 - Conseguir que se mergee `free-domains/is-a.bot#192` para tener dominio propio y lanzar Product Hunt.
 - Si #192 también cae, la opción más rápida y fiable es que el usuario compre un dominio propio (~10€/año) y apunte el CNAME a GitHub Pages.
 
+---
+
+## 2026-08-25 — ciclo completo (dominio, producto, distribución, outreach, contenido, inteligencia)
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 0 issues abiertos.
+**Estado al final del ciclo:** 95★ / 4 forks / 1 issue abierto (#19, documentado).
+
+### PRODUCTO: fix real-profile cookie import que desloguea al usuario
+- Creado issue #19 documentando el bug: `NEOBROWSER_REAL_PROFILE` puede hacer que proveedores detecten la sesión clonada y cierren todas las sesiones del Chrome real.
+- Ampliada la lista `SESSION_AUTH_EXCLUSIONS` en `rust/src/cookies/exclude.rs` con 14 proveedores más: Notion, Figma, Linear, Vercel, Cloudflare, Stripe, Dropbox, Apple, Amazon, Spotify, Zoom, Atlassian, GitLab, Bitbucket.
+- Añadido `tracing::warn!` en `browser/lifecycle.rs` cuando se activa import de cookies reales, orientando al usuario hacia `attach` o un perfil agente si sufre deslogues.
+- Tests actualizados: `additional_identity_exclusions_are_active` cubre los nuevos dominios y asegura que cookies de consentimiento/preferencias siguen importándose.
+- Verificación local: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --lib cookies` ✅.
+- Push a `main`: commit `eba9796`. CI resultante: ✅ verde.
+
+### DOMINIO: pivot de `is-a.bot` a `is-a-good.dev`
+- `is-a.bot` cerró los PR #191 y #192 sin comentario.
+- Abierto nuevo PR en `is-a-good-dev/register#1295` para `neobrowser.is-a-good.dev` → CNAME `pitiflautico.github.io`.
+- Actualizado `docs/CNAME` de `neobrowser.is-a.bot` a `neobrowser.is-a-good.dev`.
+- Actualizado `promo/scripts/producthunt_launch.py` para apuntar WEBSITE y DESCRIPTION al nuevo dominio.
+- Creado `promo/scripts/check_isagooddev_and_launch_ph.py` para monitorizar el PR #1295 y el dominio, y lanzar Product Hunt automáticamente cuando ambos estén listos.
+- Push a `main`: commits `3b759ba`, `8f035d5`. CI: ✅ verde.
+
+### DISTRIBUCIÓN: 5 nuevas submissions a directorios MCP
+- `docker/mcp-registry#4782`: registry oficial de Docker.
+- `PipedreamHQ/awesome-mcp-servers#109`: awesome list de Pipedream.
+- `ravitemer/mcp-registry#51`: registry comunitario.
+- `ever-works/awesome-mcp-servers#159`: awesome list de Ever Works.
+- `toolsdk-ai/toolsdk-mcp-registry#477`: registry de ToolSDK.
+- Submissions previas que siguen abiertas: `punkpeye/awesome-mcp-servers#12089`, `chatmcp/mcpso#3546`, `cline/mcp-marketplace#2323`.
+- **Bloqueo:** Smithery requiere API key; se documenta para cuando el usuario la tenga.
+
+### OUTREACH: 2 borradores personalizados
+- `promo/drafts/outreach-alexalbert-mcp-realbrowser-2026-08-25.md`: feedback genuino a Alex Albert (Anthropic dev rel) sobre capability contracts para browser tools en MCP.
+- `promo/drafts/outreach-jspahrsummers-mcp-security-2026-08-25.md`: pregunta de spec design a Justin Spahr-Summers (MCP lead) sobre seguridad y capabilities.
+- Estado: listos para publicación manual o para cuando X/LinkedIn se desbloqueen.
+
+### CONTENIDO: post DEV.to + comentario HN
+- `promo/drafts/devto-real-chrome-no-spoof-2026-08-25.md`: artículo "Why I stopped spoofing headless browsers and started driving real Chrome".
+- `promo/drafts/hn-value-comment-mcp-security-2026-08-25.md`: comentario value-first para threads recientes sobre seguridad en MCP.
+- Estado: borradores listos. Publicación automática bloqueada por falta de API key (DEV.to) y por precaución tras el flag anterior en HN.
+
+### INTELIGENCIA: análisis de OpenChrome
+- Repo: `shaun0927/openchrome`, 234★, TypeScript/npm, mensaje casi idéntico al nuestro.
+- Fortalezas: mensaje claro, ejemplo concreto, tabla comparativa agresiva, 118 tools, paralelismo, mascota (Raptor), desktop app beta.
+- Nuestros diferenciadores: Rust/binario único ~6 MB, benchmark honesto publicado, seguridad first-class, anti-detection "genuine".
+- Tácticas aplicables: crear mascota, hero README con ejemplo+tabla, install script one-liner, anunciar desktop app/daemon, localizar README.
+- Documentado en `promo/drafts/intelligence-competitor-openchrome-2026-08-25.md`.
+
+### Bloqueos activos
+- **Product Hunt:** bloqueado hasta que se mergee `is-a-good-dev/register#1295` y el dominio responda 200.
+- **X / LinkedIn:** bloqueados por CAPTCHA/UI en automatización; contenido queda en borrador para publicación manual.
+- **Smithery:** requiere API key.
+- **HN posts propios:** pausados tras flag anterior; se usan solo comentarios value-first en threads ajenos.
+
+### Métricas del ciclo
+- Estrellas: 95 → 95 (sin cambio, esperado sin Product Hunt ni viralización).
+- Issues abiertos: 0 → 1 (#19, bug documentado y parcialmente mitigado).
+- CI: ✅ verde tras ambos pushes.
+
+### Próximo paso crítico
+- Conseguir que se mergee `is-a-good-dev/register#1295` para lanzar Product Hunt.
+- Si también cae, pedir al usuario autorización para comprar un dominio propio (~10€/año).
+
+
