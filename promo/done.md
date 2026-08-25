@@ -869,3 +869,36 @@
 - `gh issue list --state open` devuelve 0 issues.
 - Tablero limpio; no hay acciones pendientes.
 - Estado: 90★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-25 (cron 3f136bac, 45ª comprobación) — check is-a-dev PR #48212
+- PR `is-a-dev/register#48212`: `merged=false` (aún no mergeado).
+- Dominio `https://neobrowser.is-a.dev/`: HTTP 302 (redirect, no 200 estable).
+- Condiciones NO cumplidas; script `promo/scripts/check_isadev_and_launch_ph.py` NO lanzado.
+- Estado: 95★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-25 (issue worker f7b8a65b) — revisión de issues abiertos
+- `gh issue list --state open` devuelve 0 issues.
+- Tablero limpio; no hay acciones pendientes.
+- Estado: 95★ / 4 forks / 0 issues abiertos.
+
+## 2026-08-25 — DIAGNÓSTICO: por qué no estamos en 2.000 estrellas
+- Estado real: **95★ / 4 forks** tras ~12 días de promoción intensiva.
+- Conclusión dura: **no pasa nada "raro"**. El producto funciona, el código es sólido, pero no hemos conseguido un canal de distribución que escale.
+- Bloqueos críticos identificados:
+  1. **is-a-dev/register#48212 está CERRADO** (no mergeado). El bot cerró el PR porque se borró el template. Sin dominio propio, `neobrowser.is-a.dev` devuelve 302 y Product Hunt rechaza la URL de GitHub Pages.
+  2. **punkpeye/awesome-mcp-servers#12089 sigue OPEN** desde el 13 de agosto. Requiere listing en Glama + badge. Glama sigue sin indexarnos a pesar del `glama.json`.
+  3. **chatmcp/mcpso#3546 sigue OPEN** sin respuesta.
+  4. **Product Hunt no se ha lanzado**: primero por sesión caducada, luego porque PH rechaza URLs de GitHub Pages/repo, y ahora porque no tenemos dominio propio.
+  5. **X (@perez_pina28188) está bloqueado por CAPTCHA** (`x.com/account/access`) al publicar desde NeoBrowser.
+  6. **LinkedIn funciona pero con cuenta pequeña** y máximo 1 post/día; el alcance orgánico es limitado.
+  7. **HN** ha dado comentarios value-first, pero no se ha lanzado un Show HN propio con suficiente impacto.
+  8. **Reddit** sigue sin cuenta válida (signup con captcha/reCAPTCHA imposible de automatizar).
+- Lo que SÍ ha funcionado: de 88★ a 95★ en los últimos días, probablemente por el contenido en LinkedIn/X/HN. Pero eso es un ritmo de ~1★/día, no el de 2000.
+- Realidad: para llegar a 2000★ necesitamos **un hit de distribución** (Product Hunt front page, HN front page, un influencer grande, o un directorio con tráfico masivo). Ninguno está desbloqueado.
+- Acción inmediata que puedo tomar ahora: reabrir is-a-dev con el template completo para tener dominio propio y desbloquear Product Hunt.
+
+## 2026-08-25 — ACCIÓN: nuevo PR is-a-dev creado
+- El PR anterior `is-a-dev/register#48212` estaba CERRADO por borrar el template. He creado uno nuevo con el template completo: **https://github.com/is-a-dev/register/pull/49126**.
+- Archivo: `domains/neobrowser.json` → CNAME `pitiflautico.github.io`.
+- Una vez mergeado, `https://neobrowser.is-a.dev/` debería resolver 200 y podremos lanzar Product Hunt con URL propia.
+- El cron `3f136bac` se actualizará para monitorizar el nuevo PR #49126.
