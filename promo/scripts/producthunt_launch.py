@@ -10,7 +10,7 @@ PROFILE = "Profile 24"
 NAME = "NeoBrowser"
 TAGLINE = "Your AI drives real Chrome — with your real logged-in sessions"
 TOPICS = ["Developer Tools", "Open Source", "Artificial Intelligence"]
-WEBSITE = "https://neobrowser.is-a.bot/"
+WEBSITE = "https://neobrowser.is-a-good.dev/"
 GITHUB = "https://github.com/pitiflautico/neobrowser"
 
 DESCRIPTION = """Hey Product Hunt 👋
@@ -23,7 +23,7 @@ It's a single 6.4 MB Rust binary with 67 tools: multi-tab browsing, forms, uploa
 
 What I'm proudest of: the honest benchmark vs Playwright MCP in the repo. Playwright is faster; we do things it can't. Both get walled equally on adversarial pages. No hype.
 
-Current bet: 95/10,000 GitHub stars, documented publicly at neobrowser.is-a.bot.
+Current bet: 95/10,000 GitHub stars, documented publicly at neobrowser.is-a-good.dev.
 
 MIT licensed. Feedback welcome — especially from folks who've fought bot detection before."""
 
