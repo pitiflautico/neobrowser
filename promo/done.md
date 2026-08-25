@@ -949,3 +949,48 @@
 - Añadido `docs/CNAME` con `neobrowser.is-a.bot` para que GitHub Pages sirva el custom domain en cuanto el DNS propague.
 - El cron `def4b1e8` se actualizó a `80065509` para monitorizar el nuevo PR #191 y el dominio `neobrowser.is-a.bot`.
 - Si se mergea, Product Hunt se desbloquea con URL propia.
+
+## 2026-08-25 — ciclo de producto + distribución
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 0 issues abiertos.
+
+### PRODUCTO: fix para tests fault_injection en Windows CI
+- Diagnóstico: el cambio anterior a `std::env::temp_dir()` en `tests/fault_injection.rs` hacía que Chrome no pudiera inicializar el perfil en runners Windows sandboxeados.
+- Fix: mover los perfiles de test a `target/nb-fault-tests/` (misma unidad que el repo, evita restricciones de `%TEMP%`).
+- Verificación local: `cargo test --test fault_injection` pasa 7/7 en macOS.
+- CI en `main` tras el push: ✅ verde (ubuntu, macos, security, sbom, python-archive).
+- Commits: `c39c360`, `3310232`.
+
+### PRODUCTO: pipeline de publicación en MCP Registry oficial
+- Añadido `.github/workflows/publish-mcp.yml` para publicar `server.json` a `registry.modelcontextprotocol.io` en cada tag `v*` vía OIDC.
+- Commit: `3f533a7`.
+
+### DISTRIBUCIÓN: Cline MCP Marketplace
+- Creado issue de submission en `cline/mcp-marketplace#2323` con repo, logo 400×400, descripción, JSON de instalación y attestación de prueba.
+- Asset generado: `docs/assets/logo-400x400.png` a partir del GIF viral cuadrado.
+
+### CONTENIDO: borrador social + pack de directorios
+- `promo/drafts/social-viral-real-chrome-2026-08-25.md`: post contrario a la moda de "spoofing", centrado en heredar el estado real de confianza del navegador.
+- `promo/drafts/directory-submissions-pack-2026-08-25.md`: copy-paste listo para PulseMCP, Glama, Smithery, mcpservers.org, cursor.directory.
+
+### DOMINIO: PR is-a.bot #191 cerrado sin motivo → nuevo PR #192 con CNAME
+- El PR #191 usaba registros A; fue cerrado por el maintainer `gameroman` a los 4 min sin comentario.
+- Se abrió nuevo PR `free-domains/is-a.bot#192` usando CNAME a `pitiflautico.github.io`, que es el patrón de los PRs mergeados recientes.
+- `docs/CNAME` ya apunta a `neobrowser.is-a.bot`.
+- Script `promo/scripts/check_isabot_and_launch_ph.py` actualizado a #192.
+- `https://neobrowser.is-a.bot/` sigue devolviendo 000 hasta el merge.
+
+### INTELIGENCIA: Product Hunt 2026 (aplicable en cuanto tengamos dominio)
+- Fuente: [Product Hunt Launch for Developer Tools (2026 Guide)](https://www.infrasity.com/blog/product-hunt-launch-for-developer-tools).
+- Tácticas clave a aplicar:
+  1. Usar el Product Forum del producto (foro permanente) semanas antes para generar early velocity.
+  2. Lanzar domingo si el objetivo es ranking alto con menos competencia; martes si se busca Product of the Week y tráfico máximo.
+  3. Maker comment personalizado con la historia del problema (no bullet de features) + pregunta concreta.
+  4. Responder a *todos* los comentarios en las primeras 4 horas (cuando los votos están ocultos y el algoritmo pesa engagement).
+  5. Meta: 100 votos antes de las 04:00 PT para 82% probabilidad de top 10.
+- El listing ya está preparado en `promo/scripts/producthunt_launch.py` con 95★, dominio objetivo y galería viral.
+
+### Próximo paso crítico
+- Conseguir que se mergee `free-domains/is-a.bot#192` para tener dominio propio y lanzar Product Hunt.
+- Si #192 también cae, la opción más rápida y fiable es que el usuario compre un dominio propio (~10€/año) y apunte el CNAME a GitHub Pages.
+
