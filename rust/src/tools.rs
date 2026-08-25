@@ -18,12 +18,12 @@ pub use ctx::{Tool, ToolCtx};
 pub use result::{ToolError, ToolOutput};
 pub use spec::{ParamSpec, ParamType, ToolSpec};
 
-/// Domain allowlist for `navigate`, from `NEOBROWSER_DOMAIN_ALLOWLIST`
+/// Domain allowlist for `navigate`, from `NEOBROWSER_ALLOW_DOMAINS`
 /// (comma-separated; exact host or `*.suffix` for any subdomain, e.g.
 /// `github.com,*.docs.rs`). Unset or empty means everything is allowed.
 /// Returns Err with an actionable message when the URL's host is not listed.
 pub fn check_domain_allowlist(url: &str) -> Result<(), String> {
-    let raw = match std::env::var("NEOBROWSER_DOMAIN_ALLOWLIST") {
+    let raw = match std::env::var("NEOBROWSER_ALLOW_DOMAINS") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => return Ok(()),
     };
@@ -47,7 +47,7 @@ pub fn check_domain_allowlist(url: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "navigate: '{host}' is not in NEOBROWSER_DOMAIN_ALLOWLIST (allowed: {})",
+            "navigate: '{host}' is not in NEOBROWSER_ALLOW_DOMAINS (allowed: {})",
             entries.join(", ")
         ))
     }
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn domain_allowlist_blocks_unlisted_hosts() {
         // Single test fn so env manipulation can't race across test threads.
-        const VAR: &str = "NEOBROWSER_DOMAIN_ALLOWLIST";
+        const VAR: &str = "NEOBROWSER_ALLOW_DOMAINS";
         std::env::remove_var(VAR);
         // Unset: everything allowed.
         assert!(crate::tools::check_domain_allowlist("https://anything.example/x").is_ok());
@@ -212,7 +212,7 @@ mod tests {
         assert!(crate::tools::check_domain_allowlist("https://github.com/a").is_ok());
         assert!(crate::tools::check_domain_allowlist("https://docs.rs/").is_ok());
         let err = crate::tools::check_domain_allowlist("https://evil.com/").unwrap_err();
-        assert!(err.contains("not in NEOBROWSER_DOMAIN_ALLOWLIST"));
+        assert!(err.contains("not in NEOBROWSER_ALLOW_DOMAINS"));
         // Exact entries must not leak to subdomains.
         assert!(crate::tools::check_domain_allowlist("https://sub.github.com/").is_err());
         // Wildcard entries cover the apex and subdomains.
