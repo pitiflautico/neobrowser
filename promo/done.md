@@ -1068,7 +1068,47 @@
 - CI: ✅ verde tras ambos pushes.
 
 ### Próximo paso crítico
-- Conseguir que se mergee `is-a-good-dev/register#1295` para lanzar Product Hunt.
-- Si también cae, pedir al usuario autorización para comprar un dominio propio (~10€/año).
+- Conseguir que se mergee `is-a-good-dev/register#1295` (o `is-amazing/register#297`) para lanzar Product Hunt.
+- Si ambos caen, pedir al usuario autorización para comprar un dominio propio (~10€/año).
 
+---
 
+## 2026-08-25 — ciclo de contingencia (segundo ciclo del día)
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 1 issue abierto.
+**Estado al final del ciclo:** 95★ / 4 forks / 1 issue abierto.
+
+### DOMINIO: PR alternativo en is-amaz.ing + monitor genérico
+- Abierto PR `is-amazing/register#297` para `neobrowser.is-amaz.ing` → CNAME `pitiflautico.github.io`.
+- Creado `promo/scripts/check_domains_and_launch_ph.py` que revisa ambos PRs (`is-a-good-dev#1295` e `is-amazing#297`) y lanza Product Hunt con el primer dominio que esté mergeado + 200.
+- Actualizado `promo/scripts/producthunt_launch.py` para leer `WEBSITE` desde la variable de entorno `NEOBROWSER_PH_WEBSITE` y ajustar la DESCRIPTION dinámicamente.
+- Actualizado cron a `40ed9d10` para ejecutar el nuevo monitor genérico cada 15 minutos.
+- Push a `main`: commit `e4ca20e`.
+
+### PRODUCTO: tabla comparativa en README
+- Añadida tabla comparativa honesta en `README.md`: NeoBrowser vs generic headless MCP vs Playwright MCP.
+- Enlace al benchmark `bench/study.md`.
+- Push a `main`: commit `18d9f01`.
+
+### DISTRIBUCIÓN: 2 submissions más a directorios MCP
+- `TensorBlock/awesome-mcp-servers#1962`: awesome list generalista.
+- `rohitg00/awesome-devops-mcp-servers#324`: lista DevOps, enmarcado como UI checks/monitoring.
+
+### OUTREACH: 2 borradores más
+- `promo/drafts/outreach-theprimeagen-real-chrome-2026-08-25.md`: take técnica sobre spoofing vs real Chrome.
+- `promo/drafts/outreach-fireship-real-chrome-2026-08-25.md`: propuesta de video corto con material listo.
+
+### INTELIGENCIA: análisis de OpenCLI
+- Repo: `jackwener/OpenCLI`, 28,565★, TypeScript/npm, enfoque CLI adapters + browser bridge extension.
+- Fortalezas: adapters para sitios populares, ecosistema de skills, desktop app, extensión, multi-idioma (chino).
+- Diferenciadores de NeoBrowser: sin extensión obligatoria, binario Rust, seguridad estructurada, benchmark honesto.
+- Tácticas aplicables: añadir adapters de alto nivel (GitHub, HN), skill packaging para agentes, localizar README al chino, desktop app en roadmap.
+- Documentado en `promo/drafts/intelligence-competitor-opencli-2026-08-25.md`.
+
+### Métricas del ciclo
+- Estrellas: 95 → 95 (sin cambio).
+- Issues abiertos: 1 → 1.
+- Dominios en juego: 2 (is-a-good.dev e is-amaz.ing).
+
+### Próximo paso crítico
+- Que se mergee al menos uno de los dos PRs de dominio para desbloquear Product Hunt.
