@@ -280,7 +280,7 @@ No tool beats interactive challenges like reCAPTCHA or DataDome reliably. NeoBro
 | `NEOBROWSER_CHROME_BIN` | *(auto)* | Path to the Chrome/Chromium binary |
 | `NEOBROWSER_HOME` | `~/.neobrowser` | Where profiles, cookies, sessions, playbooks, downloads live |
 | `NEOBROWSER_PROXY` | *(unset)* | Upstream proxy (`http://…` or `socks5://…`) |
-| `NEOBROWSER_DOMAIN_ALLOWLIST` | *(unset)* | Comma-separated hosts (`github.com,*.docs.rs`); `navigate` rejects anything else |
+| `NEOBROWSER_ALLOW_DOMAINS` | *(unset)* | Comma-separated hosts (`github.com,*.docs.rs`); `navigate` rejects anything else. Evaluated before `NEOBROWSER_DENY_DOMAINS` |
 | `NEOBROWSER_AUDIT` | `on` | `off` disables the append-only audit log (`~/.neobrowser/audit.log`, 0600, secrets masked) |
 | `NEOBROWSER_REQUIRE_APPROVAL` | *(unset)* | Gate sensitive tools behind interactive approval (MCP elicitation): `1` = submit/form_fill/download/upload/login, or a comma-separated tool list |
 | `NEOBROWSER_DISABLE_GPU` | *(unset)* | Force software rendering (GPU-less CI hosts only) |
