@@ -33,7 +33,12 @@ const PAGE: &str = "data:text/html,<html><body><h1 id='t'>Start</h1>\
 </body></html>";
 
 fn test_home(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("nb-fault-{name}"))
+    // Put test profiles under target/ so Windows CI can initialise them
+    // reliably (the system temp dir is restricted in some sandboxed runners).
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("nb-fault-tests")
+        .join(name)
 }
 
 async fn live_tab(
