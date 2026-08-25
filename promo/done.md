@@ -1158,3 +1158,61 @@ Consultados con `gh pr view`:
 - Corregir el JSON de `is-amazing/register#297` o conseguir merge de `is-a-good-dev/register#1295` / `creepersbs/register#133` para desbloquear Product Hunt.
 
 ---
+
+## 2026-08-25 — ciclo creativo (contenido + assets virales)
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 1 issue abierto.  
+**Estado al final del ciclo:** 95★ / 4 forks / 1 issue abierto.
+
+### DOMINIO: estado actual de los PRs
+Consultados con `gh pr view` al inicio del ciclo:
+
+- **`is-a-good-dev/register#1295`** — **OPEN**. URL: https://github.com/is-a-good-dev/register/pull/1295
+- **`is-amazing/register#297`** — **OPEN**. URL: https://github.com/is-amazing/register/pull/297
+- **`creepersbs/register#133`** — **OPEN**. URL: https://github.com/creepersbs/register/pull/133
+
+Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
+
+### CONTENIDO: GitHub Discussion publicada
+- Creada discusión en `pitiflautico/neobrowser` categoría **Show and tell**:
+  - **Título:** "Why real Chrome beats headless browser automation for AI agents — an honest benchmark"
+  - **Número:** #20
+  - **URL:** https://github.com/pitiflautico/neobrowser/discussions/20
+- Cuerpo técnico, value-first, que explica:
+  - El problema de la carrera de spoofing contra detectores de bots.
+  - Enfoque de NeoBrowser: Chrome real, sesiones reales, huella genuina.
+  - Enlace al benchmark honesto `bench/study.md`.
+  - Ask claro: leer el benchmark, probar la herramienta, compartir feedback.
+
+### ASSETS: GIFs virales regenerados y copiados
+- Ejecutado `python3 promo/scripts/generate_viral_gif.py` con el contador de estrellas actual (95★ → objetivo 10.000★).
+- GIFs generados:
+  - `~/.neobrowser/promo-home/downloads/neobrowser-viral-square.gif` (136.379 bytes)
+  - `~/.neobrowser/promo-home/downloads/neobrowser-viral-wide.gif` (105.788 bytes)
+- Copiados a `docs/assets/` sobrescribiendo los anteriores:
+  - `docs/assets/neobrowser-viral-square.gif`
+  - `docs/assets/neobrowser-viral-wide.gif`
+
+### DISTRIBUCIÓN: borrador de newsletter / foro
+- Investigadas 3 vías relevantes:
+  1. **JavaScript Weekly** — `editor@cooperpress.com` (envío por email).
+  2. **PyCoder’s Weekly** — https://pycoders.com/submissions (formulario de envío).
+  3. **DEV Community** — https://dev.to/ (publicación propia).
+- Elegida **JavaScript Weekly** por ajuste de audiencia (browser automation / web / MCP).
+- Borrador guardado en:
+  - `promo/drafts/newsletter-submission-2026-08-25.md`
+- Incluye asunto, cuerpo conciso, enlace al repo, benchmark y one-liner de instalación.
+
+### Métricas del ciclo
+- Estrellas: 95 → 95 (sin cambio, esperado: difusión todavía no desplegada).
+- Forks: 4 → 4.
+- Issues abiertos: 1 → 1 (#19).
+- Discusiones: +1 (#20).
+- Assets virales: actualizados.
+- Borradores listos: +1 para newsletter.
+
+### Próximo paso crítico
+- Publicar manualmente el borrador de JavaScript Weekly (o adaptarlo a DEV.to) una vez que se desbloquee el canal.
+- Continuar presionando suavemente los PRs de dominio para desbloquear Product Hunt.
+
+---
