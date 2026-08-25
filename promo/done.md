@@ -1216,3 +1216,69 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - Continuar presionando suavemente los PRs de dominio para desbloquear Product Hunt.
 
 ---
+
+## 2026-08-25 — ciclo de producto + honestidad post-HN
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 1 issue abierto (#19).  
+**Estado al final del ciclo:** 95★ / 4 forks / 0 issues abiertos (#19 cerrado).
+
+### PRODUCTO: fix real-profile logout (#19)
+- Implementado `NEOBROWSER_REAL_PROFILE_DOMAINS` en Rust.
+- Nuevo comportamiento por defecto: si `NEOBROWSER_REAL_PROFILE` está seteado pero `NEOBROWSER_REAL_PROFILE_DOMAINS` no, **no se importa ninguna cookie** del perfil real.
+- Las cookies solo se importan para los dominios listados explícitamente; las cookies de identidad y las de sesión no persistentes siguen excluidas.
+- Archivos modificados:
+  - `rust/src/cookies/read.rs` — helper `real_profile_domains()` + normalización.
+  - `rust/src/cookies.rs` — re-export.
+  - `rust/src/browser/lifecycle.rs` — importación condicionada al filtro de dominios.
+  - `rust/src/config/keys.rs` — nuevo setting documentado.
+  - `rust/src/sessions/profile.rs` — mensaje de reporte actualizado.
+  - `README.md` y `docs/index.html` — documentación alineada.
+- Tests añadidos: `real_profile_domains_is_opt_in_per_domain`.
+- CI local: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` — **338 passed, 0 failed, 1 ignored**.
+- Commit: `241cd1c` (`fix(real-profile): make cookie import opt-in per domain`), pusheado a `main`.
+- Issue #19 cerrado con comentario técnico explicando el fix.
+
+### CONTENIDO: GitHub Discussion sobre el flagged en HN
+- Creada discusión #21: "We got flagged on Hacker News for sounding like AI. Here's the fix."
+- URL: https://github.com/pitiflautico/neobrowser/discussions/21
+- Ángulo honesto: admite que los comentarios sonaban a IA, explica el fix de seguridad, pide feedback real.
+
+### DISTRIBUCIÓN: bump en PR de awesome-mcp-servers
+- Comentario de valor en `punkpeye/awesome-mcp-servers#12089` anunciando el cierre de #19 y CI verde.
+- URL: https://github.com/punkpeye/awesome-mcp-servers/pull/12089#issuecomment-5415993679
+
+### OUTREACH: borrador para Petr Baudis (pasky / chrome-cdp-skill)
+- Investigado competidor directo `pasky/chrome-cdp-skill` (3,233★).
+- Email de contacto encontrado: `pasky@ucw.cz`.
+- Borrador personalizado guardado en `promo/drafts/outreach-pasky-baudis.md`.
+- Tono humilde, propuesta de cross-link, sin hard sell.
+
+### INTELIGENCIA: post-mortem del lanzamiento en HN
+- Analizado post `item?id=49345320`: 34 puntos, 30 comentarios, flagged.
+- Lecciones clave:
+  1. Los comentarios deben sonar humanos; la comunidad detectó tono de IA.
+  2. Hay que responder menos y dejar que los usuarios organicen defiendan.
+  3. Críticas de seguridad válidas: human approval, audit log, revocation.
+  4. Competidores nombrados: `pasky/chrome-cdp-skill`, `browser-use`, Vercel agent browser, `BrowserOS`.
+- Documento guardado en `promo/intel/hn-49345320-lessons.md`.
+
+### DOMINIO: estado de los PRs
+- `is-a-good-dev/register#1295` — OPEN (BLOCKED).
+- `is-amazing/register#297` — OPEN (UNSTABLE).
+- `creepersbs/register#133` — OPEN (CLEAN).
+- Ninguno mergeado; Product Hunt sigue bloqueado hasta tener dominio propio.
+
+### Métricas del ciclo
+- Estrellas: 95 → 95 (sin cambio, esperado: difusión recién publicada).
+- Forks: 4 → 4.
+- Issues abiertos: 1 → 0 (#19 cerrado).
+- Discusiones: +1 (#21).
+- Borradores: +1 (outreach pasky).
+- Inteligencia: +1 (post-mortem HN).
+
+### Próximo paso crítico
+- Decisión pendiente del usuario: autorizar compra de dominio propio para desbloquear Product Hunt.
+- Enviar email de outreach a pasky cuando el landing sea estable.
+- Continuar monitorizando merges de dominio gratis cada 15 min (reinstalar cron).
+
+---
