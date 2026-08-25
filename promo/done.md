@@ -1012,10 +1012,18 @@
 ### DOMINIO: pivot de `is-a.bot` a `is-a-good.dev`
 - `is-a.bot` cerró los PR #191 y #192 sin comentario.
 - Abierto nuevo PR en `is-a-good-dev/register#1295` para `neobrowser.is-a-good.dev` → CNAME `pitiflautico.github.io`.
+- Comentado en el PR pidiendo revisión amablemente tras pasar la validación del bot.
+- Investigada alternativa `thedev-id/thedev.id`; descartada porque su `subdomains.json` está malformado en upstream (falta coma en línea ~105).
 - Actualizado `docs/CNAME` de `neobrowser.is-a.bot` a `neobrowser.is-a-good.dev`.
 - Actualizado `promo/scripts/producthunt_launch.py` para apuntar WEBSITE y DESCRIPTION al nuevo dominio.
 - Creado `promo/scripts/check_isagooddev_and_launch_ph.py` para monitorizar el PR #1295 y el dominio, y lanzar Product Hunt automáticamente cuando ambos estén listos.
 - Push a `main`: commits `3b759ba`, `8f035d5`. CI: ✅ verde.
+
+### LANDING: comparativa honesta y actualización de dominio
+- Añadida tabla comparativa en `docs/index.html`: NeoBrowser vs generic headless MCP vs Playwright MCP.
+- Actualizado banner de Product Hunt y sección "What's new" a `neobrowser.is-a-good.dev`.
+- Añadida tarjeta sobre el issue #19 y las mejoras de seguridad en sesiones reales.
+- Push a `main`: commit `cd8b9c6`.
 
 ### DISTRIBUCIÓN: 5 nuevas submissions a directorios MCP
 - `docker/mcp-registry#4782`: registry oficial de Docker.
