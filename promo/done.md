@@ -936,4 +936,16 @@
 
 ## 2026-08-25 — ACCIÓN: landing con sección "Built for real sessions, safely"
 - Añadida sección en `docs/index.html` destacando: domain rules, human approval gates, audit log, encrypted vault, origin-scoped credentials, sandbox by default.
-- Objetivo: responder de antemano a las objeciones de seguridad que surgieron en HN y mejorar conversión de visitantes cualificados.
+- Objetivo: responder de antemana a las objeciones de seguridad que surgieron en HN y mejorar conversión de visitantes cualificados.
+
+## 2026-08-25 — BLOQUEO: is-a-dev/register#49126 DENEGADO
+- Nuevo PR creado con template completo, pero el bot de is-a-dev lo denegó sin especificar motivo.
+- Esto bloquea `neobrowser.is-a.dev` y, por tanto, el lanzamiento de Product Hunt con dominio propio.
+- Pivote inmediato: probar alternativa gratuita (`is-a.bot`, DuckDNS, Netlify/Vercel) o que el usuario compre un dominio propio.
+
+## 2026-08-25 — ACCIÓN: nuevo PR en is-a.bot + CNAME preparado
+- Creado fork de `free-domains/is-a.bot` y PR **https://github.com/free-domains/is-a.bot/pull/191**.
+- Archivo: `domains/neobrowser.json` → A records de GitHub Pages (185.199.108-111.153).
+- Añadido `docs/CNAME` con `neobrowser.is-a.bot` para que GitHub Pages sirva el custom domain en cuanto el DNS propague.
+- El cron `def4b1e8` se actualizó a `80065509` para monitorizar el nuevo PR #191 y el dominio `neobrowser.is-a.bot`.
+- Si se mergea, Product Hunt se desbloquea con URL propia.
