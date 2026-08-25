@@ -1282,3 +1282,69 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - Continuar monitorizando merges de dominio gratis cada 15 min (reinstalar cron).
 
 ---
+
+## 2026-08-25 — ciclo de contraposición local-first + submit mcpservers.org
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 0 issues abiertos.  
+**Estado al final del ciclo:** 95★ / 4 forks / 0 issues abiertos.
+
+### INTELIGENCIA: análisis de browser-use
+- Repo: `browser-use/browser-use`, 110.506★ / 12.158 forks.
+- Posicionamiento: open-source Python+Playwright como gancho, cloud SaaS como negocio.
+- Tácticas de crecimiento: GIFs one-liner, cloud upsell, skill install para agentes, benchmark propio, modelo LLM propio, merch/comunidad.
+- Oportunidad para NeoBrowser: contrarian positioning **local-first / privacy-first** — "your Chrome, your sessions, no proprietary cloud".
+- Documento guardado en `promo/intel/browser-use-analysis.md`.
+- Decisión: no contactar a los founders por colaboración; competidor directo con cloud propio.
+
+### PRODUCTO: Security FAQ en README y landing
+- Añadida sección "Security FAQ" a `README.md` y `docs/index.html`.
+- Responde honestamente a las 5 críticas de seguridad del thread de HN:
+  1. Domain allowlist (`NEOBROWSER_ALLOW_DOMAINS`).
+  2. Human approval before write actions (aún no implementado; `safe` profile como mitigación intermedia).
+  3. Persistent audit record (`~/.neobrowser/traces/` con redacción).
+  4. Session revocation (`revoke_session`).
+  5. Prompt injection (mitigado, no eliminado).
+- Commit: `dcedf73` (`docs: refresh README and landing page, add browser-use competitor analysis`), pusheado a `main`.
+
+### DISTRIBUCIÓN: submit a mcpservers.org
+- Usado NeoBrowser MCP para navegar y rellenar `https://mcpservers.org/submit`.
+- Datos enviados:
+  - Nombre: NeoBrowser
+  - Descripción: MCP server that drives your real Google Chrome via CDP, with real logged-in sessions and genuine anti-bot stealth.
+  - URL: https://github.com/pitiflautico/neobrowser
+  - Categoría: Web Scraping
+  - Email: pitiflautico3@gmail.com
+- Resultado: envío exitoso. Revisión en 12 horas; notificación por email cuando sea aprobado.
+- Screenshots guardadas en `/tmp/mcpservers_submit.png` y `/tmp/mcpservers_submit_result.png`.
+- Scripts temporales eliminados tras el envío.
+
+### OUTREACH: borrador para Alex Albert (Anthropic DevRel)
+- Preparado borrador de DM/email en `promo/drafts/outreach-alex-albert.md`.
+- Enfoque: MCP-native, local-first, sin cloud propio; pedir opinión honesta, no retweet.
+
+### CONTENIDO: GitHub Discussion sobre Security FAQ
+- Creada discussion #22: "We added a Security FAQ after HN pushed back. Here's what's real and what's still missing."
+- URL: https://github.com/pitiflautico/neobrowser/discussions/22
+- Enlace directo a la nueva sección del README; admite candidatos aún no implementados.
+
+### DOMINIO: estado de los PRs
+- `is-a-good-dev/register#1295` — OPEN (BLOCKED).
+- `is-amazing/register#297` — OPEN (UNSTABLE).
+- `creepersbs/register#133` — OPEN (CLEAN).
+- Ninguno mergeado. Product Hunt sigue bloqueado.
+- Cron de monitoreo recreado (`94b2597b`, cada 15 min) para vigilar merges y lanzar PH automáticamente.
+
+### Métricas del ciclo
+- Estrellas: 95 → 95.
+- Forks: 4 → 4.
+- Issues abiertos: 0 → 0.
+- Discusiones: +1 (#22).
+- Submits a directorios: +1 (mcpservers.org).
+- Borradores de outreach: +1 (Alex Albert).
+- Inteligencia: +1 (browser-use).
+
+### Próximo paso crítico
+- Decisión pendiente del usuario: autorizar compra de dominio propio para desbloquear Product Hunt.
+- Enviar outreach a pasky y Alex Albert cuando sea oportuno (después de Product Hunt o de una release visible).
+
+---
