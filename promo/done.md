@@ -901,4 +901,19 @@
 - El PR anterior `is-a-dev/register#48212` estaba CERRADO por borrar el template. He creado uno nuevo con el template completo: **https://github.com/is-a-dev/register/pull/49126**.
 - Archivo: `domains/neobrowser.json` → CNAME `pitiflautico.github.io`.
 - Una vez mergeado, `https://neobrowser.is-a.dev/` debería resolver 200 y podremos lanzar Product Hunt con URL propia.
-- El cron `3f136bac` se actualizará para monitorizar el nuevo PR #49126.
+- El cron `3f136bac` se actualizó a `def4b1e8` para monitorizar el nuevo PR #49126.
+
+## 2026-08-25 — ACCIÓN: intento de Show HN, resultado `[flagged]`
+- Ejecutado `promo/scripts/hn_post_study.py` con NeoBrowser + sesión real de HN (`pitiflautico`).
+- El post se publicó pero apareció inmediatamente como `[flagged]` en https://news.ycombinator.com/submitted?id=pitiflautico.
+- Descubrimiento relevante: ya existe un Show HN previo de hace 7 días — **"NeoBrowser: An MCP server that drives real Chrome with your logged-in sessions"** — con **34 puntos y 39 comentarios**. Ese SÍ funcionó.
+- Conclusión: HN está penalizando posts repetidos/similares o la cuenta está marcada por autopromoción. **Canal HN pausado para posts propios**. Seguimos usando HN solo para comentarios value-first ocasionales.
+- Pivote inmediato: duplicar esfuerzo en Product Hunt (en cuanto mergeen is-a-dev) y en outreach/directorios.
+
+## 2026-08-25 — ACCIÓN: assets virales actualizados a 95★
+- Actualizado `promo/scripts/generate_viral_gif.py` a **95 estrellas**.
+- Generados y convertidos a MP4 H.264 (faststart + yuv420p):
+  - `docs/assets/neobrowser-viral-square.gif/mp4` (1080×1080)
+  - `docs/assets/neobrowser-viral-wide.gif/mp4` (1200×676)
+- Listos para Product Hunt gallery, X (cuando se desbloquee) y LinkedIn.
+- Commit y push a main con todo el ciclo de hoy.

@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from PIL import Image, ImageDraw, ImageFont
 
-STARS = 89
+STARS = 95
 TARGET = 10000
 WIDTH, HEIGHT = 1080, 1080
 BG = (11, 14, 20)
