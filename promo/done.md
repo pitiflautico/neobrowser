@@ -1122,7 +1122,7 @@
 Consultados con `gh pr view`:
 
 - **`is-a-good-dev/register#1295`** — **OPEN**. Validado por el bot sin errores. Comentario de `pitiflautico` pidiendo revisión amablemente. URL: https://github.com/is-a-good-dev/register/pull/1295
-- **`is-amazing/register#297`** — **OPEN**, pero con **JSON inválido** según el bot `github-actions` (`❌ Your JSON file is invalid, please check the template again!`). Necesita corrección. URL: https://github.com/is-amazing/register/pull/297
+- **`is-amazing/register#297`** — **OPEN**. El bot reportó "JSON inválido", pero el archivo `domains/neobrowser.json` es sintácticamente válido y pasa la validación contra el schema del repo. El workflow de CI falla en `actions/checkout@v2` porque usa `pull_request_target` sin `allow-unsafe-pr-checkout: true`; es un bug del upstream, no del JSON. Se reformateó el archivo para coincidir con el estilo del template. URL: https://github.com/is-amazing/register/pull/297
 - **`creepersbs/register#133`** — **OPEN**, sin comentarios aún. URL: https://github.com/creepersbs/register/pull/133
 
 ### DISTRIBUCIÓN: nueva submission a awesome-mcp-servers
@@ -1147,7 +1147,7 @@ Consultados con `gh pr view`:
 - Forks: 4 → 4.
 - Issues abiertos: 1 → 1 (#19, real-profile cookie import).
 - Submissions de directorios activas: +1 (`mctrinh/awesome-mcp-servers#100`).
-- Dominios en juego: 3 (is-a-good.dev, is-amaz.ing con JSON inválido, creepers.sbs).
+- Dominios en juego: 3 (is-a-good.dev, is-amaz.ing con CI roto en upstream, creepers.sbs).
 
 ### Bloqueos activos
 - **Product Hunt:** bloqueado hasta que se mergee al menos uno de los PRs de dominio y el dominio responda 200.
