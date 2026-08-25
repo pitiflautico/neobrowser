@@ -409,6 +409,25 @@ Real-session mode reads cookies from your Chrome profile and injects them into a
 - Anything an AI browses with your session acts **as you**. Point it only at sites and tasks you would do yourself.
 - **Automating a logged-in account may breach that service's terms.** Google, LinkedIn, X, and others restrict automated access. Enforcement lands on the account. That risk is yours to weigh per site.
 
+### Security FAQ
+
+Questions we got after launching on Hacker News, answered honestly:
+
+**Can I restrict which sites the agent is allowed to touch?**  
+Yes. `NEOBROWSER_ALLOW_DOMAINS=github.com,*.docs.rs` makes `navigate` refuse anything not listed. `NEOBROWSER_DENY_DOMAINS` blocks specific hosts first. These are opt-in; unset means no restriction.
+
+**Is there human approval before submit, delete, or other write actions?**  
+Not yet. Today the agent decides within the policy profile you set (`developer`/`safe`/`autonomous`). The `safe` profile is the most restrictive. We are evaluating an explicit write-mode gate that would require `NEOBROWSER_ENABLE_WRITE_ACTIONS=1` before any mutating tool runs.
+
+**Is there a persistent audit record of what the agent did?**  
+Yes, by default. Every tool call is logged with a trace id under `~/.neobrowser/traces/`. Console and network events per tab are captured too. The logs redact cookie values and other secret-shaped strings. You can inspect them with standard tools; a friendlier audit digest is on the roadmap.
+
+**How do I revoke a previously granted session?**  
+Delete the stored material: `neobrowser revoke_session` (or remove `~/.neobrowser/sessions/<profile>/`). If you used real-profile cookie import, those cookies were only a copy; revoking the copy does not log your real Chrome out. Rotating the real session in Chrome is the safest way to invalidate it at the provider.
+
+**What about prompt injection making the agent perform write operations?**  
+The main mitigations are: domain allowlists, policy profiles, excluding identity cookies from real-profile import, and origin-scoped credentials. None of these eliminate prompt-injection risk entirely. Do not point NeoBrowser at pages you do not trust with the permissions you have granted it.
+
 ## Development
 
 ```bash

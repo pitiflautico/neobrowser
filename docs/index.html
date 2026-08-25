@@ -207,6 +207,18 @@
   </section>
 
   <section>
+    <h2>Security FAQ</h2>
+    <p style="color:var(--muted);max-width:720px;margin:0 0 18px">Questions we got after our Hacker News launch, answered honestly.</p>
+    <div class="grid" style="text-align:left">
+      <div class="card"><h3>Can I restrict which sites the agent touches?</h3><p>Yes. <code>NEOBROWSER_ALLOW_DOMAINS</code> makes <code>navigate</code> refuse anything not listed. <code>NEOBROWSER_DENY_DOMAINS</code> blocks hosts first.</p></div>
+      <div class="card"><h3>Is there human approval before write actions?</h3><p>Not yet. Today the agent decides within the policy profile you set. We are evaluating an explicit write-mode gate that would require opt-in before any mutating tool runs.</p></div>
+      <div class="card"><h3>Is there a persistent audit record?</h3><p>Yes. Every tool call is logged with a trace id under <code>~/.neobrowser/traces/</code>. Console and network events per tab are captured too, with secret redaction.</p></div>
+      <div class="card"><h3>How do I revoke a session?</h3><p><code>neobrowser revoke_session</code> or remove <code>~/.neobrowser/sessions/&lt;profile&gt;/</code>. Real-profile imports are only copies; rotating the real session in Chrome invalidates it at the provider.</p></div>
+      <div class="card"><h3>What about prompt injection?</h3><p>Domain allowlists, policy profiles, identity-cookie exclusion, and origin-scoped credentials reduce the risk, but do not eliminate it. Do not point NeoBrowser at untrusted pages with permissions you are not willing to exercise.</p></div>
+    </div>
+  </section>
+
+  <section>
     <h2>Get started</h2>
     <div class="grid">
       <div class="card"><h3>1 · Install</h3><p>Run the one-liner above, or grab a binary from <a href="https://github.com/pitiflautico/neobrowser/releases">Releases</a> (checksummed &amp; signed with build provenance).</p></div>
