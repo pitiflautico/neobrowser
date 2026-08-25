@@ -144,7 +144,7 @@
   <section>
     <h2>What it does</h2>
     <div class="grid">
-      <div class="card"><h3>Real-session browsing</h3><p>Decrypt + inject cookies from your real Chrome profile (macOS Keychain / Linux secret-service / Windows DPAPI). Opt-in; identity cookies excluded so your browser isn't logged out.</p></div>
+      <div class="card"><h3>Real-session browsing</h3><p>Decrypt + inject cookies from your real Chrome profile (macOS Keychain / Linux secret-service / Windows DPAPI). Opt-in per domain; identity cookies excluded so your real browser isn't logged out.</p></div>
       <div class="card"><h3>Genuine stealth</h3><p>Passes bot.sannysoft with the host's real fingerprint — no spoofed WebGL or UA mismatch. CI runs the checks against a real Chrome on every push.</p></div>
       <div class="card"><h3>Human-like input</h3><p>Clicks travel to the target along an eased, jittered path with human-cadence pauses; typing can be per-key with realistic timing.</p></div>
       <div class="card"><h3>Bot-wall aware</h3><p>Detects CAPTCHAs, consent gates, rate-limits and login walls on any site and tells the model how to react.</p></div>
@@ -158,10 +158,10 @@
     <h2>What's new</h2>
     <div class="grid">
       <div class="card"><h3>🚀 CI green + landing sharpened</h3><p>Format/clippy/test suite verified locally; fresh push underway. Landing copy and stats kept honest.</p></div>
-      <div class="card"><h3>🔐 Safer real-profile sessions</h3><p>Issue <a href="https://github.com/pitiflautico/neobrowser/issues/19">#19</a> documented a logout bug when cloning real Chrome sessions. We now block identity cookies for 24 major providers and warn users to prefer attach mode or an agent profile.</p></div>
+      <div class="card"><h3>🔐 Real-profile sessions are now opt-in per domain</h3><p>Issue <a href="https://github.com/pitiflautico/neobrowser/issues/19">#19</a> documented a logout bug when cloning real Chrome sessions. We fixed it at the default: <code>NEOBROWSER_REAL_PROFILE</code> now imports <strong>nothing</strong> unless you also set <code>NEOBROWSER_REAL_PROFILE_DOMAINS</code>. Identity cookies for 24 major providers are still excluded.</p></div>
       <div class="card"><h3>🌐 Product Hunt queued</h3><p>We requested <code>neobrowser.is-a-good.dev</code> via is-a-good-dev/register to unlock Product Hunt. Until it resolves, the site stays on <a href="https://pitiflautico.github.io/neobrowser/">GitHub Pages</a>.</p></div>
       <div class="card"><h3>📣 Reddit r/mcp showcase live</h3><p>Honest walkthrough of real-session browsing on <a href="https://old.reddit.com/r/mcp/comments/1vtpi7j/showcase_neobrowser_mcp_server_that_drives_your/">r/mcp</a> and <a href="https://old.reddit.com/r/SideProject/comments/1vtpse8/">r/SideProject</a>. Join the discussion or ask hard questions about the benchmark.</p></div>
-      <div class="card"><h3>🔒 Domain-scoped real sessions</h3><p><code>NEOBROWSER_REAL_PROFILE_DOMAINS</code> lets you inject cookies only for specific sites. Identity cookies stay protected so your real browser never gets logged out.</p></div>
+      <div class="card"><h3>🔒 Domain-scoped imports by default</h3><p><code>NEOBROWSER_REAL_PROFILE_DOMAINS=x.com,reddit.com</code> imports cookies only for those sites. No more cloning your whole profile and getting logged out everywhere.</p></div>
       <div class="card"><h3>🛡️ Security-first defaults</h3><p>Cookie/session data is sealed at rest. Credentials never follow redirects off-origin. The sandbox is on by default; <code>--no-sandbox</code> requires an explicit opt-in.</p></div>
       <div class="card"><h3>✅ Verified actions</h3><p>Every click, fill or submit reports what actually happened — succeeded, blocked, uncertain or needs human — instead of always returning "Clicked".</p></div>
       <div class="card"><h3>🤖 Built for agents</h3><p>Multi-tab, playbooks, wall detection, and a clean MCP interface. Run it from Claude Code, Cursor, VS Code, Windsurf or any MCP client.</p></div>

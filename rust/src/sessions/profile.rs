@@ -102,9 +102,9 @@ pub async fn profile_mode_report(browser: &crate::browser::Browser) -> String {
             "Close the debug port when you are done; anything that can reach it can drive your browser.",
         ),
         ProfileMode::ImportedRealProfile => (
-            "persistent cookies decrypted from your real Chrome profile",
-            "highest: a clone of your session now exists in a second browser, which providers may flag; identity cookies for major providers are excluded, and session (non-persistent) cookies are skipped by default so the real browser is not logged out",
-            "Prefer `attached` mode, or an agent profile, unless you specifically need a headless browser carrying imported cookies.",
+            "persistent cookies decrypted from your real Chrome profile, but only for the domains listed in NEOBROWSER_REAL_PROFILE_DOMAINS",
+            "highest: a clone of your session now exists in a second browser, which providers may flag; identity cookies for major providers are excluded, session (non-persistent) cookies are skipped by default, and import is opt-in per domain so the real browser is not logged out",
+            "Prefer `attached` mode, or an agent profile, unless you specifically need a headless browser carrying imported cookies. Set NEOBROWSER_REAL_PROFILE_DOMAINS to the domains you need.",
         ),
     };
     let status = browser.status().await;

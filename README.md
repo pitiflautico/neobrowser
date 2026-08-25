@@ -228,16 +228,21 @@ By default NeoBrowser runs its own headless Chrome under a dedicated profile. To
 
 ## Real-session mode
 
-Set `NEOBROWSER_REAL_PROFILE` to the Chrome profile folder whose sessions you want (e.g. `"Default"`, `"Profile 1"`). NeoBrowser decrypts that profile's cookies via the OS keychain and injects them, so the agent starts authenticated:
+Set `NEOBROWSER_REAL_PROFILE` to the Chrome profile folder whose sessions you want (e.g. `"Default"`, `"Profile 1"`). NeoBrowser decrypts that profile's cookies via the OS keychain and injects them, so the agent starts authenticated.
+
+Import is opt-in **per domain** to avoid cloning the entire profile and logging your real Chrome out of every account:
 
 ```jsonc
 { "mcpServers": { "neobrowser": {
   "command": "neobrowser",
-  "env": { "NEOBROWSER_REAL_PROFILE": "Default" }
+  "env": {
+    "NEOBROWSER_REAL_PROFILE": "Default",
+    "NEOBROWSER_REAL_PROFILE_DOMAINS": "x.com,reddit.com"
+  }
 } } }
 ```
 
-By default only **persistent** cookies are imported; non-persistent/session cookies are skipped so the real browser is not logged out. Session-identity cookies for major providers are always excluded unless `NEOBROWSER_INCLUDE_IDENTITY_COOKIES=1` is set.
+Only cookies for the listed domains are imported. By default only **persistent** cookies are imported; non-persistent/session cookies are skipped so the real browser is not logged out. Session-identity cookies for major providers are always excluded unless `NEOBROWSER_INCLUDE_IDENTITY_COOKIES=1` is set.
 
 Or attach to a Chrome you already have open (started with `--remote-debugging-port=9222`): set `NEOBROWSER_ATTACH_PORT=9222`. In attach mode NeoBrowser never patches or kills your real browser.
 
@@ -266,6 +271,7 @@ No tool beats interactive challenges like reCAPTCHA or DataDome reliably. NeoBro
 | Env var | Default | Purpose |
 |---|---|---|
 | `NEOBROWSER_REAL_PROFILE` | *(unset)* | Real Chrome profile folder to pull sessions from |
+| `NEOBROWSER_REAL_PROFILE_DOMAINS` | *(unset)* | Comma-separated domains to import from the real profile. **Empty/unset = no import**, even when `NEOBROWSER_REAL_PROFILE` is set |
 | `NEOBROWSER_PROFILE` | `default` | Which Ghost profile this session uses. Chrome locks a profile exclusively, so give concurrent sessions different names to keep them from colliding |
 | `NEOBROWSER_ATTACH_PORT` | *(unset)* | Attach to an already-running Chrome on this debug port |
 | `NEOBROWSER_ATTACH_TIMEOUT` | `5` | Seconds to wait when attaching to an existing Chrome (max `120`) |

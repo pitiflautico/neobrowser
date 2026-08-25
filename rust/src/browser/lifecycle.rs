@@ -125,24 +125,38 @@ impl Browser {
                 .await;
 
             if inject_cookies && crate::cookies::real_profile_folder().is_some() {
-                tracing::warn!(
-                    "real-session: importing cookies from the user's Chrome profile; \
-                     some providers may detect the cloned session and log the real browser out. \
-                     Use NEOBROWSER_ATTACH_PORT or an agent profile if this happens."
-                );
-                match crate::cookies::read_real_profile_cookies(None) {
-                    Ok(cookies) if !cookies.is_empty() => {
-                        let n = cookies.len();
-                        if client
-                            .send("Network.setCookies", json!({ "cookies": cookies }))
-                            .await
-                            .is_ok()
-                        {
-                            tracing::info!("real-session: injected {n} cookies from profile");
+                match crate::cookies::real_profile_domains() {
+                    None => {
+                        tracing::warn!(
+                            "real-session: NEOBROWSER_REAL_PROFILE is set but \
+                             NEOBROWSER_REAL_PROFILE_DOMAINS is empty; no cookies will be imported. \
+                             Set NEOBROWSER_REAL_PROFILE_DOMAINS to the comma-separated domains you need."
+                        );
+                    }
+                    Some(domains) => {
+                        tracing::warn!(
+                            "real-session: importing cookies for domains {:?} from the user's Chrome profile; \
+                             some providers may still detect the cloned session and log the real browser out. \
+                             Use NEOBROWSER_ATTACH_PORT or an agent profile if this happens.",
+                            domains
+                        );
+                        match crate::cookies::read_real_profile_cookies(Some(&domains)) {
+                            Ok(cookies) if !cookies.is_empty() => {
+                                let n = cookies.len();
+                                if client
+                                    .send("Network.setCookies", json!({ "cookies": cookies }))
+                                    .await
+                                    .is_ok()
+                                {
+                                    tracing::info!(
+                                        "real-session: injected {n} cookies from profile"
+                                    );
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("real-session: cookie sync skipped: {e}"),
                         }
                     }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("real-session: cookie sync skipped: {e}"),
                 }
             }
         }

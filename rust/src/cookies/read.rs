@@ -46,6 +46,34 @@ pub fn real_profile_folder() -> Option<String> {
     ok.then_some(name)
 }
 
+/// Domains the user explicitly wants imported from their real Chrome profile.
+///
+/// Real-profile cookie import is now opt-in per domain: setting
+/// `NEOBROWSER_REAL_PROFILE` alone imports nothing. This prevents the clone
+/// of a full profile from logging the user's real browser out of every account.
+///
+/// Format: comma-separated host suffixes, e.g. `x.com,reddit.com,*.example.com`.
+/// The `*.` prefix is accepted but treated as a plain suffix match the same way
+/// `host_under_domain` already works.
+pub fn real_profile_domains() -> Option<Vec<String>> {
+    let raw = std::env::var("NEOBROWSER_REAL_PROFILE_DOMAINS").ok()?;
+    let domains: Vec<String> = raw
+        .split(',')
+        .map(|s| {
+            s.trim()
+                .trim_start_matches('*')
+                .trim_start_matches('.')
+                .to_ascii_lowercase()
+        })
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .collect();
+    if domains.is_empty() {
+        None
+    } else {
+        Some(domains)
+    }
+}
+
 /// Read + decrypt the real Chrome profile's cookies into CDP-ready cookie objects,
 /// skipping session-identity cookies (see `SESSION_AUTH_EXCLUSIONS`). Optionally
 /// filter to `domains` (host_key suffix match). Returns [] if no profile/key/DB.

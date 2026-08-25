@@ -29,7 +29,10 @@ pub mod read;
 pub use crypto::{decrypt_value_cbc, decrypt_value_gcm, derive_key_cbc};
 pub use exclude::{is_session_auth_excluded, is_session_cookie_excluded};
 pub use keys::{get_decrypt_key, DecryptKey};
-pub use read::{chrome_epoch_to_unix, read_real_profile_cookies, real_profile_folder, same_site};
+pub use read::{
+    chrome_epoch_to_unix, read_real_profile_cookies, real_profile_domains, real_profile_folder,
+    same_site,
+};
 
 #[derive(Debug, Error)]
 pub enum CookieError {
@@ -343,5 +346,37 @@ mod tests {
         // Consent/preference cookies on the same domains should still be importable.
         assert!(!is_session_auth_excluded(".notion.so", "notion_consent"));
         assert!(!is_session_auth_excluded(".figma.com", "analytics"));
+    }
+
+    /// Real-profile cookie import is opt-in per domain. The env var must be parsed as a
+    /// comma-separated list, normalised, and empty/unset must mean "import nothing".
+    #[test]
+    fn real_profile_domains_is_opt_in_per_domain() {
+        let _g = crate::env_test_guard();
+        let prev = std::env::var("NEOBROWSER_REAL_PROFILE_DOMAINS").ok();
+
+        std::env::set_var(
+            "NEOBROWSER_REAL_PROFILE_DOMAINS",
+            "x.com, *.linkedin.com, Reddit.COM , ,",
+        );
+        assert_eq!(
+            real_profile_domains(),
+            Some(vec![
+                "x.com".to_string(),
+                "linkedin.com".to_string(),
+                "reddit.com".to_string(),
+            ])
+        );
+
+        std::env::set_var("NEOBROWSER_REAL_PROFILE_DOMAINS", "");
+        assert_eq!(real_profile_domains(), None, "empty list means no import");
+
+        std::env::remove_var("NEOBROWSER_REAL_PROFILE_DOMAINS");
+        assert_eq!(real_profile_domains(), None, "unset means no import");
+
+        match prev {
+            Some(v) => std::env::set_var("NEOBROWSER_REAL_PROFILE_DOMAINS", v),
+            None => std::env::remove_var("NEOBROWSER_REAL_PROFILE_DOMAINS"),
+        }
     }
 }

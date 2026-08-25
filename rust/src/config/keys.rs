@@ -43,6 +43,11 @@ pub const KEYS: &[(&str, &str, &str)] = &[
         "Real Chrome profile folder to import cookies from (advanced)",
     ),
     (
+        "real_profile_domains",
+        "NEOBROWSER_REAL_PROFILE_DOMAINS",
+        "Comma-separated domains to import from the real profile (empty = none)",
+    ),
+    (
         "attach_port",
         "NEOBROWSER_ATTACH_PORT",
         "Attach to an already-running Chrome on this debug port",
