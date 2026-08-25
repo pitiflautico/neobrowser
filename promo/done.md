@@ -1112,3 +1112,49 @@
 
 ### Próximo paso crítico
 - Que se mergee al menos uno de los dos PRs de dominio para desbloquear Product Hunt.
+
+## 2026-08-25 — ciclo de promoción (tercer ciclo del día)
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 1 issue abierto.  
+**Estado al final del ciclo:** 95★ / 4 forks / 1 issue abierto.
+
+### DOMINIO: estado de los PRs de dominio
+Consultados con `gh pr view`:
+
+- **`is-a-good-dev/register#1295`** — **OPEN**. Validado por el bot sin errores. Comentario de `pitiflautico` pidiendo revisión amablemente. URL: https://github.com/is-a-good-dev/register/pull/1295
+- **`is-amazing/register#297`** — **OPEN**, pero con **JSON inválido** según el bot `github-actions` (`❌ Your JSON file is invalid, please check the template again!`). Necesita corrección. URL: https://github.com/is-amazing/register/pull/297
+- **`creepersbs/register#133`** — **OPEN**, sin comentarios aún. URL: https://github.com/creepersbs/register/pull/133
+
+### DISTRIBUCIÓN: nueva submission a awesome-mcp-servers
+- Creado issue de submission en `mctrinh/awesome-mcp-servers#100`: **"Submit NeoBrowser — real Chrome MCP server"**.
+- Incluye descripción del repo, licencia MIT, categoría Browser Automation y entrada sugerida para el README.
+- URL: https://github.com/mctrinh/awesome-mcp-servers/issues/100
+
+### OUTREACH: 2 borradores personalizados
+- `promo/drafts/outreach-swxtch-mcp-realbrowser-2026-08-25.md`: mensaje value-first a @swyx (Shawn Wang) sobre AI employees y por qué un Chrome real supera al headless spoofing.
+- `promo/drafts/outreach-karpathy-tools-2026-08-25.md`: mensaje value-first a @karpathy sobre agents usando herramientas reales y el modelo observe → act → verify.
+- Estado: listos para publicación manual cuando X/LinkedIn se desbloqueen.
+
+### INTELIGENCIA: análisis de Saik0s/mcp-browser-use
+- Repo: `Saik0s/mcp-browser-use`, 957★, 113 forks, Python, envuelve `browser-use` como MCP server HTTP.
+- Fortalezas: transporte HTTP para tareas largas, web UI/dashboard, deep research integrado, sistema de skills, múltiples proveedores LLM.
+- Diferenciadores de NeoBrowser: binario Rust ~6 MB sin runtime, tools granulares sin LLM obligatorio, verified actions, seguridad estructurada, anti-detección "genuine".
+- Tácticas aplicables: ofrecer transporte HTTP, añadir dashboard local de tareas, empaquetar flujo de deep research, destacar instalación one-liner y coste determinista, fortalecer sistema de playbooks/skills.
+- Documentado en `promo/drafts/intelligence-competitor-saik0s-mcp-browser-use-2026-08-25.md`.
+
+### Métricas del ciclo
+- Estrellas: 95 → 95 (sin cambio, esperado sin Product Hunt ni viralización).
+- Forks: 4 → 4.
+- Issues abiertos: 1 → 1 (#19, real-profile cookie import).
+- Submissions de directorios activas: +1 (`mctrinh/awesome-mcp-servers#100`).
+- Dominios en juego: 3 (is-a-good.dev, is-amaz.ing con JSON inválido, creepers.sbs).
+
+### Bloqueos activos
+- **Product Hunt:** bloqueado hasta que se mergee al menos uno de los PRs de dominio y el dominio responda 200.
+- **is-amazing/register#297:** requiere corregir el JSON.
+- **X / LinkedIn:** bloqueados por CAPTCHA/UI en automatización; contenido queda en borrador para publicación manual.
+
+### Próximo paso crítico
+- Corregir el JSON de `is-amazing/register#297` o conseguir merge de `is-a-good-dev/register#1295` / `creepersbs/register#133` para desbloquear Product Hunt.
+
+---
