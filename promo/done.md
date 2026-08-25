@@ -1361,6 +1361,7 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - Corregidas inconsistencias en la sección "Built for real sessions, safely" de la landing.
 - Commit: `1921ff0` (`fix(navigate): use NEOBROWSER_ALLOW_DOMAINS consistently; add local-first section to landing`).
 - CI local: fmt, clippy, test — todos verdes.
+- Seguimiento: CI remoto en Ubuntu falló por `scripts/check-claims.py` — README aún documentaba `NEOBROWSER_DOMAIN_ALLOWLIST`. Corregido en commit `272f071` (`docs: align README env var with code (NEOBROWSER_ALLOW_DOMAINS)`); CI en progreso.
 
 ### INTELIGENCIA: análisis de BrowserOS
 - Investigado `browseros-ai/BrowserOS` (~13k★, YC S24, AGPL-3.0).
