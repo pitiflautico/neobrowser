@@ -17,6 +17,11 @@ CANDIDATES = [
         "pr_api": "https://api.github.com/repos/is-amazing/register/pulls/297",
         "domain": "https://neobrowser.is-amaz.ing/",
     },
+    {
+        "name": "creepers.sbs",
+        "pr_api": "https://api.github.com/repos/creepersbs/register/pulls/133",
+        "domain": "https://neobrowser.creepers.sbs/",
+    },
 ]
 
 
