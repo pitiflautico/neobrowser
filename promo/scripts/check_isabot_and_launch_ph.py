@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-PR_API = "https://api.github.com/repos/free-domains/is-a.bot/pulls/191"
+PR_API = "https://api.github.com/repos/free-domains/is-a.bot/pulls/192"
 DOMAIN = "https://neobrowser.is-a.bot/"
 
 
