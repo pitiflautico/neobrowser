@@ -1404,3 +1404,57 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - Enviar outreach a pasky, Alex Albert y Justin Spahr-Summers cuando sea oportuno.
 
 ---
+
+## 2026-08-25 — ciclo de mantenimiento viral + HN trends
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 0 issues abiertos.  
+**Estado al final del ciclo:** 95★ / 4 forks / 0 issues abiertos.
+
+### PRODUCTO: verificación de claims y CI
+- Ejecutado `scripts/check-claims.py`: todos los claims verificables del README coinciden con el binario (67 tools, 26 anunciados, 6.4 MB, 32 env vars, 22 links).
+- CI del commit `272f071` sigue en progreso; sin fallos reportados hasta el momento.
+
+### CONTENIDO: GIFs virales regenerados
+- Ejecutado `python3 promo/scripts/generate_viral_gif.py` con contador actual (95★ → 10000★).
+- Archivos sincronizados en `~/.neobrowser/promo-home/downloads/` y `docs/assets/`.
+- Sin cambios en git porque los assets generados coinciden con HEAD (mismo contador).
+
+### INTELIGENCIA: snapshot de trends MCP en HN
+- Escaneados ~500 stories de HN (top/new/best/ask/show).
+- Posts MCP/agent más relevantes:
+  - OzBrain (92★, 55 comments) — "shared brain for knowledge between agents and your team".
+  - Proliferate (46★, 16 comments) — "open-source, self-hostable Codex for any coding agent".
+  - Pgbot (44★, 9 comments) — "A 5.9 MB read-only Postgres tool for humans and agents".
+- Lección aplicable: los títulos que funcionan son `[Nombre], [beneficio concreto] para [audiencia]`, y destacan tamaño pequeño + self-hostable.
+- Documento: `promo/intel/hn-mcp-trends-2026-08-25.md`.
+- Acción: ajustar futuros títulos de Show HN/Product Hunt para liderar con "6.4 MB single binary" y "no cloud".
+
+### DISTRIBUCIÓN: bump en chatmcp/mcpso
+- Comentario de valor en `chatmcp/mcpso#3546` con actualizaciones recientes.
+- URL: https://github.com/chatmcp/mcpso/issues/3546#issuecomment-5416479532
+
+### OUTREACH: borrador para Fireship
+- Preparado pitch para Jeff Delaney / Fireship en `promo/drafts/outreach-fireship.md`.
+- Ángulo: video "100 seconds" sobre MCP browser agents, con beats visuales concretos.
+
+### DOMINIO: estado de los PRs
+- `is-a-good-dev/register#1295` — OPEN (BLOCKED).
+- `is-amazing/register#297` — OPEN (UNSTABLE).
+- `creepersbs/register#133` — OPEN (CLEAN).
+- Ninguno mergeado. Product Hunt sigue bloqueado.
+- Cron de monitoreo activo (`94b2597b`).
+
+### Métricas del ciclo
+- Estrellas: 95 → 95.
+- Forks: 4 → 4.
+- Issues abiertos: 0 → 0.
+- GIFs virales: regenerados.
+- Borradores de outreach: +1 (Fireship).
+- Inteligencia: +1 (HN MCP trends).
+- Distribución: +1 bump.
+
+### Próximo paso crítico
+- Decisión pendiente del usuario: autorizar compra de dominio propio para desbloquear Product Hunt.
+- El bloqueo se ha reportado durante 4 ciclos consecutivos. Sin resolución en el próximo turno, el goal debe marcarse como `blocked` por imposibilidad de progreso significativo hacia 10.000 estrellas.
+
+---
