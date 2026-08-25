@@ -1,0 +1,38 @@
+name: Publish to MCP Registry
+
+# Publish the server.json manifest to the official MCP Registry on every release.
+# This is a metadata-only publish: the binary ships via GitHub Releases, and the
+# registry entry points clients at the repository/server.json.
+#
+# Uses GitHub OIDC so no long-lived token is required.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        shell: bash
+        run: |
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          curl -fsSL \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${OS}_${ARCH}.tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        shell: bash
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server metadata
+        shell: bash
+        run: ./mcp-publisher publish
