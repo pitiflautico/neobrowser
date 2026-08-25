@@ -1348,3 +1348,58 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - Enviar outreach a pasky y Alex Albert cuando sea oportuno (después de Product Hunt o de una release visible).
 
 ---
+
+## 2026-08-25 — ciclo de fixes + competidores
+
+**Estado al inicio del ciclo:** 95★ / 4 forks / 0 issues abiertos.  
+**Estado al final del ciclo:** 95★ / 4 forks / 0 issues abiertos.
+
+### PRODUCTO: fix de inconsistencia en domain allowlist + landing mejorada
+- Corregido bug: `navigate` usaba `NEOBROWSER_DOMAIN_ALLOWLIST` mientras que la config, policy y doctor usaban `NEOBROWSER_ALLOW_DOMAINS`. Ahora `tools::check_domain_allowlist` lee `NEOBROWSER_ALLOW_DOMAINS` consistentemente.
+- Actualizados mensajes de error y tests.
+- Añadida sección "Local-first vs cloud browser agents" a `docs/index.html` con tabla comparativa.
+- Corregidas inconsistencias en la sección "Built for real sessions, safely" de la landing.
+- Commit: `1921ff0` (`fix(navigate): use NEOBROWSER_ALLOW_DOMAINS consistently; add local-first section to landing`).
+- CI local: fmt, clippy, test — todos verdes.
+
+### INTELIGENCIA: análisis de BrowserOS
+- Investigado `browseros-ai/BrowserOS` (~13k★, YC S24, AGPL-3.0).
+- Producto dual: navegador para humanos + navegador para agentes (neo/MCP).
+- Stack: Chromium fork + TypeScript/Go/Rust, 53+ tools MCP, HTTP MCP server local.
+- Oportunidad para NeoBrowser: zero-install, licencia empresarial, sandbox real, DevTools completos hoy.
+- Documento guardado en `promo/intel/browseros-analysis.md`.
+
+### DISTRIBUCIÓN: bump en cline/mcp-marketplace
+- Comentario de valor en `cline/mcp-marketplace#2323` anunciando fix #19, corrección de allowlist, y submit a mcpservers.org.
+- URL: https://github.com/cline/mcp-marketplace/issues/2323#issuecomment-5416250864
+
+### OUTREACH: borrador para Justin Spahr-Summers (MCP co-creator)
+- Preparado borrador de DM/email en `promo/drafts/outreach-justin-spahr-summers.md`.
+- Enfoque: pedir su opinión sobre seguridad/guardrails esenciales, no pedir retweet.
+
+### CONTENIDO: GitHub Discussion sobre competidores
+- Creada discussion #23: "Why we're not trying to be another browser — a look at browser-use and BrowserOS".
+- URL: https://github.com/pitiflautico/neobrowser/discussions/23
+- Posicionamiento contrarian: NeoBrowser usa el Chrome real del usuario en lugar de reemplazar/duplicar el navegador.
+
+### DOMINIO: estado de los PRs
+- `is-a-good-dev/register#1295` — OPEN (BLOCKED).
+- `is-amazing/register#297` — OPEN (UNSTABLE).
+- `creepersbs/register#133` — OPEN (CLEAN).
+- Ninguno mergeado. Product Hunt sigue bloqueado.
+- Cron de monitoreo activo (`94b2597b`).
+
+### Métricas del ciclo
+- Estrellas: 95 → 95.
+- Forks: 4 → 4.
+- Issues abiertos: 0 → 0.
+- Discusiones: +1 (#23).
+- Borradores de outreach: +1 (Justin Spahr-Summers).
+- Inteligencia: +1 (BrowserOS).
+- Bug fix real: +1.
+
+### Próximo paso crítico
+- Decisión pendiente del usuario: autorizar compra de dominio propio para desbloquear Product Hunt.
+- Enviar outreach a pasky, Alex Albert y Justin Spahr-Summers cuando sea oportuno.
+
+---
