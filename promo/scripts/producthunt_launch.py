@@ -10,7 +10,7 @@ PROFILE = "Profile 24"
 NAME = "NeoBrowser"
 TAGLINE = "Your AI drives real Chrome — with your real logged-in sessions"
 TOPICS = ["Developer Tools", "Open Source", "Artificial Intelligence"]
-WEBSITE = "https://gentle-khapse-c58c79.netlify.app/"  # Netlify Drop; must be claimed to remove password
+WEBSITE = "https://neobrowser.is-a.bot/"
 GITHUB = "https://github.com/pitiflautico/neobrowser"
 
 DESCRIPTION = """Hey Product Hunt 👋
@@ -23,13 +23,14 @@ It's a single 6.4 MB Rust binary with 67 tools: multi-tab browsing, forms, uploa
 
 What I'm proudest of: the honest benchmark vs Playwright MCP in the repo. Playwright is faster; we do things it can't. Both get walled equally on adversarial pages. No hype.
 
-Current bet: 89/10,000 GitHub stars, documented publicly at gentle-khapse-c58c79.netlify.app.
+Current bet: 95/10,000 GitHub stars, documented publicly at neobrowser.is-a.bot.
 
 MIT licensed. Feedback welcome — especially from folks who've fought bot detection before."""
 
 MAKER_COMMENT = "Maker here — happy to answer anything. Two technical rabbit holes if you're curious: (1) cross-platform Chrome cookie decryption (Keychain/secret-service/DPAPI) done safely and opt-in, (2) why \"genuine consistency\" beats spoof stacking for fingerprint checks. Both are in the codebase, MIT."
 
 GALLERY = [
+    os.path.expanduser("~/.neobrowser/promo-home/downloads/neobrowser-viral-square.mp4"),
     os.path.expanduser("~/.neobrowser/promo-home/downloads/neobrowser-vs-headless.gif"),
     os.path.expanduser("~/.neobrowser/promo-home/downloads/demo.gif"),
     os.path.expanduser("~/.neobrowser/promo-home/downloads/hero-clip.mp4"),
