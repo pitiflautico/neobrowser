@@ -80,6 +80,39 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
     (&[".instagram.com"], &["sessionid", "ds_user_id"]),
     (&[".slack.com"], &["d"]),
     (&[".discord.com"], &["token"]),
+    // More providers that aggressively revoke duplicate / cloned sessions.
+    (
+        &[".notion.so", ".notion.site"],
+        &["token_v2", "notion_user_id", "notion_experiment_device_id"],
+    ),
+    (
+        &[".figma.com"],
+        &["figma.auth", "figma.session", "figma.fs"],
+    ),
+    (&[".linear.app"], &["linear", "linear_session"]),
+    (
+        &[".vercel.com"],
+        &["auth-token", "authorization", "session"],
+    ),
+    (
+        &[".cloudflare.com"],
+        &["cftoken", "cf_clearance", "session"],
+    ),
+    (&[".stripe.com"], &["session", "stripe.csrf"]),
+    (&[".dropbox.com"], &["bjarne", "jar", "t"]),
+    (&[".apple.com", ".icloud.com"], &["aa", "acn01", "Des"]),
+    (
+        &[".amazon.com", ".amazon.es", ".amazon.co.uk"],
+        &["session-id", "ubid-main", "at-main", "sess-at-main"],
+    ),
+    (&[".spotify.com"], &["sp_dc", "sp_key"]),
+    (&[".zoom.us"], &["_zm_ssid", "_zm_csp"]),
+    (
+        &[".atlassian.net", ".atlassian.com", ".jira.com"],
+        &["ajs_user_id", "tenant.session", "cloud.session.token"],
+    ),
+    (&[".gitlab.com"], &["_gitlab_session", "known_sign_in"]),
+    (&[".bitbucket.org"], &["csrftoken", "sessionid"]),
 ];
 
 /// Does a cookie's `host_key` fall under a domain from the exclusion list?

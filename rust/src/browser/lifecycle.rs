@@ -125,6 +125,11 @@ impl Browser {
                 .await;
 
             if inject_cookies && crate::cookies::real_profile_folder().is_some() {
+                tracing::warn!(
+                    "real-session: importing cookies from the user's Chrome profile; \
+                     some providers may detect the cloned session and log the real browser out. \
+                     Use NEOBROWSER_ATTACH_PORT or an agent profile if this happens."
+                );
                 match crate::cookies::read_real_profile_cookies(None) {
                     Ok(cookies) if !cookies.is_empty() => {
                         let n = cookies.len();

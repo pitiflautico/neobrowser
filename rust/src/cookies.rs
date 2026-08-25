@@ -323,5 +323,25 @@ mod tests {
         assert!(is_session_auth_excluded(".instagram.com", "sessionid"));
         assert!(is_session_auth_excluded(".slack.com", "d"));
         assert!(is_session_auth_excluded(".discord.com", "token"));
+        assert!(is_session_auth_excluded(".notion.so", "token_v2"));
+        assert!(is_session_auth_excluded("www.notion.so", "notion_user_id"));
+        assert!(is_session_auth_excluded(".figma.com", "figma.session"));
+        assert!(is_session_auth_excluded(".linear.app", "linear"));
+        assert!(is_session_auth_excluded(".vercel.com", "auth-token"));
+        assert!(is_session_auth_excluded(".cloudflare.com", "cftoken"));
+        assert!(is_session_auth_excluded(".stripe.com", "session"));
+        assert!(is_session_auth_excluded(".dropbox.com", "bjarne"));
+        assert!(is_session_auth_excluded(".apple.com", "aa"));
+        assert!(is_session_auth_excluded(".amazon.com", "at-main"));
+        assert!(is_session_auth_excluded(".spotify.com", "sp_dc"));
+        assert!(is_session_auth_excluded(".zoom.us", "_zm_ssid"));
+        assert!(is_session_auth_excluded(
+            "myteam.atlassian.net",
+            "cloud.session.token"
+        ));
+        assert!(is_session_auth_excluded(".gitlab.com", "_gitlab_session"));
+        // Consent/preference cookies on the same domains should still be importable.
+        assert!(!is_session_auth_excluded(".notion.so", "notion_consent"));
+        assert!(!is_session_auth_excluded(".figma.com", "analytics"));
     }
 }
