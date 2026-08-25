@@ -13,6 +13,18 @@
 
 Most browser tools for LLMs launch a fresh headless browser with no cookies. NeoBrowser launches or attaches to your real Chrome, so the agent lands already authenticated and passes fingerprint checks because it is using a genuine browser.
 
+| | Generic headless MCP | Playwright MCP | NeoBrowser |
+|---|---|---|---|
+| Raw speed | fast | **fastest** | fast |
+| Logged-in dashboards | re-auth every run | re-auth every run | **inherits real session** |
+| Real forms & file uploads | often broken | works | **works** |
+| Fingerprint consistency | easily flagged | can be flagged | **genuine** |
+| Bot-wall reaction | hallucinates success | hits the wall | **detects & reports** |
+| Action evidence | "clicked" | "clicked" | **succeeded / blocked / uncertain** |
+| Runtime | Node / bundled browser | Node + browser | **single ~6.4 MB binary** |
+
+See the honest benchmark in [`bench/study.md`](bench/study.md). NeoBrowser wins where the browser environment matters; Playwright wins on pure speed.
+
 ```bash
 # macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/pitiflautico/neobrowser/main/install.sh | sh
