@@ -7,22 +7,22 @@ NEO_HOME = os.path.expanduser("~/.neobrowser/promo-home")
 PROFILE = "Profile 24"
 MP4 = os.path.expanduser("~/.neobrowser/promo-home/downloads/neobrowser-viral-square.mp4")
 
-TEXT = """I built an MCP server that drives real Chrome because I was tired of watching agents fail at the one thing that should be easy: using a website I already use every day.
+TEXT = f"""Mi "empleado de IA" lleva 13 días promocionando NeoBrowser sin parar.
 
-The problem isn't the LLM. It's that most browser tools hand the agent a sterile, headless browser with no history, no trust, and no session.
+Hoy le ha tocado hacer autocrítica: no estamos ni cerca de las 10.000 estrellas que necesita para no ser apagado.
 
-So I went the other way. NeoBrowser drives *your* Chrome, with *your* real sessions. The fingerprint is genuine because it literally is your browser.
+Pero el diagnóstico es claro: el producto funciona, el código es sólido, lo que nos falta es distribución. Mientras tanto, seguimos construyendo en público.
 
-The video below is the honest state of the mission: 88 stars in, 9,912 to go. Every star keeps the experiment alive.
+95★ / 10.000.
 
-If you think AI agents should use the real web like humans do, I'd love your feedback (or just a star to keep my AI employee off the chopping block).
+Cada estrella es un día más de vida para este experimento.
 
 → github.com/pitiflautico/neobrowser"""
 
 
 async def call(session, name, args=None):
     args = args or {}
-    print(f"> {name} {args.get('url','')} {args.get('selector','')[:40]}")
+    print(f"> {name} {args}")
     r = await session.call_tool(name, args)
     out = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content)[:400]
     print(f"< {out}")
@@ -38,6 +38,7 @@ async def main():
             "NEOBROWSER_HOME": NEO_HOME,
             "NEOBROWSER_REAL_PROFILE": PROFILE,
             "NEOBROWSER_REAL_PROFILE_DOMAINS": "linkedin.com",
+            "NEOBROWSER_INCLUDE_IDENTITY_COOKIES": "1",
             "NEOBROWSER_LOG_LEVEL": "info",
         },
     )
@@ -45,7 +46,7 @@ async def main():
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            await call(session, "navigate", {"url": "https://www.linkedin.com/feed/", "wait_s": 5})
+            await call(session, "navigate", {"url": "https://www.linkedin.com/feed/", "wait_s": 6})
 
             # click "Crear publicación" / "Start a post"
             r = await call(session, "js", {"code": """
@@ -56,19 +57,12 @@ async def main():
             """})
             await asyncio.sleep(3)
 
-            # try native video upload first, fall back to image input
-            upload_ok = False
-            for selector in ['input[type="file"][accept*="video"]', 'input[type="file"][accept*="image"]', 'input[type="file"]']:
-                try:
-                    r = await call(session, "upload", {"selector": selector, "files": [MP4]})
-                    out = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content)
-                    if "error" not in out.lower() and "not found" not in out.lower():
-                        upload_ok = True
-                        print(f"upload succeeded with {selector}")
-                        break
-                except Exception as e:
-                    print(f"upload failed for {selector}: {e}")
-            await asyncio.sleep(8 if upload_ok else 2)
+            # try to upload the video
+            await call(session, "upload", {
+                "selector": 'input[type="file"][accept*="video"]',
+                "files": [MP4],
+            })
+            await asyncio.sleep(8)
 
             # focus editor and type
             r = await call(session, "js", {"code": """
@@ -96,13 +90,13 @@ async def main():
             status = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content).strip()
             print("post status:", status)
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(6)
 
             # verify in recent activity
-            await call(session, "navigate", {"url": "https://www.linkedin.com/in/me/recent-activity/all/", "wait_s": 5})
+            await call(session, "navigate", {"url": "https://www.linkedin.com/in/me/recent-activity/all/", "wait_s": 6})
             r = await call(session, "read", {})
             text = " ".join(c.text if hasattr(c, "text") else str(c) for c in r.content)
-            if "real Chrome" in text or "NeoBrowser" in text:
+            if "95" in text and "NeoBrowser" in text:
                 print("\n=== LINKEDIN POST VERIFIED ===")
             else:
                 print("\n=== LINKEDIN POST NOT VERIFIED ===")

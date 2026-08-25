@@ -151,6 +151,19 @@
   </section>
 
   <section>
+    <h2>Built for real sessions, safely</h2>
+    <p style="color:var(--muted);max-width:720px;margin:0 0 18px">Driving a real browser with an LLM raises hard questions. NeoBrowser answers them with opt-in, auditable controls — not promises.</p>
+    <div class="grid">
+      <div class="card"><h3>Domain rules</h3><p><code>NEOBROWSER_DOMAIN_ALLOWLIST</code> and <code>NEOBROWSER_ALLOW_DOMAINS</code> restrict where the agent can go. An empty allowlist in <code>autonomous</code> profile refuses everything.</p></div>
+      <div class="card"><h3>Human approval gates</h3><p><code>NEOBROWSER_REQUIRE_APPROVAL</code> gates submit, form_fill, download, upload, and login behind interactive elicitation — the model must ask before acting.</p></div>
+      <div class="card"><h3>Append-only audit log</h3><p>Every mutating action is written to <code>~/.neobrowser/audit.log</code> (0600) with secrets masked. <code>NEOBROWSER_AUDIT=off</code> is the only way to disable it.</p></div>
+      <div class="card"><h3>Encrypted vault</h3><p>Snapshots and session material are sealed with a key from the OS credential store, with TTL and explicit revocation.</p></div>
+      <div class="card"><h3>Origin-scoped credentials</h3><p>Cookies and auth headers never follow redirects off the origin you asked for. Identity cookies are excluded by default so your real browser stays logged in.</p></div>
+      <div class="card"><h3>Sandbox by default</h3><p>The renderer sandbox stays on. Running without it requires an explicit, documented opt-in and is refused together with real-profile mode unless you really mean it.</p></div>
+    </div>
+  </section>
+
+  <section>
     <h2>Benchmarked, honestly</h2>
     <p style="color:var(--muted);max-width:720px;margin:0 0 18px">A neutral harness drives NeoBrowser and Playwright MCP through the same task matrix — nothing tuned to make either win:</p>
     <table>

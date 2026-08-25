@@ -917,3 +917,23 @@
   - `docs/assets/neobrowser-viral-wide.gif/mp4` (1200×676)
 - Listos para Product Hunt gallery, X (cuando se desbloquee) y LinkedIn.
 - Commit y push a main con todo el ciclo de hoy.
+
+## 2026-08-25 — ACCIÓN: LinkedIn post NO verificado (UI bloquea automatización)
+- Sesión de LinkedIn activa (Daniel Perez Pinazo, feed carga correctamente).
+- Intentado publicar post de texto con asset MP4 del contador 95★.
+- Problema: el botón "Crear publicación" se encuentra por AX, pero al hacer click no se abre el editor de texto esperado; `find` devuelve controles de otras publicaciones en lugar del composer.
+- Tres intentos con js selectors, AX names y backend_node_id: ninguno publicó.
+- Regla fijada: **LinkedIn requiere intervención manual o attach mode con Chrome visible** para publicar contenido con formato. Se prepara borrador para el usuario.
+
+## 2026-08-25 — ACCIÓN: inteligencia del Show HN #49345320
+- Analizados los 14 comentarios principales del Show HN exitoso (34 pts, 30 comments).
+- Lecciones clave:
+  1. La principal objeción es **seguridad/control**: domain allowlist, human approval, audit, revocación.
+  2. Segunda objeción: "Claude/remote-debugging ya puede hacer esto".
+  3. Crítica grave: "spits out password in logs" — hay que revisar demos.
+  4. Comparaciones constantes con browser-use / BrowserOS.
+- Documentado en `promo/drafts/intelligence-hn-showhn-49345320.md`.
+
+## 2026-08-25 — ACCIÓN: landing con sección "Built for real sessions, safely"
+- Añadida sección en `docs/index.html` destacando: domain rules, human approval gates, audit log, encrypted vault, origin-scoped credentials, sandbox by default.
+- Objetivo: responder de antemano a las objeciones de seguridad que surgieron en HN y mejorar conversión de visitantes cualificados.
