@@ -1026,10 +1026,11 @@
 - Submissions previas que siguen abiertas: `punkpeye/awesome-mcp-servers#12089`, `chatmcp/mcpso#3546`, `cline/mcp-marketplace#2323`.
 - **Bloqueo:** Smithery requiere API key; se documenta para cuando el usuario la tenga.
 
-### OUTREACH: 2 borradores personalizados
+### OUTREACH: 2 borradores personalizados + 1 issue en el spec de MCP
 - `promo/drafts/outreach-alexalbert-mcp-realbrowser-2026-08-25.md`: feedback genuino a Alex Albert (Anthropic dev rel) sobre capability contracts para browser tools en MCP.
 - `promo/drafts/outreach-jspahrsummers-mcp-security-2026-08-25.md`: pregunta de spec design a Justin Spahr-Summers (MCP lead) sobre seguridad y capabilities.
-- Estado: listos para publicación manual o para cuando X/LinkedIn se desbloqueen.
+- Issue abierto en `modelcontextprotocol/modelcontextprotocol#3305`: propuesta formal de un capability contract `browser-automation` con invariantes de seguridad (origin-scoped credentials, verified actions, human approval, sandbox, no identity cloning, audit logging). Enlace a NeoBrowser como implementación de referencia.
+- Estado de los borradores: listos para publicación manual o para cuando X/LinkedIn se desbloqueen.
 
 ### CONTENIDO: post DEV.to + comentario HN
 - `promo/drafts/devto-real-chrome-no-spoof-2026-08-25.md`: artículo "Why I stopped spoofing headless browsers and started driving real Chrome".
@@ -1048,6 +1049,10 @@
 - **X / LinkedIn:** bloqueados por CAPTCHA/UI en automatización; contenido queda en borrador para publicación manual.
 - **Smithery:** requiere API key.
 - **HN posts propios:** pausados tras flag anterior; se usan solo comentarios value-first en threads ajenos.
+
+### Automatización
+- Eliminado cron obsoleto que monitorizaba `is-a.bot#192`.
+- Creado nuevo cron `0877db9f` que revisa `is-a-good-dev/register#1295` y `https://neobrowser.is-a-good.dev/` cada 15 minutos; lanza Product Hunt automáticamente cuando ambas condiciones se cumplan.
 
 ### Métricas del ciclo
 - Estrellas: 95 → 95 (sin cambio, esperado sin Product Hunt ni viralización).
