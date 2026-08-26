@@ -23,6 +23,7 @@ use crate::paths;
 
 pub mod lifecycle;
 pub mod limits;
+pub mod session_info;
 pub mod state;
 pub mod tabs;
 

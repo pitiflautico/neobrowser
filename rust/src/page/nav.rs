@@ -99,10 +99,56 @@ pub async fn current_url(client: &CdpClient) -> Result<String, CdpError> {
 }
 
 /// Visible text of `selector` (defaults to `body`), trimmed.
+///
+/// Returns an explicit marker for PDF documents, because Chrome renders them in
+/// its own viewer and the text is not part of the DOM. Returning an empty string
+/// here would make a PDF indistinguishable from a page with no content.
 pub async fn read_text(client: &CdpClient, selector: &str) -> Result<String, CdpError> {
+    read_text_with_options(client, selector, false).await
+}
+
+/// Visible text of `selector`, optionally with links rendered as `[text](href)`.
+pub async fn read_text_with_options(
+    client: &CdpClient,
+    selector: &str,
+    include_links: bool,
+) -> Result<String, CdpError> {
     // Materialize deferred/virtualized content before reading it.
     nudge_frame(client).await;
+
+    // PDF detection: Chrome's PDF viewer does not expose the text in the DOM.
+    let content_type = eval_body(client, "return document.contentType || ''")
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if content_type == "application/pdf" {
+        return Ok("(pdf: text not available in DOM; download the file and extract externally)".to_string());
+    }
+
     let sel = serde_json::to_string(selector).unwrap();
+    if include_links {
+        let expr = format!(
+            r#"return (() => {{
+                const el = document.querySelector({sel});
+                if (!el) return '';
+                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+                const parts = [];
+                let node;
+                while (node = walker.nextNode()) {{
+                    const text = node.textContent.trim();
+                    if (text) parts.push(text);
+                }}
+                const links = Array.from(el.querySelectorAll('a[href]'))
+                    .map(a => `[${{a.innerText.trim()}}](${{a.href}})`)
+                    .filter(s => s.length > 4);
+                return parts.join(' ') + (links.length ? '\n\nLinks:\n' + links.join('\n') : '');
+            }})()"#
+        );
+        let v = eval_body(client, &expr).await?;
+        return Ok(v.as_str().unwrap_or("").to_string());
+    }
+
     let expr = format!("return document.querySelector({sel})?.innerText?.trim() || ''");
     let v = eval_body(client, &expr).await?;
     Ok(v.as_str().unwrap_or("").to_string())

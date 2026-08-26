@@ -111,6 +111,14 @@ pub fn logs_base() -> PathBuf {
     home().join("logs")
 }
 
+/// Handoff file describing the currently running Chrome session.
+///
+/// Written when Chrome launches, deleted when it shuts down. Lets external
+/// tools discover the debug port without parsing `ps` output.
+pub fn session_file() -> PathBuf {
+    home().join("session.json")
+}
+
 /// Path of the stderr log for the Chrome instance on `port`.
 pub fn chrome_log(port: u16) -> PathBuf {
     logs_base().join(format!("chrome-{port}.log"))

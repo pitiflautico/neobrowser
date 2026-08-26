@@ -168,6 +168,11 @@ impl Tool for ReadTool {
                     ParamType::Boolean,
                     "Return the bare text without the untrusted-content fence (default false). Only for scripted extraction — a model should read the fenced form",
                 ),
+                ParamSpec::new(
+                    "include_links",
+                    ParamType::Boolean,
+                    "Append page links as `[text](href)` after the visible text (default false)",
+                ),
             ],
         }
     }
@@ -178,8 +183,9 @@ impl Tool for ReadTool {
     ) -> Result<ToolOutput, ToolError> {
         let selector = arg_str(args, "selector").unwrap_or("body");
         let raw = arg_bool(args, "raw", false);
+        let include_links = arg_bool(args, "include_links", false);
         let tab = ctx.browser.tab().await?;
-        let text = page::read_text(&tab, selector).await?;
+        let text = page::read_text_with_options(&tab, selector, include_links).await?;
         if text.is_empty() {
             return Ok(ToolOutput::text("(empty)"));
         }

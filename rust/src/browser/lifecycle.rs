@@ -88,6 +88,14 @@ impl Browser {
         if attached {
             tracing::info!("attached to existing Chrome on port {port}");
         }
+        // Handoff file for external tools: pid, port, profile, started_at.
+        if let Some(pid) = st.proc.as_ref().and_then(|p| p.pid()) {
+            let profile = self.profile_dir()
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "default".into());
+            super::session_info::write(pid, port, &profile);
+        }
         Ok(())
     }
 
@@ -200,6 +208,7 @@ impl Browser {
         if let Some(mut proc) = st.proc.take() {
             proc.kill(true).await;
         }
+        super::session_info::clear();
     }
 
     /// Test hook: kill the owned Chrome process without going through shutdown.
