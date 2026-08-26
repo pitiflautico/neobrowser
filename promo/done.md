@@ -1528,6 +1528,43 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 
 ---
 
+## 2026-08-26 — ciclo 38: outreach email + bloqueo Reddit
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### CONTENIDO / DISTRIBUCIÓN: intento Reddit r/mcp
+- Script: `promo/scripts/reddit_post_session_hygiene.py`.
+- **Bloqueado por CAPTCHA** en la página de submit. No se pudo publicar.
+- Documentado: Reddit requiere resolución manual de captcha o sesión más estable.
+
+### OUTREACH: email a swyx (Latent Space)
+- Enviado a `business@latent.space`.
+- Ángulo: agent + real web, benchmark honesto real Chrome vs Playwright MCP.
+- Asunto: "Agent + real web: driving the user's actual Chrome instead of headless".
+
+### INTELIGENCIA: análisis de viralidad en herramientas dev
+- Documento creado: `promo/intel/viral-dev-tools-2026-08-26.md`.
+- Patrones extraídos: demo visual inmediato, confesión técnica honesta, comparativa reproducible, one-liner de instalación, timing.
+- Conclusión: la viralidad no viene de posts diarios, sino de un canal grande (HN frontpage, PH top 5, influencer). El canal sigue bloqueado por falta de dominio propio.
+
+### PRODUCTO: paquete de lanzamiento urgente
+- `promo/drafts/urgent-domain-and-launch-2026-08-26.md` actualizado con instrucciones exactas para comprar dominio y lanzar PH.
+
+### Bloqueos activos
+- **Product Hunt**: rechaza GitHub Pages. Solo dominio propio desbloquea.
+- **HN**: mismo URL no resubmittible.
+- **X**: CAPTCHA.
+- **Reddit**: CAPTCHA en submit.
+
+### Assets añadidos en este ciclo
+- `promo/scripts/reddit_post_session_hygiene.py`
+- `promo/intel/viral-dev-tools-2026-08-26.md`
+
+---
+
 ## 2026-08-26 — ciclo 36: los 5 pilares completos
 
 ### Métricas de partida
