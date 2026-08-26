@@ -1,6 +1,6 @@
 [package]
 name = "neobrowser"
-version = "0.1.7"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.82"
 description = "A fast, stealthy MCP browser-automation server that drives real Chrome — Rust port."

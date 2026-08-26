@@ -109,7 +109,7 @@ Product Hunt launch is queued for the week of August 26. A star or a hunt-day co
 curl -fsSL https://raw.githubusercontent.com/pitiflautico/neobrowser/main/install.sh | sh
 
 # Pin a version instead of taking the latest:
-NEOBROWSER_VERSION=v0.1.7 curl -fsSL .../install.sh | sh
+NEOBROWSER_VERSION=v0.2.0 curl -fsSL .../install.sh | sh
 
 # Homebrew (macOS / Linux):
 brew tap pitiflautico/neobrowser https://github.com/pitiflautico/neobrowser

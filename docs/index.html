@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NeoBrowser — your AI drives real Chrome, undetected</title>
-<meta name="description" content="An MCP server that drives real Chrome with your real logged-in sessions. Genuine fingerprint, human-like input, bot-wall aware. 67 tools, single ~6.4 MB binary.">
+<meta name="description" content="An MCP server that drives real Chrome with your real logged-in sessions. Genuine fingerprint, human-like input, bot-wall aware. 71 tools, single ~6.5 MB binary.">
 <meta property="og:title" content="NeoBrowser">
 <meta property="og:description" content="Your AI drives a real Chrome with your real logged-in sessions — genuine fingerprint, human-like input, not flagged like a headless bot.">
 <meta property="og:image" content="https://pitiflautico.github.io/neobrowser/assets/og.png">
@@ -136,7 +136,7 @@
         <tr><td>File uploads / real forms</td><td class="n">often broken</td><td class="y">works</td><td class="y">works</td></tr>
         <tr><td>Bot-wall reaction</td><td class="n">hallucinates success</td><td class="n">hits the wall</td><td class="y">detects & reports</td></tr>
         <tr><td>Verified action evidence</td><td class="n">"clicked"</td><td class="n">"clicked"</td><td class="y">succeeded/blocked/uncertain</td></tr>
-        <tr><td>Runtime dependency</td><td class="n">Node / bundled browser</td><td class="n">Node + browser</td><td class="y">single ~6.4 MB binary</td></tr>
+        <tr><td>Runtime dependency</td><td class="n">Node / bundled browser</td><td class="n">Node + browser</td><td class="y">single ~6.5 MB binary</td></tr>
       </tbody>
     </table>
     <p style="color:var(--muted);font-size:13px;margin-top:10px">See the honest benchmark: <a href="https://github.com/pitiflautico/neobrowser/blob/main/bench/study.md">bench/study.md</a>. We win where the browser environment matters; Playwright wins on pure speed.</p>
@@ -150,7 +150,7 @@
       <div class="card"><h3>Human-like input</h3><p>Clicks travel to the target along an eased, jittered path with human-cadence pauses; typing can be per-key with realistic timing.</p></div>
       <div class="card"><h3>Bot-wall aware</h3><p>Detects CAPTCHAs, consent gates, rate-limits and login walls on any site and tells the model how to react.</p></div>
       <div class="card"><h3>Multi-source search</h3><p>Text, images and video across several engines — walled sources are detected and skipped, results merged.</p></div>
-      <div class="card"><h3>67 tools · one binary</h3><p>Navigate, forms, upload/download, extract, multi-tab, playbooks, search — a single ~6.4&nbsp;MB static binary, no runtime.</p></div>
+      <div class="card"><h3>71 tools · one binary</h3><p>Navigate, forms, upload/download, extract, multi-tab, playbooks, search, PDF extraction, video recording, network interception — a single ~6.5&nbsp;MB static binary, no runtime.</p></div>
       <div class="card"><h3>Robust core</h3><p>One isolated CDP connection per tab, typed timeouts, self-healing recovery — and a graceful shutdown that never leaves an orphaned Chrome behind.</p></div>
     </div>
   </section>
@@ -265,6 +265,18 @@
         })
         .catch(() => { document.getElementById('stars').textContent = '★'; });
     </script>
+  </section>
+
+  <section>
+    <h2>New in 0.2.0</h2>
+    <div class="grid">
+      <div class="card"><h3>PDF text extraction</h3><p>Read PDFs natively — <code>read</code> now extracts text from PDF documents automatically, no more empty pages.</p></div>
+      <div class="card"><h3>Video recording</h3><p><code>record_video</code> captures any tab as MP4. Perfect for demos, debugging, and verifying that actions actually had a visible effect.</p></div>
+      <div class="card"><h3>Network interception</h3><p><code>block_urls</code>, <code>block_trackers</code>, and <code>unblock_urls</code> — stop trackers, ads, and unwanted endpoints from loading.</p></div>
+      <div class="card"><h3>Persistent mode</h3><p><code>NEOBROWSER_PERSISTENT=1</code> keeps Chrome alive between MCP sessions. No more cold starts, no more lost sessions.</p></div>
+      <div class="card"><h3>Session handoff</h3><p><code>~/.neobrowser/session.json</code> records the live Chrome's PID, port, and profile — external tools can discover and attach without parsing <code>ps</code>.</p></div>
+      <div class="card"><h3>Link-aware reading</h3><p><code>read</code> with <code>include_links: true</code> returns visible text plus all page links as <code>[text](href)</code>.</p></div>
+    </div>
   </section>
 
   <footer>
