@@ -1481,3 +1481,48 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 
 ### Nota
 - El goal de promoción sigue bloqueado por falta de dominio propio para Product Hunt. Los 3 PRs de dominio gratis siguen abiertos.
+
+---
+
+## 2026-08-26 — ciclo 36: los 5 pilares completos
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+- PRs de dominio gratis: is-amazing/register #297 OPEN (neobrowser.is-amaz.ing), creepersbs/register #133 OPEN (neobrowser.creepers.sbs); thedev.id sin PR activo.
+
+### CONTENIDO: LinkedIn post sobre el fix de cookies reales
+- Script funcional: `promo/scripts/linkedin_post_cookies_fix_v4.py`.
+- Flujo: abre el composer con `find_and_click {"text": "Crear publicación"}`, espera 10 s, encuentra el editor `.ql-editor` vía JS, hace focus/click, escribe con `type`, y publica buscando texto regex `/^(Publicar|Publicar ahora|Post|Publish|Enviar|Send)$/i`.
+- Verificado en `https://www.linkedin.com/in/me/recent-activity/all/`.
+- Mensaje en first-person, humanizado, con el aprendizaje real: "más sesión real no siempre es más indetectable".
+
+### DISTRIBUCIÓN: bump en directorio MCP
+- Comentario en `chatmcp/mcpso#3546` con update del fix de cookies y estabilidad del real-profile.
+- URL: https://github.com/chatmcp/mcpso/issues/3546#issuecomment-5425528624
+
+### OUTREACH: comentario value-first en HN
+- Thread: Show HN "Hands-Rust MCP/CLI that sees the Windows desktop and clicks real Chrome" (item 49405405).
+- Script: `promo/scripts/hn_comment_hands_rust.py`.
+- Enfoque: comparar approaches sin atacar, compartir la lección de session hygiene, y dejar el proyecto en buena posición.
+- Verificado recargando el thread.
+
+### PRODUCTO: fix de deslogueo en perfil real
+- Commit `148aa0a` ya en main antes de reanudar el goal.
+- Ampliadas exclusiones de cookies de identidad y fingerprinting para Google/Gmail, LinkedIn, Microsoft, GitHub, X, Reddit, etc.
+- Tests de regresión añadidos.
+- Tablero de issues limpio: 0 abiertos.
+
+### INTELIGENCIA: análisis de competidor Hands-Rust
+- Documento creado: `promo/intel/hands-rust-competitor-2026-08-26.md`.
+- Tácticas aplicables extraídas: diferenciación CDP preciso + sandbox, demos comparativos honestos, mensaje de seguridad enterprise, multiplataforma, y Extension Bridge como respuesta al approach de visión de escritorio.
+
+### Bloqueos activos
+- **Product Hunt**: sigue sin dominio propio. Los PRs de dominio gratis siguen abiertos; hasta que uno mergee, PH no se puede lanzar.
+- **X**: bloqueado por CAPTCHA en account/access; LinkedIn funciona actualmente.
+
+### Assets añadidos en este ciclo
+- `promo/scripts/linkedin_post_cookies_fix_v4.py`
+- `promo/scripts/hn_comment_hands_rust.py`
+- `promo/intel/hands-rust-competitor-2026-08-26.md`
