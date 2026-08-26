@@ -98,6 +98,18 @@ jobs:
           NEOBROWSER_DISABLE_GPU: "1"
         run: cargo test --release --test stealth_verify -- --ignored --nocapture
 
+      - name: Print Chrome logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          # Chrome writes its startup failures to stderr, which we capture per-port.
+          # When a launch times out with an empty error, the log is the only place
+          # that says why (missing library, sandbox refusal, profile lock).
+          ls -la ~/.neobrowser/logs/ 2>/dev/null || true
+          for f in ~/.neobrowser/logs/chrome-*.log; do
+            [ -f "$f" ] && echo "=== $f ===" && cat "$f" || true
+          done
+
       - name: Report orphaned Chrome processes
         if: always()
         shell: bash
