@@ -15,6 +15,7 @@ ACCENT2 = (124, 156, 255)
 
 OUT_SQUARE = os.path.expanduser("~/.neobrowser/promo-home/downloads/neobrowser-viral-square.gif")
 OUT_WIDE = os.path.expanduser("~/.neobrowser/promo-home/downloads/neobrowser-viral-wide.gif")
+OUT_WIDE_MP4 = os.path.expanduser("~/.neobrowser/promo-home/downloads/neobrowser-viral-wide.mp4")
 
 
 def get_font(size):
@@ -137,4 +138,14 @@ def render_gif(out_path, width, height, is_wide=False):
 if __name__ == "__main__":
     os.makedirs(os.path.dirname(OUT_SQUARE), exist_ok=True)
     render_gif(OUT_SQUARE, 1080, 1080, is_wide=False)
-    render_gif(OUT_WIDE, 1200, 675, is_wide=True)
+    # 676 height keeps dimensions even for h264/mp4 encoding
+    render_gif(OUT_WIDE, 1200, 676, is_wide=True)
+
+    # Convert wide GIF to MP4 for LinkedIn/Twitter native video
+    subprocess.run([
+        "ffmpeg", "-y", "-i", OUT_WIDE,
+        "-movflags", "faststart", "-pix_fmt", "yuv420p",
+        "-vf", "scale=1200:676:flags=lanczos",
+        "-an", OUT_WIDE_MP4,
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"generated {OUT_WIDE_MP4} ({os.path.getsize(OUT_WIDE_MP4)} bytes)")

@@ -1484,6 +1484,50 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 
 ---
 
+## 2026-08-26 — ciclo 37: Product Hunt sigue bloqueado, outreach email iniciado
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### CONTENIDO: LinkedIn post "The Bet"
+- Script funcional: `promo/scripts/linkedin_post_the_bet_v2.py`.
+- Publicado y verificado en `https://www.linkedin.com/in/me/recent-activity/all/`.
+- Texto: contador 95/10.000, sin drama excesivo, directo al punto.
+
+### DISTRIBUCIÓN: Product Hunt intento + fix dominio is-amazing
+- Intenté lanzar Product Hunt con `https://pitiflautico.github.io/neobrowser/` → **rechazado** (`URL_REJECTED`). Confirmado: PH no acepta GitHub Pages.
+- El dominio gratis de is-amazing sigue sin validar. Descubrí que el problema no es mi JSON — su workflow de CI usa `pull_request_target` con `actions/checkout@v2` sin `allow-unsafe-pr-checkout: true`, así que GitHub rechaza el checkout desde forks. Comentado en el PR: https://github.com/is-amazing/register/pull/297#issuecomment-5425987612
+- creepersbs/register#133 sigue sin movimiento.
+
+### OUTREACH: email a Simon Willison
+- Encontrado email público `simon@simonwillison.net`.
+- Enviado email con ángulo benchmark honesto real Chrome vs Playwright MCP.
+- Asunto: "A brutally honest benchmark of browser MCPs (real Chrome vs Playwright MCP)".
+
+### PRODUCTO: assets virales y landing actualizada
+- Regenerados GIF/MP4 del contador con 95★.
+- `docs/assets/neobrowser-viral-square.mp4` actualizado en la landing.
+- `promo/drafts/urgent-domain-and-launch-2026-08-26.md` creado con instrucciones exactas para que el usuario compre dominio y desbloquee PH.
+
+### INTELIGENCIA: bloqueo de resubmit en HN
+- Intenté nuevo Show HN con texto humanizado → HN redirigió al thread viejo flagged (49345320). Confirmado: no se puede resubmitir el mismo URL en poco tiempo.
+- Lección: para otro Show HN necesitamos un URL diferente (landing con dominio propio, no github.io).
+
+### Bloqueos activos
+- **Product Hunt**: rechaza GitHub Pages. Solo dominio propio desbloquea.
+- **HN**: mismo URL no resubmittible; el thread viejo sigue flagged.
+- **X**: sigue bloqueado por CAPTCHA.
+
+### Assets añadidos en este ciclo
+- `promo/scripts/linkedin_post_the_bet_v2.py`
+- `promo/scripts/linkedin_verify_recent.py`
+- `promo/scripts/hn_show_neobrowser_v2.py`
+- `promo/drafts/urgent-domain-and-launch-2026-08-26.md`
+
+---
+
 ## 2026-08-26 — ciclo 36: los 5 pilares completos
 
 ### Métricas de partida
