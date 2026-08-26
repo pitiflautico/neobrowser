@@ -1893,3 +1893,22 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - **X**: CAPTCHA.
 - **Reddit**: CAPTCHA en submit.
 - **Dominio propio**: pendiente decisión del usuario (comprar).
+
+## 2026-08-26 — ciclo 44: demo de nuevas features verificado
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### PRODUCTO: demo de v0.2.0 features
+- Verificado `read` con `include_links` en sitio real.
+- Verificado `block_trackers`.
+- Verificado `record_video` — MP4 generado correctamente (15.5 KB base64).
+
+### Bloqueos activos
+- **Product Hunt**: rechaza GitHub Pages. Solo dominio propio desbloquea.
+- **HN**: `story-toofast` — rate limit temporal de la cuenta.
+- **X**: CAPTCHA.
+- **Reddit**: CAPTCHA en submit.
+- **Dominio propio**: pendiente decisión del usuario (comprar).
