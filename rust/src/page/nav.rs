@@ -116,14 +116,19 @@ pub async fn read_text_with_options(
     // Materialize deferred/virtualized content before reading it.
     nudge_frame(client).await;
 
-    // PDF detection: Chrome's PDF viewer does not expose the text in the DOM.
+    // PDF detection: Chrome's PDF viewer does not expose the text in the DOM,
+    // so we download the file and extract the text with pdftotext.
     let content_type = eval_body(client, "return document.contentType || ''")
         .await
         .ok()
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .unwrap_or_default();
     if content_type == "application/pdf" {
-        return Ok("(pdf: text not available in DOM; download the file and extract externally)".to_string());
+        return match super::pdf::extract_pdf_text(client).await {
+            Some(Ok(text)) => Ok(text),
+            Some(Err(e)) => Ok(format!("(pdf extraction failed: {e})")),
+            None => Ok("(pdf: could not determine URL for extraction)".to_string()),
+        };
     }
 
     let sel = serde_json::to_string(selector).unwrap();

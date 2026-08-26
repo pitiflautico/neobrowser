@@ -249,3 +249,118 @@ impl Tool for ScreenshotTool {
         })
     }
 }
+
+// --- record_video ---------------------------------------------------------------
+
+pub struct RecordVideoTool;
+
+#[async_trait]
+impl Tool for RecordVideoTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "record_video",
+            description: "Record the current tab as an MP4 video for N seconds (default 10). Returns base64 video data.",
+            params: vec![ParamSpec::new(
+                "seconds",
+                ParamType::Integer,
+                "Duration in seconds (default 10, max 60)",
+            )],
+        }
+    }
+    async fn call(
+        &self,
+        ctx: &ToolCtx,
+        args: &Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        let seconds = arg_i64(args, "seconds", 10).clamp(1, 60) as u64;
+        let tab = ctx.browser.tab().await?;
+        let data = page::video::record_video_base64(&tab, seconds)
+            .await
+            .map_err(ToolError::Failed)?;
+        Ok(ToolOutput::Image {
+            data,
+            mime: "video/mp4".into(),
+        })
+    }
+}
+
+// --- network interception ---------------------------------------------------------
+
+pub struct BlockUrlsTool;
+
+#[async_trait]
+impl Tool for BlockUrlsTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "block_urls",
+            description: "Block network requests by URL pattern (e.g. '*tracker*', '*.doubleclick.net'). Stays active until unblock_urls.",
+            params: vec![ParamSpec::new(
+                "patterns",
+                ParamType::String,
+                "Comma-separated URL patterns to block (supports * wildcards)",
+            ).required()],
+        }
+    }
+    async fn call(
+        &self,
+        ctx: &ToolCtx,
+        args: &Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        let patterns_str = arg_str(args, "patterns")
+            .ok_or_else(|| ToolError::Argument("patterns is required".into()))?;
+        let patterns: Vec<&str> = patterns_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let tab = ctx.browser.tab().await?;
+        let msg = page::intercept::block_urls(&tab, &patterns)
+            .await
+            .map_err(ToolError::Failed)?;
+        Ok(ToolOutput::text(msg))
+    }
+}
+
+pub struct UnblockUrlsTool;
+
+#[async_trait]
+impl Tool for UnblockUrlsTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "unblock_urls",
+            description: "Remove all URL blocks set by block_urls.",
+            params: vec![],
+        }
+    }
+    async fn call(
+        &self,
+        ctx: &ToolCtx,
+        _args: &Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        let tab = ctx.browser.tab().await?;
+        let msg = page::intercept::unblock_urls(&tab)
+            .await
+            .map_err(ToolError::Failed)?;
+        Ok(ToolOutput::text(msg))
+    }
+}
+
+pub struct BlockTrackersTool;
+
+#[async_trait]
+impl Tool for BlockTrackersTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "block_trackers",
+            description: "Block common trackers and ads (Google Analytics, Facebook Pixel, Hotjar, etc.).",
+            params: vec![],
+        }
+    }
+    async fn call(
+        &self,
+        ctx: &ToolCtx,
+        _args: &Map<String, Value>,
+    ) -> Result<ToolOutput, ToolError> {
+        let tab = ctx.browser.tab().await?;
+        let msg = page::intercept::block_trackers(&tab)
+            .await
+            .map_err(ToolError::Failed)?;
+        Ok(ToolOutput::text(msg))
+    }
+}

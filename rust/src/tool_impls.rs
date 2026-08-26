@@ -148,6 +148,10 @@ pub fn tool_list() -> Vec<Arc<dyn Tool>> {
         Arc::new(NavigateTool),
         Arc::new(ReadTool),
         Arc::new(ScreenshotTool),
+        Arc::new(RecordVideoTool),
+        Arc::new(BlockUrlsTool),
+        Arc::new(UnblockUrlsTool),
+        Arc::new(BlockTrackersTool),
         Arc::new(FindTool),
         Arc::new(ClickTool),
         Arc::new(TypeTool),
@@ -266,6 +270,11 @@ mod tests {
         "list_tabs",
         "switch_tab",
         "close_tab",
+        // Rust additions: powerful features
+        "record_video",
+        "block_urls",
+        "unblock_urls",
+        "block_trackers",
     ];
 
     #[test]

@@ -16,10 +16,13 @@ pub mod diagnose;
 pub mod eval;
 pub mod gesture;
 pub mod input;
+pub mod intercept;
 pub mod locate;
 pub mod nav;
 pub mod node;
+pub mod pdf;
 pub mod pointer;
+pub mod video;
 
 pub use diagnose::element_fingerprint;
 pub use eval::{eval_body, eval_caller_supplied, eval_expr, input_is_alive, nudge_frame};

@@ -66,14 +66,15 @@ pub fn classify(tool: &str) -> ActionClass {
         | "network_log" | "metrics" | "debug" | "analyze" | "extract" | "extract_table"
         | "session_info" | "wait" | "observe" | "perf_trace" | "computed_style" | "har_export"
         | "trace_bundle" | "profile_mode" | "list_frames" | "bridge_status" | "cpu_profile"
-        | "heap_stats" | "source_map" => ActionClass::Read,
+        | "heap_stats" | "source_map" | "record_video" => ActionClass::Read,
 
         "navigate" | "new_tab" | "switch_tab" | "close_tab" | "scroll" | "paginate" => {
             ActionClass::Navigate
         }
 
         "click" | "type" | "fill" | "form_fill" | "submit" | "find_and_click"
-        | "dismiss_overlay" | "press" | "hover" | "click_variant" | "set_control" | "drag" => {
+        | "dismiss_overlay" | "press" | "hover" | "click_variant" | "set_control" | "drag"
+        | "block_urls" | "unblock_urls" | "block_trackers" => {
             ActionClass::Interact
         }
 
