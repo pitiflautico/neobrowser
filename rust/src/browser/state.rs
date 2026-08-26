@@ -28,8 +28,11 @@ impl Browser {
 
     pub async fn record_step(&self, tool: &str, args: &serde_json::Value) {
         if let Some(rec) = self.recording.lock().await.as_mut() {
-            rec.steps
-                .push(serde_json::json!({ "tool": tool, "args": args }));
+            rec.steps.push(serde_json::json!({
+                "tool": tool,
+                "args": args,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }));
         }
     }
 
