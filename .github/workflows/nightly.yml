@@ -79,10 +79,12 @@ jobs:
           # lock and cookie paths.
           NEOBROWSER_PROFILE: ${{ matrix.mode == 'persistent' && 'nightly' || '' }}
           # Windows and macOS runners need more time to launch and attach to Chrome,
-          # especially in the fault-injection and conformance suites.
-          NEOBROWSER_LAUNCH_TIMEOUT: "60"
+          # especially in the fault-injection and conformance suites. Windows with a
+          # persistent profile is the slowest cell: first-launch profile setup can
+          # exceed 60s, so give it the code's maximum allowed (120s).
+          NEOBROWSER_LAUNCH_TIMEOUT: ${{ matrix.os == 'windows-latest' && '120' || '60' }}
           NEOBROWSER_SEND_TIMEOUT: "60"
-          NEOBROWSER_ATTACH_TIMEOUT: "30"
+          NEOBROWSER_ATTACH_TIMEOUT: ${{ matrix.os == 'windows-latest' && '60' || '30' }}
         run: cargo test --release
 
       # The real bot-detector check, which CI skips because it depends on a third-party
