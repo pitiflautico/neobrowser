@@ -127,7 +127,7 @@ pub use forms::{fill_control, find_and_click, form_fill_fields, submit_form};
 pub use harvest::{extract_links, extract_table, paginate_click, paginate_next};
 pub use inspect::{computed_style, debug_capture_off, debug_capture_on, fetch_source_map, vitals};
 pub use login::{login_fill_field, login_find_field, login_state, login_submit};
-pub use page::{frame_access, pierce, set_control, state_digest, wall_signals};
+pub use page::{frame_access, pierce, read_with_links, set_control, state_digest, wall_signals};
 
 /// How a snippet is handed to `page::js`, which is not uniform and cannot be made so.
 ///
@@ -200,6 +200,7 @@ pub fn all_snippets_for_test() -> Vec<(&'static str, Form, String)> {
             fetch_source_map().returning(),
         ),
         ("wall_signals", Expression, wall_signals().returning()),
+        ("read_with_links", Expression, read_with_links().returning()),
         ("debug_capture_on", Statements, debug_capture_on().expr()),
         ("debug_capture_off", Statements, debug_capture_off().expr()),
         ("login_find_field", Statements, login_find_field().expr()),
@@ -367,6 +368,7 @@ mod tests {
             ("login_state", login_state(), vec![]),
             ("fetch_source_map", fetch_source_map(), vec!["URL"]),
             ("wall_signals", wall_signals(), vec![]),
+            ("read_with_links", read_with_links(), vec!["SELECTOR"]),
         ];
         // Every snippet reachable through `all_snippets_for_test` must be listed, or a
         // half-substituted one ships unnoticed.

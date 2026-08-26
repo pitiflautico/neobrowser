@@ -133,24 +133,10 @@ pub async fn read_text_with_options(
 
     let sel = serde_json::to_string(selector).unwrap();
     if include_links {
-        let expr = format!(
-            r#"return (() => {{
-                const el = document.querySelector({sel});
-                if (!el) return '';
-                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
-                const parts = [];
-                let node;
-                while (node = walker.nextNode()) {{
-                    const text = node.textContent.trim();
-                    if (text) parts.push(text);
-                }}
-                const links = Array.from(el.querySelectorAll('a[href]'))
-                    .map(a => `[${{a.innerText.trim()}}](${{a.href}})`)
-                    .filter(s => s.length > 4);
-                return parts.join(' ') + (links.length ? '\n\nLinks:\n' + links.join('\n') : '');
-            }})()"#
-        );
-        let v = eval_body(client, &expr).await?;
+        let js = crate::js::read_with_links()
+            .with("SELECTOR", &sel)
+            .returning();
+        let v = eval_body(client, &js).await?;
         return Ok(v.as_str().unwrap_or("").to_string());
     }
 

@@ -60,7 +60,9 @@ pub async fn record_video_base64(client: &CdpClient, seconds: u64) -> Result<Str
         return Err("no frames captured".into());
     }
 
-    // Assemble with ffmpeg.
+    // Assemble with ffmpeg. Scale to even dimensions because libx264 requires
+    // width and height divisible by 2; a screenshot of an odd-sized viewport
+    // fails with "height not divisible by 2".
     let out_path = std::env::temp_dir().join(format!("neobrowser-video-{}.mp4", uuid_simple()));
     let status = std::process::Command::new("ffmpeg")
         .args([
@@ -69,6 +71,8 @@ pub async fn record_video_base64(client: &CdpClient, seconds: u64) -> Result<Str
             "10",
             "-i",
             &format!("{}/frame_%04d.png", frames_dir.display()),
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
             "-c:v",
             "libx264",
             "-pix_fmt",

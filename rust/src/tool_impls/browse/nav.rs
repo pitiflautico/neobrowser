@@ -308,7 +308,11 @@ impl Tool for BlockUrlsTool {
     ) -> Result<ToolOutput, ToolError> {
         let patterns_str = arg_str(args, "patterns")
             .ok_or_else(|| ToolError::Argument("patterns is required".into()))?;
-        let patterns: Vec<&str> = patterns_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let patterns: Vec<&str> = patterns_str
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
         let tab = ctx.browser.tab().await?;
         let msg = page::intercept::block_urls(&tab, &patterns)
             .await
@@ -348,7 +352,8 @@ impl Tool for BlockTrackersTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "block_trackers",
-            description: "Block common trackers and ads (Google Analytics, Facebook Pixel, Hotjar, etc.).",
+            description:
+                "Block common trackers and ads (Google Analytics, Facebook Pixel, Hotjar, etc.).",
             params: vec![],
         }
     }

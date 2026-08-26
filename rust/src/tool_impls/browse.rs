@@ -20,6 +20,9 @@ pub use forms::{FillTool, FormFillTool, SubmitTool};
 pub use harvest::{ExtractTableTool, ExtractTool, PaginateTool};
 pub use introspect::{AnalyzeTool, JsTool, PageInfoTool};
 pub use locate::{FindTool, ObserveTool};
-pub use nav::{BlockTrackersTool, BlockUrlsTool, NavigateTool, ReadTool, RecordVideoTool, ScreenshotTool, StatusTool, UnblockUrlsTool};
+pub use nav::{
+    BlockTrackersTool, BlockUrlsTool, NavigateTool, ReadTool, RecordVideoTool, ScreenshotTool,
+    StatusTool, UnblockUrlsTool,
+};
 pub use target::{DismissOverlayTool, FindAndClickTool, ScrollTool, WaitTool};
 pub use typing::TypeTool;

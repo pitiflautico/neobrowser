@@ -74,9 +74,7 @@ pub fn classify(tool: &str) -> ActionClass {
 
         "click" | "type" | "fill" | "form_fill" | "submit" | "find_and_click"
         | "dismiss_overlay" | "press" | "hover" | "click_variant" | "set_control" | "drag"
-        | "block_urls" | "unblock_urls" | "block_trackers" => {
-            ActionClass::Interact
-        }
+        | "block_urls" | "unblock_urls" | "block_trackers" => ActionClass::Interact,
 
         "search" | "search_images" | "search_videos" | "search_twitter_videos" => {
             ActionClass::Search

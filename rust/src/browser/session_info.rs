@@ -48,10 +48,17 @@ pub fn read() -> Option<SessionInfo> {
 /// A stale file is ignored: the PID must exist and the CDP port must answer.
 pub async fn live_session() -> Option<SessionInfo> {
     let info = read()?;
-    // Verify the process is still running.
+    // Verify the process is still running without unsafe FFI. On Unix we probe
+    // with `kill -0 <pid>`; on Windows we skip the PID check and rely on the port.
     #[cfg(unix)]
     {
-        let alive = unsafe { libc::kill(info.pid as i32, 0) } == 0;
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &info.pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
         if !alive {
             return None;
         }

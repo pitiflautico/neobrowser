@@ -104,7 +104,8 @@ impl Browser {
         }
         // Handoff file for external tools: pid, port, profile, started_at.
         if let Some(pid) = st.proc.as_ref().and_then(|p| p.pid()) {
-            let profile = self.profile_dir()
+            let profile = self
+                .profile_dir()
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "default".into());

@@ -35,3 +35,8 @@ pub fn set_control() -> Snippet {
 pub fn wall_signals() -> Snippet {
     Snippet::new(include_str!("../../js/wall_signals.js"))
 }
+
+/// Read visible text of a selector, appending links as `[text](href)`.
+pub fn read_with_links() -> Snippet {
+    Snippet::new(include_str!("../../js/read_with_links.js"))
+}

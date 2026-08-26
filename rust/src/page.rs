@@ -29,7 +29,9 @@ pub use eval::{eval_body, eval_caller_supplied, eval_expr, input_is_alive, nudge
 pub use gesture::{click_selector, click_stashed_node, click_variant, drag_and_drop, hover};
 pub use input::{press_key, set_control, type_text};
 pub use locate::{ax_interactive_nodes, find, AxNode};
-pub use nav::{current_url, navigate, navigate_budgeted, read_text, read_text_with_options, screenshot_base64};
+pub use nav::{
+    current_url, navigate, navigate_budgeted, read_text, read_text_with_options, screenshot_base64,
+};
 pub use node::backend_node_for_css;
 pub use pointer::{click_backend_node, ClickOutcome};
 
