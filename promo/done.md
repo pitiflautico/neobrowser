@@ -1870,3 +1870,26 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - **X**: CAPTCHA.
 - **Reddit**: CAPTCHA en submit.
 - **Dominio propio**: pendiente decisión del usuario (comprar).
+
+## 2026-08-26 — ciclo 43: outreach Wes Bos + session replay timestamps
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### OUTREACH: email a Wes Bos
+- Enviado a `hey@wesbos.com`.
+- Ángulo: single-binary Rust, dev tools prácticas, v0.2.0 features.
+- Asunto: "Single-binary MCP server that drives real Chrome (Rust)".
+
+### PRODUCTO: session replay mejorado
+- Añadidos timestamps a cada paso grabado en playbooks (`record_step`).
+- Commit `c6ad214` pusheado.
+
+### Bloqueos activos
+- **Product Hunt**: rechaza GitHub Pages. Solo dominio propio desbloquea.
+- **HN**: `story-toofast` — rate limit temporal de la cuenta.
+- **X**: CAPTCHA.
+- **Reddit**: CAPTCHA en submit.
+- **Dominio propio**: pendiente decisión del usuario (comprar).
