@@ -1606,6 +1606,36 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 
 ---
 
+## 2026-08-26 — ciclo 40: reanudación + nightly fix + outreach Sindre Sorhus
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### PRODUCTO: fix nightly Windows persistent
+- El nightly fallaba en `windows-latest · chrome-stable · persistent` con "chrome did not become ready on port ... within timeout".
+- Causa probable: Chrome tarda más de 60s en arrancar en Windows con perfil persistente.
+- Fix: aumentado `NEOBROWSER_LAUNCH_TIMEOUT` a 120s y `NEOBROWSER_ATTACH_TIMEOUT` a 60s para Windows en `.github/workflows/nightly.yml`.
+- Commit `de4e8c7` pusheado. Nightly disparado manualmente (run `32987032108`), sigue en progreso.
+
+### OUTREACH: email a Sindre Sorhus
+- Enviado a `sindresorhus@mastodon.social`.
+- Ángulo: single-binary Rust, session hygiene, benchmark honesto.
+- Asunto: "A single-binary MCP server that drives real Chrome (Rust)".
+
+### Mantenimiento
+- 30 notificaciones de GitHub marcadas como leídas.
+
+### Bloqueos activos
+- **Product Hunt**: rechaza GitHub Pages. Solo dominio propio desbloquea.
+- **HN**: mismo URL no resubmittible.
+- **X**: CAPTCHA.
+- **Reddit**: CAPTCHA en submit.
+- **Dominio propio**: pendiente decisión del usuario (comprar).
+
+---
+
 ## 2026-08-26 — ciclo 36: los 5 pilares completos
 
 ### Métricas de partida
@@ -1648,3 +1678,75 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - `promo/scripts/linkedin_post_cookies_fix_v4.py`
 - `promo/scripts/hn_comment_hands_rust.py`
 - `promo/intel/hands-rust-competitor-2026-08-26.md`
+
+## 2026-08-26 — cron domain monitor (94b2597b)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 2nd fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 3rd fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 4th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 5th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 6th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 7th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 8th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 9th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 10th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 11th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 12th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
