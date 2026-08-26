@@ -1458,3 +1458,26 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - El bloqueo se ha reportado durante 4 ciclos consecutivos. Sin resolución en el próximo turno, el goal debe marcarse como `blocked` por imposibilidad de progreso significativo hacia 10.000 estrellas.
 
 ---
+
+## 2026-08-26 — issue worker + fix de deslogueo en perfil real
+
+### Issue worker
+- `gh issue list --repo pitiflautico/neobrowser --state open` → 0 issues abiertos.
+- Nada que responder/cerrar.
+
+### PRODUCTO: fix del deslogueo de Gmail/Google en perfil real
+- El usuario reportó que usar `NEOBROWSER_REAL_PROFILE` con Gmail/Google deslogueaba su Chrome real.
+- Causa raíz: faltaban en la lista negra tokens de Gmail (`GMAIL_AT`, `OSID`, `GAUSR`, `ACCOUNT_CHOOSER`, `SMSV`, `COMPASS`, `__Host-GAPS`, etc.) y cookies de fingerprinting de Google (`AEC`, `SOCS`, `CONSENT`, `1P_JAR`, `DV`, `OTZ`) que detectan sesiones clonadas.
+- Cambios en `rust/src/cookies/exclude.rs`, `rust/src/cookies/read.rs`, `rust/src/cookies.rs`, `rust/src/browser/lifecycle.rs`, `rust/src/sessions/profile.rs`, `rust/README.md`.
+- También ampliadas exclusiones para LinkedIn, Microsoft, GitHub, X, Reddit, Facebook, Instagram, Discord, Notion, Figma, Dropbox, Apple, Amazon.
+- Tests de regresión añadidos: `gmail_auth_tokens_are_excluded_from_real_profile_import`, `google_fingerprint_cookies_are_held_back_by_default`.
+- Verificación: `cargo test --lib` 273 passed; `cargo fmt --check`; `cargo clippy --all-targets -- -D warnings` clean.
+- Commit `148aa0a` pusheado a main.
+
+### Métricas
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### Nota
+- El goal de promoción sigue bloqueado por falta de dominio propio para Product Hunt. Los 3 PRs de dominio gratis siguen abiertos.
