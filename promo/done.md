@@ -1783,3 +1783,90 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - **X**: CAPTCHA.
 - **Reddit**: CAPTCHA en submit.
 - **Dominio propio**: pendiente decisión del usuario (comprar).
+
+## 2026-08-26 — cron domain monitor (94b2597b, 13th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 14th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 15th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 16th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 17th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 18th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 19th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 20th fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 21st fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — cron domain monitor (94b2597b, 22nd fire)
+- is-a-good.dev: PR not merged.
+- is-amaz.ing: PR not merged.
+- creepers.sbs: PR not merged.
+- Result: no domain ready; no PH launch attempted.
+
+## 2026-08-26 — ciclo 42: v0.2.0 release + HN rate-limited + outreach Patrick Collison
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### CONTENIDO / PRODUCTO: v0.2.0 release
+- Landing actualizada con nuevas features: PDF extraction, video recording, network interception, persistent mode, session handoff, link-aware reading.
+- Versión bump a 0.2.0 en Cargo.toml y README.
+- Binario 6.5 MB compilado y verificado.
+
+### DISTRIBUCIÓN: intento Show HN con landing
+- **Bloqueado por `story-toofast`** — HN sigue rate-limitando la cuenta. No se pudo publicar.
+
+### OUTREACH: email a Patrick Collison (Stripe)
+- Enviado a `patrick@collison.ie`.
+- Ángulo: single-binary Rust, session hygiene, v0.2.0 features.
+- Asunto: "Single-binary MCP server that drives real Chrome (Rust)".
+
+### Bloqueos activos
+- **Product Hunt**: rechaza GitHub Pages. Solo dominio propio desbloquea.
+- **HN**: `story-toofast` — rate limit temporal de la cuenta.
+- **X**: CAPTCHA.
+- **Reddit**: CAPTCHA en submit.
+- **Dominio propio**: pendiente decisión del usuario (comprar).
