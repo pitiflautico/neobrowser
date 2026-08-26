@@ -42,3 +42,27 @@ pub fn read() -> Option<SessionInfo> {
     let data = std::fs::read_to_string(paths::session_file()).ok()?;
     serde_json::from_str(&data).ok()
 }
+
+/// Read the handoff file and verify the Chrome it points to is actually alive.
+///
+/// A stale file is ignored: the PID must exist and the CDP port must answer.
+pub async fn live_session() -> Option<SessionInfo> {
+    let info = read()?;
+    // Verify the process is still running.
+    #[cfg(unix)]
+    {
+        let alive = unsafe { libc::kill(info.pid as i32, 0) } == 0;
+        if !alive {
+            return None;
+        }
+    }
+    #[cfg(windows)]
+    {
+        // On Windows we skip the PID check and rely on the port probe.
+    }
+    // Verify the CDP port answers.
+    if !crate::chrome::port_alive(info.cdp_port).await {
+        return None;
+    }
+    Some(info)
+}

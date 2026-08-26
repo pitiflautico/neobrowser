@@ -51,6 +51,19 @@ struct Recording {
     steps: Vec<serde_json::Value>,
 }
 
+/// Whether Chrome should outlive this process instead of being killed on shutdown.
+///
+/// `NEOBROWSER_PERSISTENT=1` makes `serve` leave Chrome running when the client
+/// disconnects, so the next `serve` (or any other tool) can re-attach to the same
+/// session instead of launching a fresh browser. The handoff file
+/// (`~/.neobrowser/session.json`) is what lets the next process find it.
+fn persistent_mode() -> bool {
+    std::env::var("NEOBROWSER_PERSISTENT")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Attach to an already-running Chrome on this debug port instead of launching one.
 ///
 /// `NEOBROWSER_ATTACH_PORT=<port>` pins the port. `NEOBROWSER_ATTACH_PORT=auto`

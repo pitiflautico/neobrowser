@@ -73,10 +73,24 @@ impl Browser {
                 (None, port, true)
             }
             None => {
-                let proc = ChromeProcess::launch(self.profile_dir()).await?;
-                let port = proc.port;
-                chrome::wait_for_chrome(port, owned_launch_timeout).await?;
-                (Some(proc), port, false)
+                // Persistent mode: try to re-attach to a Chrome we left running
+                // last time before launching a fresh one.
+                if super::persistent_mode() {
+                    if let Some(session) = super::session_info::live_session().await {
+                        chrome::wait_for_chrome(session.cdp_port, attached_launch_timeout).await?;
+                        (None, session.cdp_port, true)
+                    } else {
+                        let proc = ChromeProcess::launch(self.profile_dir()).await?;
+                        let port = proc.port;
+                        chrome::wait_for_chrome(port, owned_launch_timeout).await?;
+                        (Some(proc), port, false)
+                    }
+                } else {
+                    let proc = ChromeProcess::launch(self.profile_dir()).await?;
+                    let port = proc.port;
+                    chrome::wait_for_chrome(port, owned_launch_timeout).await?;
+                    (Some(proc), port, false)
+                }
             }
         };
         let handle = Self::open_tab(port, !attached, true).await?;
@@ -201,14 +215,24 @@ impl Browser {
             .unwrap_or(20)
     }
 
-    /// Tear down the session. Only ever kills a Chrome we launched.
+    /// Tear down the session. Only ever kills a Chrome we launched, unless
+    /// persistent mode is on — then Chrome stays alive for the next process.
     pub async fn shutdown(&self) {
         let mut st = self.state.lock().await;
         st.tabs.clear();
-        if let Some(mut proc) = st.proc.take() {
-            proc.kill(true).await;
+        if super::persistent_mode() {
+            // Leave Chrome running; just drop our tabs. The handoff file stays
+            // so the next process can find it.
+            if let Some(mut proc) = st.proc.take() {
+                proc.detach();
+            }
+            tracing::info!("persistent mode: Chrome left running for next session");
+        } else {
+            if let Some(mut proc) = st.proc.take() {
+                proc.kill(true).await;
+            }
+            super::session_info::clear();
         }
-        super::session_info::clear();
     }
 
     /// Test hook: kill the owned Chrome process without going through shutdown.

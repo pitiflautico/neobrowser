@@ -154,6 +154,13 @@ impl ChromeProcess {
         self.is_alive() && self.port_alive().await
     }
 
+    /// Detach from the process without killing it. The child handle is dropped,
+    /// so `Drop` will not terminate Chrome — it keeps running for the next
+    /// process to attach to. Used by persistent mode.
+    pub fn detach(&mut self) {
+        self.child = None;
+    }
+
     /// Terminate the process. Always sends SIGTERM first (Chrome flushes its
     /// profile) and waits up to 3s for a graceful exit; only if `force` and it
     /// is still alive after the grace period does it escalate to SIGKILL.
