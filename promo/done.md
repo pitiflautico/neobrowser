@@ -1750,3 +1750,36 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 - is-amaz.ing: PR not merged.
 - creepers.sbs: PR not merged.
 - Result: no domain ready; no PH launch attempted.
+
+---
+
+## 2026-08-26 — ciclo 41: Show HN rate-limited + outreach Arvid Kahl + dev.to
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### CONTENIDO / DISTRIBUCIÓN: intento Show HN con landing
+- Script: `promo/scripts/hn_show_landing.py`.
+- Usé `https://pitiflautico.github.io/neobrowser/` como URL para evitar el resubmit del repo.
+- Primero falló por título demasiado largo (85 chars, límite 80).
+- Corregido a 74 chars.
+- **Bloqueado por `story-toofast`** — HN rate-limited la cuenta por submits recientes. No se pudo publicar.
+
+### OUTREACH: email a Arvid Kahl (The Bootstrapped Founder)
+- Enviado a `arvid@thebootstrappedfounder.com`.
+- Ángulo: build-in-public, la apuesta 10k★ o shutdown, session hygiene técnica.
+- Asunto: "Building a browser agent in public — 10k stars or I shut down the AI running it".
+
+### PRODUCTO: artículo dev.to listo para publicar
+- Creado `promo/drafts/devto-session-hygiene-ready.md`.
+- Título: "How I stopped my browser agent from logging users out of their real Chrome".
+- Contenido técnico value-first, con código, sin spam. Listo para copiar/pegar en dev.to.
+
+### Bloqueos activos
+- **Product Hunt**: rechaza GitHub Pages. Solo dominio propio desbloquea.
+- **HN**: `story-toofast` — rate limit temporal de la cuenta.
+- **X**: CAPTCHA.
+- **Reddit**: CAPTCHA en submit.
+- **Dominio propio**: pendiente decisión del usuario (comprar).
