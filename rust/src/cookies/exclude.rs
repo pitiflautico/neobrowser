@@ -42,6 +42,7 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
             ".gmail.com",
         ],
         &[
+            // Classic Google session cookies.
             "SID",
             "HSID",
             "SSID",
@@ -57,9 +58,31 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
             "__Secure-3PSIDTS",
             "SIDCC",
             "LSID",
+            // Gmail / Google Account tokens that also authenticate the user.
+            // Cloning these into a headless browser is the fastest way to get the
+            // real browser logged out by Google's anti-session-cloning defences.
+            "OSID",
+            "GMAIL_AT",
+            "GAUSR",
+            "ACCOUNT_CHOOSER",
+            "SMSV",
+            "COMPASS",
+            "SNID",
+            "__Host-GAPS",
+            "__Host-3PLSID",
+            "__Host-GMAIL_RTT",
+            "__Host-GMAIL_SUA",
+            "__Host-GMAIL_IMP",
+            "GMAIL_RTT",
+            "GMAIL_SUA",
+            "GMAIL_IMP",
+            "GMAIL_LOGIN",
         ],
     ),
-    (&[".linkedin.com"], &["li_at", "JSESSIONID"]),
+    (
+        &[".linkedin.com"],
+        &["li_at", "JSESSIONID", "li_rm", "liap", "sl"],
+    ),
     (
         &[
             ".login.microsoftonline.com",
@@ -67,27 +90,73 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
             ".login.windows.net",
             ".microsoftonline.com",
         ],
-        &["ESTSAUTH", "ESTSAUTHPERSISTENT", "ESTSAUTHLIGHT", "buid"],
+        &[
+            "ESTSAUTH",
+            "ESTSAUTHPERSISTENT",
+            "ESTSAUTHLIGHT",
+            "buid",
+            "MSPRequ",
+            "MSCC",
+            "PPAuth",
+            "WLSSC",
+            "MSPOK",
+            "MSFPC",
+            "OParams",
+            "LOpt",
+            "CLIM",
+        ],
     ),
     // Additional providers that aggressively invalidate duplicate sessions.
     (
         &[".github.com"],
-        &["user_session", "__Host-user_session_same_site"],
+        &[
+            "user_session",
+            "__Host-user_session_same_site",
+            "_device_id",
+            "has_recent_activity",
+        ],
     ),
-    (&[".twitter.com", ".x.com"], &["auth_token", "ct0", "twid"]),
-    (&[".reddit.com"], &["reddit_session"]),
-    (&[".facebook.com"], &["c_user", "xs"]),
-    (&[".instagram.com"], &["sessionid", "ds_user_id"]),
-    (&[".slack.com"], &["d"]),
-    (&[".discord.com"], &["token"]),
+    (
+        &[".twitter.com", ".x.com"],
+        &[
+            "auth_token",
+            "ct0",
+            "twid",
+            "kdt",
+            "des_opt_in",
+            "twll",
+            "dnt",
+        ],
+    ),
+    (
+        &[".reddit.com"],
+        &[
+            "reddit_session",
+            "token_v2",
+            "session_tracker",
+            "recent_srdi",
+        ],
+    ),
+    (&[".facebook.com"], &["c_user", "xs", "fr", "sb", "datr"]),
+    (
+        &[".instagram.com"],
+        &["sessionid", "ds_user_id", "csrftoken"],
+    ),
+    (&[".slack.com"], &["d", "d-s"]),
+    (&[".discord.com"], &["token", "__dcfduid", "__sdcfduid"]),
     // More providers that aggressively revoke duplicate / cloned sessions.
     (
         &[".notion.so", ".notion.site"],
-        &["token_v2", "notion_user_id", "notion_experiment_device_id"],
+        &[
+            "token_v2",
+            "notion_user_id",
+            "notion_experiment_device_id",
+            "notion_device_id",
+        ],
     ),
     (
         &[".figma.com"],
-        &["figma.auth", "figma.session", "figma.fs"],
+        &["figma.auth", "figma.session", "figma.fs", "figma_user"],
     ),
     (&[".linear.app"], &["linear", "linear_session"]),
     (
@@ -99,11 +168,20 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
         &["cftoken", "cf_clearance", "session"],
     ),
     (&[".stripe.com"], &["session", "stripe.csrf"]),
-    (&[".dropbox.com"], &["bjarne", "jar", "t"]),
-    (&[".apple.com", ".icloud.com"], &["aa", "acn01", "Des"]),
+    (&[".dropbox.com"], &["bjarne", "jar", "t", "uc_session"]),
+    (
+        &[".apple.com", ".icloud.com"],
+        &["aa", "acn01", "Des", "csa"],
+    ),
     (
         &[".amazon.com", ".amazon.es", ".amazon.co.uk"],
-        &["session-id", "ubid-main", "at-main", "sess-at-main"],
+        &[
+            "session-id",
+            "ubid-main",
+            "at-main",
+            "sess-at-main",
+            "x-main",
+        ],
     ),
     (&[".spotify.com"], &["sp_dc", "sp_key"]),
     (&[".zoom.us"], &["_zm_ssid", "_zm_csp"]),
@@ -126,7 +204,7 @@ const SESSION_AUTH_EXCLUSIONS: &[(&[&str], &[&str])] = &[
 ///
 /// Matching is still label-aware: `evilgoogle.com` must not match `google.com`, the same
 /// near-miss the policy engine's domain matching has to defend against.
-pub(super) fn host_under_domain(host_key: &str, domain: &str) -> bool {
+pub fn host_under_domain(host_key: &str, domain: &str) -> bool {
     let host = host_key.trim_start_matches('.').to_ascii_lowercase();
     let dom = domain.trim_start_matches('.').to_ascii_lowercase();
     host == dom || host.ends_with(&format!(".{dom}"))
@@ -145,6 +223,50 @@ pub fn is_session_auth_excluded(host_key: &str, name: &str) -> bool {
     SESSION_AUTH_EXCLUSIONS.iter().any(|(domains, names)| {
         names.contains(&name) && domains.iter().any(|d| host_under_domain(host_key, d))
     })
+}
+
+/// Names of cookies that are not classic "auth" tokens but are still used by
+/// providers to bind a session to a specific browser / device fingerprint.
+/// Importing them into a headless clone can trigger the same "new device"
+/// revocation that importing SID/li_at does, so they are held back by default.
+const HIGH_RISK_FINGERPRINT_COOKIES: &[(&[&str], &[&str])] = &[(
+    &[
+        ".google.com",
+        ".google.es",
+        ".googleapis.com",
+        ".gstatic.com",
+        ".youtube.com",
+        ".accounts.google.com",
+        ".gmail.com",
+    ],
+    &[
+        // Security / anti-fraud / device-binding cookies. They are not
+        // identity tokens by themselves, but Google treats their sudden use
+        // from a headless browser as evidence of session cloning.
+        "AEC",
+        "SOCS",
+        "CONSENT",
+        "1P_JAR",
+        "DV",
+        "OTZ",
+        "SEARCH_SAMESITE",
+        "OGPC",
+        "GAPS",
+    ],
+)];
+
+/// True for fingerprint / device-binding cookies that providers use to detect
+/// cloned sessions. Held back by default; `NEOBROWSER_INCLUDE_IDENTITY_COOKIES=1`
+/// disables this check as well, since the user has explicitly accepted the risk.
+pub fn is_high_risk_fingerprint_cookie(host_key: &str, name: &str) -> bool {
+    if identity_cookies_opt_in() {
+        return false;
+    }
+    HIGH_RISK_FINGERPRINT_COOKIES
+        .iter()
+        .any(|(domains, names)| {
+            names.contains(&name) && domains.iter().any(|d| host_under_domain(host_key, d))
+        })
 }
 
 /// True only for an explicit affirmative value.

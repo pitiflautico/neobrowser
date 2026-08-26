@@ -46,8 +46,10 @@ search_videos search_twitter_videos record_task stop_recording replay`
 ### Beyond parity (Rust-only robustness)
 
 - **Real-session auto-auth** — `NEOBROWSER_REAL_PROFILE` reads + decrypts the real
-  Chrome profile's cookies and injects them at launch (Google/LinkedIn/MS identity
-  cookies excluded so your real browser isn't logged out).
+  Chrome profile's cookies and injects them at launch. Identity and fingerprint
+  cookies for Google/Gmail, Microsoft, LinkedIn and other high-risk providers are
+  excluded by default to avoid logging your real browser out. If a provider still
+  revokes the session, use `NEOBROWSER_ATTACH_PORT` or a logged-in agent profile.
 - **Multi-provider search** — text (DuckDuckGo + Google), images (Bing + Google),
   videos (YouTube + Google): walled sources are detected and skipped, results merged.
 - **Generic wall detection** — `navigate` flags bot walls, captchas, consent gates,

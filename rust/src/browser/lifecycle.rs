@@ -136,8 +136,9 @@ impl Browser {
                     Some(domains) => {
                         tracing::warn!(
                             "real-session: importing cookies for domains {:?} from the user's Chrome profile; \
-                             some providers may still detect the cloned session and log the real browser out. \
-                             Use NEOBROWSER_ATTACH_PORT or an agent profile if this happens.",
+                             Google/Gmail and other high-risk providers are filtered aggressively, \
+                             but any cloned session can still trigger a logout. \
+                             If your real browser is logged out, switch to NEOBROWSER_ATTACH_PORT or an agent profile.",
                             domains
                         );
                         match crate::cookies::read_real_profile_cookies(Some(&domains)) {

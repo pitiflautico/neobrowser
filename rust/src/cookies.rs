@@ -27,7 +27,10 @@ pub mod keys;
 pub mod read;
 
 pub use crypto::{decrypt_value_cbc, decrypt_value_gcm, derive_key_cbc};
-pub use exclude::{is_session_auth_excluded, is_session_cookie_excluded};
+pub use exclude::{
+    host_under_domain, is_high_risk_fingerprint_cookie, is_session_auth_excluded,
+    is_session_cookie_excluded,
+};
 pub use keys::{get_decrypt_key, DecryptKey};
 pub use read::{
     chrome_epoch_to_unix, read_real_profile_cookies, real_profile_domains, real_profile_folder,
@@ -346,6 +349,41 @@ mod tests {
         // Consent/preference cookies on the same domains should still be importable.
         assert!(!is_session_auth_excluded(".notion.so", "notion_consent"));
         assert!(!is_session_auth_excluded(".figma.com", "analytics"));
+    }
+
+    /// Regression: Gmail/Google auth tokens beyond the classic SID family were
+    /// imported from real profiles, causing the user's real Chrome to be logged out.
+    #[test]
+    fn gmail_auth_tokens_are_excluded_from_real_profile_import() {
+        let _g = crate::env_test_guard();
+        assert!(is_session_auth_excluded(".gmail.com", "GMAIL_AT"));
+        assert!(is_session_auth_excluded("mail.google.com", "GMAIL_AT"));
+        assert!(is_session_auth_excluded(".google.com", "OSID"));
+        assert!(is_session_auth_excluded(".accounts.google.com", "OSID"));
+        assert!(is_session_auth_excluded(".google.com", "GAUSR"));
+        assert!(is_session_auth_excluded(".google.com", "ACCOUNT_CHOOSER"));
+        assert!(is_session_auth_excluded(".google.com", "SMSV"));
+        assert!(is_session_auth_excluded(".google.com", "COMPASS"));
+        assert!(is_session_auth_excluded(".google.com", "__Host-GAPS"));
+        assert!(is_session_auth_excluded(".google.com", "__Host-3PLSID"));
+        assert!(is_session_auth_excluded(".gmail.com", "GMAIL_LOGIN"));
+    }
+
+    /// Google also uses security/fingerprint cookies to detect cloned sessions.
+    /// Importing them from a real profile can still log the real browser out.
+    #[test]
+    fn google_fingerprint_cookies_are_held_back_by_default() {
+        let _g = crate::env_test_guard();
+        assert!(is_high_risk_fingerprint_cookie(".google.com", "AEC"));
+        assert!(is_high_risk_fingerprint_cookie(".google.com", "SOCS"));
+        assert!(is_high_risk_fingerprint_cookie(".gmail.com", "CONSENT"));
+        assert!(is_high_risk_fingerprint_cookie("mail.google.com", "1P_JAR"));
+        assert!(is_high_risk_fingerprint_cookie(".youtube.com", "DV"));
+        assert!(is_high_risk_fingerprint_cookie(".google.com", "OTZ"));
+        // The escape hatch disables fingerprint holding too.
+        std::env::set_var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES", "1");
+        assert!(!is_high_risk_fingerprint_cookie(".google.com", "AEC"));
+        std::env::remove_var("NEOBROWSER_INCLUDE_IDENTITY_COOKIES");
     }
 
     /// Real-profile cookie import is opt-in per domain. The env var must be parsed as a

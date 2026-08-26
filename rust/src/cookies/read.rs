@@ -5,7 +5,10 @@
 //! live file. The rows come back partially encrypted, with timestamps in Chrome's epoch and
 //! `sameSite` as an integer, so the conversions live here too.
 
-use super::exclude::{host_under_domain, is_session_auth_excluded, is_session_cookie_excluded};
+use super::exclude::{
+    host_under_domain, is_high_risk_fingerprint_cookie, is_session_auth_excluded,
+    is_session_cookie_excluded,
+};
 use super::keys::get_decrypt_key;
 use super::CookieError;
 
@@ -107,6 +110,9 @@ pub fn read_real_profile_cookies(
             }
         }
         if is_session_auth_excluded(&r.host_key, &r.name) {
+            continue;
+        }
+        if is_high_risk_fingerprint_cookie(&r.host_key, &r.name) {
             continue;
         }
         let value = if !r.encrypted_value.is_empty() {
