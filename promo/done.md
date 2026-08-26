@@ -1565,6 +1565,47 @@ Ninguno ha recibido merge ni nuevos comentarios durante este ciclo.
 
 ---
 
+## 2026-08-26 — ciclo 39: demo comparativo + launch day kit + outreach Lee Robinson
+
+### Métricas de partida
+- Estrellas: 95.
+- Forks: 4.
+- Issues abiertos: 0.
+
+### CONTENIDO / PRODUCTO: demo comparativo conceptual
+- Script: `promo/scripts/generate_comparison_demo.py`.
+- Generados `neobrowser-vs-playwright.gif` y `.mp4`.
+- Actualizada la landing (`docs/index.html`) para usar el video en la sección "Why a fresh headless browser fails".
+- Assets copiados a `docs/assets/`.
+
+### DISTRIBUCIÓN: Product Hunt launch day kit
+- Documento creado: `promo/drafts/producthunt-launch-day-kit.md`.
+- Incluye: hunter strategy, assets checklist, primer comment del maker, respuestas preparadas, cross-post plan, timeline del día, métricas a vigilar.
+- Listo para ejecutar en cuanto haya dominio propio.
+
+### OUTREACH: email a Lee Robinson (Vercel)
+- Enviado a `lee@leerob.com`.
+- Ángulo: dev tools, single binary Rust, DX, session hygiene.
+- Asunto: "Single-binary MCP server that drives real Chrome (Rust)".
+
+### INTELIGENCIA: patrones de viralidad aplicados
+- El launch day kit incorpora las tácticas del análisis de viralidad (demo visual, confesión técnica, timing, cross-post).
+
+### Bloqueos activos
+- **Product Hunt**: rechaza GitHub Pages. Solo dominio propio desbloquea.
+- **HN**: mismo URL no resubmittible.
+- **X**: CAPTCHA.
+- **Reddit**: CAPTCHA en submit.
+- **Dominio propio**: pendiente decisión del usuario (comprar).
+
+### Assets añadidos en este ciclo
+- `promo/scripts/generate_comparison_demo.py`
+- `docs/assets/neobrowser-vs-playwright.gif`
+- `docs/assets/neobrowser-vs-playwright.mp4`
+- `promo/drafts/producthunt-launch-day-kit.md`
+
+---
+
 ## 2026-08-26 — ciclo 36: los 5 pilares completos
 
 ### Métricas de partida
